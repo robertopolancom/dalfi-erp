@@ -30,6 +30,7 @@
           <button class="nav-item" data-view="inventory" type="button">Inventario</button>
           <button class="nav-item" data-view="fixed-assets" type="button">Activos fijos</button>
           <button class="nav-item" data-view="reports" type="button">Reportes</button>
+          <button class="nav-item" data-view="users" type="button">Usuarios</button>
           <button class="nav-item" data-view="settings" type="button">Base de datos</button>
         </nav>
       </aside>
@@ -1386,6 +1387,48 @@
               </div>
               <div class="simple-list" id="commission-list"></div>
             </section>
+          </div>
+        </section>
+
+        <section id="users" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="user-create-form">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Administración</p>
+                  <h3>Crear usuario</h3>
+                </div>
+              </div>
+              <div class="form-row">
+                <label>
+                  Nombre
+                  <input id="new-user-name" placeholder="Nombre de la persona" />
+                </label>
+                <label>
+                  Correo
+                  <input id="new-user-email" type="email" placeholder="correo@empresa.com" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Contraseña temporal
+                  <input id="new-user-password" type="password" minlength="6" placeholder="Mínimo 6 caracteres" required />
+                </label>
+                <label>
+                  Rol
+                  <select id="new-user-role">
+                    <option value="operador">Operador</option>
+                    <option value="administradora">Administradora</option>
+                    <option value="propietario">Propietario</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-actions">
+                <button class="primary-btn" type="submit">Crear usuario</button>
+                <button class="secondary-btn" id="open-supabase-users" type="button">Abrir usuarios en Supabase</button>
+              </div>
+              <p class="form-message" id="user-create-message">Solo los correos autorizados como administradores pueden crear usuarios.</p>
+            </form>
           </div>
         </section>
       </main>

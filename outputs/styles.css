@@ -477,6 +477,27 @@ textarea:focus {
   padding: 10px 12px;
 }
 
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.form-message {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.form-message.success {
+  color: var(--accent-strong);
+}
+
+.form-message.error {
+  color: var(--rose);
+}
+
 .quick-create {
   margin: 12px 18px 0;
   padding: 12px;

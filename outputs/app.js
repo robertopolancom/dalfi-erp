@@ -2255,6 +2255,48 @@ function wireAuth() {
   });
 }
 
+function wireUserAdmin() {
+  const form = byId("user-create-form");
+  if (!form) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const message = byId("user-create-message");
+    if (!isSupabaseReady()) {
+      message.textContent = "Debes iniciar sesión antes de crear usuarios.";
+      message.className = "form-message error";
+      return;
+    }
+    const email = byId("new-user-email").value.trim();
+    const password = byId("new-user-password").value;
+    const fullName = byId("new-user-name").value.trim();
+    const role = byId("new-user-role").value;
+    message.textContent = "Creando usuario...";
+    message.className = "form-message";
+    try {
+      const response = await fetch("/.netlify/functions/create-user", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${supabaseSession.access_token}`,
+        },
+        body: JSON.stringify({ email, password, fullName, role }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "No se pudo crear el usuario.");
+      form.reset();
+      message.textContent = `Usuario creado: ${result.email || email}`;
+      message.className = "form-message success";
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = "form-message error";
+    }
+  });
+
+  byId("open-supabase-users")?.addEventListener("click", () => {
+    window.open("https://supabase.com/dashboard/project/lcqxbhlkqtjlwsedarej/auth/users", "_blank", "noopener");
+  });
+}
+
 function wireDataFormToggles() {
   const selectModule = (formId) => {
     document.querySelectorAll(".data-form-toggle").forEach((item) => item.classList.toggle("active", item.dataset.formTarget === formId));
@@ -3981,6 +4023,7 @@ async function init() {
   updateAuthUi();
   wireNavigation();
   wireAuth();
+  wireUserAdmin();
   wireDataFormToggles();
   wireForms();
   wireSearches();
