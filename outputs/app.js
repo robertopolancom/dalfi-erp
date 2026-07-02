@@ -223,13 +223,15 @@ function updateSyncStatus(message, mode = "") {
 
 function updateAuthUi() {
   const connected = isSupabaseReady();
+  document.body.classList.toggle("auth-required", !connected);
   byId("open-login").classList.toggle("hidden", connected);
   byId("logout-button").classList.toggle("hidden", !connected);
   if (connected) {
     byId("auth-panel").classList.add("hidden");
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
   } else {
-    updateSyncStatus("Modo local", "");
+    byId("auth-panel").classList.remove("hidden");
+    updateSyncStatus("Inicia sesión para usar el ERP", "");
   }
 }
 
@@ -2212,6 +2214,7 @@ function wireAuth() {
     byId("auth-email").focus();
   });
   byId("close-login").addEventListener("click", () => {
+    if (!isSupabaseReady()) return;
     byId("auth-panel").classList.add("hidden");
   });
   byId("logout-button").addEventListener("click", async () => {

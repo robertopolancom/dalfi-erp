@@ -205,6 +205,19 @@ textarea {
   font-size: 13px;
 }
 
+body.auth-required .nav-list,
+body.auth-required .view,
+body.auth-required #open-login,
+body.auth-required #close-login {
+  display: none !important;
+}
+
+body.auth-required .auth-panel {
+  display: grid !important;
+  max-width: 920px;
+  margin: 48px auto 0;
+}
+
 .view {
   display: none;
 }
