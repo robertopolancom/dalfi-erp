@@ -44,6 +44,7 @@
           <div class="topbar-actions">
             <div class="sync-status" id="sync-status">Modo local</div>
             <button class="secondary-btn compact" id="open-login" type="button">Conectar Supabase</button>
+            <button class="secondary-btn compact hidden" id="open-password-change" type="button">Cambiar contraseña</button>
             <button class="secondary-btn compact hidden" id="logout-button" type="button">Salir</button>
             <div class="date-pill" id="today-label"></div>
           </div>
@@ -65,10 +66,59 @@
             </label>
             <div class="auth-actions">
               <button class="primary-btn inline" type="submit">Entrar</button>
+              <button class="secondary-btn" id="forgot-password" type="button">No recuerdo contraseña</button>
               <button class="secondary-btn" id="close-login" type="button">Cancelar</button>
             </div>
           </form>
           <p class="auth-note">Usa un usuario creado en Supabase Authentication. Al entrar, los datos se guardan en la nube.</p>
+        </section>
+
+        <section class="auth-panel hidden" id="forgot-password-panel">
+          <div>
+            <p class="eyebrow">Recuperación</p>
+            <h3>No recuerdo contraseña</h3>
+          </div>
+          <form class="auth-form" id="forgot-password-form">
+            <label>
+              Correo
+              <input id="forgot-email" type="email" placeholder="correo@empresa.com" required />
+            </label>
+            <div class="auth-actions">
+              <button class="primary-btn inline" type="submit">Validar reset</button>
+              <button class="secondary-btn" id="cancel-forgot-password" type="button">Cancelar</button>
+            </div>
+          </form>
+          <p class="auth-note" id="forgot-password-message">Si el administrador ya reseteó tu contraseña, podrás crear una nueva.</p>
+        </section>
+
+        <section class="auth-panel hidden" id="password-change-panel">
+          <div>
+            <p class="eyebrow">Seguridad</p>
+            <h3 id="password-change-title">Cambiar contraseña</h3>
+          </div>
+          <form class="auth-form" id="password-change-form">
+            <label class="hidden" id="password-change-email-label">
+              Correo
+              <input id="password-change-email" type="email" placeholder="correo@empresa.com" />
+            </label>
+            <label>
+              Contraseña actual o temporal
+              <input id="password-current" type="password" placeholder="Contraseña actual" required />
+            </label>
+            <label>
+              Nueva contraseña
+              <input id="password-new" type="password" minlength="6" placeholder="Mínimo 6 caracteres" required />
+            </label>
+            <label>
+              Confirmar contraseña
+              <input id="password-confirm" type="password" minlength="6" placeholder="Repite la contraseña" required />
+            </label>
+            <div class="auth-actions">
+              <button class="primary-btn inline" type="submit">Guardar contraseña</button>
+              <button class="secondary-btn" id="cancel-password-change" type="button">Cancelar</button>
+            </div>
+          </form>
+          <p class="auth-note" id="password-change-message">La contraseña nueva será la que usarás para entrar al ERP.</p>
         </section>
 
         <section id="dashboard" class="view active">
@@ -1406,7 +1456,7 @@
               <div class="form-row">
                 <label>
                   Contraseña temporal
-                  <input id="new-user-password" type="password" minlength="6" placeholder="Mínimo 6 caracteres" required />
+                  <input id="new-user-password" type="password" minlength="6" placeholder="Automática si se deja vacío" />
                 </label>
                 <label>
                   Rol
@@ -1439,12 +1489,13 @@
                       <th>Correo</th>
                       <th>Rol</th>
                       <th>Estado</th>
-                      <th>Nueva contraseña</th>
+                      <th>Clave</th>
+                      <th>Contraseña temporal</th>
                       <th>Acciones</th>
                     </tr>
                   </thead>
                   <tbody id="users-list">
-                    <tr><td class="empty" colspan="6">Pulsa Actualizar para cargar usuarios.</td></tr>
+                    <tr><td class="empty" colspan="7">Pulsa Actualizar para cargar usuarios.</td></tr>
                   </tbody>
                 </table>
               </div>

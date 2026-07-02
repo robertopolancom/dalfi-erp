@@ -212,7 +212,22 @@ body.auth-required #close-login {
   display: none !important;
 }
 
-body.auth-required .auth-panel {
+body.auth-required .auth-panel:not(.hidden) {
+  display: grid !important;
+  max-width: 920px;
+  margin: 48px auto 0;
+}
+
+body.password-change-required .nav-list,
+body.password-change-required .view,
+body.password-change-required #auth-panel,
+body.password-change-required #forgot-password-panel,
+body.password-change-required #open-password-change,
+body.password-change-required #cancel-password-change {
+  display: none !important;
+}
+
+body.password-change-required #password-change-panel {
   display: grid !important;
   max-width: 920px;
   margin: 48px auto 0;
@@ -529,6 +544,11 @@ textarea:focus {
 .status-pill.danger {
   background: rgba(180, 35, 85, 0.1);
   color: var(--rose);
+}
+
+.status-pill.warning {
+  background: rgba(185, 128, 22, 0.14);
+  color: #8a5a00;
 }
 
 .quick-create {

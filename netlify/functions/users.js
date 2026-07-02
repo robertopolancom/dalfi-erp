@@ -4,7 +4,15 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
+const { randomBytes } = require("crypto");
+
 const normalizeEmail = (value = "") => value.trim().toLowerCase();
+
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = randomBytes(10);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("") + "#1";
+}
 
 async function requireAdmin(event) {
   const supabaseUrl = process.env.SUPABASE_URL;
@@ -63,6 +71,7 @@ function toPublicUser(user) {
     fullName: user.user_metadata?.full_name || "",
     role: user.user_metadata?.role || "operador",
     estado: isInactive(user) ? "Inactivo" : "Activo",
+    passwordResetRequired: Boolean(user.user_metadata?.password_reset_required),
     createdAt: user.created_at,
     lastSignInAt: user.last_sign_in_at,
   };
@@ -103,6 +112,18 @@ exports.handler = async (event) => {
     return json(400, { error: "Falta el ID del usuario." });
   }
 
+  const currentResponse = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+    },
+  });
+  const currentUser = await currentResponse.json().catch(() => ({}));
+  if (!currentResponse.ok) {
+    return json(currentResponse.status, { error: currentUser.msg || currentUser.error || "No se pudo leer el usuario." });
+  }
+  const currentMetadata = currentUser.user_metadata || {};
+
   const update = {};
   const fullName = String(payload.fullName || "").trim();
   const role = String(payload.role || "operador").trim();
@@ -110,20 +131,28 @@ exports.handler = async (event) => {
   const estado = payload.estado === "Inactivo" ? "Inactivo" : "Activo";
   const email = normalizeEmail(payload.email);
   const password = String(payload.password || "");
+  const resetPassword = Boolean(payload.resetPassword);
+  const temporaryPassword = resetPassword ? generateTemporaryPassword() : password;
 
   if (email) update.email = email;
-  if (password) {
-    if (password.length < 6) {
+  if (temporaryPassword) {
+    if (temporaryPassword.length < 6) {
       return json(400, { error: "La contrasena debe tener al menos 6 caracteres." });
     }
-    update.password = password;
+    update.password = temporaryPassword;
   }
 
   update.user_metadata = {
+    ...currentMetadata,
     full_name: fullName,
     role,
     updated_by: requesterEmail,
   };
+  if (temporaryPassword) {
+    update.user_metadata.password_reset_required = true;
+    update.user_metadata.password_reset_reason = resetPassword ? "admin_reset" : "admin_password_update";
+    update.user_metadata.password_reset_at = new Date().toISOString();
+  }
   if (hasEstado) {
     update.user_metadata.estado = estado;
     update.ban_duration = estado === "Inactivo" ? "876000h" : "none";
@@ -144,5 +173,5 @@ exports.handler = async (event) => {
     return json(response.status, { error: body.msg || body.message || body.error_description || body.error || "No se pudo actualizar el usuario." });
   }
 
-  return json(200, { user: toPublicUser(body) });
+  return json(200, { user: toPublicUser(body), temporaryPassword: resetPassword ? temporaryPassword : undefined });
 };

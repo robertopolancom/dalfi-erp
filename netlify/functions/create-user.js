@@ -4,7 +4,15 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
+const { randomBytes } = require("crypto");
+
 const normalizeEmail = (value = "") => value.trim().toLowerCase();
+
+function generateTemporaryPassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = randomBytes(10);
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("") + "#1";
+}
 
 exports.handler = async (event) => {
   if (event.httpMethod !== "POST") {
@@ -59,12 +67,12 @@ exports.handler = async (event) => {
   }
 
   const email = normalizeEmail(payload.email);
-  const password = String(payload.password || "");
+  const password = String(payload.password || "") || generateTemporaryPassword();
   const fullName = String(payload.fullName || "").trim();
   const role = String(payload.role || "operador").trim();
 
-  if (!email || !password) {
-    return json(400, { error: "Correo y contrasena son obligatorios." });
+  if (!email) {
+    return json(400, { error: "El correo es obligatorio." });
   }
 
   if (password.length < 6) {
@@ -86,6 +94,9 @@ exports.handler = async (event) => {
         full_name: fullName,
         role,
         created_by: requesterEmail,
+        password_reset_required: true,
+        password_reset_reason: "initial_password",
+        password_reset_at: new Date().toISOString(),
       },
     }),
   });
@@ -95,5 +106,5 @@ exports.handler = async (event) => {
     return json(createResponse.status, { error: created.msg || created.error_description || created.error || "No se pudo crear el usuario." });
   }
 
-  return json(200, { id: created.id, email: created.email || email });
+  return json(200, { id: created.id, email: created.email || email, temporaryPassword: password });
 };

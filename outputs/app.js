@@ -169,6 +169,10 @@ function isSupabaseReady() {
   return Boolean(supabaseClient && supabaseSession?.user);
 }
 
+function isPasswordResetRequired() {
+  return Boolean(supabaseSession?.user?.user_metadata?.password_reset_required);
+}
+
 async function loadRemoteDatabase() {
   if (!isSupabaseReady()) return null;
   isLoadingRemote = true;
@@ -223,14 +227,30 @@ function updateSyncStatus(message, mode = "") {
 
 function updateAuthUi() {
   const connected = isSupabaseReady();
+  const passwordChangeRequired = connected && isPasswordResetRequired();
   document.body.classList.toggle("auth-required", !connected);
+  document.body.classList.toggle("password-change-required", passwordChangeRequired);
   byId("open-login").classList.toggle("hidden", connected);
+  byId("open-password-change").classList.toggle("hidden", !connected);
   byId("logout-button").classList.toggle("hidden", !connected);
-  if (connected) {
+  if (passwordChangeRequired) {
     byId("auth-panel").classList.add("hidden");
+    byId("forgot-password-panel")?.classList.add("hidden");
+    byId("password-change-panel")?.classList.remove("hidden");
+    byId("password-change-title").textContent = "Cambia tu contraseña temporal";
+    byId("password-change-message").textContent = "Debes crear una contraseña propia antes de usar el ERP.";
+    byId("password-change-email-label").classList.add("hidden");
+    byId("password-current").placeholder = "Contraseña temporal";
+    updateSyncStatus("Cambia tu contraseña para continuar", "error");
+  } else if (connected) {
+    byId("auth-panel").classList.add("hidden");
+    byId("forgot-password-panel")?.classList.add("hidden");
+    byId("password-change-panel")?.classList.add("hidden");
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
   } else {
     byId("auth-panel").classList.remove("hidden");
+    byId("forgot-password-panel")?.classList.add("hidden");
+    byId("password-change-panel")?.classList.add("hidden");
     updateSyncStatus("Inicia sesión para usar el ERP", "");
   }
 }
@@ -2339,10 +2359,30 @@ function wireNavigation() {
 }
 
 function wireAuth() {
+  const resetPasswordPanel = (mode = "own") => {
+    byId("password-change-form").reset();
+    byId("password-change-panel").classList.remove("hidden");
+    byId("auth-panel").classList.add("hidden");
+    byId("forgot-password-panel").classList.add("hidden");
+    byId("password-change-form").dataset.mode = mode;
+    byId("password-change-email-label").classList.toggle("hidden", mode !== "forgot");
+    byId("cancel-password-change").classList.toggle("hidden", mode === "forced");
+    byId("password-current").placeholder = mode === "forgot" || mode === "forced" ? "Contraseña temporal" : "Contraseña actual";
+    byId("password-change-title").textContent = mode === "forgot" ? "Crear contraseña nueva" : "Cambiar contraseña";
+    byId("password-change-message").textContent =
+      mode === "forgot"
+        ? "Usa la contraseña temporal que te entregó el administrador."
+        : "La contraseña nueva será la que usarás para entrar al ERP.";
+    byId(mode === "forgot" ? "password-change-email" : "password-current").focus();
+  };
+
   byId("open-login").addEventListener("click", () => {
     byId("auth-panel").classList.remove("hidden");
+    byId("forgot-password-panel").classList.add("hidden");
+    byId("password-change-panel").classList.add("hidden");
     byId("auth-email").focus();
   });
+  byId("open-password-change").addEventListener("click", () => resetPasswordPanel("own"));
   byId("close-login").addEventListener("click", () => {
     if (!isSupabaseReady()) return;
     byId("auth-panel").classList.add("hidden");
@@ -2353,6 +2393,102 @@ function wireAuth() {
     await supabaseClient.auth.signOut();
     supabaseSession = null;
     updateAuthUi();
+  });
+  byId("forgot-password").addEventListener("click", () => {
+    byId("auth-panel").classList.add("hidden");
+    byId("forgot-password-panel").classList.remove("hidden");
+    byId("password-change-panel").classList.add("hidden");
+    byId("forgot-email").value = byId("auth-email").value.trim();
+    byId("forgot-email").focus();
+  });
+  byId("cancel-forgot-password").addEventListener("click", () => {
+    byId("forgot-password-panel").classList.add("hidden");
+    byId("auth-panel").classList.remove("hidden");
+  });
+  byId("cancel-password-change").addEventListener("click", () => {
+    byId("password-change-panel").classList.add("hidden");
+    if (!isSupabaseReady()) byId("auth-panel").classList.remove("hidden");
+  });
+  byId("forgot-password-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = byId("forgot-email").value.trim();
+    const message = byId("forgot-password-message");
+    message.textContent = "Validando reset...";
+    try {
+      const response = await fetch("/.netlify/functions/password-reset-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "No se pudo validar el reset.");
+      message.textContent = result.message;
+      if (result.canReset) {
+        resetPasswordPanel("forgot");
+        byId("password-change-email").value = email;
+      }
+    } catch (error) {
+      message.textContent = error.message;
+    }
+  });
+  byId("password-change-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    initSupabaseClient();
+    if (!supabaseClient) {
+      updateSyncStatus("Falta configuración central de Supabase", "error");
+      return;
+    }
+    const mode = event.currentTarget.dataset.mode || (isPasswordResetRequired() ? "forced" : "own");
+    const email = mode === "forgot" ? byId("password-change-email").value.trim() : supabaseSession?.user?.email;
+    const currentPassword = byId("password-current").value;
+    const newPassword = byId("password-new").value;
+    const confirmPassword = byId("password-confirm").value;
+    const message = byId("password-change-message");
+    if (!email) {
+      message.textContent = "Falta el correo del usuario.";
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      message.textContent = "La confirmación no coincide con la contraseña nueva.";
+      return;
+    }
+    if (newPassword.length < 6) {
+      message.textContent = "La contraseña nueva debe tener al menos 6 caracteres.";
+      return;
+    }
+    message.textContent = "Actualizando contraseña...";
+    const signInResult = await supabaseClient.auth.signInWithPassword({ email, password: currentPassword });
+    if (signInResult.error) {
+      message.textContent = "La contraseña actual o temporal no es correcta.";
+      return;
+    }
+    const { data, error } = await supabaseClient.auth.updateUser({
+      password: newPassword,
+      data: {
+        ...(signInResult.data.user?.user_metadata || {}),
+        password_reset_required: false,
+        password_reset_reason: "",
+        password_changed_at: new Date().toISOString(),
+      },
+    });
+    if (error) {
+      message.textContent = error.message || "No se pudo cambiar la contraseña.";
+      return;
+    }
+    supabaseSession = { ...signInResult.data.session, user: data.user || signInResult.data.user };
+    event.currentTarget.reset();
+    byId("password-change-panel").classList.add("hidden");
+    message.textContent = "Contraseña actualizada.";
+    const remoteDatabase = await loadRemoteDatabase();
+    if (remoteDatabase) {
+      database = remoteDatabase;
+      ensureDatabaseShape();
+      state = stateFromDatabase(database);
+      localStorage.setItem(dbStorageKey, JSON.stringify(database));
+      localStorage.setItem(appStorageKey, JSON.stringify(state));
+    }
+    updateAuthUi();
+    renderAll();
   });
   byId("auth-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2379,6 +2515,9 @@ function wireAuth() {
       localStorage.setItem(appStorageKey, JSON.stringify(state));
     } else {
       await saveRemoteDatabase();
+    }
+    if (isPasswordResetRequired()) {
+      byId("password-change-form").dataset.mode = "forced";
     }
     updateAuthUi();
     renderAll();
@@ -2415,7 +2554,7 @@ function wireUserAdmin() {
       listMessage.textContent = "Usuarios cargados.";
       listMessage.className = "form-message success";
     } catch (error) {
-      listTarget.innerHTML = '<tr><td class="empty" colspan="6">No se pudo cargar usuarios.</td></tr>';
+      listTarget.innerHTML = '<tr><td class="empty" colspan="7">No se pudo cargar usuarios.</td></tr>';
       listMessage.textContent = error.message;
       listMessage.className = "form-message error";
     }
@@ -2423,12 +2562,13 @@ function wireUserAdmin() {
 
   const renderUsersList = (users) => {
     if (!users.length) {
-      listTarget.innerHTML = '<tr><td class="empty" colspan="6">No hay usuarios registrados.</td></tr>';
+      listTarget.innerHTML = '<tr><td class="empty" colspan="7">No hay usuarios registrados.</td></tr>';
       return;
     }
     listTarget.innerHTML = users
       .map((user) => {
         const inactive = user.estado === "Inactivo";
+        const pendingPassword = Boolean(user.passwordResetRequired);
         return `
           <tr data-user-id="${escapeHtml(user.id)}">
             <td><input class="user-name-input compact-input" value="${escapeHtml(user.fullName || "")}" placeholder="Nombre" /></td>
@@ -2441,10 +2581,12 @@ function wireUserAdmin() {
               </select>
             </td>
             <td><span class="status-pill ${inactive ? "danger" : "success"}">${escapeHtml(user.estado || "Activo")}</span></td>
+            <td><span class="status-pill ${pendingPassword ? "warning" : "success"}">${pendingPassword ? "Debe cambiar" : "Definitiva"}</span></td>
             <td><input class="user-password-input compact-input" type="password" minlength="6" placeholder="Opcional" /></td>
             <td>
               <div class="row-actions">
                 <button class="secondary-btn compact save-user" type="button">Guardar</button>
+                <button class="secondary-btn compact reset-user-password" type="button">Resetear</button>
                 <button class="secondary-btn compact toggle-user" data-next-state="${inactive ? "Activo" : "Inactivo"}" type="button">${inactive ? "Reactivar" : "Inactivar"}</button>
               </div>
             </td>
@@ -2474,7 +2616,31 @@ function wireUserAdmin() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "No se pudo actualizar el usuario.");
-    listMessage.textContent = "Usuario actualizado.";
+    listMessage.textContent = result.temporaryPassword
+      ? `Contraseña temporal generada: ${result.temporaryPassword}`
+      : "Usuario actualizado.";
+    listMessage.className = "form-message success";
+    await loadUsers();
+  };
+
+  const resetUserPassword = async (row) => {
+    const payload = {
+      id: row.dataset.userId,
+      fullName: row.querySelector(".user-name-input").value.trim(),
+      email: row.querySelector(".user-email-input").value.trim(),
+      role: row.querySelector(".user-role-input").value,
+      resetPassword: true,
+    };
+    listMessage.textContent = "Generando contraseña temporal...";
+    listMessage.className = "form-message";
+    const response = await fetch("/.netlify/functions/users", {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo resetear la contraseña.");
+    listMessage.textContent = `Contraseña temporal generada: ${result.temporaryPassword}. Entrégala al usuario para que cree su contraseña nueva.`;
     listMessage.className = "form-message success";
     await loadUsers();
   };
@@ -2504,7 +2670,9 @@ function wireUserAdmin() {
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "No se pudo crear el usuario.");
       form.reset();
-      message.textContent = `Usuario creado: ${result.email || email}`;
+      message.textContent = result.temporaryPassword
+        ? `Usuario creado: ${result.email || email}. Contraseña temporal: ${result.temporaryPassword}`
+        : `Usuario creado: ${result.email || email}`;
       message.className = "form-message success";
       await loadUsers();
     } catch (error) {
@@ -2523,6 +2691,9 @@ function wireUserAdmin() {
       }
       if (event.target.closest(".toggle-user")) {
         await saveUserRow(row, event.target.closest(".toggle-user").dataset.nextState);
+      }
+      if (event.target.closest(".reset-user-password")) {
+        await resetUserPassword(row);
       }
     } catch (error) {
       listMessage.textContent = error.message;
