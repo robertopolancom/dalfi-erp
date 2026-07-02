@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Manual de uso - Dalfi Studio Nail & Academy ERP</title>
+    <style>
+      :root {
+        --bg: #f5f3ee;
+        --ink: #202225;
+        --muted: #6b6f76;
+        --line: #dedbd2;
+        --accent: #0f766e;
+        --surface: #ffffff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.55;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      aside {
+        position: sticky;
+        top: 0;
+        height: 100vh;
+        overflow: auto;
+        background: #1f2a2a;
+        color: #f8faf9;
+        padding: 24px 18px;
+      }
+
+      aside h1 {
+        margin: 0 0 6px;
+        font-size: 19px;
+      }
+
+      aside p {
+        margin: 0 0 20px;
+        color: #b8c5c1;
+        font-size: 13px;
+      }
+
+      nav {
+        display: grid;
+        gap: 6px;
+      }
+
+      nav a {
+        border-radius: 8px;
+        color: #dbe5e1;
+        padding: 9px 10px;
+        text-decoration: none;
+      }
+
+      nav a:hover {
+        background: rgba(255, 255, 255, 0.11);
+        color: #ffffff;
+      }
+
+      main {
+        max-width: 1180px;
+        padding: 34px;
+      }
+
+      .hero,
+      section {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--surface);
+        margin-bottom: 20px;
+        padding: 24px;
+      }
+
+      .hero h2 {
+        margin: 0 0 8px;
+        font-size: 34px;
+        line-height: 1.1;
+      }
+
+      .meta {
+        color: var(--muted);
+        margin: 0;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 25px;
+      }
+
+      h3 {
+        margin: 18px 0 8px;
+        font-size: 17px;
+      }
+
+      ul,
+      ol {
+        padding-left: 22px;
+      }
+
+      li {
+        margin: 4px 0;
+      }
+
+      img {
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin: 16px 0 22px;
+        background: #fff;
+      }
+
+      .callout {
+        border-left: 4px solid var(--accent);
+        background: #eef8f6;
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin: 14px 0;
+      }
+
+      code {
+        background: #f0ede6;
+        border-radius: 6px;
+        padding: 2px 5px;
+      }
+
+      @media print {
+        body {
+          background: #ffffff;
+        }
+
+        .layout {
+          display: block;
+        }
+
+        aside {
+          display: none;
+        }
+
+        main {
+          max-width: none;
+          padding: 0;
+        }
+
+        section,
+        .hero {
+          break-inside: avoid;
+          border: 0;
+          padding: 12px 0;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          position: static;
+          height: auto;
+        }
+
+        nav {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        main {
+          padding: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <aside>
+        <h1>Manual ERP</h1>
+        <p>Dalfi Studio Nail & Academy</p>
+        <nav>
+          <a href="#dashboard">Dashboard</a>
+          <a href="#facturacion">Facturación</a>
+          <a href="#cxc">Cuentas por cobrar</a>
+          <a href="#transferencias">Transferencias pendientes</a>
+          <a href="#reservas">Reservas</a>
+          <a href="#nomina">Nómina</a>
+          <a href="#cierres">Cierres de caja</a>
+          <a href="#tarjetas">Conciliación tarjetas</a>
+          <a href="#egresos">Egresos</a>
+          <a href="#inventario">Inventario</a>
+          <a href="#activos">Activos fijos</a>
+          <a href="#reportes">Reportes</a>
+          <a href="#base-datos">Base de datos</a>
+          <a href="#videos">Guiones de videos</a>
+        </nav>
+      </aside>
+
+      <main>
+        <div class="hero">
+          <h2>Manual de uso - Dalfi Studio Nail & Academy ERP</h2>
+          <p class="meta">Fecha de elaboración: 2026-07-02 · URL local: <code>http://127.0.0.1:8765/index.html</code></p>
+          <div class="callout">Este manual está basado en pantallazos reales de la aplicación actual y está organizado por módulo.</div>
+        </div>
+
+        <section id="dashboard">
+          <h2>1. Dashboard</h2>
+          <img src="imagenes/01-dashboard.png" alt="Dashboard" />
+          <p>El Dashboard muestra la operación del día: facturación, cobros de cuentas por cobrar, citas y caja estimada.</p>
+          <ol>
+            <li>Entrar al menú <strong>Dashboard</strong>.</li>
+            <li>Revisar las tarjetas superiores.</li>
+            <li>Consultar facturación, CxC cobradas y citas del día.</li>
+          </ol>
+        </section>
+
+        <section id="facturacion">
+          <h2>2. Facturación</h2>
+          <img src="imagenes/02-facturacion.png" alt="Facturación" />
+          <p>Permite registrar servicios, colaboradoras, adicionales, descuentos, propinas y pagos mixtos.</p>
+          <ol>
+            <li>Seleccionar o crear cliente.</li>
+            <li>Agregar uno o varios servicios.</li>
+            <li>Seleccionar colaboradora por cada servicio.</li>
+            <li>Agregar propina, adicional o descuento si aplica.</li>
+            <li>Agregar una o varias formas de pago.</li>
+            <li>Confirmar que el total esté cubierto y crear factura.</li>
+          </ol>
+          <div class="callout">Si el pago excede el total, el sobrante puede ir a sobrante de caja o balance a favor.</div>
+        </section>
+
+        <section id="cxc">
+          <h2>3. Cuentas por cobrar</h2>
+          <img src="imagenes/03-cuentas-por-cobrar.png" alt="Cuentas por cobrar" />
+          <p>Controla créditos, transferencias pendientes y balances de facturas no saldadas.</p>
+          <ol>
+            <li>Seleccionar factura pendiente.</li>
+            <li>Indicar monto cobrado.</li>
+            <li>Seleccionar método.</li>
+            <li>Aplicar cobro.</li>
+          </ol>
+        </section>
+
+        <section id="transferencias">
+          <h2>4. Transferencias pendientes</h2>
+          <img src="imagenes/04-transferencias-pendientes.png" alt="Transferencias pendientes" />
+          <p>Gestiona las transferencias no confirmadas sin mezclarlas con ingresos reales.</p>
+          <ul>
+            <li><strong>Confirmar:</strong> registra el ingreso y salda la cuenta.</li>
+            <li><strong>Declinar:</strong> convierte la transferencia en deuda vencida inmediata.</li>
+          </ul>
+        </section>
+
+        <section id="reservas">
+          <h2>5. Reservas</h2>
+          <img src="imagenes/05-reservas.png" alt="Reservas" />
+          <p>Registra citas por cliente, servicio, fecha, hora y colaboradora. También permite facturar desde una reserva.</p>
+          <ol>
+            <li>Completar cliente o teléfono.</li>
+            <li>Seleccionar servicio, fecha, hora y técnico/a.</li>
+            <li>Guardar reserva.</li>
+            <li>Usar <strong>Facturar</strong> para llevar la reserva al módulo de facturación.</li>
+          </ol>
+        </section>
+
+        <section id="nomina">
+          <h2>6. Nómina</h2>
+          <img src="imagenes/06-nomina.png" alt="Nómina" />
+          <p>Calcula payroll por período, con salario, comisiones, propinas, descuentos y CxC del colaborador.</p>
+          <ol>
+            <li>Seleccionar colaboradora.</li>
+            <li>Seleccionar período y corte.</li>
+            <li>Revisar salario, comisión y propina.</li>
+            <li>Agregar descuentos.</li>
+            <li>Generar payroll y cuenta por pagar.</li>
+          </ol>
+        </section>
+
+        <section id="cierres">
+          <h2>7. Cierres de caja</h2>
+          <img src="imagenes/07-cierres-caja.png" alt="Cierres de caja" />
+          <p>Compara efectivo esperado contra efectivo contado y documenta faltantes o sobrantes.</p>
+          <ol>
+            <li>Indicar fecha y monto contado.</li>
+            <li>Presionar <strong>Generar cuadre de efectivo</strong>.</li>
+            <li>Documentar faltante si existe.</li>
+            <li>Registrar tarjeta, lote y transferencias confirmadas.</li>
+            <li>Guardar cierre.</li>
+          </ol>
+        </section>
+
+        <section id="tarjetas">
+          <h2>8. Conciliación tarjetas</h2>
+          <img src="imagenes/08-conciliacion-tarjetas.png" alt="Conciliación tarjetas" />
+          <p>Permite conciliar lotes de tarjeta contra depósitos reales del adquirente.</p>
+          <ol>
+            <li>Seleccionar lote pendiente.</li>
+            <li>Indicar fecha de pago y cuenta bancaria.</li>
+            <li>Revisar monto recibido y comisión.</li>
+            <li>Conciliar tarjeta.</li>
+          </ol>
+        </section>
+
+        <section id="egresos">
+          <h2>9. Egresos</h2>
+          <img src="imagenes/09-egresos.png" alt="Egresos" />
+          <p>Registra gastos, costos, inversiones, transferencias internas y avances autorizados.</p>
+          <ol>
+            <li>Seleccionar fecha y tipo.</li>
+            <li>Seleccionar cuenta origen.</li>
+            <li>Revisar disponible.</li>
+            <li>Indicar monto, concepto y observación.</li>
+            <li>Guardar egreso.</li>
+          </ol>
+        </section>
+
+        <section id="inventario">
+          <h2>10. Inventario</h2>
+          <img src="imagenes/10-inventario.png" alt="Inventario" />
+          <p>Registra insumos internos, productos de venta, productos usados en servicios, herramientas y otros artículos.</p>
+          <ol>
+            <li>Completar SKU, tipo y nombre.</li>
+            <li>Indicar costo, precio, existencia y mínimo.</li>
+            <li>Seleccionar proveedor y fecha de entrada.</li>
+            <li>Guardar inventario.</li>
+          </ol>
+        </section>
+
+        <section id="activos">
+          <h2>11. Activos fijos</h2>
+          <img src="imagenes/11-activos-fijos.png" alt="Activos fijos" />
+          <p>Registra equipos, mobiliario, herramientas y otros activos del negocio con depreciación y valor en libros.</p>
+          <ol>
+            <li>Completar nombre, categoría y fecha de adquisición.</li>
+            <li>Indicar valor y vida útil.</li>
+            <li>Seleccionar estado, ubicación y responsable.</li>
+            <li>Guardar activo.</li>
+          </ol>
+        </section>
+
+        <section id="reportes">
+          <h2>12. Reportes</h2>
+          <img src="imagenes/12-reportes.png" alt="Reportes" />
+          <p>Genera reportes financieros y operativos por período.</p>
+          <ol>
+            <li>Seleccionar reporte.</li>
+            <li>Indicar fecha desde y hasta.</li>
+            <li>Completar filtros opcionales.</li>
+            <li>Presionar <strong>Generar reporte</strong>.</li>
+          </ol>
+        </section>
+
+        <section id="base-datos">
+          <h2>13. Base de datos</h2>
+          <img src="imagenes/13-base-datos.png" alt="Base de datos" />
+          <p>Administra catálogos del sistema: clientes, servicios, colaboradoras, cuentas/cajas, compañías de tarjeta y umbrales.</p>
+          <ol>
+            <li>Seleccionar catálogo.</li>
+            <li>Agregar, editar o inactivar registros.</li>
+            <li>Usar inactivación para conservar historial.</li>
+          </ol>
+        </section>
+
+        <section id="videos">
+          <h2>14. Guiones sugeridos para videos</h2>
+          <h3>Facturación completa</h3>
+          <p>Crear cliente, agregar servicios, propina, pagos mixtos y crear factura.</p>
+          <h3>Transferencia pendiente</h3>
+          <p>Crear factura con transferencia pendiente, confirmar y declinar desde el módulo correspondiente.</p>
+          <h3>Tarjeta y conciliación</h3>
+          <p>Facturar con tarjeta, registrar cierre con lote y conciliar contra banco.</p>
+          <h3>Crédito y cobro posterior</h3>
+          <p>Crear factura a crédito, cobrar desde CxC y revisar saldo.</p>
+          <h3>Nómina</h3>
+          <p>Seleccionar colaboradora, período, corte, descuentos y generar payroll.</p>
+          <h3>Cierre de caja</h3>
+          <p>Generar cuadre, documentar faltante y guardar cierre.</p>
+          <h3>Reportes</h3>
+          <p>Generar balance de cuentas, facturación por colaboradora y CxC.</p>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,1432 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ERP Centro de Uñas</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Navegación principal">
+        <div class="brand">
+          <div class="brand-mark">NU</div>
+          <div>
+            <h1>NailUnit ERP</h1>
+            <p>Centro de uñas</p>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" data-view="dashboard" type="button">Dashboard</button>
+          <button class="nav-item" data-view="billing" type="button">Facturación</button>
+          <button class="nav-item" data-view="receivables" type="button">Cuentas por cobrar</button>
+          <button class="nav-item" data-view="pending-transfers" type="button">Transferencias pendientes</button>
+          <button class="nav-item" data-view="reservations" type="button">Reservas</button>
+          <button class="nav-item" data-view="payroll" type="button">Nómina</button>
+          <button class="nav-item" data-view="cash" type="button">Cierres de caja</button>
+          <button class="nav-item" data-view="card-reconciliation" type="button">Conciliación tarjetas</button>
+          <button class="nav-item" data-view="expenses" type="button">Egresos</button>
+          <button class="nav-item" data-view="inventory" type="button">Inventario</button>
+          <button class="nav-item" data-view="fixed-assets" type="button">Activos fijos</button>
+          <button class="nav-item" data-view="reports" type="button">Reportes</button>
+          <button class="nav-item" data-view="settings" type="button">Base de datos</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Operaciones del día</p>
+            <h2 id="view-title">Dashboard</h2>
+          </div>
+          <div class="topbar-actions">
+            <div class="sync-status" id="sync-status">Modo local</div>
+            <button class="secondary-btn compact" id="open-login" type="button">Conectar Supabase</button>
+            <button class="secondary-btn compact hidden" id="logout-button" type="button">Salir</button>
+            <div class="date-pill" id="today-label"></div>
+          </div>
+        </header>
+
+        <section class="auth-panel hidden" id="auth-panel">
+          <div>
+            <p class="eyebrow">Base de datos compartida</p>
+            <h3>Acceso Supabase</h3>
+          </div>
+          <form class="auth-form" id="auth-form">
+            <label>
+              Correo
+              <input id="auth-email" type="email" placeholder="correo@empresa.com" required />
+            </label>
+            <label>
+              Contraseña
+              <input id="auth-password" type="password" placeholder="Contraseña" required />
+            </label>
+            <div class="auth-actions">
+              <button class="primary-btn inline" type="submit">Entrar</button>
+              <button class="secondary-btn" id="close-login" type="button">Cancelar</button>
+            </div>
+          </form>
+          <p class="auth-note">Usa un usuario creado en Supabase Authentication. Al entrar, los datos se guardan en la nube.</p>
+        </section>
+
+        <section id="dashboard" class="view active">
+          <div class="metrics-grid">
+            <article class="metric">
+              <span>Facturado hoy</span>
+              <strong id="metric-invoices">RD$0.00</strong>
+            </article>
+            <article class="metric">
+              <span>Cobrado CxC hoy</span>
+              <strong id="metric-ar">RD$0.00</strong>
+            </article>
+            <article class="metric">
+              <span>Citas de hoy</span>
+              <strong id="metric-bookings">0</strong>
+            </article>
+            <article class="metric">
+              <span>Caja estimada</span>
+              <strong id="metric-cash">RD$0.00</strong>
+            </article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Facturación de hoy</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>No.</th>
+                      <th>Cliente</th>
+                      <th>Servicio</th>
+                      <th>Total</th>
+                      <th>Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody id="today-invoices"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>CxC cobradas hoy</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Cliente</th>
+                      <th>Monto</th>
+                      <th>Factura</th>
+                    </tr>
+                  </thead>
+                  <tbody id="today-payments"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel panel-wide">
+              <div class="panel-head">
+                <h3>Citas de hoy</h3>
+              </div>
+              <div class="appointments" id="today-appointments"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="billing" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="invoice-form">
+              <div class="panel-head">
+                <h3>Nueva factura</h3>
+              </div>
+              <div class="field-block">
+                <div class="field-heading">
+                  <span>Cliente</span>
+                  <button class="secondary-btn compact" id="show-invoice-client-form" type="button">Crear cliente</button>
+                </div>
+                <input id="invoice-client-search" list="clients-list" placeholder="Buscar o digitar cliente" autocomplete="off" required />
+              </div>
+              <div class="quick-create hidden" id="invoice-client-create">
+                <label>
+                  Nombre completo
+                  <input id="quick-client-name" placeholder="Nombre completo" />
+                </label>
+                <div class="form-row">
+                  <label>
+                    Nombre
+                    <input id="quick-client-first-name" />
+                  </label>
+                  <label>
+                    Apellido
+                    <input id="quick-client-last-name" />
+                  </label>
+                </div>
+                <div class="form-row">
+                  <label>
+                    Teléfono
+                    <input id="quick-client-phone" placeholder="Teléfono" />
+                  </label>
+                  <label>
+                    Sexo
+                    <select id="quick-client-sex">
+                      <option value="">No especificado</option>
+                      <option value="Femenino">Femenino</option>
+                      <option value="Masculino">Masculino</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  Correo
+                  <input id="quick-client-email" type="email" />
+                </label>
+                <label>
+                  Dirección
+                  <textarea id="quick-client-address" rows="2"></textarea>
+                </label>
+                <label>
+                  Observaciones
+                  <textarea id="quick-client-notes" rows="2"></textarea>
+                </label>
+                <div class="quick-actions">
+                  <button class="secondary-btn" id="cancel-invoice-client" type="button">Cancelar</button>
+                  <button class="primary-btn inline" id="save-invoice-client" type="button">Guardar cliente</button>
+                </div>
+              </div>
+
+              <section class="invoice-lines">
+                <div class="section-title-row">
+                  <h4>Servicios de la factura</h4>
+                  <button class="secondary-btn compact" id="add-invoice-line" type="button">Agregar servicio</button>
+                </div>
+                <div class="invoice-line-list" id="invoice-line-list"></div>
+                <div class="line-actions">
+                  <button class="secondary-btn add-invoice-line-action" type="button">Agregar otro servicio</button>
+                </div>
+              </section>
+
+              <section class="invoice-summary">
+                <div class="summary-row">
+                  <span>Servicios</span>
+                  <strong id="invoice-services-total">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Adicionales</span>
+                  <strong id="invoice-extras-total">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Descuentos</span>
+                  <strong id="invoice-discounts-total">RD$0.00</strong>
+                </div>
+                <label>
+                  Propina pagada en caja
+                  <input id="invoice-tip" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <div class="tip-allocation" id="tip-allocation"></div>
+                <div class="summary-row total">
+                  <span>Total a cobrar</span>
+                  <strong id="invoice-grand-total">RD$0.00</strong>
+                </div>
+              </section>
+
+              <section class="invoice-lines">
+                <div class="section-title-row">
+                  <h4>Formas de pago</h4>
+                  <button class="secondary-btn compact" id="add-payment-line" type="button">Agregar pago</button>
+                </div>
+                <div class="invoice-line-list" id="payment-line-list"></div>
+                <div class="line-actions">
+                  <button class="secondary-btn add-payment-line-action" type="button">Agregar otra forma de pago</button>
+                </div>
+              </section>
+
+              <section class="invoice-summary">
+                <div class="summary-row">
+                  <span>Pagos ingresados</span>
+                  <strong id="invoice-paid-total">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Pendiente</span>
+                  <strong id="invoice-pending-total">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Sobrante</span>
+                  <strong id="invoice-overpay-total">RD$0.00</strong>
+                </div>
+                <label class="hidden" id="overpay-policy-label">
+                  Destino del sobrante
+                  <select id="invoice-overpay-policy">
+                    <option value="sobrante">Cuenta de sobrante</option>
+                    <option value="balance">Balance a favor del cliente</option>
+                  </select>
+                </label>
+              </section>
+
+              <label>
+                Nota
+                <textarea id="invoice-note" rows="3" placeholder="Detalle interno"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Crear factura</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Facturas</h3>
+                <input class="inline-search" id="invoice-search" placeholder="Buscar factura, cliente o servicio" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>No.</th>
+                      <th>Fecha</th>
+                      <th>Cliente</th>
+                      <th>Servicio</th>
+                      <th>Total</th>
+                      <th>Pago</th>
+                    </tr>
+                  </thead>
+                  <tbody id="invoice-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="receivables" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="payment-form">
+              <div class="panel-head">
+                <h3>Registrar cobro</h3>
+              </div>
+              <label>
+                Factura pendiente
+                <select id="payment-invoice" required></select>
+              </label>
+              <label>
+                Monto cobrado
+                <input id="payment-amount" type="number" min="0" step="0.01" required />
+              </label>
+              <label>
+                Método
+                <select id="payment-method">
+                  <option value="efectivo">Efectivo</option>
+                  <option value="tarjeta">Tarjeta</option>
+                  <option value="transferencia">Transferencia</option>
+                </select>
+              </label>
+              <button class="primary-btn" type="submit">Aplicar cobro</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Cuentas por cobrar</h3>
+                <input class="inline-search" id="ar-search" placeholder="Buscar cliente o factura" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Factura</th>
+                      <th>Cliente</th>
+                      <th>Total</th>
+                      <th>Abonado</th>
+                      <th>Pendiente</th>
+                      <th>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ar-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="pending-transfers" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h3>Transferencias no confirmadas</h3>
+              <input class="inline-search" id="pending-transfer-search" placeholder="Buscar cliente, factura, referencia" />
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>Factura</th>
+                    <th>Cliente</th>
+                    <th>Monto</th>
+                    <th>Vence</th>
+                    <th>Referencia</th>
+                    <th>Acción</th>
+                  </tr>
+                </thead>
+                <tbody id="pending-transfer-table"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="reservations" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="reservation-form">
+              <div class="panel-head">
+                <h3>Nueva reserva</h3>
+              </div>
+              <label>
+                Cliente
+                <input id="reservation-client-search" list="clients-list" placeholder="Buscar o digitar cliente" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Teléfono
+                  <input id="reservation-client-phone" placeholder="Teléfono para cargar o crear cliente" />
+                </label>
+                <label>
+                  Correo
+                  <input id="reservation-client-email" type="email" />
+                </label>
+              </div>
+              <label>
+                Servicio
+                <input id="reservation-service-search" list="services-list" placeholder="Buscar o digitar servicio" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Fecha
+                  <input id="reservation-date" type="date" required />
+                </label>
+                <label>
+                  Hora
+                  <input id="reservation-time" type="time" required />
+                </label>
+              </div>
+              <label>
+                Técnico/a
+                <input id="reservation-staff" list="staff-list" placeholder="Buscar técnico/a" required />
+              </label>
+              <label>
+                Observaciones
+                <textarea id="reservation-note" rows="3" placeholder="Notas de la reserva"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar reserva</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Agenda</h3>
+                <input class="inline-search" id="reservation-search" placeholder="Buscar cliente, servicio u hora" />
+              </div>
+              <div class="appointments list" id="reservation-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="inventory" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="inventory-form">
+              <div class="panel-head">
+                <h3>Registrar producto o insumo</h3>
+              </div>
+              <input id="inventory-edit-id" type="hidden" />
+              <div class="form-row">
+                <label>
+                  SKU
+                  <input id="inventory-sku" required />
+                </label>
+                <label>
+                  Tipo
+                  <select id="inventory-type">
+                    <option value="Insumo">Insumo interno</option>
+                    <option value="Producto venta">Producto de venta</option>
+                    <option value="Producto servicio">Producto usado en servicio</option>
+                    <option value="Herramienta">Herramienta</option>
+                    <option value="Otro">Otro</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Producto
+                <input id="inventory-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Categoría
+                  <input id="inventory-category" />
+                </label>
+                <label>
+                  Unidad
+                  <input id="inventory-unit" placeholder="Unidad, ml, oz, pieza" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Costo
+                  <input id="inventory-cost" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  Precio venta
+                  <input id="inventory-sale-price" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Existencia actual
+                  <input id="inventory-stock" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  Existencia mínima
+                  <input id="inventory-min-stock" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Proveedor
+                  <input id="inventory-supplier" list="advance-people-list" />
+                </label>
+                <label>
+                  Fecha entrada
+                  <input id="inventory-entry-date" type="date" />
+                </label>
+              </div>
+              <label>
+                Observaciones
+                <textarea id="inventory-note" rows="3"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar inventario</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Inventario</h3>
+                <input class="inline-search" id="inventory-search" placeholder="Buscar SKU, producto o categoría" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Producto</th>
+                      <th>Tipo</th>
+                      <th>Existencia</th>
+                      <th>Mínimo</th>
+                      <th>Costo</th>
+                      <th>Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody id="inventory-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="fixed-assets" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="asset-form">
+              <div class="panel-head">
+                <h3>Registrar activo fijo</h3>
+              </div>
+              <input id="asset-edit-id" type="hidden" />
+              <label>
+                Nombre del activo
+                <input id="asset-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Categoría
+                  <input id="asset-category" placeholder="Equipo, mobiliario, tecnología..." />
+                </label>
+                <label>
+                  Fecha adquisición
+                  <input id="asset-acquired-date" type="date" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Valor adquisición
+                  <input id="asset-value" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  Vida útil meses
+                  <input id="asset-life" type="number" min="1" step="1" value="60" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Método depreciación
+                  <select id="asset-method">
+                    <option value="Linea recta">Línea recta</option>
+                    <option value="Manual">Manual</option>
+                  </select>
+                </label>
+                <label>
+                  Estado
+                  <select id="asset-status">
+                    <option value="Activo">Activo</option>
+                    <option value="En reparación">En reparación</option>
+                    <option value="Retirado">Retirado</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Ubicación
+                  <input id="asset-location" />
+                </label>
+                <label>
+                  Responsable
+                  <input id="asset-responsible" list="staff-list" />
+                </label>
+              </div>
+              <label>
+                Observaciones
+                <textarea id="asset-note" rows="3"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar activo</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Activos fijos</h3>
+                <input class="inline-search" id="asset-search" placeholder="Buscar activo, ubicación o responsable" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Activo</th>
+                      <th>Categoría</th>
+                      <th>Valor</th>
+                      <th>Deprec.</th>
+                      <th>Valor libros</th>
+                      <th>Ubicación</th>
+                      <th>Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody id="asset-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="payroll" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="payroll-form">
+              <div class="panel-head">
+                <h3>Payroll</h3>
+              </div>
+              <label>
+                Empleado/a
+                <input id="payroll-staff" list="staff-list" placeholder="Nombre" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Período
+                  <input id="payroll-period" type="month" required />
+                </label>
+                <label>
+                  Corte
+                  <select id="payroll-cut">
+                    <option value="month">Mes completo</option>
+                    <option value="first">Primera quincena</option>
+                    <option value="second">Segunda quincena</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Salario del período
+                  <input id="payroll-base" type="number" min="0" step="0.01" readonly />
+                </label>
+                <label>
+                  Comisión calculada
+                  <input id="payroll-commission" type="number" min="0" step="0.01" readonly />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Propinas pendientes
+                  <input id="payroll-tips" type="number" min="0" step="0.01" readonly />
+                </label>
+                <label>
+                  AFP
+                  <input id="payroll-afp" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Seguro
+                  <input id="payroll-insurance" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  Otros descuentos
+                  <input id="payroll-other-deductions" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <label>
+                Concepto otros descuentos
+                <input id="payroll-other-concept" list="payroll-discount-concept-list" placeholder="Bonificación negativa, uniforme, ajuste..." />
+              </label>
+              <div class="payroll-box">
+                <h4>CxC del colaborador a descontar</h4>
+                <div id="payroll-cxc-list" class="simple-list"></div>
+              </div>
+              <section class="invoice-summary">
+                <div class="summary-row">
+                  <span>Total facturado por colaborador</span>
+                  <strong id="payroll-sales-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Umbral aplicado</span>
+                  <strong id="payroll-rate-preview">0%</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Total descuentos</span>
+                  <strong id="payroll-deductions-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row total">
+                  <span>Neto a pagar</span>
+                  <strong id="payroll-net-preview">RD$0.00</strong>
+                </div>
+              </section>
+              <button class="primary-btn" type="submit">Generar payroll y cuenta por pagar</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Reporte de nómina</h3>
+                <input class="inline-search" id="payroll-search" placeholder="Filtrar empleado o período" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Período</th>
+                      <th>Corte</th>
+                      <th>Empleado/a</th>
+                      <th>Base</th>
+                      <th>Comisión</th>
+                      <th>Propinas</th>
+                      <th>Deducción</th>
+                      <th>Neto</th>
+                    </tr>
+                  </thead>
+                  <tbody id="payroll-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="cash" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="cash-form">
+              <div class="panel-head">
+                <h3>Cierre de caja</h3>
+              </div>
+              <label>
+                Fecha
+                <input id="cash-date" type="date" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Monto contado inicial
+                  <input id="cash-counted" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Gastos del día
+                  <input id="cash-expenses" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <button class="secondary-btn" id="generate-cash-balance" type="button">Generar cuadre de efectivo</button>
+              <section class="invoice-summary hidden" id="cash-balance-panel">
+                <div class="summary-row">
+                  <span>Efectivo esperado en caja</span>
+                  <strong id="cash-expected-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Diferencia</span>
+                  <strong id="cash-difference-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Cuadre faltante</span>
+                  <strong id="cash-shortage-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Sobrante de caja</span>
+                  <strong id="cash-surplus-preview">RD$0.00</strong>
+                </div>
+              </section>
+              <label class="hidden" id="cash-shortage-label">
+                Motivo del faltante
+                <textarea id="cash-shortage-note" rows="3" placeholder="Documentar por qué faltó efectivo en caja"></textarea>
+                <span>Monto contado rectificado</span>
+                <input id="cash-rectified-counted" type="number" min="0" step="0.01" placeholder="Monto completivo luego de revisar caja" />
+              </label>
+              <div class="form-row">
+                <label>
+                  Tarjeta cierre/lote
+                  <input id="cash-card-counted" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  Compañía tarjeta
+                  <input id="cash-card-processor" list="processors-list" placeholder="Azul, CardNet..." />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Número de lote
+                  <input id="cash-card-batch" placeholder="Lote tarjeta" />
+                </label>
+                <label>
+                  Transferencias confirmadas
+                  <input id="cash-transfer-counted" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <label>
+                Observación
+                <textarea id="cash-note" rows="3"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar cierre</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Cierres registrados</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Esperado</th>
+                      <th>Contado</th>
+                      <th>Tarjeta</th>
+                      <th>Gastos</th>
+                      <th>Faltante</th>
+                      <th>Sobrante</th>
+                      <th>Diferencia</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cash-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="card-reconciliation" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="card-reconciliation-form">
+              <div class="panel-head">
+                <h3>Conciliar pago de tarjeta</h3>
+              </div>
+              <input id="card-reconciliation-closing-id" type="hidden" />
+              <label>
+                Cierre/lote seleccionado
+                <input id="card-reconciliation-label" placeholder="Selecciona un lote de la tabla" readonly required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Fecha de pago
+                  <input id="card-reconciliation-date" type="date" required />
+                </label>
+                <label>
+                  Cuenta bancaria destino
+                  <input id="card-reconciliation-bank" list="bank-accounts-list" placeholder="Banco donde entró el pago" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Monto recibido
+                  <input id="card-reconciliation-net" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Comisión retenida
+                  <input id="card-reconciliation-fee" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <label>
+                Observación
+                <textarea id="card-reconciliation-note" rows="3" placeholder="Referencia bancaria, comentario de conciliación"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Conciliar tarjeta</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Lotes pendientes de conciliación</h3>
+                <input class="inline-search" id="card-reconciliation-search" placeholder="Buscar lote, procesador o fecha" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha cierre</th>
+                      <th>Procesador</th>
+                      <th>Lote</th>
+                      <th>Monto tarjeta</th>
+                      <th>Comisión</th>
+                      <th>Neto a recibir</th>
+                      <th>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody id="card-reconciliation-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="expenses" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="expense-form">
+              <div class="panel-head">
+                <h3>Registrar egreso</h3>
+              </div>
+              <div class="form-row">
+                <label>
+                  Fecha
+                  <input id="expense-date" type="date" required />
+                </label>
+                <label>
+                  Tipo de egreso
+                  <select id="expense-type">
+                    <option value="gasto">Gasto del negocio</option>
+                    <option value="costo">Costo operativo/activo</option>
+                    <option value="inversion">Inversión al activo</option>
+                    <option value="transferencia">Transferencia entre cuentas/cajas</option>
+                    <option value="avance">Avance autorizado</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Cuenta o caja origen
+                <input id="expense-source" list="accounts-list" placeholder="Caja registradora, caja fuerte o banco" required />
+              </label>
+              <section class="invoice-summary hidden" id="expense-balance-panel">
+                <div class="summary-row">
+                  <span>Disponible en origen</span>
+                  <strong id="expense-source-balance">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Restante después del egreso</span>
+                  <strong id="expense-source-after">RD$0.00</strong>
+                </div>
+              </section>
+              <label class="hidden" id="expense-destination-label">
+                Cuenta o caja destino
+                <input id="expense-destination" list="accounts-list" placeholder="Destino de transferencia" />
+              </label>
+              <label class="hidden" id="expense-receivable-label">
+                Suplidor o colaborador
+                <input id="expense-receivable-person" list="advance-people-list" placeholder="Suplidor o colaborador" />
+              </label>
+              <div class="form-row">
+                <label>
+                  Monto
+                  <input id="expense-amount" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Concepto
+                  <input id="expense-concept" list="expense-concept-list" placeholder="Servicio, compra, producto..." required />
+                </label>
+              </div>
+              <label>
+                Observación
+                <textarea id="expense-note" rows="3"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar egreso</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Egresos registrados</h3>
+                <input class="inline-search" id="expense-search" placeholder="Buscar tipo, cuenta o concepto" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Tipo</th>
+                      <th>Origen</th>
+                      <th>Destino</th>
+                      <th>Concepto</th>
+                      <th>Monto</th>
+                    </tr>
+                  </thead>
+                  <tbody id="expense-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="reports" class="view">
+          <div class="dashboard-grid">
+            <section class="panel panel-wide">
+              <div class="panel-head">
+                <h3>Reportes de gestión</h3>
+              </div>
+              <div class="report-filters">
+                <label>
+                  Reporte
+                  <select id="report-type">
+                    <option value="executive">Resumen gestión</option>
+                    <option value="account-balances">Balance general cuentas</option>
+                    <option value="account-movements">Movimientos de cuenta</option>
+                    <option value="billing">Facturación</option>
+                    <option value="receivables">Cuentas por cobrar</option>
+                    <option value="payroll">Nómina</option>
+                    <option value="staff-billing">Facturación por colaborador</option>
+                    <option value="cash-closings">Cierres de caja</option>
+                    <option value="income-methods">Ingresos por forma de pago</option>
+                    <option value="card-receivables">CxC adquirentes tarjeta</option>
+                    <option value="pending-transfers">Transferencias no confirmadas</option>
+                    <option value="tips">Propinas por colaborador</option>
+                    <option value="commissions">Comisiones por colaborador</option>
+                    <option value="expenses">Egresos por categoría</option>
+                    <option value="services">Servicios más vendidos</option>
+                    <option value="clients">Clientes frecuentes</option>
+                    <option value="inventory">Inventario</option>
+                    <option value="fixed-assets">Activos fijos</option>
+                  </select>
+                </label>
+                <label>
+                  Desde
+                  <input id="report-start" type="date" />
+                </label>
+                <label>
+                  Hasta
+                  <input id="report-end" type="date" />
+                </label>
+                <label id="report-account-filter">
+                  Cuenta
+                  <input id="report-account" list="accounts-list" placeholder="Todas las cuentas" />
+                </label>
+                <label id="report-staff-filter">
+                  Colaborador
+                  <input id="report-staff" list="staff-list" placeholder="Todos los colaboradores" />
+                </label>
+                <label id="report-client-filter">
+                  Cliente
+                  <input id="report-client" list="clients-list" placeholder="Todos los clientes" />
+                </label>
+                <label class="toggle-field" id="report-tips-filter">
+                  <input id="report-include-tips" type="checkbox" checked />
+                  Incluir propinas
+                </label>
+                <label class="toggle-field" id="report-commission-filter">
+                  <input id="report-include-commission" type="checkbox" checked />
+                  Incluir comisión
+                </label>
+                <label class="toggle-field" id="report-deductions-filter">
+                  <input id="report-include-deductions" type="checkbox" checked />
+                  Incluir descuentos
+                </label>
+                <button class="primary-btn inline report-generate-btn" id="generate-report" type="button">Generar reporte</button>
+              </div>
+            </section>
+
+            <section class="panel panel-wide" id="report-result-panel">
+              <div class="panel-head">
+                <h3 id="report-title">Resumen gestión</h3>
+              </div>
+              <div class="report-summary" id="report-summary"></div>
+              <div class="table-wrap">
+                <table>
+                  <thead id="report-head"></thead>
+                  <tbody id="report-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="settings" class="view">
+          <div class="settings-grid">
+            <section class="panel settings-actions panel-wide">
+              <div class="panel-head">
+                <h3>Base de datos</h3>
+              </div>
+              <div class="action-buttons">
+                <button class="secondary-btn data-form-toggle active" data-form-target="client-form" type="button">Clientes</button>
+                <button class="secondary-btn data-form-toggle" data-form-target="service-form" type="button">Servicios</button>
+                <button class="secondary-btn data-form-toggle" data-form-target="staff-form" type="button">Colaboradores</button>
+                <button class="secondary-btn data-form-toggle" data-form-target="account-form" type="button">Cuentas/Cajas</button>
+                <button class="secondary-btn data-form-toggle" data-form-target="processor-form" type="button">Compañías tarjeta</button>
+                <button class="secondary-btn data-form-toggle" data-form-target="commission-form" type="button">Umbrales comisión</button>
+              </div>
+            </section>
+
+            <form class="panel form-panel data-entry-form" id="client-form">
+              <div class="panel-head">
+                <h3>Agregar cliente</h3>
+              </div>
+              <input id="client-edit-id" type="hidden" />
+              <label>
+                Nombre completo
+                <input id="client-full-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Nombre
+                  <input id="client-first-name" />
+                </label>
+                <label>
+                  Apellido
+                  <input id="client-last-name" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Teléfono
+                  <input id="client-phone" />
+                </label>
+                <label>
+                  Sexo
+                  <select id="client-sex">
+                    <option value="">No especificado</option>
+                    <option value="Femenino">Femenino</option>
+                    <option value="Masculino">Masculino</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Correo
+                <input id="client-email" type="email" />
+              </label>
+              <label>
+                Dirección
+                <textarea id="client-address" rows="2"></textarea>
+              </label>
+              <label>
+                Observaciones
+                <textarea id="client-notes" rows="2"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar cliente</button>
+            </form>
+
+            <form class="panel form-panel data-entry-form" id="service-form">
+              <div class="panel-head">
+                <h3>Agregar servicio</h3>
+              </div>
+              <input id="service-edit-id" type="hidden" />
+              <label>
+                Servicio
+                <input id="service-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Categoría
+                  <input id="service-category" list="service-category-list" value="Uñas" />
+                </label>
+                <label>
+                  Estado
+                  <select id="service-status">
+                    <option value="Activo">Activo</option>
+                    <option value="Inactivo">Inactivo</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Precio base
+                  <input id="service-price" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Duración min.
+                  <input id="service-duration" type="number" min="0" step="1" value="45" />
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Guardar servicio</button>
+            </form>
+
+            <form class="panel form-panel data-entry-form" id="staff-form">
+              <div class="panel-head">
+                <h3>Agregar colaborador</h3>
+              </div>
+              <input id="staff-edit-id" type="hidden" />
+              <label>
+                Nombre completo
+                <input id="staff-full-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Nombre
+                  <input id="staff-first-name" />
+                </label>
+                <label>
+                  Apellido
+                  <input id="staff-last-name" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Función
+                  <input id="staff-role" list="staff-role-list" />
+                </label>
+                <label>
+                  Teléfono
+                  <input id="staff-phone" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Salario mensual
+                  <input id="staff-salary" type="number" min="0" step="0.01" />
+                </label>
+                <label>
+                  Fecha ingreso
+                  <input id="staff-start-date" type="date" />
+                </label>
+              </div>
+              <div class="payroll-box">
+                <h4>Umbrales de comisión asignados</h4>
+                <div id="staff-commission-thresholds" class="check-list"></div>
+              </div>
+              <label>
+                Correo
+                <input id="staff-email" type="email" />
+              </label>
+              <label>
+                Dirección
+                <textarea id="staff-address" rows="2"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar colaborador</button>
+            </form>
+
+            <form class="panel form-panel data-entry-form" id="account-form">
+              <div class="panel-head">
+                <h3>Agregar cuenta o caja</h3>
+              </div>
+              <input id="account-edit-id" type="hidden" />
+              <div class="form-row">
+                <label>
+                  Tipo cuenta
+                  <select id="account-type">
+                    <option value="Banco">Banco</option>
+                    <option value="Caja Operativa">Caja Operativa</option>
+                    <option value="Caja Fuerte">Caja Fuerte</option>
+                    <option value="Caja Chica">Caja Chica</option>
+                  </select>
+                </label>
+                <label>
+                  Tipo producto
+                  <input id="account-product" list="account-product-list" />
+                </label>
+              </div>
+              <label>
+                Nombre cuenta
+                <input id="account-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Entidad
+                  <input id="account-entity" />
+                </label>
+                <label>
+                  Número cuenta
+                  <input id="account-number" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Titular
+                  <input id="account-owner" />
+                </label>
+                <label>
+                  Documento titular
+                  <input id="account-owner-document" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Moneda
+                  <select id="account-currency">
+                    <option value="DOP">DOP</option>
+                    <option value="USD">USD</option>
+                  </select>
+                </label>
+                <label>
+                  Estado
+                  <select id="account-status">
+                    <option value="Activo">Activo</option>
+                    <option value="Inactivo">Inactivo</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Balance inicial
+                  <input id="account-opening-balance" type="number" step="0.01" value="0" />
+                </label>
+                <label>
+                  Balance mínimo
+                  <input id="account-min-balance" type="number" step="0.01" value="0" />
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Guardar cuenta/caja</button>
+            </form>
+
+            <form class="panel form-panel data-entry-form" id="commission-form">
+              <div class="panel-head">
+                <h3>Agregar umbral de comisión</h3>
+              </div>
+              <input id="commission-edit-id" type="hidden" />
+              <label>
+                Nombre del umbral
+                <input id="commission-applies-to" placeholder="Ej. Manicuristas nivel 1" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Desde
+                  <input id="commission-from" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Hasta
+                  <input id="commission-to" type="number" min="0" step="0.01" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Porcentaje
+                  <input id="commission-rate" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Estado
+                  <select id="commission-status">
+                    <option value="Activo">Activo</option>
+                    <option value="Inactivo">Inactivo</option>
+                  </select>
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Guardar umbral</button>
+            </form>
+
+            <form class="panel form-panel data-entry-form" id="processor-form">
+              <div class="panel-head">
+                <h3>Agregar compañía de tarjeta</h3>
+              </div>
+              <input id="processor-edit-id" type="hidden" />
+              <label>
+                Compañía adquiriente
+                <input id="processor-name" placeholder="Azul, CardNet, VisaNet..." required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Comisión %
+                  <input id="processor-fee-rate" type="number" min="0" step="0.01" placeholder="Ej. 2.8" required />
+                </label>
+                <label>
+                  Estado
+                  <select id="processor-status">
+                    <option value="Activo">Activo</option>
+                    <option value="Inactivo">Inactivo</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Observación
+                <textarea id="processor-note" rows="2" placeholder="Detalle de contrato o condiciones"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar compañía</button>
+            </form>
+
+            <section class="panel data-list-panel active" data-list-panel="client-form">
+              <div class="panel-head">
+                <h3>Clientes</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="client-form" type="button">Agregar</button>
+                <input class="inline-search" id="client-search" placeholder="Buscar cliente" />
+              </div>
+              <div class="simple-list" id="client-list"></div>
+            </section>
+            <section class="panel data-list-panel" data-list-panel="service-form">
+              <div class="panel-head">
+                <h3>Servicios</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="service-form" type="button">Agregar</button>
+                <input class="inline-search" id="service-search" placeholder="Buscar servicio" />
+              </div>
+              <div class="simple-list" id="service-list"></div>
+            </section>
+            <section class="panel data-list-panel" data-list-panel="staff-form">
+              <div class="panel-head">
+                <h3>Colaboradores</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="staff-form" type="button">Agregar</button>
+                <input class="inline-search" id="staff-search" placeholder="Buscar colaborador" />
+              </div>
+              <div class="simple-list" id="staff-list-view"></div>
+            </section>
+            <section class="panel data-list-panel" data-list-panel="account-form">
+              <div class="panel-head">
+                <h3>Cuentas y cajas</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="account-form" type="button">Agregar</button>
+                <input class="inline-search" id="account-search" placeholder="Buscar cuenta o caja" />
+              </div>
+              <div class="simple-list" id="account-list"></div>
+            </section>
+            <section class="panel data-list-panel" data-list-panel="processor-form">
+              <div class="panel-head">
+                <h3>Compañías de tarjeta</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="processor-form" type="button">Agregar</button>
+                <input class="inline-search" id="processor-search" placeholder="Buscar compañía" />
+              </div>
+              <div class="simple-list" id="processor-list"></div>
+            </section>
+            <section class="panel data-list-panel" data-list-panel="commission-form">
+              <div class="panel-head">
+                <h3>Umbrales de comisión</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="commission-form" type="button">Agregar</button>
+                <input class="inline-search" id="commission-search" placeholder="Buscar umbral" />
+              </div>
+              <div class="simple-list" id="commission-list"></div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <datalist id="clients-list"></datalist>
+    <datalist id="people-list"></datalist>
+    <datalist id="advance-people-list"></datalist>
+    <datalist id="services-list"></datalist>
+    <datalist id="staff-list"></datalist>
+    <datalist id="accounts-list"></datalist>
+    <datalist id="bank-accounts-list"></datalist>
+    <datalist id="processors-list"></datalist>
+    <datalist id="expense-concept-list"></datalist>
+    <datalist id="commission-threshold-list"></datalist>
+    <datalist id="payroll-discount-concept-list">
+      <option value="AFP"></option>
+      <option value="Seguro"></option>
+      <option value="Uniforme"></option>
+      <option value="Avance de efectivo"></option>
+      <option value="Ajuste autorizado"></option>
+    </datalist>
+    <datalist id="service-category-list">
+      <option value="Uñas"></option>
+      <option value="Academia"></option>
+      <option value="Producto"></option>
+    </datalist>
+    <datalist id="staff-role-list">
+      <option value="Gerente/Manicurista"></option>
+      <option value="Manicurista"></option>
+      <option value="Cajera"></option>
+      <option value="Administración"></option>
+    </datalist>
+    <datalist id="account-product-list">
+      <option value="Ahorro"></option>
+      <option value="Corriente"></option>
+      <option value="Efectivo"></option>
+      <option value="Tarjeta"></option>
+    </datalist>
+    <script src="supabase-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

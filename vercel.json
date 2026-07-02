@@ -1,0 +1,14 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "outputs",
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/outputs/index.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/outputs/$1"
+    }
+  ]
+}

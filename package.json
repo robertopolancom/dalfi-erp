@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "build": "node scripts/write-supabase-config.mjs"
+  }
+}
