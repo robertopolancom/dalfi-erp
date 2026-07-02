@@ -45,7 +45,9 @@ exports.handler = async (event) => {
 
   const sessionUser = await sessionResponse.json();
   const requesterEmail = normalizeEmail(sessionUser.email);
-  if (!adminEmails.includes(requesterEmail)) {
+  const requesterRole = String(sessionUser.user_metadata?.role || "").toLowerCase();
+  const requesterIsAdmin = adminEmails.includes(requesterEmail) || ["administradora", "propietario"].includes(requesterRole);
+  if (!requesterIsAdmin) {
     return json(403, { error: "Tu usuario no esta autorizado para crear usuarios." });
   }
 

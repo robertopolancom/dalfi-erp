@@ -1429,6 +1429,33 @@
               </div>
               <p class="form-message" id="user-create-message">Solo los correos autorizados como administradores pueden crear usuarios.</p>
             </form>
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Accesos</p>
+                  <h3>Usuarios registrados</h3>
+                </div>
+                <button class="secondary-btn compact" id="refresh-users" type="button">Actualizar</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Nombre</th>
+                      <th>Correo</th>
+                      <th>Rol</th>
+                      <th>Estado</th>
+                      <th>Nueva contraseña</th>
+                      <th>Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody id="users-list">
+                    <tr><td class="empty" colspan="6">Pulsa Actualizar para cargar usuarios.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="form-message" id="users-list-message">Los cambios se aplican a los usuarios de Supabase Authentication.</p>
+            </section>
           </div>
         </section>
       </main>

@@ -2258,9 +2258,100 @@ function wireAuth() {
 function wireUserAdmin() {
   const form = byId("user-create-form");
   if (!form) return;
+  const message = byId("user-create-message");
+  const listMessage = byId("users-list-message");
+  const listTarget = byId("users-list");
+
+  const authHeaders = () => ({
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${supabaseSession.access_token}`,
+  });
+
+  const loadUsers = async () => {
+    if (!isSupabaseReady()) {
+      listMessage.textContent = "Debes iniciar sesión para cargar usuarios.";
+      listMessage.className = "form-message error";
+      return;
+    }
+    listMessage.textContent = "Cargando usuarios...";
+    listMessage.className = "form-message";
+    try {
+      const response = await fetch("/.netlify/functions/users", {
+        headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "No se pudo cargar usuarios.");
+      renderUsersList(result.users || []);
+      listMessage.textContent = "Usuarios cargados.";
+      listMessage.className = "form-message success";
+    } catch (error) {
+      listTarget.innerHTML = '<tr><td class="empty" colspan="6">No se pudo cargar usuarios.</td></tr>';
+      listMessage.textContent = error.message;
+      listMessage.className = "form-message error";
+    }
+  };
+
+  const renderUsersList = (users) => {
+    if (!users.length) {
+      listTarget.innerHTML = '<tr><td class="empty" colspan="6">No hay usuarios registrados.</td></tr>';
+      return;
+    }
+    listTarget.innerHTML = users
+      .map((user) => {
+        const inactive = user.estado === "Inactivo";
+        return `
+          <tr data-user-id="${escapeHtml(user.id)}">
+            <td><input class="user-name-input compact-input" value="${escapeHtml(user.fullName || "")}" placeholder="Nombre" /></td>
+            <td><input class="user-email-input compact-input" type="email" value="${escapeHtml(user.email || "")}" /></td>
+            <td>
+              <select class="user-role-input compact-input">
+                <option value="operador" ${user.role === "operador" ? "selected" : ""}>Operador</option>
+                <option value="administradora" ${user.role === "administradora" ? "selected" : ""}>Administradora</option>
+                <option value="propietario" ${user.role === "propietario" ? "selected" : ""}>Propietario</option>
+              </select>
+            </td>
+            <td><span class="status-pill ${inactive ? "danger" : "success"}">${escapeHtml(user.estado || "Activo")}</span></td>
+            <td><input class="user-password-input compact-input" type="password" minlength="6" placeholder="Opcional" /></td>
+            <td>
+              <div class="row-actions">
+                <button class="secondary-btn compact save-user" type="button">Guardar</button>
+                <button class="secondary-btn compact toggle-user" data-next-state="${inactive ? "Activo" : "Inactivo"}" type="button">${inactive ? "Reactivar" : "Inactivar"}</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+  };
+
+  const saveUserRow = async (row, estado = null) => {
+    if (!isSupabaseReady()) return;
+    const inferredEstado = row.querySelector(".toggle-user").dataset.nextState === "Activo" ? "Inactivo" : "Activo";
+    const payload = {
+      id: row.dataset.userId,
+      fullName: row.querySelector(".user-name-input").value.trim(),
+      email: row.querySelector(".user-email-input").value.trim(),
+      role: row.querySelector(".user-role-input").value,
+      password: row.querySelector(".user-password-input").value,
+      estado: estado || inferredEstado,
+    };
+
+    listMessage.textContent = "Guardando usuario...";
+    listMessage.className = "form-message";
+    const response = await fetch("/.netlify/functions/users", {
+      method: "PATCH",
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "No se pudo actualizar el usuario.");
+    listMessage.textContent = "Usuario actualizado.";
+    listMessage.className = "form-message success";
+    await loadUsers();
+  };
+
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const message = byId("user-create-message");
     if (!isSupabaseReady()) {
       message.textContent = "Debes iniciar sesión antes de crear usuarios.";
       message.className = "form-message error";
@@ -2286,9 +2377,27 @@ function wireUserAdmin() {
       form.reset();
       message.textContent = `Usuario creado: ${result.email || email}`;
       message.className = "form-message success";
+      await loadUsers();
     } catch (error) {
       message.textContent = error.message;
       message.className = "form-message error";
+    }
+  });
+
+  byId("refresh-users")?.addEventListener("click", loadUsers);
+  listTarget?.addEventListener("click", async (event) => {
+    const row = event.target.closest("tr[data-user-id]");
+    if (!row) return;
+    try {
+      if (event.target.closest(".save-user")) {
+        await saveUserRow(row);
+      }
+      if (event.target.closest(".toggle-user")) {
+        await saveUserRow(row, event.target.closest(".toggle-user").dataset.nextState);
+      }
+    } catch (error) {
+      listMessage.textContent = error.message;
+      listMessage.className = "form-message error";
     }
   });
 

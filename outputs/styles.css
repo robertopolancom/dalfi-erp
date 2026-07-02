@@ -498,6 +498,31 @@ textarea:focus {
   color: var(--rose);
 }
 
+.compact-input {
+  min-width: 150px;
+  padding: 9px 10px;
+  font-size: 14px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-pill.success {
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--accent-strong);
+}
+
+.status-pill.danger {
+  background: rgba(180, 35, 85, 0.1);
+  color: var(--rose);
+}
+
 .quick-create {
   margin: 12px 18px 0;
   padding: 12px;
