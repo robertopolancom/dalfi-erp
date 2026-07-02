@@ -2326,15 +2326,14 @@ function wireUserAdmin() {
 
   const saveUserRow = async (row, estado = null) => {
     if (!isSupabaseReady()) return;
-    const inferredEstado = row.querySelector(".toggle-user").dataset.nextState === "Activo" ? "Inactivo" : "Activo";
     const payload = {
       id: row.dataset.userId,
       fullName: row.querySelector(".user-name-input").value.trim(),
       email: row.querySelector(".user-email-input").value.trim(),
       role: row.querySelector(".user-role-input").value,
       password: row.querySelector(".user-password-input").value,
-      estado: estado || inferredEstado,
     };
+    if (estado) payload.estado = estado;
 
     listMessage.textContent = "Guardando usuario...";
     listMessage.className = "form-message";

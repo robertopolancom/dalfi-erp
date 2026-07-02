@@ -106,6 +106,7 @@ exports.handler = async (event) => {
   const update = {};
   const fullName = String(payload.fullName || "").trim();
   const role = String(payload.role || "operador").trim();
+  const hasEstado = Object.prototype.hasOwnProperty.call(payload, "estado");
   const estado = payload.estado === "Inactivo" ? "Inactivo" : "Activo";
   const email = normalizeEmail(payload.email);
   const password = String(payload.password || "");
@@ -121,10 +122,12 @@ exports.handler = async (event) => {
   update.user_metadata = {
     full_name: fullName,
     role,
-    estado,
     updated_by: requesterEmail,
   };
-  update.ban_duration = estado === "Inactivo" ? "876000h" : "none";
+  if (hasEstado) {
+    update.user_metadata.estado = estado;
+    update.ban_duration = estado === "Inactivo" ? "876000h" : "none";
+  }
 
   const response = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
     method: "PATCH",
@@ -138,7 +141,7 @@ exports.handler = async (event) => {
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    return json(response.status, { error: body.msg || body.error_description || body.error || "No se pudo actualizar el usuario." });
+    return json(response.status, { error: body.msg || body.message || body.error_description || body.error || "No se pudo actualizar el usuario." });
   }
 
   return json(200, { user: toPublicUser(body) });
