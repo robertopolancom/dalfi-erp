@@ -268,7 +268,7 @@ body.auth-required .auth-panel {
 }
 
 .work-grid {
-  grid-template-columns: 360px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .settings-grid {
@@ -317,6 +317,14 @@ body.auth-required .auth-panel {
 .panel {
   min-width: 0;
   overflow: hidden;
+}
+
+.form-panel {
+  max-width: 980px;
+}
+
+.toggle-list-panel {
+  max-width: 100%;
 }
 
 .panel-head {

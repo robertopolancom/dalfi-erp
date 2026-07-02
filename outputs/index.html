@@ -12,8 +12,8 @@
         <div class="brand">
           <div class="brand-mark">NU</div>
           <div>
-            <h1>NailUnit ERP</h1>
-            <p>Centro de uñas</p>
+            <h1>SeBen ERP</h1>
+            <p>Dalfi Studio Nails</p>
           </div>
         </div>
 
@@ -153,10 +153,6 @@
                 <input id="invoice-client-search" list="clients-list" placeholder="Buscar o digitar cliente" autocomplete="off" required />
               </div>
               <div class="quick-create hidden" id="invoice-client-create">
-                <label>
-                  Nombre completo
-                  <input id="quick-client-name" placeholder="Nombre completo" />
-                </label>
                 <div class="form-row">
                   <label>
                     Nombre
@@ -289,6 +285,7 @@
                       <th>Servicio</th>
                       <th>Total</th>
                       <th>Pago</th>
+                      <th>Acción</th>
                     </tr>
                   </thead>
                   <tbody id="invoice-table"></tbody>
@@ -1070,14 +1067,11 @@
                 <h3>Agregar cliente</h3>
               </div>
               <input id="client-edit-id" type="hidden" />
-              <label>
-                Nombre completo
-                <input id="client-full-name" required />
-              </label>
+              <input id="client-full-name" type="hidden" />
               <div class="form-row">
                 <label>
                   Nombre
-                  <input id="client-first-name" />
+                  <input id="client-first-name" required />
                 </label>
                 <label>
                   Apellido

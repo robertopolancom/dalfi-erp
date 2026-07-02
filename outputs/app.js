@@ -980,21 +980,151 @@ function renderInvoices() {
   const query = byId("invoice-search").value;
   const rows = state.invoices.filter((invoice) => matches(invoice, query, ["id", "client", "service", "payment"]));
   const target = byId("invoice-table");
-  if (!rows.length) return renderEmpty(target, 6, "No hay facturas con ese criterio.");
+  if (!rows.length) return renderEmpty(target, 7, "No hay facturas con ese criterio.");
   target.innerHTML = rows
     .map(
       (invoice) => `
-        <tr>
+        <tr data-invoice-id="${escapeHtml(invoice.id)}">
           <td>${invoice.id}</td>
           <td>${invoice.date}</td>
           <td>${invoice.client}</td>
           <td>${invoice.service}</td>
           <td>${money.format(invoice.total)}</td>
           <td>${invoice.payment}</td>
+          <td>
+            <div class="row-actions">
+              <button class="secondary-btn compact view-invoice" type="button">Ver</button>
+              <button class="secondary-btn compact pdf-invoice" type="button">PDF</button>
+              <button class="secondary-btn compact image-invoice" type="button">Foto</button>
+            </div>
+          </td>
         </tr>
       `,
     )
     .join("");
+}
+
+function invoiceReportData(invoiceId) {
+  const invoice = state.invoices.find((item) => item.id === invoiceId);
+  const dbInvoice = dbTable("facturas").find((item) => item.facturaID === invoiceId);
+  const details = dbTable("facturaDetalle").filter((item) => item.facturaID === invoiceId);
+  const payments = dbTable("ingresos").filter((item) => item.facturaID === invoiceId);
+  return { invoice, dbInvoice, details, payments };
+}
+
+function invoiceReportHtml(invoiceId) {
+  const { invoice, dbInvoice, details, payments } = invoiceReportData(invoiceId);
+  if (!invoice && !dbInvoice) return "<p>Factura no encontrada.</p>";
+  const client = invoice?.client || dbInvoice?.clienteNombre || "";
+  const date = invoice?.date || dateOnly(dbInvoice?.fechaHora);
+  const total = Number(invoice?.total ?? dbInvoice?.totalFacturado) || 0;
+  const paid = Number(invoice?.paid ?? dbInvoice?.totalPagadoConfirmado) || 0;
+  const note = invoice?.note || dbInvoice?.observaciones || "";
+  const lines = details.length
+    ? details
+    : [{ servicio: invoice?.service || "Servicio", colaboradorNombre: dbInvoice?.colaboradorNombre || "", subtotal: total }];
+  return `
+    <section class="invoice-report">
+      <h1>SeBen ERP</h1>
+      <p>Dalfi Studio Nails</p>
+      <hr />
+      <h2>Factura ${escapeHtml(invoiceId)}</h2>
+      <p><strong>Fecha:</strong> ${escapeHtml(date || "")}</p>
+      <p><strong>Cliente:</strong> ${escapeHtml(client)}</p>
+      <table>
+        <thead><tr><th>Servicio</th><th>Colaborador/a</th><th>Monto</th></tr></thead>
+        <tbody>
+          ${lines
+            .map(
+              (line) => `<tr><td>${escapeHtml(line.servicio || "")}</td><td>${escapeHtml(line.colaboradorNombre || "")}</td><td>${money.format(Number(line.subtotal) || 0)}</td></tr>`,
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <div class="invoice-totals">
+        <p><strong>Total:</strong> ${money.format(total)}</p>
+        <p><strong>Pagado confirmado:</strong> ${money.format(paid)}</p>
+        <p><strong>Balance:</strong> ${money.format(Math.max(0, total - paid))}</p>
+      </div>
+      ${
+        payments.length
+          ? `<h3>Pagos</h3><ul>${payments.map((payment) => `<li>${escapeHtml(payment.metodoPago || "")}: ${money.format(Number(payment.monto) || 0)}</li>`).join("")}</ul>`
+          : ""
+      }
+      ${note ? `<p><strong>Nota:</strong> ${escapeHtml(note)}</p>` : ""}
+    </section>
+  `;
+}
+
+function openInvoiceReport(invoiceId, print = false) {
+  const popup = window.open("", "_blank");
+  if (!popup) return;
+  popup.document.write(`
+    <!doctype html>
+    <html lang="es">
+      <head>
+        <meta charset="utf-8" />
+        <title>Factura ${escapeHtml(invoiceId)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 32px; color: #202225; }
+          h1, h2, h3, p { margin: 0 0 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 18px 0; }
+          th, td { border-bottom: 1px solid #ddd; padding: 10px; text-align: left; }
+          th { background: #fbfaf7; }
+          .invoice-report { max-width: 760px; margin: 0 auto; }
+          .invoice-totals { margin-left: auto; max-width: 280px; }
+          @media print { button { display: none; } body { margin: 18px; } }
+        </style>
+      </head>
+      <body>
+        <button onclick="window.print()">Exportar / imprimir PDF</button>
+        ${invoiceReportHtml(invoiceId)}
+      </body>
+    </html>
+  `);
+  popup.document.close();
+  if (print) popup.addEventListener("load", () => popup.print());
+}
+
+function downloadInvoiceImage(invoiceId) {
+  const { invoice, dbInvoice, details } = invoiceReportData(invoiceId);
+  if (!invoice && !dbInvoice) return;
+  const client = invoice?.client || dbInvoice?.clienteNombre || "";
+  const total = Number(invoice?.total ?? dbInvoice?.totalFacturado) || 0;
+  const lines = details.length ? details : [{ servicio: invoice?.service || "Servicio", subtotal: total }];
+  const canvas = document.createElement("canvas");
+  canvas.width = 900;
+  canvas.height = 360 + lines.length * 38;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#202225";
+  ctx.font = "bold 34px Arial";
+  ctx.fillText("SeBen ERP", 40, 55);
+  ctx.font = "18px Arial";
+  ctx.fillText("Dalfi Studio Nails", 40, 84);
+  ctx.font = "bold 26px Arial";
+  ctx.fillText(`Factura ${invoiceId}`, 40, 130);
+  ctx.font = "18px Arial";
+  ctx.fillText(`Cliente: ${client}`, 40, 168);
+  ctx.fillText(`Fecha: ${invoice?.date || dateOnly(dbInvoice?.fechaHora) || ""}`, 40, 198);
+  let y = 250;
+  ctx.font = "bold 18px Arial";
+  ctx.fillText("Servicio", 40, y);
+  ctx.fillText("Monto", 720, y);
+  ctx.font = "18px Arial";
+  lines.forEach((line) => {
+    y += 38;
+    ctx.fillText(String(line.servicio || "").slice(0, 58), 40, y);
+    ctx.fillText(money.format(Number(line.subtotal) || 0), 720, y);
+  });
+  y += 55;
+  ctx.font = "bold 24px Arial";
+  ctx.fillText(`Total: ${money.format(total)}`, 580, y);
+  const link = document.createElement("a");
+  link.href = canvas.toDataURL("image/png");
+  link.download = `${invoiceId}.png`;
+  link.click();
 }
 
 function renderReceivables() {
@@ -2437,6 +2567,28 @@ function wireDataFormToggles() {
   });
 }
 
+function wireInlineListToggles() {
+  document.querySelectorAll(".work-grid").forEach((grid) => {
+    const form = grid.querySelector(":scope > form.panel");
+    const lists = [...grid.querySelectorAll(":scope > section.panel")];
+    if (!form || !lists.length || form.dataset.listToggleReady) return;
+    form.dataset.listToggleReady = "true";
+    lists.forEach((panel) => panel.classList.add("toggle-list-panel", "hidden"));
+    const head = form.querySelector(".panel-head");
+    const button = document.createElement("button");
+    button.className = "secondary-btn compact";
+    button.type = "button";
+    button.textContent = form.id === "invoice-form" ? "Lista de facturas" : "Ver listado";
+    head?.appendChild(button);
+    button.addEventListener("click", () => {
+      const willShow = lists.some((panel) => panel.classList.contains("hidden"));
+      lists.forEach((panel) => panel.classList.toggle("hidden", !willShow));
+      button.textContent = willShow ? "Ocultar listado" : form.id === "invoice-form" ? "Lista de facturas" : "Ver listado";
+      if (willShow) lists[0].scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  });
+}
+
 function openDataForm(formId) {
   document.querySelectorAll(".data-form-toggle").forEach((item) => item.classList.toggle("active", item.dataset.formTarget === formId));
   document.querySelectorAll(".data-list-panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.listPanel === formId));
@@ -2453,10 +2605,11 @@ function fillDataForm(type, id) {
   if (type === "client") {
     const client = dbTable("clientes").find((row) => row.clienteID === id);
     if (!client) return;
+    const parts = splitName(client.nombreCompleto || "");
     byId("client-edit-id").value = client.clienteID || "";
     byId("client-full-name").value = client.nombreCompleto || "";
-    byId("client-first-name").value = client.nombre || "";
-    byId("client-last-name").value = client.apellido || "";
+    byId("client-first-name").value = client.nombre || parts.first || "";
+    byId("client-last-name").value = client.apellido || parts.last || "";
     byId("client-phone").value = client.telefono || "";
     byId("client-sex").value = client.sexo || "";
     byId("client-email").value = client.correo || "";
@@ -2872,11 +3025,10 @@ function updateExpenseBalancePreview() {
 function wireForms() {
   const saveClientCatalog = (event) => {
     event.preventDefault();
-    const fullName = byId("client-full-name").value.trim();
-    if (!fullName) return;
-    const parts = splitName(fullName);
-    const firstName = byId("client-first-name").value.trim() || parts.first;
-    const lastName = byId("client-last-name").value.trim() || parts.last;
+    const firstName = byId("client-first-name").value.trim();
+    const lastName = byId("client-last-name").value.trim();
+    const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+    if (!firstName || !fullName) return;
     const editId = byId("client-edit-id").value;
     let client = dbTable("clientes").find((row) => row.clienteID === editId) || findClientByName(fullName);
     if (!client) {
@@ -2918,9 +3070,11 @@ function wireForms() {
   });
 
   byId("show-invoice-client-form").addEventListener("click", () => {
-    byId("quick-client-name").value = byId("invoice-client-search").value.trim();
+    const parts = splitName(byId("invoice-client-search").value.trim());
+    byId("quick-client-first-name").value = parts.first;
+    byId("quick-client-last-name").value = parts.last;
     byId("invoice-client-create").classList.remove("hidden");
-    byId("quick-client-name").focus();
+    byId("quick-client-first-name").focus();
   });
 
   byId("cancel-invoice-client").addEventListener("click", () => {
@@ -2928,15 +3082,16 @@ function wireForms() {
   });
 
   byId("save-invoice-client").addEventListener("click", () => {
-    const fullName = byId("quick-client-name").value.trim();
-    if (!fullName) return;
-    const parts = splitName(fullName);
+    const firstName = byId("quick-client-first-name").value.trim();
+    const lastName = byId("quick-client-last-name").value.trim();
+    const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+    if (!firstName || !fullName) return;
     const phone = byId("quick-client-phone").value.trim();
     let client = findClientByPhone(phone) || findClientByName(fullName);
     const payload = {
       nombreCompleto: client?.nombreCompleto || fullName,
-      nombre: byId("quick-client-first-name").value.trim() || parts.first,
-      apellido: byId("quick-client-last-name").value.trim() || parts.last,
+      nombre: firstName,
+      apellido: lastName,
       telefono: phone,
       sexo: byId("quick-client-sex").value,
       correo: byId("quick-client-email").value.trim(),
@@ -2960,7 +3115,7 @@ function wireForms() {
     }
     state = stateFromDatabase(database);
     byId("invoice-client-search").value = client?.nombreCompleto || fullName;
-    ["quick-client-name", "quick-client-first-name", "quick-client-last-name", "quick-client-phone", "quick-client-email", "quick-client-address", "quick-client-notes"].forEach((id) => {
+    ["quick-client-first-name", "quick-client-last-name", "quick-client-phone", "quick-client-email", "quick-client-address", "quick-client-notes"].forEach((id) => {
       byId(id).value = "";
     });
     byId("quick-client-sex").value = "";
@@ -3239,6 +3394,15 @@ function wireForms() {
     clearInvoiceFormAfterSubmit();
     saveState();
     renderAll();
+  });
+
+  byId("invoice-table").addEventListener("click", (event) => {
+    const row = event.target.closest("tr[data-invoice-id]");
+    if (!row) return;
+    const invoiceId = row.dataset.invoiceId;
+    if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
+    if (event.target.closest(".pdf-invoice")) openInvoiceReport(invoiceId, true);
+    if (event.target.closest(".image-invoice")) downloadInvoiceImage(invoiceId);
   });
 
   byId("payment-form").addEventListener("submit", (event) => {
@@ -4133,6 +4297,7 @@ async function init() {
   wireAuth();
   wireUserAdmin();
   wireDataFormToggles();
+  wireInlineListToggles();
   wireForms();
   wireSearches();
   attachSearchableLookups();
