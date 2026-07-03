@@ -428,6 +428,16 @@ form label {
   font-weight: 700;
 }
 
+.readonly-hint {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  padding: 9px 11px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -855,16 +865,38 @@ th {
     position: sticky;
     top: 0;
     z-index: 5;
-    padding: 14px;
+    padding: 8px 10px;
+  }
+
+  .brand {
+    margin-bottom: 8px;
+  }
+
+  .brand-mark {
+    width: 42px;
+    height: 42px;
+  }
+
+  .brand h1 {
+    font-size: 16px;
+  }
+
+  .brand p {
+    font-size: 12px;
   }
 
   .nav-list {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(118px, 1fr);
+    overflow-x: auto;
+    padding-bottom: 3px;
   }
 
   .nav-item {
     text-align: center;
-    padding: 10px 8px;
+    padding: 8px 7px;
+    font-size: 13px;
   }
 
   .metrics-grid,
@@ -885,21 +917,20 @@ th {
 
 @media (max-width: 640px) {
   .main {
-    padding: 16px;
+    padding: 12px;
   }
 
   .brand {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .nav-list {
-    display: flex;
     overflow-x: auto;
     padding-bottom: 2px;
   }
 
   .nav-item {
-    flex: 0 0 auto;
+    min-width: 112px;
   }
 
   .topbar {

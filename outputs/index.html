@@ -10,10 +10,10 @@
     <div class="app-shell">
       <aside class="sidebar" aria-label="Navegación principal">
         <div class="brand">
-          <div class="brand-mark">NU</div>
+          <div class="brand-mark">DS</div>
           <div>
-            <h1>SeBen ERP</h1>
-            <p>Dalfi Studio Nails</p>
+            <h1>Dalfi Studio Nails</h1>
+            <p>SeBen ERP</p>
           </div>
         </div>
 
@@ -22,7 +22,7 @@
           <button class="nav-item" data-view="billing" type="button">Facturación</button>
           <button class="nav-item" data-view="receivables" type="button">Cuentas por cobrar</button>
           <button class="nav-item" data-view="pending-transfers" type="button">Transferencias pendientes</button>
-          <button class="nav-item" data-view="reservations" type="button">Reservas</button>
+          <button class="nav-item" data-view="reservations" type="button">Citas</button>
           <button class="nav-item" data-view="payroll" type="button">Nómina</button>
           <button class="nav-item" data-view="cash" type="button">Cierres de caja</button>
           <button class="nav-item" data-view="card-reconciliation" type="button">Conciliación tarjetas</button>
@@ -201,6 +201,7 @@
                   <button class="secondary-btn compact" id="show-invoice-client-form" type="button">Crear cliente</button>
                 </div>
                 <input id="invoice-client-search" list="clients-list" placeholder="Buscar o digitar cliente" autocomplete="off" required />
+                <div class="readonly-hint" id="invoice-client-summary">Selecciona un cliente para ver nombre y teléfono.</div>
               </div>
               <div class="quick-create hidden" id="invoice-client-create">
                 <div class="form-row">
@@ -248,11 +249,15 @@
               <section class="invoice-lines">
                 <div class="section-title-row">
                   <h4>Servicios de la factura</h4>
-                  <button class="secondary-btn compact" id="add-invoice-line" type="button">Agregar servicio</button>
+                  <div class="row-actions">
+                    <button class="secondary-btn compact" id="create-service-from-invoice" type="button">Crear servicio</button>
+                    <button class="secondary-btn compact" id="add-invoice-line" type="button">Registrar servicio a factura</button>
+                  </div>
                 </div>
                 <div class="invoice-line-list" id="invoice-line-list"></div>
                 <div class="line-actions">
                   <button class="secondary-btn add-invoice-line-action" type="button">Agregar otro servicio</button>
+                  <button class="secondary-btn" id="toggle-invoice-details" type="button">Expandir detalles</button>
                 </div>
               </section>
 
@@ -270,12 +275,29 @@
                   <strong id="invoice-discounts-total">RD$0.00</strong>
                 </div>
                 <label>
-                  Propina pagada en caja
-                  <input id="invoice-tip" type="number" min="0" step="0.01" value="0" />
+                  Descuento general %
+                  <input id="invoice-general-discount-percent" type="number" min="0" max="100" step="0.01" value="0" />
                 </label>
-                <div class="tip-allocation" id="tip-allocation"></div>
+                <div class="form-row">
+                  <label>
+                    Servicios adicionales generales
+                    <input id="invoice-general-extra" type="number" min="0" step="0.01" value="0" />
+                  </label>
+                  <label>
+                    Detalle adicional general
+                    <input id="invoice-general-extra-note" placeholder="Transporte, producto especial, impuesto transferencia..." />
+                  </label>
+                </div>
+                <div class="summary-row">
+                  <span>Adicional general sin comisión</span>
+                  <strong id="invoice-general-extra-total">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Total servicios y cargos</span>
+                  <strong id="invoice-base-total">RD$0.00</strong>
+                </div>
                 <div class="summary-row total">
-                  <span>Total a cobrar</span>
+                  <span>Total servicios antes de propina</span>
                   <strong id="invoice-grand-total">RD$0.00</strong>
                 </div>
               </section>
@@ -297,14 +319,27 @@
                   <strong id="invoice-paid-total">RD$0.00</strong>
                 </div>
                 <div class="summary-row">
-                  <span>Pendiente</span>
+                  <span>Pendiente servicios</span>
                   <strong id="invoice-pending-total">RD$0.00</strong>
                 </div>
                 <div class="summary-row">
-                  <span>Sobrante</span>
+                  <span>Excedente disponible</span>
                   <strong id="invoice-overpay-total">RD$0.00</strong>
                 </div>
-                <label class="hidden" id="overpay-policy-label">
+                <label>
+                  Propina desde excedente pagado
+                  <input id="invoice-tip" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <div class="tip-allocation" id="tip-allocation"></div>
+                <div class="summary-row total">
+                  <span>Total final con propina</span>
+                  <strong id="invoice-total-with-tip">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Sobrante después de propina</span>
+                  <strong id="invoice-final-overpay-total">RD$0.00</strong>
+                </div>
+                <label id="overpay-policy-label">
                   Destino del sobrante
                   <select id="invoice-overpay-policy">
                     <option value="sobrante">Cuenta de sobrante</option>
@@ -358,6 +393,10 @@
               <label>
                 Monto cobrado
                 <input id="payment-amount" type="number" min="0" step="0.01" required />
+              </label>
+              <label>
+                Fecha entrada a caja
+                <input id="payment-cash-date" type="date" />
               </label>
               <label>
                 Método

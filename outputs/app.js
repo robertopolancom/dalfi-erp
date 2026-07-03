@@ -596,6 +596,32 @@ function accountForPayment(method) {
   return accounts.find((account) => normalize(account.tipoCuenta).includes("banco")) || accounts[0] || {};
 }
 
+function accountForPaymentLine(method, accountName = "") {
+  const normalized = normalizePayment(method);
+  if (normalized === "efectivo") return accountForPayment("efectivo");
+  if (normalized.includes("transferencia")) return findAccountByName(accountName) || {};
+  return findAccountByName(accountName) || accountForPayment(method);
+}
+
+function currentUserEmail() {
+  return supabaseSession?.user?.email || "local";
+}
+
+function currentUserRole() {
+  return supabaseSession?.user?.user_metadata?.role || "";
+}
+
+function stampRecord(record, action = "created") {
+  const now = new Date().toISOString();
+  if (action === "created" && !record.creadoPor) {
+    record.creadoPor = currentUserEmail();
+    record.fechaCreacion = now;
+  }
+  record.actualizadoPor = currentUserEmail();
+  record.fechaActualizacion = now;
+  return record;
+}
+
 function processorForPayment(method) {
   if (normalizePayment(method) !== "tarjeta") return {};
   return dbTable("procesadores").find((processor) => normalize(processor.estado || "Activo") === "activo") || dbTable("procesadores")[0] || {};
@@ -611,16 +637,16 @@ function processorFeeRate(processor) {
   return value > 1 ? value / 100 : value;
 }
 
-function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method, note = "", processorName = "") {
+function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method, note = "", processorName = "", accountName = "", cashDate = "") {
   const paymentId = nextDbId("pagosFactura", "pagoID", "PAG");
   const incomeId = nextDbId("ingresos", "ingresoID", "ING");
   const applicationId = nextDbId("ingresoAplicaciones", "aplicacionID", "APL");
-  const account = accountForPayment(method);
+  const account = accountForPaymentLine(method, accountName);
   const processor = findProcessorByName(processorName) || processorForPayment(method);
   const retention = normalizePayment(method) === "tarjeta" ? amount * processorFeeRate(processor) : 0;
   const net = amount - retention;
 
-  dbTable("pagosFactura").push({
+  dbTable("pagosFactura").push(stampRecord({
     pagoID: paymentId,
     facturaID: invoiceId,
     fechaHora: new Date().toISOString(),
@@ -635,10 +661,11 @@ function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method
     deudorTipo: "Cliente",
     deudorID: clientRecord?.clienteID || "",
     observaciones: note,
-  });
-  dbTable("ingresos").push({
+  }));
+  dbTable("ingresos").push(stampRecord({
     ingresoID: incomeId,
     fechaHora: new Date().toISOString(),
+    fechaEntradaCaja: cashDate || today,
     tipoIngreso: note || "Cobro factura",
     facturaID: invoiceId,
     clienteID: clientRecord?.clienteID || "",
@@ -651,8 +678,8 @@ function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method
     montoNeto: net,
     estado: "Confirmado",
     observaciones: "",
-  });
-  dbTable("ingresoAplicaciones").push({
+  }));
+  dbTable("ingresoAplicaciones").push(stampRecord({
     aplicacionID: applicationId,
     ingresoID: incomeId,
     facturaID: invoiceId,
@@ -660,16 +687,17 @@ function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method
     cxCID: "",
     montoAplicado: amount,
     observaciones: "Aplicado a factura",
-  });
+  }));
   state.payments.push({ id: paymentId, date: today, invoiceId, client: clientName, amount: net, method: normalizePayment(method) });
   return paymentId;
 }
 
-function addReceivable(invoiceId, clientRecord, clientName, amount, concept) {
+function addReceivable(invoiceId, clientRecord, clientName, amount, concept, accountName = "") {
   const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
   const dueDate = concept.includes("Transferencia pendiente") || concept.includes("Declinada") ? today : datePlusDays(7);
   const isProcessorReceivable = normalize(concept).includes("procesador");
-  dbTable("cuentasCobrar").push({
+  const account = findAccountByName(accountName);
+  dbTable("cuentasCobrar").push(stampRecord({
     cxCID: cxcId,
     fechaOrigen: new Date().toISOString(),
     tipoCxC: concept,
@@ -684,7 +712,9 @@ function addReceivable(invoiceId, clientRecord, clientName, amount, concept) {
     estado: "Pendiente",
     concepto: concept,
     fechaVencimiento: dueDate,
-  });
+    cuentaDestinoID: account?.cuentaID || "",
+    cuentaDestino: account?.nombreCuenta || accountName,
+  }));
   return cxcId;
 }
 
@@ -709,7 +739,7 @@ function isConfirmedPaymentMethod(method) {
   return ["efectivo", "transferencia_confirmada", "tarjeta", "balance"].includes(method);
 }
 
-function applyClientReceivablesFirst(clientRecord, clientName, amount, method, note = "Registro de ingreso aplicado a CxC") {
+function applyClientReceivablesFirst(clientRecord, clientName, amount, method, note = "Registro de ingreso aplicado a CxC", processorName = "", accountName = "", cashDate = "") {
   let remaining = amount;
   const receivables = dbTable("cuentasCobrar")
     .filter((cxc) => cxc.deudorTipo === "Cliente" && cxc.deudorID === clientRecord?.clienteID && Number(cxc.balancePendiente) > 0)
@@ -722,7 +752,7 @@ function applyClientReceivablesFirst(clientRecord, clientName, amount, method, n
     cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + applied;
     cxc.balancePendiente = Math.max(0, pending - applied);
     cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
-    addConfirmedPayment(cxc.facturaID || "", clientRecord, clientName, applied, method, note);
+    addConfirmedPayment(cxc.facturaID || "", clientRecord, clientName, applied, method, note, processorName, accountName, cashDate);
     remaining -= applied;
   });
 
@@ -765,7 +795,7 @@ function ensureClient(name, phone = "", options = {}) {
   }
   if (!dbExisting) {
     const nameParts = splitName(clean);
-    dbTable("clientes").push({
+    dbTable("clientes").push(stampRecord({
       clienteID: clientId,
       nombreCompleto: clean,
       nombre: nameParts.first,
@@ -777,7 +807,7 @@ function ensureClient(name, phone = "", options = {}) {
       estado: "Activo",
       fechaRegistro: today,
       observaciones: options.note || "Creado desde facturación",
-    });
+    }));
     return findClientByName(clean);
   } else if (dbExisting && phone.trim() && !dbExisting.telefono) {
     dbExisting.telefono = phone.trim();
@@ -796,14 +826,14 @@ function ensureService(name, price) {
     state.services.push({ id, name: clean, price: Number(price) || 0 });
   }
   if (!dbExisting) {
-    dbTable("servicios").push({
+    dbTable("servicios").push(stampRecord({
       servicioID: state.services.find((service) => normalize(service.name) === normalize(clean))?.id || nextDbId("servicios", "servicioID", "SER"),
       servicio: clean,
       categoria: "Uñas",
       precioBase: Number(price) || 0,
       duracionMin: 45,
       estado: "Activo",
-    });
+    }));
   }
 }
 
@@ -1283,7 +1313,7 @@ function handlePendingTransferAction(button, action) {
     cxc.balancePendiente = 0;
     cxc.estado = "Saldada";
     cxc.observaciones = `${cxc.observaciones || ""} Transferencia confirmada ${new Date().toISOString()}`.trim();
-    addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", amount, "transferencia_confirmada", "Transferencia confirmada desde cuentas por cobrar");
+    addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", amount, "transferencia_confirmada", "Transferencia confirmada desde cuentas por cobrar", "", cxc.cuentaDestino || "");
   }
   if (action === "decline") {
     cxc.tipoCxC = "Crédito cliente";
@@ -1327,7 +1357,7 @@ function renderReservations() {
   const rows = state.reservations
     .filter((reservation) => matches(reservation, query, ["client", "service", "staff", "time", "date"]))
     .sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`));
-  renderAppointments(byId("reservation-list"), rows, "No hay reservas con ese criterio.");
+  renderAppointments(byId("reservation-list"), rows, "No hay citas con ese criterio.");
 }
 
 function payrollPeriodRange(period, cut) {
@@ -2930,9 +2960,9 @@ function addInvoiceLine(defaultStaff = "") {
       </label>
       <label>
         Precio
-        <input class="line-price" type="number" min="0" step="0.01" required />
+        <input class="line-price" type="number" min="0" step="0.01" readonly required />
       </label>
-      <label>
+      <label class="invoice-detail-field hidden">
         Adicional
         <input class="line-extra" type="number" min="0" step="0.01" value="0" />
       </label>
@@ -2940,7 +2970,7 @@ function addInvoiceLine(defaultStaff = "") {
         Detalle adicional
         <input class="line-extra-note" maxlength="50" placeholder="Máximo 50 caracteres" />
       </label>
-      <label>
+      <label class="invoice-detail-field hidden">
         Descuento
         <input class="line-discount" type="number" min="0" step="0.01" value="0" />
       </label>
@@ -2987,6 +3017,17 @@ function getInvoiceLines() {
   });
 }
 
+function applyGeneralDiscountPercent() {
+  const percent = Number(byId("invoice-general-discount-percent")?.value) || 0;
+  if (percent <= 0) return;
+  document.querySelectorAll(".invoice-line:not(.payment-line)").forEach((line) => {
+    const price = Number(line.querySelector(".line-price")?.value) || 0;
+    const discount = Number((price * (percent / 100)).toFixed(2));
+    line.querySelector(".line-discount").value = discount;
+    line.querySelector(".line-discount-note").value = `Descuento general ${percent}%`;
+  });
+}
+
 function updateInvoiceLineOptionalFields(line) {
   const extra = Number(line.querySelector(".line-extra")?.value) || 0;
   const discount = Number(line.querySelector(".line-discount")?.value) || 0;
@@ -2997,27 +3038,35 @@ function updateInvoiceLineOptionalFields(line) {
 }
 
 function updateInvoiceTotals() {
+  applyGeneralDiscountPercent();
   const lines = getInvoiceLines();
   const payments = getPaymentLines();
   const servicesTotal = lines.reduce((sum, line) => sum + line.qty * line.price, 0);
   const extrasTotal = lines.reduce((sum, line) => sum + line.extra, 0);
   const discountsTotal = lines.reduce((sum, line) => sum + line.discount, 0);
+  const generalExtra = Number(byId("invoice-general-extra")?.value) || 0;
   const tip = Number(byId("invoice-tip").value) || 0;
-  const grandTotal = Math.max(0, servicesTotal + extrasTotal - discountsTotal + tip);
+  const grandTotal = Math.max(0, servicesTotal + extrasTotal + generalExtra - discountsTotal);
+  const totalWithTip = grandTotal + tip;
   const paidTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
   const pendingTotal = Math.max(0, grandTotal - paidTotal);
   const overpay = Math.max(0, paidTotal - grandTotal);
+  const finalOverpay = Math.max(0, paidTotal - totalWithTip);
   lines.forEach((line) => {
     line.element.querySelector(".line-subtotal").value = money.format(line.subtotal);
   });
   byId("invoice-services-total").textContent = money.format(servicesTotal);
   byId("invoice-extras-total").textContent = money.format(extrasTotal);
   byId("invoice-discounts-total").textContent = money.format(discountsTotal);
+  byId("invoice-general-extra-total").textContent = money.format(generalExtra);
+  byId("invoice-base-total").textContent = money.format(grandTotal);
   byId("invoice-grand-total").textContent = money.format(grandTotal);
+  byId("invoice-total-with-tip").textContent = money.format(totalWithTip);
   byId("invoice-paid-total").textContent = money.format(paidTotal);
   byId("invoice-pending-total").textContent = money.format(pendingTotal);
   byId("invoice-overpay-total").textContent = money.format(overpay);
-  byId("overpay-policy-label").classList.toggle("hidden", overpay <= 0);
+  byId("invoice-final-overpay-total").textContent = money.format(finalOverpay);
+  byId("overpay-policy-label").classList.toggle("hidden", finalOverpay <= 0);
   renderTipAllocation(lines, tip);
 }
 
@@ -3053,6 +3102,20 @@ function getTipAllocations() {
     .filter((item) => item.staff && item.amount > 0);
 }
 
+function rebalanceTipShares(changedInput) {
+  const total = Number(byId("invoice-tip").value) || 0;
+  const inputs = [...document.querySelectorAll(".tip-share")];
+  if (!total || inputs.length < 2 || !changedInput) return;
+  const fixed = Number(changedInput.value) || 0;
+  const others = inputs.filter((input) => input !== changedInput);
+  const remaining = Math.max(0, total - fixed);
+  const base = Math.floor((remaining / others.length) * 100) / 100;
+  let remainder = Number((remaining - base * others.length).toFixed(2));
+  others.forEach((input, index) => {
+    input.value = (index === 0 ? Number((base + remainder).toFixed(2)) : base).toFixed(2);
+  });
+}
+
 function ensureStaffRecord(name) {
   if (!name) return { colaboradorID: "", nombreCompleto: "" };
   let staff = findStaffByName(name);
@@ -3071,7 +3134,7 @@ function ensureStaffRecord(name) {
       estado: "Activo",
       fechaIngreso: today,
     };
-    dbTable("colaboradores").push(staff);
+    dbTable("colaboradores").push(stampRecord(staff));
   }
   return staff;
 }
@@ -3082,6 +3145,10 @@ function clearInvoiceFormAfterSubmit() {
   byId("payment-line-list").innerHTML = "";
   byId("tip-allocation").innerHTML = "";
   byId("invoice-tip").value = 0;
+  byId("invoice-general-extra").value = 0;
+  byId("invoice-general-extra-note").value = "";
+  byId("invoice-general-discount-percent").value = 0;
+  byId("invoice-client-summary").textContent = "Selecciona un cliente para ver nombre y teléfono.";
   addInvoiceLine();
   addPaymentLine();
   updateInvoiceTotals();
@@ -3092,6 +3159,16 @@ function openBillingView() {
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
   byId("billing").classList.add("active");
   byId("view-title").textContent = "Facturación";
+}
+
+function openSettingsFormFromInvoice(formId) {
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === "settings"));
+  document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
+  byId("settings").classList.add("active");
+  byId("view-title").textContent = "Base de datos";
+  byId(formId).dataset.returnToInvoice = "true";
+  openDataForm(formId);
+  byId(formId).scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 function populateInvoiceFromReservation(reservationId) {
@@ -3144,8 +3221,8 @@ function addPaymentLine() {
         <input class="payment-amount" type="number" min="0" step="0.01" value="0" />
       </label>
       <label class="payment-account-field hidden">
-        Cuenta banco
-        <input class="payment-account" list="bank-accounts-list" placeholder="Banco destino" />
+        Cuenta destino
+        <input class="payment-account" placeholder="Buscar cuenta" />
       </label>
       <label class="payment-processor-field hidden">
         Procesador tarjeta
@@ -3198,6 +3275,8 @@ function updatePaymentLineState(line) {
     state.value = "Pendiente por confirmar";
     due.value = today;
     line.querySelector(".payment-account-field")?.classList.remove("hidden");
+    account.setAttribute("list", "bank-accounts-list");
+    account.placeholder = "Seleccionar banco";
     line.querySelector(".payment-reference-field")?.classList.remove("hidden");
   } else if (method === "credito") {
     state.value = "Crédito";
@@ -3213,10 +3292,15 @@ function updatePaymentLineState(line) {
     state.value = "Confirmado";
     if (method === "transferencia_confirmada") {
       line.querySelector(".payment-account-field")?.classList.remove("hidden");
+      account.setAttribute("list", "bank-accounts-list");
+      account.placeholder = "Seleccionar banco";
       line.querySelector(".payment-reference-field")?.classList.remove("hidden");
     }
   }
-  if (method === "efectivo") account.value = "Caja Registradora";
+  if (method === "efectivo") {
+    account.value = "Caja Registradora";
+    account.removeAttribute("list");
+  }
   if (!method.includes("transferencia")) account.value = method === "efectivo" ? "Caja Registradora" : "";
   if (method !== "tarjeta") processor.value = "";
 }
@@ -3269,7 +3353,7 @@ function wireForms() {
         fechaRegistro: today,
         observaciones: byId("client-notes").value.trim(),
       };
-      dbTable("clientes").push(client);
+      dbTable("clientes").push(stampRecord(client));
     } else {
       client.nombreCompleto = fullName;
       client.nombre = firstName;
@@ -3281,10 +3365,14 @@ function wireForms() {
       client.observaciones = byId("client-notes").value.trim() || client.observaciones;
     }
     byId("client-form").reset();
+    const shouldReturnToInvoice = byId("client-form").dataset.returnToInvoice === "true";
+    delete byId("client-form").dataset.returnToInvoice;
+    if (shouldReturnToInvoice) byId("invoice-client-search").value = client.nombreCompleto || fullName;
     closeDataForms();
     state = stateFromDatabase(database);
     saveState();
     renderAll();
+    if (shouldReturnToInvoice) openBillingView();
   };
 
   byId("generate-report").addEventListener("click", () => {
@@ -3295,10 +3383,14 @@ function wireForms() {
 
   byId("show-invoice-client-form").addEventListener("click", () => {
     const parts = splitName(byId("invoice-client-search").value.trim());
-    byId("quick-client-first-name").value = parts.first;
-    byId("quick-client-last-name").value = parts.last;
-    byId("invoice-client-create").classList.remove("hidden");
-    byId("quick-client-first-name").focus();
+    byId("client-first-name").value = parts.first;
+    byId("client-last-name").value = parts.last;
+    openSettingsFormFromInvoice("client-form");
+  });
+
+  byId("create-service-from-invoice").addEventListener("click", () => {
+    byId("service-name").value = document.querySelector(".line-service")?.value.trim() || "";
+    openSettingsFormFromInvoice("service-form");
   });
 
   byId("cancel-invoice-client").addEventListener("click", () => {
@@ -3325,7 +3417,7 @@ function wireForms() {
       observaciones: byId("quick-client-notes").value.trim(),
     };
     if (!client) {
-      dbTable("clientes").push({ clienteID: nextDbId("clientes", "clienteID", "CLI"), ...payload });
+      dbTable("clientes").push(stampRecord({ clienteID: nextDbId("clientes", "clienteID", "CLI"), ...payload }));
     } else {
       Object.assign(client, {
         ...payload,
@@ -3378,6 +3470,30 @@ function wireForms() {
     updateInvoiceTotals();
   });
 
+  byId("invoice-client-search").addEventListener("input", () => {
+    const client = findClientByName(byId("invoice-client-search").value.trim());
+    byId("invoice-client-summary").textContent = client
+      ? `${client.nombreCompleto || ""} · ${client.telefono || "Sin teléfono"}`
+      : "Cliente nuevo o no encontrado en base de datos.";
+  });
+
+  ["invoice-general-extra", "invoice-general-extra-note", "invoice-general-discount-percent"].forEach((id) => {
+    byId(id).addEventListener("input", () => {
+      if (id === "invoice-general-discount-percent") {
+        document.querySelectorAll(".invoice-line:not(.payment-line)").forEach((line) => updateInvoiceLineOptionalFields(line));
+      }
+      updateInvoiceTotals();
+    });
+  });
+
+  byId("toggle-invoice-details").addEventListener("click", () => {
+    const detailsHidden = document.querySelector(".invoice-detail-field")?.classList.contains("hidden");
+    document.querySelectorAll(".invoice-detail-field, .extra-note-field, .discount-note-field").forEach((field) => {
+      field.classList.toggle("hidden", !detailsHidden);
+    });
+    byId("toggle-invoice-details").textContent = detailsHidden ? "Ocultar detalles" : "Expandir detalles";
+  });
+
   byId("invoice-line-list").addEventListener("click", (event) => {
     if (!event.target.classList.contains("remove-invoice-line")) return;
     const lines = document.querySelectorAll(".invoice-line:not(.payment-line)");
@@ -3392,7 +3508,10 @@ function wireForms() {
     updateInvoiceTotals();
   });
 
-  byId("tip-allocation").addEventListener("input", updateInvoiceTotals);
+  byId("tip-allocation").addEventListener("input", (event) => {
+    if (event.target.classList.contains("tip-share")) rebalanceTipShares(event.target);
+    updateInvoiceTotals();
+  });
 
   ["payroll-staff", "payroll-period", "payroll-cut", "payroll-afp", "payroll-insurance", "payroll-other-deductions"].forEach((id) => {
     byId(id).addEventListener("input", () => updatePayrollPreview(id === "payroll-staff" || id === "payroll-period" || id === "payroll-cut"));
@@ -3451,18 +3570,37 @@ function wireForms() {
       missingProcessor.element.querySelector(".payment-processor")?.focus();
       return;
     }
+    const missingTransferAccount = payments.find((payment) => payment.method.includes("transferencia") && !findAccountByName(payment.account));
+    if (missingTransferAccount) {
+      alert("Selecciona una cuenta bancaria válida para la transferencia.");
+      missingTransferAccount.element.querySelector(".payment-account")?.focus();
+      return;
+    }
     const tip = Number(byId("invoice-tip").value) || 0;
+    const generalExtra = Number(byId("invoice-general-extra").value) || 0;
+    const generalExtraNote = byId("invoice-general-extra-note").value.trim();
+    const generalDiscountPercent = Number(byId("invoice-general-discount-percent").value) || 0;
+    if (generalExtra > 0 && !generalExtraNote) {
+      alert("Indica el detalle del adicional general.");
+      byId("invoice-general-extra-note").focus();
+      return;
+    }
     const servicesTotal = lines.reduce((sum, line) => sum + line.qty * line.price, 0);
     const extrasTotal = lines.reduce((sum, line) => sum + line.extra, 0);
     const discount = lines.reduce((sum, line) => sum + line.discount, 0);
-    const total = Math.max(0, servicesTotal + extrasTotal - discount + tip);
+    const total = Math.max(0, servicesTotal + extrasTotal + generalExtra - discount);
+    const totalWithTip = total + tip;
     const confirmedPaid = payments.filter((payment) => isConfirmedPaymentMethod(payment.method)).reduce((sum, payment) => sum + payment.amount, 0);
     const paidTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
     if (paidTotal < total) {
       alert(`Falta registrar ${money.format(total - paidTotal)} en formas de pago. Agrega efectivo, tarjeta, transferencia confirmada, transferencia pendiente o crédito por ese monto.`);
       return;
     }
-    const overpay = Math.max(0, paidTotal - total);
+    if (tip > Math.max(0, paidTotal - total)) {
+      alert("La propina debe salir del excedente pagado después de cubrir los servicios.");
+      byId("invoice-tip").focus();
+      return;
+    }
     const overpayPolicy = byId("invoice-overpay-policy").value;
     let paid = Math.min(total, confirmedPaid);
     const status = payments.some((paymentLine) => paymentLine.method === "credito" || paymentLine.method === "transferencia_pendiente") ? "Parcial" : "Pagada";
@@ -3497,10 +3635,10 @@ function wireForms() {
         subtotal: line.subtotal,
       };
       detailRecords.push(detail);
-      dbTable("facturaDetalle").push(detail);
+      dbTable("facturaDetalle").push(stampRecord(detail));
     });
 
-    state.invoices.push({
+    state.invoices.push(stampRecord({
       id: invoiceId,
       date: today,
       clientId: clientRecord?.clienteID || "",
@@ -3513,8 +3651,8 @@ function wireForms() {
       payment,
       paid,
       note,
-    });
-    const invoiceRecord = {
+    }));
+    const invoiceRecord = stampRecord({
       facturaID: invoiceId,
       fechaHora: new Date().toISOString(),
       clienteID: clientRecord?.clienteID || "",
@@ -3526,9 +3664,13 @@ function wireForms() {
       totalPagadoConfirmado: paid,
       totalCxC: total - paid,
       balanceFavorCliente: 0,
+      adicionalGeneralMonto: generalExtra,
+      adicionalGeneralDetalle: generalExtraNote,
+      descuentoGeneralPorcentaje: generalDiscountPercent,
+      totalConPropina: totalWithTip,
       cierreID: "Cierre no creado",
       observaciones: note,
-    };
+    });
     dbTable("facturas").push(invoiceRecord);
     if (activeReservationInvoiceId) {
       const { stateRecord, dbRecord } = reservationRecordById(activeReservationInvoiceId);
@@ -3555,9 +3697,9 @@ function wireForms() {
         adjustClientBalance(clientRecord?.clienteID, -used);
         confirmedAppliedToInvoice += used;
       } else if (isConfirmedPaymentMethod(paymentLine.method)) {
-        const remainingForInvoice = applyClientReceivablesFirst(clientRecord, client, paymentLine.amount, paymentLine.method, "Pago aplicado primero a CxC previa");
+        const remainingForInvoice = applyClientReceivablesFirst(clientRecord, client, paymentLine.amount, paymentLine.method, "Pago aplicado primero a CxC previa", paymentLine.processor, paymentLine.account);
         if (remainingForInvoice > 0) {
-          addConfirmedPayment(invoiceId, clientRecord, client, remainingForInvoice, paymentLine.method, paymentLine.reference || "Cobro factura", paymentLine.processor);
+          addConfirmedPayment(invoiceId, clientRecord, client, remainingForInvoice, paymentLine.method, paymentLine.reference || "Cobro factura", paymentLine.processor, paymentLine.account);
           confirmedAppliedToInvoice += remainingForInvoice;
         }
         if (paymentLine.method === "tarjeta") {
@@ -3565,7 +3707,7 @@ function wireForms() {
           addReceivable(invoiceId, { clienteID: processor.procesadorID || "" }, processor.nombre || "Procesador tarjeta", remainingForInvoice || paymentLine.amount, "CxC procesador tarjeta");
         }
       } else if (paymentLine.method === "transferencia_pendiente") {
-        addReceivable(invoiceId, clientRecord, client, paymentLine.amount, "Transferencia pendiente por confirmar");
+        addReceivable(invoiceId, clientRecord, client, paymentLine.amount, "Transferencia pendiente por confirmar", paymentLine.account);
         nonConfirmedCxC += paymentLine.amount;
       } else if (paymentLine.method === "credito") {
         addReceivable(invoiceId, clientRecord, client, paymentLine.amount, `Crédito cliente vence ${paymentLine.dueDate || datePlusDays(7)}`);
@@ -3581,14 +3723,15 @@ function wireForms() {
     invoiceRecord.totalCxC = nonConfirmedCxC;
     invoiceRecord.estadoFactura = nonConfirmedCxC > 0 ? "Parcial" : "Pagada";
 
-    const actualOverpay = Math.max(0, confirmedAppliedToInvoice - total);
+    const actualOverpay = Math.max(0, confirmedAppliedToInvoice - total - tip);
     if (actualOverpay > 0) {
       if (overpayPolicy === "balance") {
         adjustClientBalance(clientRecord?.clienteID, actualOverpay);
       } else {
-        dbTable("ingresos").push({
+        dbTable("ingresos").push(stampRecord({
           ingresoID: nextDbId("ingresos", "ingresoID", "ING"),
           fechaHora: new Date().toISOString(),
+          fechaEntradaCaja: today,
           tipoIngreso: "Sobrante de facturación",
           facturaID: invoiceId,
           clienteID: clientRecord?.clienteID || "",
@@ -3601,18 +3744,18 @@ function wireForms() {
           montoNeto: actualOverpay,
           estado: "Confirmado",
           observaciones: "Cliente pagó por encima del total facturado",
-        });
+        }));
       }
     }
 
-    const confirmedCapacity = Math.max(0, confirmedAppliedToInvoice - (total - tip));
+    const confirmedCapacity = Math.max(0, confirmedAppliedToInvoice - total);
     getTipAllocations().forEach((allocation) => {
       if (confirmedCapacity <= 0) return;
       const staffRecord = ensureStaffRecord(allocation.staff);
       const matchingDetail = detailRecords.find((detail) => detail.colaboradorID === staffRecord.colaboradorID) || detailRecords[0];
       const cardPaid = payments.some((paymentLine) => paymentLine.method === "tarjeta");
       const retention = cardPaid ? allocation.amount * 0.05 : 0;
-      dbTable("propinas").push({
+      dbTable("propinas").push(stampRecord({
         propinaID: nextDbId("propinas", "propinaID", "PRO"),
         fechaHora: new Date().toISOString(),
         facturaID: invoiceId,
@@ -3624,7 +3767,7 @@ function wireForms() {
         retencion20Tarjeta: retention,
         montoNetoPagar: allocation.amount - retention,
         estadoPagoNomina: "Pendiente",
-      });
+      }));
     });
     state = stateFromDatabase(database);
     activeReservationInvoiceId = "";
@@ -3648,6 +3791,7 @@ function wireForms() {
     if (!invoice) return;
     const amount = Math.min(Number(byId("payment-amount").value), outstanding(invoice));
     const method = byId("payment-method").value;
+    const cashDate = byId("payment-cash-date").value || today;
     invoice.paid += amount;
     invoice.payment = method;
     const dbInvoice = dbTable("facturas").find((item) => item.facturaID === invoice.id);
@@ -3662,8 +3806,9 @@ function wireForms() {
       cxc.balancePendiente = Math.max(0, (Number(cxc.montoOriginal) || 0) - (Number(cxc.montoAplicado) || 0));
       cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
     }
-    addConfirmedPayment(invoice.id, dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client), invoice.client, amount, method, "Cobro cuenta por cobrar");
+    addConfirmedPayment(invoice.id, dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client), invoice.client, amount, method, "Cobro cuenta por cobrar", "", "", cashDate);
     event.target.reset();
+    byId("payment-cash-date").value = today;
     saveState();
     renderAll();
   });
@@ -3721,9 +3866,10 @@ function wireForms() {
     }
     const processorName = closing.procesadorTarjeta || "Procesador tarjeta";
     const incomeId = nextDbId("ingresos", "ingresoID", "ING");
-    dbTable("ingresos").push({
+    dbTable("ingresos").push(stampRecord({
       ingresoID: incomeId,
       fechaHora: `${byId("card-reconciliation-date").value}T12:00:00`,
+      fechaEntradaCaja: byId("card-reconciliation-date").value || today,
       tipoIngreso: "Conciliación pago tarjeta",
       facturaID: "",
       clienteID: "",
@@ -3736,7 +3882,7 @@ function wireForms() {
       montoNeto: net,
       estado: "Confirmado",
       observaciones: `Cierre ${closing.cierreID} lote ${closing.loteTarjeta || "sin lote"}. ${byId("card-reconciliation-note").value.trim()}`.trim(),
-    });
+    }));
 
     let remaining = gross;
     dbTable("cuentasCobrar")
@@ -3750,7 +3896,7 @@ function wireForms() {
         cxc.balancePendiente = Math.max(0, (Number(cxc.balancePendiente) || 0) - applied);
         cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
         remaining -= applied;
-        dbTable("ingresoAplicaciones").push({
+        dbTable("ingresoAplicaciones").push(stampRecord({
           aplicacionID: nextDbId("ingresoAplicaciones", "aplicacionID", "APL"),
           ingresoID: incomeId,
           facturaID: cxc.facturaID || "",
@@ -3758,11 +3904,11 @@ function wireForms() {
           cxCID: cxc.cxCID,
           montoAplicado: applied,
           observaciones: "Conciliación de procesador de tarjeta",
-        });
+        }));
       });
 
     if (fee > 0) {
-      dbTable("cuentasPagar").push({
+      dbTable("cuentasPagar").push(stampRecord({
         cxPID: nextDbId("cuentasPagar", "cxPID", "CXP"),
         fechaOrigen: `${byId("card-reconciliation-date").value}T12:00:00`,
         tipoCxP: "Comisión tarjeta",
@@ -3776,7 +3922,7 @@ function wireForms() {
         estado: "Pagada",
         concepto: `Comisión ${processorName} lote ${closing.loteTarjeta || ""}`.trim(),
         fechaVencimiento: byId("card-reconciliation-date").value,
-      });
+      }));
     }
 
     closing.estadoConciliacionTarjeta = "Conciliada";
@@ -3838,7 +3984,7 @@ function wireForms() {
       note,
     };
     state.expenses.push(row);
-    dbTable("egresos").push({
+    dbTable("egresos").push(stampRecord({
       egresoID: expenseId,
       fechaHora: `${row.date}T12:00:00`,
       tipoEgreso: type,
@@ -3850,9 +3996,9 @@ function wireForms() {
       monto: amount,
       estado: "Registrado",
       observaciones: note,
-    });
+    }));
     if (type === "transferencia") {
-      dbTable("transferencias").push({
+      dbTable("transferencias").push(stampRecord({
         transferenciaID: nextDbId("transferencias", "transferenciaID", "TRF"),
         fechaHora: `${row.date}T12:00:00`,
         cuentaOrigenID: sourceAccount?.cuentaID || "",
@@ -3862,14 +4008,14 @@ function wireForms() {
         monto: amount,
         estado: "Confirmada",
         observaciones: note || concept,
-      });
+      }));
     }
     if (type === "avance") {
       const staffRecord = advanceStaff;
       const supplierRecord = advanceSupplier;
       if (staffRecord) {
         const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
-        dbTable("cuentasCobrar").push({
+        dbTable("cuentasCobrar").push(stampRecord({
           cxCID: cxcId,
           fechaOrigen: new Date().toISOString(),
           tipoCxC: "Avance colaborador",
@@ -3884,12 +4030,12 @@ function wireForms() {
           estado: "Pendiente",
           concepto: `Avance autorizado: ${concept}`,
           fechaVencimiento: today,
-        });
+        }));
       }
       if (supplierRecord) {
         const supplierName = supplierRecord.nombre || supplierRecord.nombreCompleto || supplierRecord.empresa || supplierRecord.suplidorNombre;
         const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
-        dbTable("cuentasCobrar").push({
+        dbTable("cuentasCobrar").push(stampRecord({
           cxCID: cxcId,
           fechaOrigen: new Date().toISOString(),
           tipoCxC: "Avance suplidor",
@@ -3904,7 +4050,7 @@ function wireForms() {
           estado: "Pendiente",
           concepto: `Avance a suplidor: ${concept}`,
           fechaVencimiento: today,
-        });
+        }));
       }
     }
     event.target.reset();
@@ -3942,13 +4088,13 @@ function wireForms() {
     };
     if (!item) {
       item = { itemID: nextDbId("inventario", "itemID", "INV"), ...payload };
-      dbTable("inventario").push(item);
+      dbTable("inventario").push(stampRecord(item));
     } else {
       Object.assign(item, payload);
     }
     const delta = stock - previousStock;
     if (delta !== 0) {
-      dbTable("inventarioMovimientos").push({
+      dbTable("inventarioMovimientos").push(stampRecord({
         movimientoID: nextDbId("inventarioMovimientos", "movimientoID", "MOV"),
         itemID: item.itemID,
         fechaHora: new Date().toISOString(),
@@ -3959,7 +4105,7 @@ function wireForms() {
         motivo: editId ? "Ajuste manual" : "Registro inicial",
         existenciaDespues: stock,
         observaciones: payload.observaciones,
-      });
+      }));
     }
     event.target.reset();
     byId("inventory-entry-date").value = today;
@@ -3991,7 +4137,7 @@ function wireForms() {
     const depreciation = assetDepreciation(payload);
     payload.depreciacionAcumulada = depreciation.accumulated;
     payload.valorLibros = depreciation.book;
-    if (!asset) dbTable("activosFijos").push({ activoID: nextDbId("activosFijos", "activoID", "ACT"), ...payload });
+    if (!asset) dbTable("activosFijos").push(stampRecord({ activoID: nextDbId("activosFijos", "activoID", "ACT"), ...payload }));
     else Object.assign(asset, payload);
     event.target.reset();
     byId("asset-acquired-date").value = today;
@@ -4063,7 +4209,7 @@ function wireForms() {
       staff,
       note: byId("reservation-note").value.trim(),
     });
-    dbTable("reservas").push({
+    dbTable("reservas").push(stampRecord({
       reservaID: reservationId,
       fecha: byId("reservation-date").value,
       hora: byId("reservation-time").value,
@@ -4078,7 +4224,7 @@ function wireForms() {
       colaboradorNombre: staff,
       facturaID: "",
       observaciones: byId("reservation-note").value.trim(),
-    });
+    }));
     event.target.reset();
     delete event.target.dataset.clientId;
     delete byId("reservation-client-phone").dataset.autofilled;
@@ -4111,7 +4257,7 @@ function wireForms() {
         fechaIngreso: today,
         umbralesComisionActivos: [],
       };
-      dbTable("colaboradores").push(staffRecord);
+      dbTable("colaboradores").push(stampRecord(staffRecord));
     }
     const payrollId = nextDbId("nomina", "nominaID", "NOM");
     [...document.querySelectorAll(".payroll-cxc-discount")].forEach((input) => {
@@ -4134,7 +4280,7 @@ function wireForms() {
     });
     const otherConcept = byId("payroll-other-concept").value.trim();
     if (otherConcept && !dbTable("conceptosDescuentoNomina").some((row) => normalize(row.concepto) === normalize(otherConcept))) {
-      dbTable("conceptosDescuentoNomina").push({ conceptoID: nextDbId("conceptosDescuentoNomina", "conceptoID", "DESC"), concepto: otherConcept, estado: "Activo" });
+      dbTable("conceptosDescuentoNomina").push(stampRecord({ conceptoID: nextDbId("conceptosDescuentoNomina", "conceptoID", "DESC"), concepto: otherConcept, estado: "Activo" }));
     }
     state.payroll.push({
       id: payrollId,
@@ -4148,7 +4294,7 @@ function wireForms() {
       sales: data.sales,
       net: data.net,
     });
-    dbTable("nomina").push({
+    dbTable("nomina").push(stampRecord({
       nominaID: payrollId,
       periodoInicio: data.range.start,
       periodoFin: data.range.end,
@@ -4169,8 +4315,8 @@ function wireForms() {
       conceptoOtrosDescuentos: otherConcept,
       totalAPagar: data.net,
       estado: "Pendiente",
-    });
-    dbTable("cuentasPagar").push({
+    }));
+    dbTable("cuentasPagar").push(stampRecord({
       cxPID: nextDbId("cuentasPagar", "cxPID", "CXP"),
       fechaOrigen: new Date().toISOString(),
       tipoCxP: "Nómina",
@@ -4184,7 +4330,7 @@ function wireForms() {
       estado: "Pendiente",
       concepto: `Payroll ${data.range.label} ${data.period}`,
       fechaVencimiento: data.range.end,
-    });
+    }));
     event.target.reset();
     byId("payroll-period").value = month;
     byId("payroll-cut").value = "month";
@@ -4265,9 +4411,10 @@ function wireForms() {
       note: byId("cash-note").value.trim(),
     });
     if (surplus > 0) {
-      dbTable("ingresos").push({
+      dbTable("ingresos").push(stampRecord({
         ingresoID: nextDbId("ingresos", "ingresoID", "ING"),
         fechaHora: new Date().toISOString(),
+        fechaEntradaCaja: date,
         tipoIngreso: "Sobrante en cierre de caja",
         facturaID: "",
         clienteID: "",
@@ -4280,9 +4427,9 @@ function wireForms() {
         montoNeto: surplus,
         estado: "Confirmado",
         observaciones: "Excedente contado en cierre",
-      });
+      }));
     }
-    dbTable("cierres").push({
+    dbTable("cierres").push(stampRecord({
       cierreID: closingId,
       fechaHoraCierre: `${date}T23:59:00`,
       cajero: defaultStaffRecord().nombreCompleto || "",
@@ -4311,7 +4458,7 @@ function wireForms() {
       creditoGenerado: summary.credit,
       motivoFaltante: shortageNote,
       observaciones: byId("cash-note").value.trim(),
-    });
+    }));
     event.target.reset();
     byId("cash-date").value = today;
     byId("cash-expenses").value = 0;
@@ -4339,7 +4486,7 @@ function wireForms() {
         duracionMin: Number(byId("service-duration").value) || 0,
         estado: byId("service-status").value,
       };
-      dbTable("servicios").push(service);
+      dbTable("servicios").push(stampRecord(service));
     } else {
       service.servicio = name;
       service.categoria = byId("service-category").value.trim() || service.categoria;
@@ -4348,12 +4495,26 @@ function wireForms() {
       service.estado = byId("service-status").value || service.estado;
     }
     event.target.reset();
+    const shouldReturnToInvoice = event.target.dataset.returnToInvoice === "true";
+    delete event.target.dataset.returnToInvoice;
+    if (shouldReturnToInvoice) {
+      const emptyLine = [...document.querySelectorAll(".invoice-line:not(.payment-line)")].find((line) => !line.querySelector(".line-service").value.trim());
+      const line = emptyLine || document.querySelector(".invoice-line:not(.payment-line)");
+      if (line) {
+        line.querySelector(".line-service").value = service.servicio || name;
+        line.querySelector(".line-price").value = Number(service.precioBase) || 0;
+      }
+    }
     byId("service-category").value = "Uñas";
     byId("service-duration").value = 45;
     closeDataForms();
     state = stateFromDatabase(database);
     saveState();
     renderAll();
+    if (shouldReturnToInvoice) {
+      openBillingView();
+      updateInvoiceTotals();
+    }
   });
 
   byId("staff-form").addEventListener("submit", (event) => {
@@ -4378,7 +4539,7 @@ function wireForms() {
         fechaIngreso: byId("staff-start-date").value || today,
         umbralesComisionActivos: selectedStaffThresholdIds(),
       };
-      dbTable("colaboradores").push(staff);
+      dbTable("colaboradores").push(stampRecord(staff));
     } else {
       staff.nombreCompleto = fullName;
       staff.nombre = byId("staff-first-name").value.trim() || staff.nombre;
@@ -4420,7 +4581,7 @@ function wireForms() {
       estado: byId("account-status").value,
     };
     if (!account) {
-      dbTable("cuentas").push({ cuentaID: nextDbId("cuentas", "cuentaID", "CTA"), ...payload });
+      dbTable("cuentas").push(stampRecord({ cuentaID: nextDbId("cuentas", "cuentaID", "CTA"), ...payload }));
     } else {
       Object.assign(account, payload);
     }
@@ -4449,7 +4610,7 @@ function wireForms() {
       observaciones: byId("processor-note").value.trim(),
     };
     if (!processor) {
-      dbTable("procesadores").push({ procesadorID: nextDbId("procesadores", "procesadorID", "PT"), ...payload });
+      dbTable("procesadores").push(stampRecord({ procesadorID: nextDbId("procesadores", "procesadorID", "PT"), ...payload }));
     } else {
       Object.assign(processor, payload);
     }
@@ -4482,7 +4643,7 @@ function wireForms() {
       estado: byId("commission-status").value,
     };
     if (existing) Object.assign(existing, payload);
-    else dbTable("umbralesComision").push({ escalaID: nextDbId("umbralesComision", "escalaID", "COM"), ...payload });
+    else dbTable("umbralesComision").push(stampRecord({ escalaID: nextDbId("umbralesComision", "escalaID", "COM"), ...payload }));
     event.target.reset();
     renderStaffThresholdChoices([]);
     closeDataForms();
@@ -4534,12 +4695,26 @@ function wireSearches() {
   });
 }
 
+function wireNumberFieldFocus() {
+  document.addEventListener("focusin", (event) => {
+    if (event.target?.matches('input[type="number"]') && event.target.value === "0") {
+      event.target.value = "";
+    }
+  });
+  document.addEventListener("focusout", (event) => {
+    if (event.target?.matches('input[type="number"]') && event.target.value === "") {
+      event.target.value = event.target.min === "" || Number(event.target.min) <= 0 ? "0" : event.target.min;
+    }
+  });
+}
+
 async function init() {
   await loadDatabase();
   state = loadState();
   saveState();
   byId("today-label").textContent = dateLabel.format(new Date(`${today}T12:00:00`));
   byId("reservation-date").value = today;
+  byId("payment-cash-date").value = today;
   byId("cash-date").value = today;
   byId("card-reconciliation-date").value = today;
   byId("expense-date").value = today;
@@ -4557,6 +4732,7 @@ async function init() {
   wireInlineListToggles();
   wireForms();
   wireSearches();
+  wireNumberFieldFocus();
   attachSearchableLookups();
   if (!document.querySelector(".invoice-line")) addInvoiceLine();
   if (!document.querySelector(".payment-line")) addPaymentLine();
