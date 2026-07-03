@@ -287,7 +287,7 @@ function ensureDatabaseShape() {
       table: "T_Reservas",
       key: "reservas",
       ref: "A1:L1",
-      columns: ["ReservaID", "Fecha", "Hora", "ClienteID", "ClienteNombre", "Telefono", "Correo", "ServicioID", "Servicio", "ColaboradorNombre", "FacturaID", "Observaciones"],
+      columns: ["ReservaID", "Fecha", "Hora", "ClienteID", "ClienteNombre", "Telefono", "Correo", "ClienteProvisional", "CanalOrigen", "ServicioID", "Servicio", "ColaboradorNombre", "FacturaID", "Observaciones"],
     });
   }
   if (!database.schema.some((table) => table.key === "cuentasPagar")) {
@@ -398,6 +398,8 @@ function stateFromDatabase(db) {
       client: reservation.clienteNombre,
       phone: reservation.telefono || "",
       email: reservation.correo || "",
+      provisional: Boolean(reservation.clienteProvisional),
+      source: reservation.canalOrigen || "Presencial",
       serviceId: reservation.servicioID,
       service: reservation.servicio,
       staff: reservation.colaboradorNombre,
@@ -749,35 +751,39 @@ function renderEmpty(target, colspan, message) {
   target.innerHTML = `<tr><td colspan="${colspan}" class="empty">${message}</td></tr>`;
 }
 
-function ensureClient(name, phone = "") {
+function ensureClient(name, phone = "", options = {}) {
   const clean = name.trim();
-  if (!clean) return;
+  if (!clean) return null;
+  const email = String(options.email || "").trim();
   const existing = state.clients.find((client) => normalize(client.name) === normalize(clean));
   const dbExisting = findClientByName(clean);
+  const clientId = dbExisting?.clienteID || existing?.id || nextDbId("clientes", "clienteID", "CLI");
   if (!existing) {
-    const id = dbExisting?.clienteID || nextDbId("clientes", "clienteID", "CLI");
-    state.clients.push({ id, name: clean, phone: phone.trim() });
+    state.clients.push({ id: clientId, name: clean, phone: phone.trim() });
   } else if (phone.trim() && !existing.phone) {
     existing.phone = phone.trim();
   }
   if (!dbExisting) {
     const nameParts = splitName(clean);
     dbTable("clientes").push({
-      clienteID: state.clients.find((client) => normalize(client.name) === normalize(clean))?.id || nextDbId("clientes", "clienteID", "CLI"),
+      clienteID: clientId,
       nombreCompleto: clean,
       nombre: nameParts.first,
       apellido: nameParts.last,
       telefono: phone.trim(),
       sexo: "",
-      correo: "",
+      correo: email,
       direccion: "",
       estado: "Activo",
       fechaRegistro: today,
-      observaciones: "Creado desde facturación",
+      observaciones: options.note || "Creado desde facturación",
     });
-  } else if (phone.trim() && !dbExisting.telefono) {
+    return findClientByName(clean);
+  } else if (dbExisting && phone.trim() && !dbExisting.telefono) {
     dbExisting.telefono = phone.trim();
   }
+  if (dbExisting && email && !dbExisting.correo) dbExisting.correo = email;
+  return dbExisting || findClientByName(clean);
 }
 
 function ensureService(name, price) {
@@ -799,6 +805,53 @@ function ensureService(name, price) {
       estado: "Activo",
     });
   }
+}
+
+function reservationRecordById(reservationId) {
+  const stateRecord = state.reservations.find((item) => item.id === reservationId);
+  const dbRecord = dbTable("reservas").find((item) => item.reservaID === reservationId);
+  return { stateRecord, dbRecord, record: stateRecord || dbRecord };
+}
+
+function fillReservationClientFromRecord(client) {
+  if (!client) return false;
+  byId("reservation-form").dataset.clientId = client.clienteID || "";
+  byId("reservation-client-search").value = client.nombreCompleto || "";
+  byId("reservation-client-phone").value = client.telefono || "";
+  byId("reservation-client-email").value = client.correo || "";
+  byId("reservation-client-phone").dataset.autofilled = "true";
+  byId("reservation-client-email").dataset.autofilled = "true";
+  return true;
+}
+
+function clearAutofilledReservationClientFields() {
+  delete byId("reservation-form").dataset.clientId;
+  const phoneField = byId("reservation-client-phone");
+  const emailField = byId("reservation-client-email");
+  if (phoneField.dataset.autofilled === "true") phoneField.value = "";
+  if (emailField.dataset.autofilled === "true") emailField.value = "";
+  delete phoneField.dataset.autofilled;
+  delete emailField.dataset.autofilled;
+}
+
+function ensureClientFromReservation(reservation) {
+  if (!reservation) return null;
+  const clientName = reservation.client || reservation.clienteNombre || "";
+  const phone = reservation.phone || reservation.telefono || "";
+  const email = reservation.email || reservation.correo || "";
+  const source = reservation.source || reservation.canalOrigen || "Reserva";
+  const clientRecord =
+    (phone && findClientByPhone(phone)) ||
+    findClientByName(clientName) ||
+    ensureClient(clientName, phone, {
+      email,
+      note: `Cliente provisional convertido desde reserva (${source})`,
+    });
+  if (clientRecord) {
+    if (email && !clientRecord.correo) clientRecord.correo = email;
+    if (phone && !clientRecord.telefono) clientRecord.telefono = phone;
+  }
+  return clientRecord;
 }
 
 function servicePrice(name) {
@@ -1257,7 +1310,7 @@ function renderAppointments(target, rows, emptyMessage) {
           <div>
             <strong>${reservation.client}</strong>
             <span>${reservation.service} con ${reservation.staff}</span>
-            <span>${reservation.phone || ""} ${reservation.note ? `· ${reservation.note}` : ""}</span>
+            <span>${reservation.phone || ""} ${reservation.provisional ? "· Cliente provisional" : ""} ${reservation.source ? `· ${reservation.source}` : ""} ${reservation.note ? `· ${reservation.note}` : ""}</span>
           </div>
           <div class="row-actions">
             <span>${reservation.invoiceId ? `Factura ${reservation.invoiceId}` : reservation.date}</span>
@@ -3042,7 +3095,7 @@ function openBillingView() {
 }
 
 function populateInvoiceFromReservation(reservationId) {
-  const reservation = state.reservations.find((item) => item.id === reservationId) || dbTable("reservas").find((item) => item.reservaID === reservationId);
+  const { record: reservation } = reservationRecordById(reservationId);
   if (!reservation) return;
   activeReservationInvoiceId = reservationId;
   const clientName = reservation.client || reservation.clienteNombre || "";
@@ -3414,9 +3467,11 @@ function wireForms() {
     let paid = Math.min(total, confirmedPaid);
     const status = payments.some((paymentLine) => paymentLine.method === "credito" || paymentLine.method === "transferencia_pendiente") ? "Parcial" : "Pagada";
     const payment = payments.map((item) => item.method).join(", ") || "sin pago";
-    ensureClient(client);
+    const reservationForInvoice = activeReservationInvoiceId ? reservationRecordById(activeReservationInvoiceId) : null;
+    const reservationClientRecord = reservationForInvoice?.record ? ensureClientFromReservation(reservationForInvoice.record) : null;
+    if (!reservationClientRecord) ensureClient(client);
     const invoiceId = nextDbId("facturas", "facturaID", "FAC");
-    const clientRecord = findClientByName(client);
+    const clientRecord = reservationClientRecord || findClientByName(client);
     const firstStaff = ensureStaffRecord(lines[0].staff);
     const note = byId("invoice-note").value.trim();
     const detailRecords = [];
@@ -3476,8 +3531,19 @@ function wireForms() {
     };
     dbTable("facturas").push(invoiceRecord);
     if (activeReservationInvoiceId) {
-      const reservation = dbTable("reservas").find((row) => row.reservaID === activeReservationInvoiceId);
-      if (reservation) reservation.facturaID = invoiceId;
+      const { stateRecord, dbRecord } = reservationRecordById(activeReservationInvoiceId);
+      if (dbRecord) {
+        dbRecord.facturaID = invoiceId;
+        dbRecord.clienteID = clientRecord?.clienteID || dbRecord.clienteID || "";
+        dbRecord.clienteNombre = clientRecord?.nombreCompleto || dbRecord.clienteNombre || client;
+        dbRecord.clienteProvisional = false;
+      }
+      if (stateRecord) {
+        stateRecord.invoiceId = invoiceId;
+        stateRecord.clientId = clientRecord?.clienteID || stateRecord.clientId || "";
+        stateRecord.client = clientRecord?.nombreCompleto || stateRecord.client || client;
+        stateRecord.provisional = false;
+      }
     }
 
     let confirmedAppliedToInvoice = 0;
@@ -3935,10 +4001,21 @@ function wireForms() {
   });
 
   byId("reservation-client-phone").addEventListener("input", () => {
+    delete byId("reservation-client-phone").dataset.autofilled;
     const client = findClientByPhone(byId("reservation-client-phone").value);
-    if (!client) return;
-    byId("reservation-client-search").value = client.nombreCompleto || "";
-    byId("reservation-client-email").value = client.correo || "";
+    if (client) {
+      fillReservationClientFromRecord(client);
+    } else {
+      delete byId("reservation-form").dataset.clientId;
+      const emailField = byId("reservation-client-email");
+      if (emailField.dataset.autofilled === "true") emailField.value = "";
+      delete emailField.dataset.autofilled;
+    }
+  });
+
+  byId("reservation-client-search").addEventListener("input", () => {
+    const client = findClientByName(byId("reservation-client-search").value.trim());
+    if (!fillReservationClientFromRecord(client)) clearAutofilledReservationClientFields();
   });
 
   byId("reservation-list").addEventListener("click", (event) => {
@@ -3954,20 +4031,21 @@ function wireForms() {
     const staff = byId("reservation-staff").value.trim();
     const phone = byId("reservation-client-phone").value.trim();
     const email = byId("reservation-client-email").value.trim();
+    const source = byId("reservation-source").value;
     const existingByPhone = findClientByPhone(phone);
+    const existingByName = findClientByName(client);
+    let clientRecord = existingByPhone || existingByName || null;
     if (phone && existingByPhone && normalize(existingByPhone.nombreCompleto) !== normalize(client)) {
       client = existingByPhone.nombreCompleto || client;
       byId("reservation-client-search").value = client;
     }
-    ensureClient(client);
-    const dbClient = findClientByName(byId("reservation-client-search").value.trim()) || findClientByName(client);
-    if (dbClient) {
-      if (phone && !dbClient.telefono) dbClient.telefono = phone;
-      if (email && !dbClient.correo) dbClient.correo = email;
+    if (clientRecord) {
+      if (phone && !clientRecord.telefono) clientRecord.telefono = phone;
+      if (email && !clientRecord.correo) clientRecord.correo = email;
     }
     ensureService(service, servicePrice(service));
     if (staff && !state.staff.includes(staff)) state.staff.push(staff);
-    const clientRecord = dbClient || findClientByName(client);
+    const isProvisional = !clientRecord;
     const serviceRecord = findServiceByName(service);
     const reservationId = nextDbId("reservas", "reservaID", "RES");
     state.reservations.push({
@@ -3978,6 +4056,8 @@ function wireForms() {
       client: clientRecord?.nombreCompleto || client,
       phone,
       email,
+      provisional: isProvisional,
+      source,
       serviceId: serviceRecord?.servicioID || "",
       service,
       staff,
@@ -3991,6 +4071,8 @@ function wireForms() {
       clienteNombre: clientRecord?.nombreCompleto || client,
       telefono: phone,
       correo: email,
+      clienteProvisional: isProvisional,
+      canalOrigen: source,
       servicioID: serviceRecord?.servicioID || "",
       servicio: service,
       colaboradorNombre: staff,
@@ -3998,7 +4080,11 @@ function wireForms() {
       observaciones: byId("reservation-note").value.trim(),
     });
     event.target.reset();
+    delete event.target.dataset.clientId;
+    delete byId("reservation-client-phone").dataset.autofilled;
+    delete byId("reservation-client-email").dataset.autofilled;
     byId("reservation-date").value = today;
+    byId("reservation-source").value = "Presencial";
     saveState();
     renderAll();
   });
