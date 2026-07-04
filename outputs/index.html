@@ -437,6 +437,27 @@
                 </table>
               </div>
             </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Ingresos registrados</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Factura</th>
+                      <th>Cliente</th>
+                      <th>Método</th>
+                      <th>Monto</th>
+                      <th>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody id="income-table"></tbody>
+                </table>
+              </div>
+            </section>
           </div>
         </section>
 
@@ -990,6 +1011,7 @@
         <section id="expenses" class="view">
           <div class="work-grid">
             <form class="panel form-panel" id="expense-form">
+              <input id="expense-edit-id" type="hidden" />
               <div class="panel-head">
                 <h3>Registrar egreso</h3>
               </div>
@@ -1045,7 +1067,7 @@
                 Observación
                 <textarea id="expense-note" rows="3"></textarea>
               </label>
-              <button class="primary-btn" type="submit">Guardar egreso</button>
+              <button class="primary-btn" id="expense-submit" type="submit">Guardar egreso</button>
             </form>
 
             <section class="panel">
@@ -1063,6 +1085,7 @@
                       <th>Destino</th>
                       <th>Concepto</th>
                       <th>Monto</th>
+                      <th>Acción</th>
                     </tr>
                   </thead>
                   <tbody id="expense-table"></tbody>
