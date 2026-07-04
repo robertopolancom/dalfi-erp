@@ -352,6 +352,14 @@ body.password-change-required #password-change-panel {
   background: var(--surface-soft);
 }
 
+.panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .panel h3 {
   font-size: 17px;
 }
@@ -442,6 +450,10 @@ form label {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
+}
+
+.form-row > button {
+  width: auto;
 }
 
 input,

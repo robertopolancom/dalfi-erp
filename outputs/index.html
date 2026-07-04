@@ -352,13 +352,20 @@
                 Nota
                 <textarea id="invoice-note" rows="3" placeholder="Detalle interno"></textarea>
               </label>
-              <button class="primary-btn" type="submit">Crear factura</button>
+              <input id="invoice-edit-id" type="hidden" />
+              <div class="form-row">
+                <button class="primary-btn" id="invoice-submit-button" type="submit">Crear factura</button>
+                <button class="secondary-btn hidden" id="cancel-invoice-edit" type="button">Cancelar edición</button>
+              </div>
             </form>
 
             <section class="panel">
               <div class="panel-head">
                 <h3>Facturas</h3>
-                <input class="inline-search" id="invoice-search" placeholder="Buscar factura, cliente o servicio" />
+                <div class="panel-actions">
+                  <input class="inline-search" id="invoice-search" placeholder="Buscar factura, cliente o servicio" />
+                  <button class="secondary-btn compact" id="move-today-invoices-yesterday" type="button">Mover facturas por fecha</button>
+                </div>
               </div>
               <div class="table-wrap">
                 <table>
@@ -906,6 +913,8 @@
                       <th>Faltante</th>
                       <th>Sobrante</th>
                       <th>Diferencia</th>
+                      <th>Estado</th>
+                      <th>Acción</th>
                     </tr>
                   </thead>
                   <tbody id="cash-table"></tbody>
