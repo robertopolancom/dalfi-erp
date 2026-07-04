@@ -668,6 +668,11 @@ function canEditInvoice(invoiceId) {
   return isClosingOpenForEdits(closingForDate(invoiceOperationalDate(invoiceId)));
 }
 
+function canEditRecordDate(date) {
+  if (!canManageInvoices()) return false;
+  return isClosingOpenForEdits(closingForDate(date));
+}
+
 function stampRecord(record, action = "created") {
   const now = new Date().toISOString();
   if (action === "created" && !record.creadoPor) {
@@ -1297,9 +1302,7 @@ function renderInvoices() {
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice" type="button">Ver</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice" type="button">Editar</button>' : ""}
-              ${canManageInvoices() ? '<button class="secondary-btn compact date-invoice" type="button">Fecha</button>' : ""}
-              <button class="secondary-btn compact pdf-invoice" type="button">PDF</button>
-              <button class="secondary-btn compact image-invoice" type="button">Foto</button>
+              ${editable ? '<button class="secondary-btn compact date-invoice" type="button">Fecha</button>' : ""}
             </div>
           </td>
         </tr>
@@ -1329,8 +1332,8 @@ function invoiceReportHtml(invoiceId) {
     : [{ servicio: invoice?.service || "Servicio", colaboradorNombre: dbInvoice?.colaboradorNombre || "", subtotal: total }];
   return `
     <section class="invoice-report">
-      <h1>SeBen ERP</h1>
-      <p>Dalfi Studio Nails</p>
+      <h1>Dalfi Studio Nails</h1>
+      <p>SeBen ERP</p>
       <hr />
       <h2>Factura ${escapeHtml(invoiceId)}</h2>
       <p><strong>Fecha:</strong> ${escapeHtml(date || "")}</p>
@@ -1352,7 +1355,7 @@ function invoiceReportHtml(invoiceId) {
       </div>
       ${
         payments.length
-          ? `<h3>Pagos</h3><ul>${payments.map((payment) => `<li>${escapeHtml(payment.metodoPago || "")}: ${money.format(Number(payment.monto) || 0)}</li>`).join("")}</ul>`
+          ? `<h3>Pagos</h3><ul>${payments.map((payment) => `<li>${escapeHtml(payment.metodoPago || "")}: ${money.format(Number(payment.montoBruto) || Number(payment.montoNeto) || 0)}</li>`).join("")}</ul>`
           : ""
       }
       ${note ? `<p><strong>Nota:</strong> ${escapeHtml(note)}</p>` : ""}
@@ -1360,7 +1363,7 @@ function invoiceReportHtml(invoiceId) {
   `;
 }
 
-function openInvoiceReport(invoiceId, print = false) {
+function openInvoiceReport(invoiceId) {
   const popup = window.open("", "_blank");
   if (!popup) return;
   popup.document.write(`
@@ -1377,17 +1380,120 @@ function openInvoiceReport(invoiceId, print = false) {
           th { background: #fbfaf7; }
           .invoice-report { max-width: 760px; margin: 0 auto; }
           .invoice-totals { margin-left: auto; max-width: 280px; }
-          @media print { button { display: none; } body { margin: 18px; } }
+          .report-actions { display: flex; gap: 10px; margin: 0 auto 18px; max-width: 760px; }
+          button { border: 1px solid #d8d3c8; background: #fff; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+          @media print { .report-actions { display: none; } body { margin: 18px; } }
         </style>
       </head>
       <body>
-        <button onclick="window.print()">Exportar / imprimir PDF</button>
+        <div class="report-actions">
+          <button onclick="window.print()">Imprimir / guardar PDF</button>
+          <button onclick="window.opener.downloadInvoiceImage('${escapeHtml(invoiceId)}')">Guardar imagen</button>
+        </div>
         ${invoiceReportHtml(invoiceId)}
       </body>
     </html>
   `);
   popup.document.close();
-  if (print) popup.addEventListener("load", () => popup.print());
+}
+
+function openRecordReport(title, bodyHtml) {
+  const popup = window.open("", "_blank");
+  if (!popup) return;
+  popup.document.write(`
+    <!doctype html>
+    <html lang="es">
+      <head>
+        <meta charset="utf-8" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 32px; color: #202225; }
+          h1, h2, h3, p { margin: 0 0 10px; }
+          table { width: 100%; border-collapse: collapse; margin: 18px 0; }
+          th, td { border-bottom: 1px solid #ddd; padding: 10px; text-align: left; }
+          th { background: #fbfaf7; }
+          .record-report { max-width: 760px; margin: 0 auto; }
+          .report-actions { display: flex; gap: 10px; margin: 0 auto 18px; max-width: 760px; }
+          button { border: 1px solid #d8d3c8; background: #fff; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+          @media print { .report-actions { display: none; } body { margin: 18px; } }
+        </style>
+      </head>
+      <body>
+        <div class="report-actions">
+          <button onclick="window.print()">Imprimir / guardar PDF</button>
+        </div>
+        <section class="record-report">
+          <h1>Dalfi Studio Nails</h1>
+          <p>SeBen ERP</p>
+          <hr />
+          ${bodyHtml}
+        </section>
+      </body>
+    </html>
+  `);
+  popup.document.close();
+}
+
+function openIncomeReport(incomeId) {
+  const income = dbTable("ingresos").find((row) => row.ingresoID === incomeId);
+  if (!income) return;
+  openRecordReport(
+    `Ingreso ${incomeId}`,
+    `
+      <h2>Ingreso ${escapeHtml(incomeId)}</h2>
+      <p><strong>Fecha:</strong> ${escapeHtml(dateOnly(income.fechaHora))}</p>
+      <p><strong>Fecha entrada caja:</strong> ${escapeHtml(dateOnly(income.fechaEntradaCaja) || "")}</p>
+      <p><strong>Factura:</strong> ${escapeHtml(income.facturaID || "-")}</p>
+      <p><strong>Cliente:</strong> ${escapeHtml(income.clienteNombre || "-")}</p>
+      <p><strong>Método:</strong> ${escapeHtml(income.metodoPago || "-")}</p>
+      <p><strong>Cuenta destino:</strong> ${escapeHtml(income.cuentaDestino || "-")}</p>
+      <p><strong>Monto bruto:</strong> ${money.format(Number(income.montoBruto) || 0)}</p>
+      <p><strong>Retención:</strong> ${money.format(Number(income.retencion) || 0)}</p>
+      <p><strong>Monto neto:</strong> ${money.format(Number(income.montoNeto) || 0)}</p>
+      <p><strong>Estado:</strong> ${escapeHtml(income.estado || "")}</p>
+      ${income.observaciones ? `<p><strong>Nota:</strong> ${escapeHtml(income.observaciones)}</p>` : ""}
+    `,
+  );
+}
+
+function openExpenseReport(expenseId) {
+  const expense = dbTable("egresos").find((row) => row.egresoID === expenseId);
+  if (!expense) return;
+  openRecordReport(
+    `Egreso ${expenseId}`,
+    `
+      <h2>Egreso ${escapeHtml(expenseId)}</h2>
+      <p><strong>Fecha:</strong> ${escapeHtml(dateOnly(expense.fechaHora))}</p>
+      <p><strong>Tipo:</strong> ${escapeHtml(expense.tipoEgreso || "")}</p>
+      <p><strong>Origen:</strong> ${escapeHtml(expense.cuentaOrigen || "-")}</p>
+      <p><strong>Destino:</strong> ${escapeHtml(expense.cuentaDestino || "-")}</p>
+      <p><strong>Concepto:</strong> ${escapeHtml(expense.concepto || "")}</p>
+      <p><strong>Monto:</strong> ${money.format(Number(expense.monto) || 0)}</p>
+      <p><strong>Estado:</strong> ${escapeHtml(expense.estado || "")}</p>
+      ${expense.observaciones ? `<p><strong>Nota:</strong> ${escapeHtml(expense.observaciones)}</p>` : ""}
+    `,
+  );
+}
+
+function openClosingReport(closingId) {
+  const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
+  if (!closing) return;
+  openRecordReport(
+    `Cierre ${closingId}`,
+    `
+      <h2>Cierre ${escapeHtml(closingId)}</h2>
+      <p><strong>Fecha:</strong> ${escapeHtml(dateOnly(closing.fechaHoraCierre))}</p>
+      <p><strong>Cajero:</strong> ${escapeHtml(closing.cajero || "-")}</p>
+      <p><strong>Caja:</strong> ${escapeHtml(closing.cuentaCaja || "-")}</p>
+      <p><strong>Esperado efectivo:</strong> ${money.format(Number(closing.balanceTeorico) || 0)}</p>
+      <p><strong>Contado:</strong> ${money.format(Number(closing.balanceContado) || 0)}</p>
+      <p><strong>Diferencia:</strong> ${money.format(Number(closing.diferencia) || 0)}</p>
+      <p><strong>Tarjeta contada:</strong> ${money.format(Number(closing.tarjetaContada) || 0)}</p>
+      <p><strong>Transferencia contada:</strong> ${money.format(Number(closing.transferenciaContada) || 0)}</p>
+      <p><strong>Estado:</strong> ${escapeHtml(closing.estado || "")}</p>
+      ${closing.observaciones ? `<p><strong>Nota:</strong> ${escapeHtml(closing.observaciones)}</p>` : ""}
+    `,
+  );
 }
 
 function downloadInvoiceImage(invoiceId) {
@@ -1404,9 +1510,9 @@ function downloadInvoiceImage(invoiceId) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#202225";
   ctx.font = "bold 34px Arial";
-  ctx.fillText("SeBen ERP", 40, 55);
+  ctx.fillText("Dalfi Studio Nails", 40, 55);
   ctx.font = "18px Arial";
-  ctx.fillText("Dalfi Studio Nails", 40, 84);
+  ctx.fillText("SeBen ERP", 40, 84);
   ctx.font = "bold 26px Arial";
   ctx.fillText(`Factura ${invoiceId}`, 40, 130);
   ctx.font = "18px Arial";
@@ -1479,7 +1585,9 @@ function renderIncomeRecords() {
   if (!rows.length) return renderEmpty(target, 6, "No hay ingresos registrados.");
   target.innerHTML = rows
     .map(
-      (income) => `
+      (income) => {
+        const editable = canEditRecordDate(dateOnly(income.fechaHora));
+        return `
         <tr>
           <td>${dateOnly(income.fechaHora)}</td>
           <td>${income.facturaID || income.ingresoID}</td>
@@ -1488,11 +1596,13 @@ function renderIncomeRecords() {
           <td class="amount">${money.format(Number(income.montoBruto) || Number(income.montoNeto) || 0)}</td>
           <td>
             <div class="row-actions">
-              ${canManageInvoices() ? `<button class="secondary-btn compact date-income" data-income-id="${escapeHtml(income.ingresoID)}" type="button">Fecha</button>` : '<span class="muted">Solo lectura</span>'}
+              <button class="secondary-btn compact view-income" data-income-id="${escapeHtml(income.ingresoID)}" type="button">Ver</button>
+              ${editable ? `<button class="secondary-btn compact date-income" data-income-id="${escapeHtml(income.ingresoID)}" type="button">Fecha</button>` : ""}
             </div>
           </td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
 }
@@ -1725,6 +1835,7 @@ function renderCash() {
           <td>${escapeHtml(status)}</td>
           <td>
             <div class="row-actions">
+              <button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Ver</button>
               ${canManage && !isOpen ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Abrir</button>` : ""}
               ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact confirm-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Confirmar</button>` : ""}
               ${canManage && !pendingConfirmation ? `<button class="secondary-btn compact void-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Anular</button>` : ""}
@@ -1849,7 +1960,9 @@ function renderExpenses() {
   if (!rows.length) return renderEmpty(target, 7, "No hay egresos registrados.");
   target.innerHTML = rows
     .map(
-      (row) => `
+      (row) => {
+        const editable = canEditRecordDate(row.date);
+        return `
         <tr data-expense-id="${escapeHtml(row.id)}">
           <td>${row.date}</td>
           <td>${row.type}</td>
@@ -1859,11 +1972,13 @@ function renderExpenses() {
           <td class="amount danger">${money.format(row.amount)}</td>
           <td>
             <div class="row-actions">
-              ${canManageInvoices() ? '<button class="secondary-btn compact edit-expense" type="button">Editar</button><button class="secondary-btn compact date-expense" type="button">Fecha</button>' : '<span class="muted">Solo lectura</span>'}
+              <button class="secondary-btn compact view-expense" type="button">Ver</button>
+              ${editable ? '<button class="secondary-btn compact edit-expense" type="button">Editar</button><button class="secondary-btn compact date-expense" type="button">Fecha</button>' : ""}
             </div>
           </td>
         </tr>
-      `,
+      `;
+      },
     )
     .join("");
 }
@@ -4259,8 +4374,6 @@ function wireForms() {
     if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
     if (event.target.closest(".date-invoice")) changeInvoiceDate(invoiceId);
-    if (event.target.closest(".pdf-invoice")) openInvoiceReport(invoiceId, true);
-    if (event.target.closest(".image-invoice")) downloadInvoiceImage(invoiceId);
   });
 
   byId("payment-form").addEventListener("submit", (event) => {
@@ -4295,12 +4408,19 @@ function wireForms() {
     const openButton = event.target.closest(".open-closing");
     const confirmButton = event.target.closest(".confirm-closing");
     const voidButton = event.target.closest(".void-closing");
+    const viewButton = event.target.closest(".view-closing");
+    if (viewButton) openClosingReport(viewButton.dataset.closingId);
     if (openButton) openClosingForEdit(openButton.dataset.closingId);
     if (confirmButton) confirmClosing(confirmButton.dataset.closingId);
     if (voidButton) voidClosing(voidButton.dataset.closingId);
   });
 
   byId("income-table").addEventListener("click", (event) => {
+    const viewButton = event.target.closest(".view-income");
+    if (viewButton) {
+      openIncomeReport(viewButton.dataset.incomeId);
+      return;
+    }
     const button = event.target.closest(".date-income");
     if (!button) return;
     changeIncomeDate(button.dataset.incomeId);
@@ -4589,6 +4709,7 @@ function wireForms() {
   byId("expense-table").addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-expense-id]");
     if (!row) return;
+    if (event.target.closest(".view-expense")) openExpenseReport(row.dataset.expenseId);
     if (event.target.closest(".edit-expense")) startExpenseEdit(row.dataset.expenseId);
     if (event.target.closest(".date-expense")) changeExpenseDate(row.dataset.expenseId);
   });
