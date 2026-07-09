@@ -628,6 +628,13 @@ function defaultStaffRecord() {
   return dbTable("colaboradores")[0] || { colaboradorID: "", nombreCompleto: state.staff[0] || "" };
 }
 
+function activeStaffNames() {
+  return dbTable("colaboradores")
+    .filter((staff) => normalize(staff.estado || "Activo") === "activo")
+    .map((staff) => staff.nombreCompleto)
+    .filter(Boolean);
+}
+
 function accountForPayment(method) {
   const normalized = normalizePayment(method);
   const accounts = dbTable("cuentas");
@@ -1289,13 +1296,14 @@ function resetCashBalancePreview() {
 
 function renderDatalists() {
   byId("clients-list").innerHTML = uniqueOptions(state.clients.map((client) => client.name));
-  byId("people-list").innerHTML = uniqueOptions([...state.clients.map((client) => client.name), ...state.staff]);
+  const staffNames = activeStaffNames();
+  byId("people-list").innerHTML = uniqueOptions([...state.clients.map((client) => client.name), ...staffNames]);
   byId("advance-people-list").innerHTML = uniqueOptions([
-    ...state.staff,
+    ...staffNames,
     ...dbTable("suplidores").map((supplier) => supplier.nombre || supplier.nombreCompleto || supplier.empresa || supplier.suplidorNombre),
   ]);
   byId("services-list").innerHTML = uniqueOptions(state.services.map((service) => service.name));
-  byId("staff-list").innerHTML = uniqueOptions(state.staff);
+  byId("staff-list").innerHTML = uniqueOptions(staffNames);
   byId("accounts-list").innerHTML = uniqueOptions(activeAccounts().map((account) => account.nombreCuenta));
   byId("cash-accounts-list").innerHTML = uniqueOptions(cashAccounts().map((account) => account.nombreCuenta));
   byId("bank-accounts-list").innerHTML = uniqueOptions(bankAccounts().map((account) => account.nombreCuenta));
@@ -1982,12 +1990,25 @@ function renderPayroll() {
 
 function renderCash() {
   const target = byId("cash-table");
-  if (!state.cashClosings.length) return renderEmpty(target, 10, "No hay cierres registrados.");
-  target.innerHTML = state.cashClosings
+  const created = ensureProvisionalClosings();
+  if (created) {
+    state = stateFromDatabase(database);
+    saveState();
+  }
+  const rows = dbTable("cierres")
     .slice()
-    .sort((a, b) => `${b.date || ""} ${b.id || ""}`.localeCompare(`${a.date || ""} ${a.id || ""}`))
-    .map((row) => {
-      const closing = dbTable("cierres").find((item) => item.cierreID === row.id || dateOnly(item.fechaHoraCierre) === row.date);
+    .sort((a, b) => `${dateOnly(b.fechaHoraCierre) || ""} ${b.cierreID || ""}`.localeCompare(`${dateOnly(a.fechaHoraCierre) || ""} ${a.cierreID || ""}`));
+  if (!rows.length) return renderEmpty(target, 10, "No hay cierres registrados.");
+  target.innerHTML = rows
+    .map((closing) => {
+      const date = dateOnly(closing.fechaHoraCierre);
+      const expected = Number(closing.balanceTeorico) || dailyIncomeSummary(date).cash;
+      const counted = Number(closing.balanceContado) || 0;
+      const cardCounted = Number(closing.tarjetaContada) || 0;
+      const expenses = Number(closing.egresos) || 0;
+      const shortage = Number(closing.cuadreFaltante) || 0;
+      const surplus = Number(closing.sobranteCaja) || 0;
+      const difference = Number(closing.diferencia) || counted - expenses - expected;
       const status = closing?.estado || "Cerrado";
       const isOpen = isClosingOpenForEdits(closing);
       const canManage = canManageInvoices();
@@ -1995,22 +2016,22 @@ function renderCash() {
       const pendingConfirmation = isClosingPendingConfirmation(closing);
       return `
         <tr>
-          <td>${row.date}</td>
-          <td>${money.format(row.expected)}</td>
-          <td>${money.format(row.counted)}</td>
-          <td>${money.format(row.cardCounted || 0)}</td>
-          <td>${money.format(row.expenses)}</td>
-          <td class="amount danger">${money.format(row.shortage || 0)}</td>
-          <td class="amount gold">${money.format(row.surplus || 0)}</td>
-          <td class="amount ${row.difference < 0 ? "danger" : "gold"}">${money.format(row.difference)}</td>
+          <td>${date}</td>
+          <td>${money.format(expected)}</td>
+          <td>${money.format(counted)}</td>
+          <td>${money.format(cardCounted)}</td>
+          <td>${money.format(expenses)}</td>
+          <td class="amount danger">${money.format(shortage)}</td>
+          <td class="amount gold">${money.format(surplus)}</td>
+          <td class="amount ${difference < 0 ? "danger" : "gold"}">${money.format(difference)}</td>
           <td>${escapeHtml(status)}</td>
           <td>
             <div class="row-actions">
-              <button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Ver</button>
-              ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact edit-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Editar</button>` : ""}
-              ${canManage && !isOpen ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Abrir</button>` : ""}
-              ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact confirm-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Confirmar</button>` : ""}
-              ${canManage && !pendingConfirmation ? `<button class="secondary-btn compact void-closing" data-closing-id="${escapeHtml(closing?.cierreID || "")}" type="button">Quitar cierre</button>` : ""}
+              <button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Ver</button>
+              ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact edit-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Editar</button>` : ""}
+              ${canManage && !isOpen ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Abrir</button>` : ""}
+              ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact confirm-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Confirmar</button>` : ""}
+              ${canManage && !pendingConfirmation ? `<button class="secondary-btn compact void-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Quitar cierre</button>` : ""}
             </div>
           </td>
         </tr>
@@ -3132,15 +3153,15 @@ function renderAll() {
 
 function lookupValuesFor(listId) {
   if (listId === "clients-list") return state.clients.map((client) => client.name).filter(Boolean);
-  if (listId === "people-list") return [...state.clients.map((client) => client.name), ...state.staff].filter(Boolean);
+  if (listId === "people-list") return [...state.clients.map((client) => client.name), ...activeStaffNames()].filter(Boolean);
   if (listId === "advance-people-list") {
     return [
-      ...state.staff,
+      ...activeStaffNames(),
       ...dbTable("suplidores").map((supplier) => supplier.nombre || supplier.nombreCompleto || supplier.empresa || supplier.suplidorNombre),
     ].filter(Boolean);
   }
   if (listId === "services-list") return state.services.map((service) => service.name).filter(Boolean);
-  if (listId === "staff-list") return state.staff.filter(Boolean);
+  if (listId === "staff-list") return activeStaffNames();
   if (listId === "accounts-list") return activeAccounts().map((account) => account.nombreCuenta).filter(Boolean);
   if (listId === "cash-accounts-list") return cashAccounts().map((account) => account.nombreCuenta).filter(Boolean);
   if (listId === "bank-accounts-list") return bankAccounts().map((account) => account.nombreCuenta).filter(Boolean);
@@ -3761,7 +3782,7 @@ function addInvoiceLine(defaultStaff = "") {
 
 function currentDefaultInvoiceStaff() {
   const firstLineStaff = document.querySelector(".line-staff")?.value.trim();
-  return firstLineStaff || state.staff[0] || "";
+  return firstLineStaff || "";
 }
 
 function getInvoiceLines() {
