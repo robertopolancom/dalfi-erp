@@ -361,7 +361,14 @@ body.password-change-required #password-change-panel {
 }
 
 .panel h3 {
+  margin: 0;
   font-size: 17px;
+}
+
+.panel-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .form-panel {

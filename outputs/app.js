@@ -1365,6 +1365,124 @@ function resetCashBalancePreview() {
   byId("cash-rectified-counted").value = "";
 }
 
+function ensureCashModuleMarkup() {
+  const cashView = byId("cash");
+  if (!cashView || byId("cash-table")) return;
+  cashView.innerHTML = `
+    <section class="panel panel-wide cash-list-panel">
+      <div class="panel-head">
+        <div>
+          <h3>Cierres diarios por caja/cuenta</h3>
+          <p class="panel-note">Cuadres pendientes y confirmados por día, caja registradora, cajas, bancos y cuentas.</p>
+        </div>
+        <div class="panel-actions">
+          <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Crear cierres automáticos</button>
+          <button class="primary-btn compact" id="new-cash-closing" type="button">Hacer cierre del día</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Cuenta</th>
+              <th>Esperado</th>
+              <th>Contado</th>
+              <th>Tarjeta</th>
+              <th>Gastos</th>
+              <th>Faltante</th>
+              <th>Sobrante</th>
+              <th>Diferencia</th>
+              <th>Estado</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody id="cash-table"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div class="work-grid cash-form-grid">
+      <form class="panel form-panel hidden" id="cash-form">
+        <input id="cash-edit-id" type="hidden" />
+        <input id="cash-confirm-after-save" type="hidden" />
+        <div class="panel-head">
+          <h3>Cierre de caja</h3>
+        </div>
+        <label>
+          Fecha
+          <input id="cash-date" type="date" required />
+        </label>
+        <label>
+          Cuenta / caja
+          <input id="cash-account" list="accounts-list" placeholder="Seleccionar cuenta o caja" required />
+        </label>
+        <div class="form-row">
+          <label>
+            Monto contado inicial
+            <input id="cash-counted" type="number" min="0" step="0.01" required />
+          </label>
+          <label>
+            Gastos del día
+            <input id="cash-expenses" type="number" min="0" step="0.01" value="0" />
+          </label>
+        </div>
+        <button class="secondary-btn" id="generate-cash-balance" type="button">Generar cuadre de efectivo</button>
+        <section class="invoice-summary hidden" id="cash-balance-panel">
+          <div class="summary-row">
+            <span>Efectivo esperado en caja</span>
+            <strong id="cash-expected-preview">RD$0.00</strong>
+          </div>
+          <div class="summary-row">
+            <span>Diferencia</span>
+            <strong id="cash-difference-preview">RD$0.00</strong>
+          </div>
+          <div class="summary-row">
+            <span>Cuadre faltante</span>
+            <strong id="cash-shortage-preview">RD$0.00</strong>
+          </div>
+          <div class="summary-row">
+            <span>Sobrante de caja</span>
+            <strong id="cash-surplus-preview">RD$0.00</strong>
+          </div>
+        </section>
+        <label class="hidden" id="cash-shortage-label">
+          Motivo del faltante
+          <textarea id="cash-shortage-note" rows="3" placeholder="Documentar por qué faltó efectivo en caja"></textarea>
+          <span>Monto contado rectificado</span>
+          <input id="cash-rectified-counted" type="number" min="0" step="0.01" placeholder="Monto completivo luego de revisar caja" />
+        </label>
+        <div class="form-row">
+          <label>
+            Tarjeta cierre/lote
+            <input id="cash-card-counted" type="number" min="0" step="0.01" value="0" />
+          </label>
+          <label>
+            Compañía tarjeta
+            <input id="cash-card-processor" list="processors-list" placeholder="Azul, CardNet..." />
+          </label>
+        </div>
+        <div class="form-row">
+          <label>
+            Número de lote
+            <input id="cash-card-batch" placeholder="Lote tarjeta" />
+          </label>
+          <label>
+            Transferencias confirmadas
+            <input id="cash-transfer-counted" type="number" min="0" step="0.01" value="0" />
+          </label>
+        </div>
+        <label>
+          Observación
+          <textarea id="cash-note" rows="3"></textarea>
+        </label>
+        <button class="primary-btn" id="cash-submit" type="submit">Guardar cierre</button>
+        <button class="secondary-btn" id="cancel-cash-closing" type="button">Cancelar</button>
+      </form>
+    </div>
+  `;
+}
+
 function renderDatalists() {
   byId("clients-list").innerHTML = uniqueOptions(state.clients.map((client) => client.name));
   const staffNames = activeStaffNames();
@@ -6017,6 +6135,7 @@ function wireNumberFieldFocus() {
 
 async function init() {
   await loadDatabase();
+  ensureCashModuleMarkup();
   ensureProvisionalClosings();
   state = loadState();
   saveState();
