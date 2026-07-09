@@ -196,6 +196,10 @@
               <div class="panel-head">
                 <h3>Nueva factura</h3>
               </div>
+              <label class="admin-only hidden">
+                Fecha factura
+                <input id="invoice-date" type="date" />
+              </label>
               <div class="field-block">
                 <div class="field-heading">
                   <span>Cliente</span>
@@ -397,6 +401,7 @@
               </div>
               <div class="panel-actions">
                 <input class="inline-search" id="invoice-admin-search" placeholder="Buscar factura, cliente o fecha" />
+                <button class="primary-btn compact" id="admin-new-invoice" type="button">Nueva factura admin</button>
                 <button class="secondary-btn compact" id="move-july-9-invoices" type="button">Mover 9 julio a 8 julio</button>
               </div>
             </div>
@@ -409,7 +414,6 @@
                     <th>Cliente</th>
                     <th>Total</th>
                     <th>Estado cierre</th>
-                    <th>Nueva fecha</th>
                     <th>Acción</th>
                   </tr>
                 </thead>
@@ -882,6 +886,7 @@
           <div class="work-grid">
             <form class="panel form-panel hidden" id="cash-form">
               <input id="cash-edit-id" type="hidden" />
+              <input id="cash-confirm-after-save" type="hidden" />
               <div class="panel-head">
                 <h3>Cierre de caja</h3>
               </div>
@@ -956,7 +961,7 @@
               <div class="panel-head">
                 <h3>Cierres registrados</h3>
                 <div class="panel-actions">
-                  <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Confirmar anteriores pendientes</button>
+                  <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Crear cierres pendientes</button>
                   <button class="primary-btn compact" id="new-cash-closing" type="button">Nuevo cierre</button>
                 </div>
               </div>
