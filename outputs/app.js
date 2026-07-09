@@ -631,15 +631,57 @@ function defaultStaffRecord() {
 function accountForPayment(method) {
   const normalized = normalizePayment(method);
   const accounts = dbTable("cuentas");
-  if (normalized === "efectivo") return accounts.find((account) => normalize(account.tipoProducto).includes("efectivo")) || accounts[0] || {};
-  return accounts.find((account) => normalize(account.tipoCuenta).includes("banco")) || accounts[0] || {};
+  if (normalized === "efectivo") return cashRegisterAccount() || cashAccounts()[0] || accounts[0] || {};
+  return bankAccounts()[0] || accounts[0] || {};
 }
 
 function accountForPaymentLine(method, accountName = "") {
   const normalized = normalizePayment(method);
   if (normalized === "efectivo") return accountForPayment("efectivo");
-  if (normalized.includes("transferencia")) return findAccountByName(accountName) || {};
+  if (normalized.includes("transferencia")) return findBankAccountByName(accountName) || {};
+  if (normalized === "tarjeta") return {};
   return findAccountByName(accountName) || accountForPayment(method);
+}
+
+function activeAccounts() {
+  return dbTable("cuentas").filter((account) => normalize(account.estado || "Activo") === "activo");
+}
+
+function isBankAccount(account) {
+  const text = normalize(`${account?.tipoCuenta || ""} ${account?.tipoProducto || ""} ${account?.nombreCuenta || ""}`);
+  return text.includes("banco") || text.includes("ahorro") || text.includes("corriente");
+}
+
+function isCashAccount(account) {
+  const text = normalize(`${account?.tipoCuenta || ""} ${account?.tipoProducto || ""} ${account?.nombreCuenta || ""}`);
+  return text.includes("caja") || text.includes("efectivo");
+}
+
+function bankAccounts() {
+  return activeAccounts().filter(isBankAccount);
+}
+
+function cashAccounts() {
+  return activeAccounts().filter(isCashAccount);
+}
+
+function cashRegisterAccount() {
+  return cashAccounts().find((account) => normalize(account.nombreCuenta).includes("registradora"));
+}
+
+function findBankAccountByName(name) {
+  const account = findAccountByName(name);
+  return isBankAccount(account) ? account : null;
+}
+
+function findCashAccountByName(name) {
+  const account = findAccountByName(name);
+  return isCashAccount(account) ? account : null;
+}
+
+function inputSingleOrBlank(input, values) {
+  if (!input) return;
+  input.value = values.length === 1 ? values[0] : "";
 }
 
 function currentUserEmail() {
@@ -1254,12 +1296,9 @@ function renderDatalists() {
   ]);
   byId("services-list").innerHTML = uniqueOptions(state.services.map((service) => service.name));
   byId("staff-list").innerHTML = uniqueOptions(state.staff);
-  byId("accounts-list").innerHTML = uniqueOptions(dbTable("cuentas").map((account) => account.nombreCuenta));
-  byId("bank-accounts-list").innerHTML = uniqueOptions(
-    dbTable("cuentas")
-      .filter((account) => normalize(account.tipoCuenta).includes("banco"))
-      .map((account) => account.nombreCuenta),
-  );
+  byId("accounts-list").innerHTML = uniqueOptions(activeAccounts().map((account) => account.nombreCuenta));
+  byId("cash-accounts-list").innerHTML = uniqueOptions(cashAccounts().map((account) => account.nombreCuenta));
+  byId("bank-accounts-list").innerHTML = uniqueOptions(bankAccounts().map((account) => account.nombreCuenta));
   byId("processors-list").innerHTML = uniqueOptions(
     dbTable("procesadores")
       .filter((processor) => normalize(processor.estado || "Activo") === "activo")
@@ -2287,6 +2326,7 @@ function startExpenseEdit(expenseId) {
   byId("expense-type").value = expense.tipoEgreso || "gasto";
   byId("expense-source").value = expense.cuentaOrigen || "";
   byId("expense-destination").value = expense.cuentaDestino || "";
+  byId("expense-destination-type").value = findBankAccountByName(expense.cuentaDestino) ? "bank" : "cash";
   byId("expense-amount").value = Number(expense.monto) || 0;
   byId("expense-concept").value = expense.concepto || "";
   byId("expense-note").value = expense.observaciones || "";
@@ -3101,13 +3141,9 @@ function lookupValuesFor(listId) {
   }
   if (listId === "services-list") return state.services.map((service) => service.name).filter(Boolean);
   if (listId === "staff-list") return state.staff.filter(Boolean);
-  if (listId === "accounts-list") return dbTable("cuentas").map((account) => account.nombreCuenta).filter(Boolean);
-  if (listId === "bank-accounts-list") {
-    return dbTable("cuentas")
-      .filter((account) => normalize(account.tipoCuenta).includes("banco"))
-      .map((account) => account.nombreCuenta)
-      .filter(Boolean);
-  }
+  if (listId === "accounts-list") return activeAccounts().map((account) => account.nombreCuenta).filter(Boolean);
+  if (listId === "cash-accounts-list") return cashAccounts().map((account) => account.nombreCuenta).filter(Boolean);
+  if (listId === "bank-accounts-list") return bankAccounts().map((account) => account.nombreCuenta).filter(Boolean);
   if (listId === "processors-list") {
     return dbTable("procesadores")
       .filter((processor) => normalize(processor.estado || "Activo") === "activo")
@@ -4077,7 +4113,7 @@ function addPaymentLine() {
       </label>
       <label class="payment-account-field hidden">
         Cuenta destino
-        <input class="payment-account" placeholder="Buscar cuenta" />
+        <input class="payment-account" list="bank-accounts-list" placeholder="Buscar cuenta bancaria" />
       </label>
       <label class="payment-processor-field hidden">
         Procesador tarjeta
@@ -4131,7 +4167,8 @@ function updatePaymentLineState(line) {
     due.value = today;
     line.querySelector(".payment-account-field")?.classList.remove("hidden");
     account.setAttribute("list", "bank-accounts-list");
-    account.placeholder = "Seleccionar banco";
+    account.placeholder = "Buscar cuenta bancaria";
+    if (!findBankAccountByName(account.value)) inputSingleOrBlank(account, lookupValuesFor("bank-accounts-list"));
     line.querySelector(".payment-reference-field")?.classList.remove("hidden");
   } else if (method === "credito") {
     state.value = "Crédito";
@@ -4141,6 +4178,7 @@ function updatePaymentLineState(line) {
     state.value = "Contado / CxC procesador";
     line.querySelector(".payment-processor-field")?.classList.remove("hidden");
     line.querySelector(".payment-reference-field")?.classList.remove("hidden");
+    if (!findProcessorByName(processor.value)) inputSingleOrBlank(processor, lookupValuesFor("processors-list"));
   } else if (method === "balance") {
     state.value = "Balance a favor";
   } else {
@@ -4148,22 +4186,65 @@ function updatePaymentLineState(line) {
     if (method === "transferencia_confirmada") {
       line.querySelector(".payment-account-field")?.classList.remove("hidden");
       account.setAttribute("list", "bank-accounts-list");
-      account.placeholder = "Seleccionar banco";
+      account.placeholder = "Buscar cuenta bancaria";
+      if (!findBankAccountByName(account.value)) inputSingleOrBlank(account, lookupValuesFor("bank-accounts-list"));
       line.querySelector(".payment-reference-field")?.classList.remove("hidden");
     }
   }
   if (method === "efectivo") {
-    account.value = "Caja Registradora";
+    account.value = cashRegisterAccount()?.nombreCuenta || "Caja Registradora";
     account.removeAttribute("list");
   }
-  if (!method.includes("transferencia")) account.value = method === "efectivo" ? "Caja Registradora" : "";
+  if (!method.includes("transferencia")) account.value = method === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : "";
   if (method !== "tarjeta") processor.value = "";
+}
+
+function updateIncomePaymentFields() {
+  const method = byId("payment-method").value;
+  const accountInput = byId("payment-account");
+  const processorInput = byId("payment-processor");
+  byId("payment-account-label").classList.toggle("hidden", method !== "transferencia");
+  byId("payment-processor-label").classList.toggle("hidden", method !== "tarjeta");
+  if (method === "efectivo") {
+    accountInput.value = cashRegisterAccount()?.nombreCuenta || "Caja Registradora";
+    processorInput.value = "";
+    return;
+  }
+  if (method === "transferencia") {
+    accountInput.setAttribute("list", "bank-accounts-list");
+    accountInput.placeholder = "Buscar cuenta bancaria";
+    if (!findBankAccountByName(accountInput.value)) inputSingleOrBlank(accountInput, lookupValuesFor("bank-accounts-list"));
+    processorInput.value = "";
+    return;
+  }
+  if (method === "tarjeta") {
+    if (!findProcessorByName(processorInput.value)) inputSingleOrBlank(processorInput, lookupValuesFor("processors-list"));
+    accountInput.value = "";
+  }
+}
+
+function updateExpenseDestinationLookup() {
+  const type = byId("expense-type").value;
+  const destinationInput = byId("expense-destination");
+  if (type !== "transferencia") {
+    destinationInput.value = "";
+    destinationInput.setAttribute("list", "accounts-list");
+    return;
+  }
+  const destinationType = byId("expense-destination-type").value;
+  const listId = destinationType === "bank" ? "bank-accounts-list" : "cash-accounts-list";
+  destinationInput.setAttribute("list", listId);
+  destinationInput.placeholder = destinationType === "bank" ? "Buscar cuenta bancaria destino" : "Buscar caja destino";
+  const valid = destinationType === "bank" ? findBankAccountByName(destinationInput.value) : findCashAccountByName(destinationInput.value);
+  if (!valid) inputSingleOrBlank(destinationInput, lookupValuesFor(listId));
 }
 
 function updateExpenseOptionalFields() {
   const type = byId("expense-type").value;
   byId("expense-destination-label").classList.toggle("hidden", type !== "transferencia");
+  byId("expense-destination-type-label").classList.toggle("hidden", type !== "transferencia");
   byId("expense-receivable-label").classList.toggle("hidden", type !== "avance");
+  updateExpenseDestinationLookup();
   updateExpenseBalancePreview();
 }
 
@@ -4435,7 +4516,7 @@ function wireForms() {
       missingProcessor.element.querySelector(".payment-processor")?.focus();
       return;
     }
-    const missingTransferAccount = payments.find((payment) => payment.method.includes("transferencia") && !findAccountByName(payment.account));
+    const missingTransferAccount = payments.find((payment) => payment.method.includes("transferencia") && !findBankAccountByName(payment.account));
     if (missingTransferAccount) {
       alert("Selecciona una cuenta bancaria válida para la transferencia.");
       missingTransferAccount.element.querySelector(".payment-account")?.focus();
@@ -4664,13 +4745,26 @@ function wireForms() {
   byId("admin-new-invoice").addEventListener("click", () => openAdminInvoiceEditor());
   byId("move-july-9-invoices").addEventListener("click", moveBuggedJuly9InvoicesToJuly8);
 
+  byId("payment-method").addEventListener("change", updateIncomePaymentFields);
   byId("payment-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const invoice = state.invoices.find((item) => item.id === byId("payment-invoice").value);
     if (!invoice) return;
     const amount = Math.min(Number(byId("payment-amount").value), outstanding(invoice));
     const method = byId("payment-method").value;
+    const accountName = method === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : byId("payment-account").value.trim();
+    const processorName = byId("payment-processor").value.trim();
     const cashDate = byId("payment-cash-date").value || today;
+    if (method === "transferencia" && !findBankAccountByName(accountName)) {
+      alert("Selecciona una cuenta bancaria para registrar la transferencia.");
+      byId("payment-account").focus();
+      return;
+    }
+    if (method === "tarjeta" && !findProcessorByName(processorName)) {
+      alert("Selecciona la compañía de tarjeta para registrar el pago.");
+      byId("payment-processor").focus();
+      return;
+    }
     invoice.paid += amount;
     invoice.payment = method;
     const dbInvoice = dbTable("facturas").find((item) => item.facturaID === invoice.id);
@@ -4685,9 +4779,10 @@ function wireForms() {
       cxc.balancePendiente = Math.max(0, (Number(cxc.montoOriginal) || 0) - (Number(cxc.montoAplicado) || 0));
       cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
     }
-    addConfirmedPayment(invoice.id, dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client), invoice.client, amount, method, "Cobro cuenta por cobrar", "", "", cashDate);
+    addConfirmedPayment(invoice.id, dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client), invoice.client, amount, method, "Cobro cuenta por cobrar", processorName, accountName, cashDate);
     event.target.reset();
     byId("payment-cash-date").value = today;
+    updateIncomePaymentFields();
     saveState();
     renderAll();
   });
@@ -4846,6 +4941,7 @@ function wireForms() {
   });
 
   byId("expense-type").addEventListener("change", updateExpenseOptionalFields);
+  byId("expense-destination-type").addEventListener("change", updateExpenseDestinationLookup);
   ["expense-source", "expense-destination", "expense-amount"].forEach((id) => {
     byId(id).addEventListener("input", updateExpenseBalancePreview);
   });
@@ -4856,9 +4952,16 @@ function wireForms() {
     const amount = Number(byId("expense-amount").value) || 0;
     const source = byId("expense-source").value.trim();
     const destination = byId("expense-destination").value.trim();
+    const destinationType = byId("expense-destination-type").value;
     const concept = byId("expense-concept").value.trim();
     const note = byId("expense-note").value.trim();
     if (!amount || !source || !concept) return;
+    const sourceAccountSelected = findAccountByName(source);
+    if (!sourceAccountSelected) {
+      alert("Selecciona una cuenta o caja origen válida.");
+      byId("expense-source").focus();
+      return;
+    }
     const existingExpense = dbTable("egresos").find((row) => row.egresoID === editId);
     const sourceCredit = existingExpense && normalize(existingExpense.cuentaOrigen) === normalize(source) ? Number(existingExpense.monto) || 0 : 0;
     const available = accountAvailableBalance(source) + sourceCredit;
@@ -4869,6 +4972,16 @@ function wireForms() {
     }
     if (type === "transferencia" && !destination) {
       alert("Selecciona la cuenta o caja destino para registrar la transferencia.");
+      byId("expense-destination").focus();
+      return;
+    }
+    const destinationAccountSelected = type === "transferencia"
+      ? destinationType === "bank"
+        ? findBankAccountByName(destination)
+        : findCashAccountByName(destination)
+      : null;
+    if (type === "transferencia" && !destinationAccountSelected) {
+      alert(destinationType === "bank" ? "Selecciona una cuenta bancaria destino." : "Selecciona una caja destino.");
       byId("expense-destination").focus();
       return;
     }
@@ -4887,9 +5000,9 @@ function wireForms() {
       Object.assign(existingExpense, {
         fechaHora: withDateOnly(existingExpense.fechaHora, targetDate),
         tipoEgreso: type,
-        cuentaOrigenID: findAccountByName(source)?.cuentaID || "",
+        cuentaOrigenID: sourceAccountSelected?.cuentaID || "",
         cuentaOrigen: source,
-        cuentaDestinoID: findAccountByName(destination)?.cuentaID || "",
+        cuentaDestinoID: destinationAccountSelected?.cuentaID || "",
         cuentaDestino: destination,
         concepto,
         monto: amount,
@@ -4908,8 +5021,8 @@ function wireForms() {
       return;
     }
     const expenseId = nextDbId("egresos", "egresoID", "EGR");
-    const sourceAccount = findAccountByName(source);
-    const destinationAccount = findAccountByName(destination);
+    const sourceAccount = sourceAccountSelected;
+    const destinationAccount = destinationAccountSelected || findAccountByName(destination);
     const row = {
       id: expenseId,
       date: byId("expense-date").value,
@@ -5688,6 +5801,7 @@ async function init() {
   attachSearchableLookups();
   if (!document.querySelector(".invoice-line")) addInvoiceLine();
   if (!document.querySelector(".payment-line")) addPaymentLine();
+  updateIncomePaymentFields();
   updateExpenseOptionalFields();
   updatePayrollPreview(true);
   renderAll();

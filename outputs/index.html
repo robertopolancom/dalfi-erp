@@ -449,6 +449,14 @@
                   <option value="transferencia">Transferencia</option>
                 </select>
               </label>
+              <label class="hidden" id="payment-account-label">
+                Cuenta bancaria
+                <input id="payment-account" list="bank-accounts-list" placeholder="Buscar cuenta bancaria" />
+              </label>
+              <label class="hidden" id="payment-processor-label">
+                Compañía tarjeta
+                <input id="payment-processor" list="processors-list" placeholder="Buscar compañía" />
+              </label>
               <button class="primary-btn" type="submit">Aplicar cobro</button>
             </form>
 
@@ -1088,6 +1096,13 @@
                   <strong id="expense-source-after">RD$0.00</strong>
                 </div>
               </section>
+              <label class="hidden" id="expense-destination-type-label">
+                Tipo de destino
+                <select id="expense-destination-type">
+                  <option value="cash">Caja / efectivo</option>
+                  <option value="bank">Banco</option>
+                </select>
+              </label>
               <label class="hidden" id="expense-destination-label">
                 Cuenta o caja destino
                 <input id="expense-destination" list="accounts-list" placeholder="Destino de transferencia" />
@@ -1635,6 +1650,7 @@
     <datalist id="services-list"></datalist>
     <datalist id="staff-list"></datalist>
     <datalist id="accounts-list"></datalist>
+    <datalist id="cash-accounts-list"></datalist>
     <datalist id="bank-accounts-list"></datalist>
     <datalist id="processors-list"></datalist>
     <datalist id="expense-concept-list"></datalist>
