@@ -3177,10 +3177,17 @@ function lookupValuesFor(listId) {
   return [];
 }
 
+function datalistValuesFor(listId) {
+  const list = listId ? byId(listId) : null;
+  if (!list) return [];
+  return Array.from(list.options).map((option) => option.value).filter(Boolean);
+}
+
 function attachSearchableLookups() {
   document.querySelectorAll("input[list]").forEach((input) => {
     if (input.dataset.lookupReady) return;
     input.dataset.lookupReady = "true";
+    input.setAttribute("autocomplete", "off");
     const wrapper = document.createElement("div");
     wrapper.className = "lookup-wrap";
     const menu = document.createElement("div");
@@ -3191,7 +3198,9 @@ function attachSearchableLookups() {
 
     const showMatches = () => {
       const query = normalize(input.value);
-      const values = [...new Set(lookupValuesFor(input.getAttribute("list")))]
+      const listId = input.getAttribute("list");
+      const sourceValues = lookupValuesFor(listId);
+      const values = [...new Set((sourceValues.length ? sourceValues : datalistValuesFor(listId)))]
         .filter((value) => !query || normalize(value).includes(query))
         .slice(0, 8);
       menu.innerHTML = values
@@ -3201,6 +3210,7 @@ function attachSearchableLookups() {
     };
 
     input.addEventListener("focus", showMatches);
+    input.addEventListener("click", showMatches);
     input.addEventListener("input", showMatches);
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") menu.classList.remove("active");
@@ -3211,6 +3221,7 @@ function attachSearchableLookups() {
       event.preventDefault();
       input.value = option.dataset.value;
       input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
       menu.classList.remove("active");
     });
     document.addEventListener("click", (event) => {

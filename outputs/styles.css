@@ -385,6 +385,13 @@ form label {
 
 .lookup-wrap {
   position: relative;
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.lookup-wrap > input {
+  width: 100%;
 }
 
 .lookup-menu {
@@ -392,8 +399,9 @@ form label {
   top: calc(100% + 4px);
   left: 0;
   right: 0;
-  z-index: 20;
+  z-index: 80;
   display: none;
+  width: 100%;
   max-height: 210px;
   overflow: auto;
   border: 1px solid var(--line);
