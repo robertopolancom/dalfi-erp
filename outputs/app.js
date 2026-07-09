@@ -812,7 +812,7 @@ function processorFeeRate(processor) {
   return value > 1 ? value / 100 : value;
 }
 
-function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method, note = "", processorName = "", accountName = "", cashDate = "") {
+function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method, note = "", processorName = "", accountName = "", cashDate = "", cxcId = "") {
   const paymentId = nextDbId("pagosFactura", "pagoID", "PAG");
   const incomeId = nextDbId("ingresos", "ingresoID", "ING");
   const applicationId = nextDbId("ingresoAplicaciones", "aplicacionID", "APL");
@@ -861,9 +861,9 @@ function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method
     ingresoID: incomeId,
     facturaID: invoiceId,
     pagoID: paymentId,
-    cxCID: "",
+    cxCID: cxcId,
     montoAplicado: amount,
-    observaciones: "Aplicado a factura",
+    observaciones: cxcId ? "Aplicado a cuenta por cobrar" : "Aplicado a factura",
   }));
   state.payments.push({ id: paymentId, date: effectiveDate, invoiceId, client: clientName, amount: net, method: normalizePayment(method) });
   return paymentId;
@@ -1367,7 +1367,8 @@ function resetCashBalancePreview() {
 
 function ensureCashModuleMarkup() {
   const cashView = byId("cash");
-  if (!cashView || byId("cash-table")) return;
+  if (!cashView) return;
+  if (cashView.querySelector("#cash-table") && cashView.querySelector("#new-cash-closing")) return;
   cashView.innerHTML = `
     <section class="panel panel-wide cash-list-panel">
       <div class="panel-head">
@@ -1938,9 +1939,10 @@ function renderReceivables() {
 
   const select = byId("payment-invoice");
   select.innerHTML = rows
-    .map((cxc) => `<option value="${cxc.facturaID}">${cxc.facturaID || cxc.cxCID} - ${cxc.deudorNombre} - ${money.format(Number(cxc.balancePendiente) || 0)}</option>`)
+    .map((cxc) => `<option value="${cxc.cxCID}">${cxc.facturaID || cxc.cxCID} - ${cxc.deudorNombre} - ${money.format(Number(cxc.balancePendiente) || 0)}</option>`)
     .join("");
   if (!rows.length) select.innerHTML = '<option value="">No hay facturas pendientes</option>';
+  updatePaymentSummary();
 }
 
 function renderIncomeRecords() {
@@ -2179,7 +2181,7 @@ function renderPayroll() {
 
 function renderCash() {
   ensureCashModuleMarkup();
-  const target = byId("cash-table");
+  const target = byId("cash")?.querySelector("#cash-table");
   if (!target) return;
   const created = ensureProvisionalClosings();
   if (created) {
@@ -4526,14 +4528,15 @@ function updateIncomePaymentLineState(line) {
 }
 
 function getIncomePaymentLines() {
-  const mainMethod = byId("payment-method").value;
-  const mainAccount = mainMethod === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : byId("payment-account").value.trim();
+  const mainMethod = byId("payment-method")?.value || "efectivo";
+  const mainAmountInput = byId("payment-method-amount") || byId("payment-amount");
+  const mainAccount = mainMethod === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : byId("payment-account")?.value.trim() || "";
   const rows = [
     {
-      amount: Number(byId("payment-amount").value) || 0,
+      amount: Number(mainAmountInput?.value) || 0,
       method: mainMethod,
       account: mainAccount,
-      processor: byId("payment-processor").value.trim(),
+      processor: byId("payment-processor")?.value.trim() || "",
       accountInput: byId("payment-account"),
       processorInput: byId("payment-processor"),
     },
@@ -4550,6 +4553,127 @@ function getIncomePaymentLines() {
     });
   });
   return rows.filter((row) => row.amount > 0);
+}
+
+function selectedReceivable() {
+  const selectedId = byId("payment-invoice")?.value || "";
+  return dbTable("cuentasCobrar").find((item) => item.cxCID === selectedId && Number(item.balancePendiente) > 0) || null;
+}
+
+function clientReceivablesFor(cxc) {
+  if (!cxc) return [];
+  return dbTable("cuentasCobrar")
+    .filter((item) => Number(item.balancePendiente) > 0)
+    .filter((item) => item.deudorTipo === "Cliente")
+    .filter((item) => {
+      if (cxc.deudorID) return item.deudorID === cxc.deudorID;
+      return normalize(item.deudorNombre) === normalize(cxc.deudorNombre);
+    })
+    .sort((a, b) => {
+      if (a.cxCID === cxc.cxCID) return -1;
+      if (b.cxCID === cxc.cxCID) return 1;
+      return String(a.fechaOrigen || "").localeCompare(String(b.fechaOrigen || ""));
+    });
+}
+
+function updatePaymentSummary() {
+  if (!byId("payment-invoice") || !byId("payment-amount")) return;
+  const cxc = selectedReceivable();
+  const clientRows = clientReceivablesFor(cxc);
+  const invoiceDebt = Number(cxc?.balancePendiente) || 0;
+  const clientDebt = clientRows.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
+  const paymentGoal = Number(byId("payment-amount")?.value) || 0;
+  const linesTotal = getIncomePaymentLines().reduce((sum, line) => sum + line.amount, 0);
+  const difference = linesTotal - paymentGoal;
+
+  if (byId("payment-client-name")) byId("payment-client-name").textContent = cxc?.deudorNombre || "-";
+  if (byId("payment-invoice-debt")) byId("payment-invoice-debt").textContent = money.format(invoiceDebt);
+  if (byId("payment-client-debt")) byId("payment-client-debt").textContent = money.format(clientDebt);
+  if (byId("payment-lines-total")) byId("payment-lines-total").textContent = money.format(linesTotal);
+  if (byId("payment-lines-difference")) {
+    byId("payment-lines-difference").textContent = money.format(difference);
+    byId("payment-lines-difference").classList.toggle("danger", difference < 0);
+    byId("payment-lines-difference").classList.toggle("gold", difference > 0);
+  }
+  if (byId("payment-overpay-label")) {
+    byId("payment-overpay-label").classList.toggle("hidden", difference <= 0);
+    if (difference > 0 && byId("payment-overpay-policy")?.value === "cxc" && clientDebt <= paymentGoal) {
+      byId("payment-overpay-policy").value = "sobrante";
+    }
+  }
+}
+
+function fillPaymentGoalFromSelection() {
+  const cxc = selectedReceivable();
+  const amountInput = byId("payment-amount");
+  const methodAmountInput = byId("payment-method-amount");
+  const pending = Number(cxc?.balancePendiente) || 0;
+  amountInput.value = pending ? String(pending) : "";
+  methodAmountInput.value = pending ? String(pending) : "";
+  updatePaymentSummary();
+}
+
+function syncInvoicePaymentFromReceivable(cxc, applied) {
+  if (!cxc?.facturaID || applied <= 0) return;
+  const invoice = state.invoices.find((item) => item.id === cxc.facturaID);
+  if (invoice) invoice.paid = Math.min(invoice.total, (Number(invoice.paid) || 0) + applied);
+  const dbInvoice = dbTable("facturas").find((item) => item.facturaID === cxc.facturaID);
+  if (dbInvoice) {
+    dbInvoice.totalPagadoConfirmado = (Number(dbInvoice.totalPagadoConfirmado) || 0) + applied;
+    const previousCxC = Number(dbInvoice.totalCxC);
+    dbInvoice.totalCxC = Number.isFinite(previousCxC) ? Math.max(0, previousCxC - applied) : Math.max(0, Number(cxc.balancePendiente) || 0);
+    dbInvoice.estadoFactura = dbInvoice.totalCxC <= 0 ? "Pagada" : "Parcial";
+    stampRecord(dbInvoice, "updated");
+  }
+}
+
+function createExtraIncome(line, amount, clientRecord, clientName, cashDate, type, note) {
+  if (amount <= 0) return;
+  const account = accountForPaymentLine(line.method, line.account);
+  const processor = findProcessorByName(line.processor) || processorForPayment(line.method);
+  const retention = normalizePayment(line.method) === "tarjeta" ? amount * processorFeeRate(processor) : 0;
+  const net = amount - retention;
+  dbTable("ingresos").push(stampRecord({
+    ingresoID: nextDbId("ingresos", "ingresoID", "ING"),
+    fechaHora: dateTimeForOperationalDate(cashDate),
+    fechaEntradaCaja: cashDate,
+    tipoIngreso: type,
+    facturaID: "",
+    clienteID: clientRecord?.clienteID || "",
+    clienteNombre: clientName,
+    metodoPago: line.method,
+    cuentaDestinoID: account.cuentaID || "",
+    cuentaDestino: account.nombreCuenta || "",
+    montoBruto: amount,
+    retencion: retention,
+    montoNeto: net,
+    estado: "Confirmado",
+    observaciones: note,
+  }));
+}
+
+function applyReceivablePaymentLines(receivables, amountToApply, paymentLines, cashDate) {
+  const mutableLines = paymentLines.map((line) => ({ ...line, remaining: line.amount }));
+  let remainingToApply = amountToApply;
+  for (const cxc of receivables) {
+    let pending = Number(cxc.balancePendiente) || 0;
+    while (pending > 0 && remainingToApply > 0) {
+      const line = mutableLines.find((item) => item.remaining > 0);
+      if (!line) return mutableLines;
+      const applied = Math.min(line.remaining, pending, remainingToApply);
+      const clientRecord = dbTable("clientes").find((client) => client.clienteID === cxc.deudorID) || findClientByName(cxc.deudorNombre);
+      cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + applied;
+      cxc.balancePendiente = Math.max(0, (Number(cxc.balancePendiente) || 0) - applied);
+      cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
+      stampRecord(cxc, "updated");
+      syncInvoicePaymentFromReceivable(cxc, applied);
+      addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", applied, line.method, "Cobro cuenta por cobrar", line.processor, line.account, cashDate, cxc.cxCID);
+      line.remaining -= applied;
+      pending -= applied;
+      remainingToApply -= applied;
+    }
+  }
+  return mutableLines;
 }
 
 function updateExpenseDestinationLookup() {
@@ -5073,24 +5197,49 @@ function wireForms() {
   byId("admin-new-invoice").addEventListener("click", () => openAdminInvoiceEditor());
   byId("move-july-9-invoices").addEventListener("click", moveBuggedJuly9InvoicesToJuly8);
 
-  byId("payment-method").addEventListener("change", updateIncomePaymentFields);
-  byId("add-income-payment-line").addEventListener("click", addIncomePaymentLine);
+  byId("payment-invoice").addEventListener("change", fillPaymentGoalFromSelection);
+  byId("payment-amount").addEventListener("input", updatePaymentSummary);
+  byId("payment-method-amount").addEventListener("input", updatePaymentSummary);
+  byId("payment-overpay-policy").addEventListener("change", updatePaymentSummary);
+  byId("payment-method").addEventListener("change", () => {
+    updateIncomePaymentFields();
+    updatePaymentSummary();
+  });
+  byId("add-income-payment-line").addEventListener("click", () => {
+    addIncomePaymentLine();
+    updatePaymentSummary();
+  });
   byId("income-payment-line-list").addEventListener("change", (event) => {
     const line = event.target.closest(".income-payment-line");
     if (line && event.target.matches(".income-payment-method")) updateIncomePaymentLineState(line);
+    updatePaymentSummary();
+  });
+  byId("income-payment-line-list").addEventListener("input", (event) => {
+    if (event.target.matches(".income-payment-amount")) updatePaymentSummary();
   });
   byId("income-payment-line-list").addEventListener("click", (event) => {
     const removeButton = event.target.closest(".remove-income-payment-line");
     if (!removeButton) return;
     removeButton.closest(".income-payment-line")?.remove();
+    updatePaymentSummary();
   });
   byId("payment-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    const invoice = state.invoices.find((item) => item.id === byId("payment-invoice").value);
-    if (!invoice) return;
+    const selectedCxc = selectedReceivable();
+    if (!selectedCxc) {
+      alert("Selecciona una cuenta por cobrar pendiente.");
+      byId("payment-invoice").focus();
+      return;
+    }
     const paymentLines = getIncomePaymentLines();
     if (!paymentLines.length) {
       alert("Agrega al menos una forma de pago con monto mayor que cero.");
+      byId("payment-method-amount").focus();
+      return;
+    }
+    const paymentGoal = Number(byId("payment-amount").value) || 0;
+    if (paymentGoal <= 0) {
+      alert("Indica el monto que el cliente va a pagar.");
       byId("payment-amount").focus();
       return;
     }
@@ -5107,40 +5256,45 @@ function wireForms() {
         return;
       }
     }
-    const invoiceOutstanding = outstanding(invoice);
-    const requestedAmount = paymentLines.reduce((sum, line) => sum + line.amount, 0);
-    const amount = Math.min(requestedAmount, invoiceOutstanding);
-    let remainingToApply = amount;
-    invoice.paid += amount;
-    invoice.payment = paymentLines.length > 1 ? "combinado" : paymentLines[0].method;
-    const dbInvoice = dbTable("facturas").find((item) => item.facturaID === invoice.id);
-    if (dbInvoice) {
-      dbInvoice.totalPagadoConfirmado = invoice.paid;
-      dbInvoice.totalCxC = outstanding(invoice);
-      dbInvoice.estadoFactura = outstanding(invoice) <= 0 ? "Pagada" : "Parcial";
+    const linesTotal = paymentLines.reduce((sum, line) => sum + line.amount, 0);
+    if (linesTotal + 0.01 < paymentGoal) {
+      alert("Las formas de pago no completan el monto a pagar. Agrega otra forma de pago o ajusta los montos.");
+      byId("add-income-payment-line").focus();
+      return;
     }
-    const cxc = dbTable("cuentasCobrar").find((item) => item.facturaID === invoice.id && Number(item.balancePendiente) > 0);
-    if (cxc) {
-      cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + amount;
-      cxc.balancePendiente = Math.max(0, (Number(cxc.montoOriginal) || 0) - (Number(cxc.montoAplicado) || 0));
-      cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
+    const clientRows = clientReceivablesFor(selectedCxc);
+    const clientDebt = clientRows.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
+    const overpayPolicy = byId("payment-overpay-policy").value;
+    const extraPaid = Math.max(0, linesTotal - paymentGoal);
+    const applyExtraToCxc = overpayPolicy === "cxc" ? extraPaid : 0;
+    const amountToDebt = Math.min(clientDebt, paymentGoal + applyExtraToCxc);
+    const mutableLines = applyReceivablePaymentLines(clientRows, amountToDebt, paymentLines, cashDate);
+    const clientRecord = dbTable("clientes").find((client) => client.clienteID === selectedCxc.deudorID) || findClientByName(selectedCxc.deudorNombre);
+    const remainingExtra = mutableLines.reduce((sum, line) => sum + (Number(line.remaining) || 0), 0);
+    if (remainingExtra > 0) {
+      const finalPolicy = overpayPolicy === "balance" || overpayPolicy === "cxc" ? "balance" : "sobrante";
+      mutableLines.forEach((line) => {
+        if (line.remaining <= 0) return;
+        if (finalPolicy === "balance") {
+          adjustClientBalance(clientRecord?.clienteID, line.remaining);
+          createExtraIncome(line, line.remaining, clientRecord, selectedCxc.deudorNombre || "", cashDate, "Balance a favor de cliente", "Excedente de cobro aplicado a balance a favor");
+        } else {
+          createExtraIncome(line, line.remaining, clientRecord, selectedCxc.deudorNombre || "", cashDate, "Sobrante de caja", "Excedente de cobro de cuenta por cobrar");
+        }
+      });
     }
-    const clientRecord = dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client);
-    paymentLines.forEach((line) => {
-      if (remainingToApply <= 0) return;
-      const lineAmount = Math.min(line.amount, remainingToApply);
-      remainingToApply -= lineAmount;
-      addConfirmedPayment(invoice.id, clientRecord, invoice.client, lineAmount, line.method, "Cobro cuenta por cobrar", line.processor, line.account, cashDate);
-    });
     event.target.reset();
     byId("income-payment-line-list").innerHTML = "";
     byId("payment-cash-date").value = today;
+    byId("payment-method-amount").value = "";
     updateIncomePaymentFields();
+    updatePaymentSummary();
     saveState();
     renderAll();
   });
 
-  byId("cash-table").addEventListener("click", (event) => {
+  ensureCashModuleMarkup();
+  byId("cash-table")?.addEventListener("click", (event) => {
     const openButton = event.target.closest(".open-closing");
     const confirmButton = event.target.closest(".confirm-closing");
     const voidButton = event.target.closest(".void-closing");
@@ -5153,9 +5307,9 @@ function wireForms() {
     if (voidButton) voidClosing(voidButton.dataset.closingId);
   });
 
-  byId("new-cash-closing").addEventListener("click", showNewCashClosing);
-  byId("cancel-cash-closing").addEventListener("click", hideCashClosingForm);
-  byId("confirm-previous-closings").addEventListener("click", confirmPreviousPendingClosings);
+  byId("new-cash-closing")?.addEventListener("click", showNewCashClosing);
+  byId("cancel-cash-closing")?.addEventListener("click", hideCashClosingForm);
+  byId("confirm-previous-closings")?.addEventListener("click", confirmPreviousPendingClosings);
 
   byId("income-table").addEventListener("click", (event) => {
     const viewButton = event.target.closest(".view-income");
@@ -5186,10 +5340,10 @@ function wireForms() {
     selectCardClosing(button.dataset.closingId);
   });
 
-  byId("generate-cash-balance").addEventListener("click", updateCashBalancePreview);
+  byId("generate-cash-balance")?.addEventListener("click", updateCashBalancePreview);
 
   ["cash-counted", "cash-expenses", "cash-date", "cash-account"].forEach((id) => {
-    byId(id).addEventListener("input", resetCashBalancePreview);
+    byId(id)?.addEventListener("input", resetCashBalancePreview);
   });
 
   byId("card-reconciliation-form").addEventListener("submit", (event) => {
@@ -5751,7 +5905,7 @@ function wireForms() {
     updatePayrollPreview(true);
   });
 
-  byId("cash-form").addEventListener("submit", (event) => {
+  byId("cash-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const editId = byId("cash-edit-id").value;
     const confirmAfterSave = byId("cash-confirm-after-save").value === "true";

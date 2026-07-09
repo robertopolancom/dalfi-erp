@@ -437,8 +437,22 @@
                 Factura pendiente
                 <select id="payment-invoice" required></select>
               </label>
+              <section class="invoice-summary compact-summary" id="payment-debt-summary">
+                <div class="summary-row">
+                  <span>Cliente</span>
+                  <strong id="payment-client-name">-</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Deuda factura seleccionada</span>
+                  <strong id="payment-invoice-debt">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Deuda total cliente</span>
+                  <strong id="payment-client-debt">RD$0.00</strong>
+                </div>
+              </section>
               <label>
-                Monto cobrado
+                Monto a pagar
                 <input id="payment-amount" type="number" min="0" step="0.01" required />
               </label>
               <label>
@@ -453,6 +467,10 @@
                   <option value="transferencia">Transferencia</option>
                 </select>
               </label>
+              <label>
+                Monto en esta forma de pago
+                <input id="payment-method-amount" type="number" min="0" step="0.01" required />
+              </label>
               <label class="hidden" id="payment-account-label">
                 Cuenta bancaria
                 <input id="payment-account" list="bank-accounts-list" placeholder="Buscar cuenta bancaria" />
@@ -463,6 +481,24 @@
               </label>
               <div class="invoice-line-list" id="income-payment-line-list"></div>
               <button class="secondary-btn" id="add-income-payment-line" type="button">Agregar otra forma de pago</button>
+              <section class="invoice-summary compact-summary" id="payment-total-summary">
+                <div class="summary-row">
+                  <span>Total formas de pago</span>
+                  <strong id="payment-lines-total">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Diferencia contra monto a pagar</span>
+                  <strong id="payment-lines-difference">RD$0.00</strong>
+                </div>
+              </section>
+              <label id="payment-overpay-label">
+                Destino del excedente
+                <select id="payment-overpay-policy">
+                  <option value="sobrante">Sobrante de caja</option>
+                  <option value="cxc">Aplicar a otras cuentas por cobrar del cliente</option>
+                  <option value="balance">Balance a favor del cliente</option>
+                </select>
+              </label>
               <button class="primary-btn" type="submit">Aplicar cobro</button>
             </form>
 
@@ -1696,6 +1732,6 @@
     </datalist>
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=20260709-cash"></script>
+    <script src="app.js?v=20260709-cxc-cash-fix"></script>
   </body>
 </html>
