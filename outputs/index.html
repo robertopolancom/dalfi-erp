@@ -526,14 +526,16 @@
 
             <section class="panel">
               <div class="panel-head">
-                <h3>Ingresos registrados</h3>
+                <h3>Recibos de cobros CxC</h3>
+                <input class="inline-search" id="income-search" placeholder="Buscar recibo, cliente o factura" />
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
                       <th>Fecha</th>
-                      <th>Factura</th>
+                      <th>Recibo</th>
+                      <th>Factura / CxC</th>
                       <th>Cliente</th>
                       <th>Método</th>
                       <th>Monto</th>
@@ -1732,6 +1734,6 @@
     </datalist>
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=20260709-cxc-cash-fix"></script>
+    <script src="app.js?v=20260709-cxc-receipts-cash"></script>
   </body>
 </html>

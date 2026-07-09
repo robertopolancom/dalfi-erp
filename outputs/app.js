@@ -1948,21 +1948,26 @@ function renderReceivables() {
 function renderIncomeRecords() {
   const target = byId("income-table");
   if (!target) return;
-  const rows = dbTable("ingresos").slice().sort((a, b) => String(b.fechaHora || "").localeCompare(String(a.fechaHora || ""))).slice(0, 100);
-  if (!rows.length) return renderEmpty(target, 6, "No hay ingresos registrados.");
+  const query = byId("income-search")?.value || "";
+  const rows = receivableReceiptRows(query).slice(0, 100);
+  if (!rows.length) return renderEmpty(target, 7, "No hay recibos de cobros de cuentas por cobrar.");
   target.innerHTML = rows
     .map(
-      (income) => {
+      (row) => {
+        const editable = canManageReceivableReceipt(row.income);
         return `
         <tr>
-          <td>${dateOnly(income.fechaHora)}</td>
-          <td>${income.facturaID || income.ingresoID}</td>
-          <td>${income.clienteNombre || income.deudorNombre || "Sin cliente"}</td>
-          <td>${income.metodoPago || income.formaPago || "-"}</td>
-          <td class="amount">${money.format(Number(income.montoBruto) || Number(income.montoNeto) || 0)}</td>
+          <td>${dateOnly(row.income.fechaHora)}</td>
+          <td>${row.income.ingresoID}</td>
+          <td>${row.application.facturaID || row.cxc?.facturaID || row.cxc?.cxCID || "-"}</td>
+          <td>${row.income.clienteNombre || row.cxc?.deudorNombre || "Sin cliente"}</td>
+          <td>${row.income.metodoPago || row.income.formaPago || "-"}</td>
+          <td class="amount">${money.format(Number(row.application.montoAplicado) || Number(row.income.montoBruto) || 0)}</td>
           <td>
             <div class="row-actions">
-              <button class="secondary-btn compact view-income" data-income-id="${escapeHtml(income.ingresoID)}" type="button">Ver</button>
+              <button class="secondary-btn compact view-income" data-income-id="${escapeHtml(row.income.ingresoID)}" type="button">Ver</button>
+              ${editable ? `<button class="secondary-btn compact edit-income-date" data-income-id="${escapeHtml(row.income.ingresoID)}" type="button">Editar fecha</button>` : ""}
+              ${editable ? `<button class="secondary-btn compact void-income" data-income-id="${escapeHtml(row.income.ingresoID)}" type="button">Anular</button>` : ""}
             </div>
           </td>
         </tr>
@@ -1970,6 +1975,38 @@ function renderIncomeRecords() {
       },
     )
     .join("");
+}
+
+function receivableReceiptRows(query = "") {
+  const normalizedQuery = normalize(query);
+  return dbTable("ingresoAplicaciones")
+    .filter((application) => application.cxCID && normalize(application.estado || "Activo") !== "anulado")
+    .map((application) => {
+      const income = dbTable("ingresos").find((row) => row.ingresoID === application.ingresoID);
+      const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === application.cxCID);
+      if (!income || normalize(income.estado || "Confirmado") === "anulado") return null;
+      return { application, income, cxc };
+    })
+    .filter(Boolean)
+    .filter((row) => {
+      if (!normalizedQuery) return true;
+      return [
+        row.income.ingresoID,
+        row.income.facturaID,
+        row.income.clienteNombre,
+        row.income.metodoPago,
+        row.cxc?.cxCID,
+        row.cxc?.facturaID,
+        row.cxc?.deudorNombre,
+        row.cxc?.concepto,
+      ].some((field) => normalize(field).includes(normalizedQuery));
+    })
+    .sort((a, b) => `${b.income.fechaHora || ""} ${b.income.ingresoID || ""}`.localeCompare(`${a.income.fechaHora || ""} ${a.income.ingresoID || ""}`));
+}
+
+function canManageReceivableReceipt(income) {
+  if (!canManageInvoices() || !income) return false;
+  return isClosingOpenForEdits(closingForDate(dateOnly(income.fechaHora)));
 }
 
 function pendingTransferRows() {
@@ -2516,6 +2553,70 @@ function changeIncomeDate(incomeId) {
     payment.fechaHora = withDateOnly(payment.fechaHora, targetDate);
     stampRecord(payment, "updated");
   }
+  state = stateFromDatabase(database);
+  saveState();
+  renderAll();
+}
+
+function voidReceivableReceipt(incomeId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede anular recibos de cobros.");
+    return;
+  }
+  const income = dbTable("ingresos").find((row) => row.ingresoID === incomeId);
+  if (!income) return;
+  if (!canManageReceivableReceipt(income)) {
+    alert("Este recibo pertenece a un día con cierre confirmado. Primero administración debe abrir o quitar el cierre.");
+    return;
+  }
+  const applications = dbTable("ingresoAplicaciones").filter((row) => row.ingresoID === incomeId && row.cxCID);
+  if (!applications.length) {
+    alert("Este ingreso no tiene aplicaciones de cuenta por cobrar para anular.");
+    return;
+  }
+  if (!confirm(`Anular el recibo ${incomeId} devolverá el balance a la cuenta por cobrar. ¿Continuar?`)) return;
+  applications.forEach((application) => {
+    const amount = Number(application.montoAplicado) || 0;
+    const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === application.cxCID);
+    if (cxc) {
+      cxc.montoAplicado = Math.max(0, (Number(cxc.montoAplicado) || 0) - amount);
+      cxc.balancePendiente = Math.max(0, (Number(cxc.balancePendiente) || 0) + amount);
+      cxc.estado = cxc.balancePendiente > 0 && cxc.montoAplicado > 0 ? "Parcial" : "Pendiente";
+      stampRecord(cxc, "updated");
+    }
+    if (application.facturaID) {
+      const invoice = state.invoices.find((item) => item.id === application.facturaID);
+      if (invoice) invoice.paid = Math.max(0, (Number(invoice.paid) || 0) - amount);
+      const dbInvoice = dbTable("facturas").find((item) => item.facturaID === application.facturaID);
+      if (dbInvoice) {
+        dbInvoice.totalPagadoConfirmado = Math.max(0, (Number(dbInvoice.totalPagadoConfirmado) || 0) - amount);
+        dbInvoice.totalCxC = Math.max(0, (Number(dbInvoice.totalCxC) || 0) + amount);
+        dbInvoice.estadoFactura = dbInvoice.totalCxC > 0 && dbInvoice.totalPagadoConfirmado > 0 ? "Parcial" : "Crédito";
+        stampRecord(dbInvoice, "updated");
+      }
+    }
+    application.estado = "Anulado";
+    application.observaciones = `${application.observaciones || ""} Anulado por ${currentUserEmail()} ${new Date().toISOString()}`.trim();
+    stampRecord(application, "updated");
+    if (application.pagoID) {
+      const payment = dbTable("pagosFactura").find((row) => row.pagoID === application.pagoID);
+      if (payment) {
+        payment.estado = "Anulado";
+        payment.montoBruto = 0;
+        payment.montoNeto = 0;
+        payment.observaciones = `${payment.observaciones || ""} Anulado junto al recibo ${incomeId}`.trim();
+        stampRecord(payment, "updated");
+      }
+    }
+  });
+  income.estado = "Anulado";
+  income.montoBrutoOriginal = income.montoBrutoOriginal || income.montoBruto;
+  income.montoNetoOriginal = income.montoNetoOriginal || income.montoNeto;
+  income.montoBruto = 0;
+  income.montoNeto = 0;
+  income.retencion = 0;
+  income.observaciones = `${income.observaciones || ""} Recibo anulado por ${currentUserEmail()} ${new Date().toISOString()}`.trim();
+  stampRecord(income, "updated");
   state = stateFromDatabase(database);
   saveState();
   renderAll();
@@ -4448,8 +4549,11 @@ function updateIncomePaymentFields() {
   const processorInput = byId("payment-processor");
   byId("payment-account-label").classList.toggle("hidden", method !== "transferencia");
   byId("payment-processor-label").classList.toggle("hidden", method !== "tarjeta");
+  accountInput.required = method === "transferencia";
+  processorInput.required = method === "tarjeta";
   if (method === "efectivo") {
     accountInput.value = cashRegisterAccount()?.nombreCuenta || "Caja Registradora";
+    accountInput.removeAttribute("list");
     processorInput.value = "";
     return;
   }
@@ -4463,6 +4567,7 @@ function updateIncomePaymentFields() {
   if (method === "tarjeta") {
     if (!findProcessorByName(processorInput.value)) inputSingleOrBlank(processorInput, lookupValuesFor("processors-list"));
     accountInput.value = "";
+    accountInput.removeAttribute("list");
   }
 }
 
@@ -4509,8 +4614,11 @@ function updateIncomePaymentLineState(line) {
   const processorInput = line.querySelector(".income-payment-processor");
   line.querySelector(".income-payment-account-label")?.classList.toggle("hidden", method !== "transferencia");
   line.querySelector(".income-payment-processor-label")?.classList.toggle("hidden", method !== "tarjeta");
+  accountInput.required = method === "transferencia";
+  processorInput.required = method === "tarjeta";
   if (method === "efectivo") {
     accountInput.value = cashRegisterAccount()?.nombreCuenta || "Caja Registradora";
+    accountInput.removeAttribute("list");
     processorInput.value = "";
     return;
   }
@@ -4524,6 +4632,7 @@ function updateIncomePaymentLineState(line) {
   if (method === "tarjeta") {
     if (!findProcessorByName(processorInput.value)) inputSingleOrBlank(processorInput, lookupValuesFor("processors-list"));
     accountInput.value = "";
+    accountInput.removeAttribute("list");
   }
 }
 
@@ -5313,9 +5422,11 @@ function wireForms() {
 
   byId("income-table").addEventListener("click", (event) => {
     const viewButton = event.target.closest(".view-income");
-    if (viewButton) {
-      openIncomeReport(viewButton.dataset.incomeId);
-    }
+    const editButton = event.target.closest(".edit-income-date");
+    const voidButton = event.target.closest(".void-income");
+    if (viewButton) openIncomeReport(viewButton.dataset.incomeId);
+    if (editButton) changeIncomeDate(editButton.dataset.incomeId);
+    if (voidButton) voidReceivableReceipt(voidButton.dataset.incomeId);
   });
 
   byId("ar-table").addEventListener("click", (event) => {
@@ -6239,6 +6350,7 @@ function wireSearches() {
     "invoice-search",
     "invoice-admin-search",
     "ar-search",
+    "income-search",
     "pending-transfer-search",
     "reservation-search",
     "payroll-search",
