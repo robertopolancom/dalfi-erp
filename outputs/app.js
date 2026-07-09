@@ -1167,7 +1167,27 @@ function confirmedIncomeOn(date) {
   return dbTable("ingresos").filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmado") === "confirmado");
 }
 
+function automaticClosingEligible(date) {
+  if (!date || date > today) return false;
+  if (date < today) return true;
+  const now = new Date();
+  return now.getHours() > 23 || (now.getHours() === 23 && now.getMinutes() >= 59);
+}
+
+function removePrematureProvisionalClosings() {
+  const rows = dbTable("cierres");
+  const kept = rows.filter((closing) => {
+    const closingDate = dateOnly(closing.fechaHoraCierre);
+    const provisional = closing.provisional || normalize(closing.cajero).includes("cierre provisional automatico");
+    return !(provisional && isClosingPendingConfirmation(closing) && !automaticClosingEligible(closingDate));
+  });
+  const removed = rows.length - kept.length;
+  if (removed) database.data.cierres = kept;
+  return removed;
+}
+
 function ensureProvisionalClosings() {
+  const removed = removePrematureProvisionalClosings();
   const dates = new Set();
   [
     ["facturas", "fechaHora"],
@@ -1179,7 +1199,7 @@ function ensureProvisionalClosings() {
   ].forEach(([tableName, field]) => {
     dbTable(tableName).forEach((row) => {
       const date = dateOnly(row[field]);
-      if (date && date <= today) dates.add(date);
+      if (automaticClosingEligible(date)) dates.add(date);
     });
   });
   let created = 0;
@@ -1223,7 +1243,7 @@ function ensureProvisionalClosings() {
       created += 1;
     });
   });
-  return created;
+  return created + removed;
 }
 
 function moveInvoicesBetweenDates(sourceDate, targetDate) {
