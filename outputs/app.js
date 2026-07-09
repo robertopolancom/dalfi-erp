@@ -2178,7 +2178,9 @@ function renderPayroll() {
 }
 
 function renderCash() {
+  ensureCashModuleMarkup();
   const target = byId("cash-table");
+  if (!target) return;
   const created = ensureProvisionalClosings();
   if (created) {
     state = stateFromDatabase(database);
@@ -3444,6 +3446,7 @@ function wireNavigation() {
       button.classList.add("active");
       byId(button.dataset.view).classList.add("active");
       byId("view-title").textContent = button.textContent;
+      if (button.dataset.view === "cash") renderCash();
     });
   });
 }
