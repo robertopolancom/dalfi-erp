@@ -1130,6 +1130,33 @@ function updateInvoiceDateFromAdmin(invoiceId, targetDate) {
   renderAll();
 }
 
+function moveBuggedJuly9InvoicesToJuly8() {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede mover fechas de facturas.");
+    return;
+  }
+  const sourceDate = "2026-07-09";
+  const targetDate = "2026-07-08";
+  const invoices = dbTable("facturas").filter((invoice) => dateOnly(invoice.fechaHora) === sourceDate);
+  const targetCount = dbTable("facturas").filter((invoice) => dateOnly(invoice.fechaHora) === targetDate).length;
+  if (!invoices.length) {
+    alert(
+      targetCount
+        ? `No hay facturas en ${sourceDate}. Ya existen ${targetCount} factura(s) en ${targetDate}; probablemente ya fueron corregidas.`
+        : `No hay facturas en ${sourceDate} ni en ${targetDate}.`,
+    );
+    return;
+  }
+  if (!closingAllowsDateChange(sourceDate, targetDate)) return;
+  if (!confirm(`Se encontraron ${invoices.length} factura(s) con fecha ${sourceDate}. Se moverán a ${targetDate} junto con pagos, ingresos, propinas y CxC vinculadas. ¿Continuar?`)) return;
+  moveLinkedRecordsForInvoices(invoices, sourceDate, targetDate);
+  ensureProvisionalClosings();
+  state = stateFromDatabase(database);
+  saveState();
+  renderAll();
+  alert(`Listo. Se movieron ${invoices.length} factura(s) de ${sourceDate} a ${targetDate}.`);
+}
+
 function moveTodayInvoicesToYesterday() {
   const defaultSource = datePlusDaysFrom(today, -1);
   const defaultTarget = datePlusDaysFrom(today, -2);
@@ -4535,6 +4562,7 @@ function wireForms() {
       updateInvoiceDateFromAdmin(invoiceId, row.querySelector(".invoice-admin-date")?.value);
     }
   });
+  byId("move-july-9-invoices").addEventListener("click", moveBuggedJuly9InvoicesToJuly8);
 
   byId("payment-form").addEventListener("submit", (event) => {
     event.preventDefault();
