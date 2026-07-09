@@ -20,6 +20,7 @@
         <nav class="nav-list">
           <button class="nav-item active" data-view="dashboard" type="button">Dashboard</button>
           <button class="nav-item" data-view="billing" type="button">Facturación</button>
+          <button class="nav-item admin-only hidden" data-view="invoice-admin" type="button">Admin facturas</button>
           <button class="nav-item" data-view="receivables" type="button">Cuentas por cobrar</button>
           <button class="nav-item" data-view="pending-transfers" type="button">Transferencias pendientes</button>
           <button class="nav-item" data-view="reservations" type="button">Citas</button>
@@ -385,6 +386,34 @@
               </div>
             </section>
           </div>
+        </section>
+
+        <section id="invoice-admin" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <span class="eyebrow">Administración</span>
+                <h3>Registro especial de facturas</h3>
+              </div>
+              <input class="inline-search" id="invoice-admin-search" placeholder="Buscar factura, cliente o fecha" />
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Factura</th>
+                    <th>Fecha actual</th>
+                    <th>Cliente</th>
+                    <th>Total</th>
+                    <th>Estado cierre</th>
+                    <th>Nueva fecha</th>
+                    <th>Acción</th>
+                  </tr>
+                </thead>
+                <tbody id="invoice-admin-table"></tbody>
+              </table>
+            </div>
+          </section>
         </section>
 
         <section id="receivables" class="view">
@@ -848,7 +877,8 @@
 
         <section id="cash" class="view">
           <div class="work-grid">
-            <form class="panel form-panel" id="cash-form">
+            <form class="panel form-panel hidden" id="cash-form">
+              <input id="cash-edit-id" type="hidden" />
               <div class="panel-head">
                 <h3>Cierre de caja</h3>
               </div>
@@ -915,12 +945,17 @@
                 Observación
                 <textarea id="cash-note" rows="3"></textarea>
               </label>
-              <button class="primary-btn" type="submit">Guardar cierre</button>
+              <button class="primary-btn" id="cash-submit" type="submit">Guardar cierre</button>
+              <button class="secondary-btn" id="cancel-cash-closing" type="button">Cancelar</button>
             </form>
 
             <section class="panel">
               <div class="panel-head">
                 <h3>Cierres registrados</h3>
+                <div class="panel-actions">
+                  <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Confirmar anteriores pendientes</button>
+                  <button class="primary-btn compact" id="new-cash-closing" type="button">Nuevo cierre</button>
+                </div>
               </div>
               <div class="table-wrap">
                 <table>
