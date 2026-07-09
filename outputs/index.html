@@ -461,6 +461,8 @@
                 Compañía tarjeta
                 <input id="payment-processor" list="processors-list" placeholder="Buscar compañía" />
               </label>
+              <div class="invoice-line-list" id="income-payment-line-list"></div>
+              <button class="secondary-btn" id="add-income-payment-line" type="button">Agregar otra forma de pago</button>
               <button class="primary-btn" type="submit">Aplicar cobro</button>
             </form>
 
@@ -975,10 +977,10 @@
 
             <section class="panel">
               <div class="panel-head">
-                <h3>Cierres registrados</h3>
+                <h3>Cierres diarios por caja/cuenta</h3>
                 <div class="panel-actions">
-                  <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Crear cierres pendientes</button>
-                  <button class="primary-btn compact" id="new-cash-closing" type="button">Nuevo cierre</button>
+                  <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Crear cierres por día/cuenta</button>
+                  <button class="primary-btn compact" id="new-cash-closing" type="button">Nuevo cierre manual</button>
                 </div>
               </div>
               <div class="table-wrap">

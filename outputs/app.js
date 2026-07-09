@@ -106,6 +106,7 @@ let database = null;
 let state = structuredClone(fallbackSeed);
 let invoiceLineCounter = 0;
 let paymentLineCounter = 0;
+let incomePaymentLineCounter = 0;
 let cashBalanceDraft = null;
 let reportGenerated = false;
 let activeReservationInvoiceId = "";
@@ -2068,7 +2069,7 @@ function renderCash() {
   const rows = dbTable("cierres")
     .slice()
     .sort((a, b) => `${dateOnly(b.fechaHoraCierre) || ""} ${b.cierreID || ""}`.localeCompare(`${dateOnly(a.fechaHoraCierre) || ""} ${a.cierreID || ""}`));
-  if (!rows.length) return renderEmpty(target, 11, "No hay cierres registrados.");
+  if (!rows.length) return renderEmpty(target, 11, "No hay cierres registrados. Usa Crear cierres por dia/cuenta para generarlos desde los registros existentes.");
   target.innerHTML = rows
     .map((closing) => {
       const date = dateOnly(closing.fechaHoraCierre);
@@ -2236,7 +2237,7 @@ function confirmPreviousPendingClosings() {
   state = stateFromDatabase(database);
   saveState();
   renderAll();
-  alert(created ? `Se crearon ${created} cierre(s) pendiente(s) para días con registros.` : "Todos los días con registros ya tienen cierre creado.");
+  alert(created ? `Se crearon ${created} cierre(s) pendiente(s) por día y cuenta/caja con registros.` : "Todos los días y cuentas/cajas con registros ya tienen cierre creado.");
 }
 
 function showNewCashClosing() {
@@ -4342,6 +4343,94 @@ function updateIncomePaymentFields() {
   }
 }
 
+function addIncomePaymentLine() {
+  const line = document.createElement("article");
+  line.className = "invoice-line income-payment-line";
+  line.dataset.lineId = `income-payment-${++incomePaymentLineCounter}`;
+  line.innerHTML = `
+    <div class="line-head">
+      <strong>Forma de pago adicional</strong>
+      <button class="secondary-btn compact remove-income-payment-line" type="button">Quitar</button>
+    </div>
+    <div class="line-grid">
+      <label>
+        Monto
+        <input class="income-payment-amount" type="number" min="0" step="0.01" value="0" />
+      </label>
+      <label>
+        Método
+        <select class="income-payment-method">
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjeta">Tarjeta</option>
+          <option value="transferencia">Transferencia</option>
+        </select>
+      </label>
+      <label class="income-payment-account-label hidden">
+        Cuenta bancaria
+        <input class="income-payment-account" list="bank-accounts-list" placeholder="Buscar cuenta bancaria" />
+      </label>
+      <label class="income-payment-processor-label hidden">
+        Compañía tarjeta
+        <input class="income-payment-processor" list="processors-list" placeholder="Buscar compañía" />
+      </label>
+    </div>
+  `;
+  byId("income-payment-line-list").appendChild(line);
+  updateIncomePaymentLineState(line);
+  attachSearchableLookups();
+}
+
+function updateIncomePaymentLineState(line) {
+  const method = line.querySelector(".income-payment-method").value;
+  const accountInput = line.querySelector(".income-payment-account");
+  const processorInput = line.querySelector(".income-payment-processor");
+  line.querySelector(".income-payment-account-label")?.classList.toggle("hidden", method !== "transferencia");
+  line.querySelector(".income-payment-processor-label")?.classList.toggle("hidden", method !== "tarjeta");
+  if (method === "efectivo") {
+    accountInput.value = cashRegisterAccount()?.nombreCuenta || "Caja Registradora";
+    processorInput.value = "";
+    return;
+  }
+  if (method === "transferencia") {
+    accountInput.setAttribute("list", "bank-accounts-list");
+    accountInput.placeholder = "Buscar cuenta bancaria";
+    if (!findBankAccountByName(accountInput.value)) inputSingleOrBlank(accountInput, lookupValuesFor("bank-accounts-list"));
+    processorInput.value = "";
+    return;
+  }
+  if (method === "tarjeta") {
+    if (!findProcessorByName(processorInput.value)) inputSingleOrBlank(processorInput, lookupValuesFor("processors-list"));
+    accountInput.value = "";
+  }
+}
+
+function getIncomePaymentLines() {
+  const mainMethod = byId("payment-method").value;
+  const mainAccount = mainMethod === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : byId("payment-account").value.trim();
+  const rows = [
+    {
+      amount: Number(byId("payment-amount").value) || 0,
+      method: mainMethod,
+      account: mainAccount,
+      processor: byId("payment-processor").value.trim(),
+      accountInput: byId("payment-account"),
+      processorInput: byId("payment-processor"),
+    },
+  ];
+  document.querySelectorAll(".income-payment-line").forEach((line) => {
+    const method = line.querySelector(".income-payment-method").value;
+    rows.push({
+      amount: Number(line.querySelector(".income-payment-amount").value) || 0,
+      method,
+      account: method === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : line.querySelector(".income-payment-account").value.trim(),
+      processor: line.querySelector(".income-payment-processor").value.trim(),
+      accountInput: line.querySelector(".income-payment-account"),
+      processorInput: line.querySelector(".income-payment-processor"),
+    });
+  });
+  return rows.filter((row) => row.amount > 0);
+}
+
 function updateExpenseDestinationLookup() {
   const type = byId("expense-type").value;
   const destinationInput = byId("expense-destination");
@@ -4864,27 +4953,45 @@ function wireForms() {
   byId("move-july-9-invoices").addEventListener("click", moveBuggedJuly9InvoicesToJuly8);
 
   byId("payment-method").addEventListener("change", updateIncomePaymentFields);
+  byId("add-income-payment-line").addEventListener("click", addIncomePaymentLine);
+  byId("income-payment-line-list").addEventListener("change", (event) => {
+    const line = event.target.closest(".income-payment-line");
+    if (line && event.target.matches(".income-payment-method")) updateIncomePaymentLineState(line);
+  });
+  byId("income-payment-line-list").addEventListener("click", (event) => {
+    const removeButton = event.target.closest(".remove-income-payment-line");
+    if (!removeButton) return;
+    removeButton.closest(".income-payment-line")?.remove();
+  });
   byId("payment-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const invoice = state.invoices.find((item) => item.id === byId("payment-invoice").value);
     if (!invoice) return;
-    const amount = Math.min(Number(byId("payment-amount").value), outstanding(invoice));
-    const method = byId("payment-method").value;
-    const accountName = method === "efectivo" ? cashRegisterAccount()?.nombreCuenta || "Caja Registradora" : byId("payment-account").value.trim();
-    const processorName = byId("payment-processor").value.trim();
+    const paymentLines = getIncomePaymentLines();
+    if (!paymentLines.length) {
+      alert("Agrega al menos una forma de pago con monto mayor que cero.");
+      byId("payment-amount").focus();
+      return;
+    }
     const cashDate = byId("payment-cash-date").value || today;
-    if (method === "transferencia" && !findBankAccountByName(accountName)) {
-      alert("Selecciona una cuenta bancaria para registrar la transferencia.");
-      byId("payment-account").focus();
-      return;
+    for (const line of paymentLines) {
+      if (line.method === "transferencia" && !findBankAccountByName(line.account)) {
+        alert("Selecciona una cuenta bancaria para registrar la transferencia.");
+        line.accountInput?.focus();
+        return;
+      }
+      if (line.method === "tarjeta" && !findProcessorByName(line.processor)) {
+        alert("Selecciona la compañía de tarjeta para registrar el pago.");
+        line.processorInput?.focus();
+        return;
+      }
     }
-    if (method === "tarjeta" && !findProcessorByName(processorName)) {
-      alert("Selecciona la compañía de tarjeta para registrar el pago.");
-      byId("payment-processor").focus();
-      return;
-    }
+    const invoiceOutstanding = outstanding(invoice);
+    const requestedAmount = paymentLines.reduce((sum, line) => sum + line.amount, 0);
+    const amount = Math.min(requestedAmount, invoiceOutstanding);
+    let remainingToApply = amount;
     invoice.paid += amount;
-    invoice.payment = method;
+    invoice.payment = paymentLines.length > 1 ? "combinado" : paymentLines[0].method;
     const dbInvoice = dbTable("facturas").find((item) => item.facturaID === invoice.id);
     if (dbInvoice) {
       dbInvoice.totalPagadoConfirmado = invoice.paid;
@@ -4897,8 +5004,15 @@ function wireForms() {
       cxc.balancePendiente = Math.max(0, (Number(cxc.montoOriginal) || 0) - (Number(cxc.montoAplicado) || 0));
       cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
     }
-    addConfirmedPayment(invoice.id, dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client), invoice.client, amount, method, "Cobro cuenta por cobrar", processorName, accountName, cashDate);
+    const clientRecord = dbTable("clientes").find((client) => client.clienteID === invoice.clientId) || findClientByName(invoice.client);
+    paymentLines.forEach((line) => {
+      if (remainingToApply <= 0) return;
+      const lineAmount = Math.min(line.amount, remainingToApply);
+      remainingToApply -= lineAmount;
+      addConfirmedPayment(invoice.id, clientRecord, invoice.client, lineAmount, line.method, "Cobro cuenta por cobrar", line.processor, line.account, cashDate);
+    });
     event.target.reset();
+    byId("income-payment-line-list").innerHTML = "";
     byId("payment-cash-date").value = today;
     updateIncomePaymentFields();
     saveState();
