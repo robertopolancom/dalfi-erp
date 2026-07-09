@@ -133,6 +133,10 @@
               <strong id="metric-ar">RD$0.00</strong>
             </article>
             <article class="metric">
+              <span>Ingresos hoy</span>
+              <strong id="metric-income">RD$0.00</strong>
+            </article>
+            <article class="metric">
               <span>Citas de hoy</span>
               <strong id="metric-bookings">0</strong>
             </article>
@@ -902,6 +906,10 @@
                 Fecha
                 <input id="cash-date" type="date" required />
               </label>
+              <label>
+                Cuenta / caja
+                <input id="cash-account" list="accounts-list" placeholder="Seleccionar cuenta o caja" required />
+              </label>
               <div class="form-row">
                 <label>
                   Monto contado inicial
@@ -978,6 +986,7 @@
                   <thead>
                     <tr>
                       <th>Fecha</th>
+                      <th>Cuenta</th>
                       <th>Esperado</th>
                       <th>Contado</th>
                       <th>Tarjeta</th>

@@ -686,6 +686,37 @@ function findCashAccountByName(name) {
   return isCashAccount(account) ? account : null;
 }
 
+function accountKey(account) {
+  return account?.cuentaID || normalize(account?.nombreCuenta || "");
+}
+
+function recordMatchesAccount(row, account, nameFields = [], idFields = []) {
+  const key = accountKey(account);
+  const accountName = normalize(account?.nombreCuenta || "");
+  if (!key && !accountName) return false;
+  return idFields.some((field) => row[field] && row[field] === key) || nameFields.some((field) => accountName && normalize(row[field]) === accountName);
+}
+
+function accountActivityForDate(date, account) {
+  const income = dbTable("ingresos")
+    .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmado") === "confirmado")
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaDestino"], ["cuentaDestinoID"]))
+    .reduce((sum, row) => sum + (Number(row.montoNeto) || Number(row.montoBruto) || 0), 0);
+  const expenses = dbTable("egresos")
+    .filter((row) => dateOnly(row.fechaHora) === date)
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
+  const transferIn = dbTable("transferencias")
+    .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaDestino"], ["cuentaDestinoID"]))
+    .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
+  const transferOut = dbTable("transferencias")
+    .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
+  return { income, expenses, transferIn, transferOut, expected: income + transferIn - expenses - transferOut };
+}
+
 function inputSingleOrBlank(input, values) {
   if (!input) return;
   input.value = values.length === 1 ? values[0] : "";
@@ -713,10 +744,20 @@ function canConfirmClosings() {
   return ["operador", "operadora", "administradora", "administrador", "propietario"].includes(currentRoleKey());
 }
 
+function closingForDateAndAccount(date, account) {
+  return dbTable("cierres")
+    .filter((closing) => dateOnly(closing.fechaHoraCierre) === date)
+    .find((closing) => recordMatchesAccount(closing, account, ["cuentaCaja"], ["cuentaID"]));
+}
+
 function closingForDate(date) {
   return dbTable("cierres")
     .filter((closing) => dateOnly(closing.fechaHoraCierre) === date)
-    .sort((a, b) => String(b.fechaActualizacion || b.fechaHoraCierre).localeCompare(String(a.fechaActualizacion || a.fechaHoraCierre)))[0];
+    .sort((a, b) => {
+      const pendingDiff = Number(isClosingPendingConfirmation(a)) - Number(isClosingPendingConfirmation(b));
+      if (pendingDiff) return pendingDiff;
+      return String(b.fechaActualizacion || b.fechaHoraCierre).localeCompare(String(a.fechaActualizacion || a.fechaHoraCierre));
+    })[0];
 }
 
 function isClosingOpenForEdits(closing) {
@@ -1039,7 +1080,7 @@ function cashExpectedFor(date) {
 }
 
 function dailyIncomeSummary(date) {
-  const income = dbTable("ingresos").filter((row) => dateOnly(row.fechaHora) === date && row.estado === "Confirmado");
+  const income = dbTable("ingresos").filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmado") === "confirmado");
   const receivables = dbTable("cuentasCobrar").filter((row) => dateOnly(row.fechaOrigen) === date && Number(row.balancePendiente) > 0);
   const byMethod = income.reduce(
     (summary, row) => {
@@ -1055,6 +1096,31 @@ function dailyIncomeSummary(date) {
     .filter((row) => row.deudorTipo === "Cliente" && !String(row.concepto || "").includes("procesador"))
     .reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
   return byMethod;
+}
+
+function clientReceivablePaymentsOn(date) {
+  return dbTable("ingresoAplicaciones")
+    .map((application) => {
+      if (!application.cxCID) return null;
+      const income = dbTable("ingresos").find((row) => row.ingresoID === application.ingresoID);
+      const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === application.cxCID);
+      if (!income || !cxc) return null;
+      if (dateOnly(income.fechaHora) !== date) return null;
+      if (normalize(income.estado || "Confirmado") !== "confirmado") return null;
+      if (normalize(cxc.deudorTipo || "Cliente") !== "cliente") return null;
+      if (normalize(cxc.concepto || "").includes("procesador")) return null;
+      return {
+        client: income.clienteNombre || cxc.deudorNombre || "Cliente",
+        amount: Number(application.montoAplicado) || 0,
+        invoiceId: application.facturaID || cxc.facturaID || cxc.cxCID,
+        method: income.metodoPago || "",
+      };
+    })
+    .filter(Boolean);
+}
+
+function confirmedIncomeOn(date) {
+  return dbTable("ingresos").filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmado") === "confirmado");
 }
 
 function ensureProvisionalClosings() {
@@ -1073,42 +1139,45 @@ function ensureProvisionalClosings() {
     });
   });
   let created = 0;
+  const accounts = activeAccounts();
+  const fallbackAccount = accountForPayment("efectivo");
+  const closingAccounts = accounts.length ? accounts : [fallbackAccount].filter(Boolean);
   [...dates].sort().forEach((date) => {
-    if (closingForDate(date)) return;
     const summary = dailyIncomeSummary(date);
-    const expenses = dbTable("egresos")
-      .filter((expense) => dateOnly(expense.fechaHora) === date)
-      .reduce((sum, expense) => sum + (Number(expense.monto) || 0), 0);
-    const account = accountForPayment("efectivo");
-    dbTable("cierres").push(stampRecord({
-      cierreID: nextDbId("cierres", "cierreID", "CIE"),
-      fechaHoraCierre: `${date}T23:59:00`,
-      cajero: "Cierre provisional automático",
-      cuentaCaja: account.nombreCuenta || "Caja registradora",
-      cuentaID: account.cuentaID || "",
-      balanceInicial: 0,
-      ingresosConfirmados: summary.cash,
-      egresos: expenses,
-      balanceTeorico: summary.cash,
-      balanceContado: 0,
-      conteoInicial: 0,
-      balanceContadoRectificado: 0,
-      diferenciaInicial: -(summary.cash + expenses),
-      diferencia: -(summary.cash + expenses),
-      cuadreFaltante: summary.cash + expenses,
-      cuadreFaltanteInicial: summary.cash + expenses,
-      sobranteCaja: 0,
-      tarjetaContada: 0,
-      tarjetaEsperada: summary.card,
-      transferenciaContada: 0,
-      transferenciaEsperada: summary.transfer,
-      creditoGenerado: summary.credit,
-      estado: "Pendiente de confirmacion",
-      requiereConfirmacion: true,
-      provisional: true,
-      observaciones: "Generado automáticamente porque el día tenía registros y no se confirmó cierre.",
-    }));
-    created += 1;
+    closingAccounts.forEach((account) => {
+      if (!account?.nombreCuenta || closingForDateAndAccount(date, account)) return;
+      const activity = accountActivityForDate(date, account);
+      const isRegister = normalize(account.nombreCuenta).includes("registradora");
+      dbTable("cierres").push(stampRecord({
+        cierreID: nextDbId("cierres", "cierreID", "CIE"),
+        fechaHoraCierre: `${date}T23:59:00`,
+        cajero: "Cierre provisional automático",
+        cuentaCaja: account.nombreCuenta || "Caja registradora",
+        cuentaID: account.cuentaID || "",
+        balanceInicial: 0,
+        ingresosConfirmados: activity.income + activity.transferIn,
+        egresos: activity.expenses + activity.transferOut,
+        balanceTeorico: activity.expected,
+        balanceContado: 0,
+        conteoInicial: 0,
+        balanceContadoRectificado: 0,
+        diferenciaInicial: -activity.expected,
+        diferencia: -activity.expected,
+        cuadreFaltante: Math.max(0, activity.expected),
+        cuadreFaltanteInicial: Math.max(0, activity.expected),
+        sobranteCaja: 0,
+        tarjetaContada: 0,
+        tarjetaEsperada: isRegister ? summary.card : 0,
+        transferenciaContada: 0,
+        transferenciaEsperada: isRegister ? summary.transfer : 0,
+        creditoGenerado: isRegister ? summary.credit : 0,
+        estado: "Pendiente de confirmacion",
+        requiereConfirmacion: true,
+        provisional: true,
+        observaciones: "Generado automáticamente porque el día tenía registros y no se confirmó cierre.",
+      }));
+      created += 1;
+    });
   });
   return created;
 }
@@ -1267,15 +1336,16 @@ function updateCashBalancePreview() {
     return;
   }
   const date = byId("cash-date").value || today;
-  const summary = dailyIncomeSummary(date);
-  const expected = summary.cash;
+  const account = findAccountByName(byId("cash-account").value) || accountForPayment("efectivo");
+  const activity = accountActivityForDate(date, account);
+  const expected = activity.expected;
   const counted = Number(countedRaw) || 0;
   const expenses = Number(byId("cash-expenses").value) || 0;
   const effectiveCounted = counted - expenses;
   const difference = effectiveCounted - expected;
   const shortage = Math.max(0, -difference);
   const surplus = Math.max(0, difference);
-  cashBalanceDraft = { date, expected, counted, expenses, difference, shortage, surplus, generatedAt: new Date().toISOString() };
+  cashBalanceDraft = { date, account: account.nombreCuenta || "", expected, counted, expenses, difference, shortage, surplus, generatedAt: new Date().toISOString() };
 
   byId("cash-expected-preview").textContent = money.format(expected);
   byId("cash-difference-preview").textContent = money.format(difference);
@@ -1360,14 +1430,17 @@ function escapeHtml(value) {
 
 function renderDashboard() {
   const todayInvoices = state.invoices.filter((invoice) => invoice.date === today);
-  const todayPayments = state.payments.filter((payment) => payment.date === today);
+  const todayPayments = clientReceivablePaymentsOn(today);
+  const todayIncome = confirmedIncomeOn(today);
   const todayReservations = state.reservations.filter((reservation) => reservation.date === today).sort((a, b) => a.time.localeCompare(b.time));
 
   const invoiced = todayInvoices.reduce((sum, invoice) => sum + invoice.total, 0);
   const collectedAr = todayPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const totalIncome = todayIncome.reduce((sum, income) => sum + (Number(income.montoNeto) || Number(income.montoBruto) || 0), 0);
 
   byId("metric-invoices").textContent = money.format(invoiced);
   byId("metric-ar").textContent = money.format(collectedAr);
+  byId("metric-income").textContent = money.format(totalIncome);
   byId("metric-bookings").textContent = todayReservations.length;
   byId("metric-cash").textContent = money.format(cashExpectedFor(today));
 
@@ -1436,7 +1509,6 @@ function renderInvoices() {
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice" type="button">Ver</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice" type="button">Editar</button>' : ""}
-              ${editable ? '<button class="secondary-btn compact date-invoice" type="button">Fecha</button>' : ""}
             </div>
           </td>
         </tr>
@@ -1760,7 +1832,6 @@ function renderIncomeRecords() {
   target.innerHTML = rows
     .map(
       (income) => {
-        const editable = canEditRecordDate(dateOnly(income.fechaHora));
         return `
         <tr>
           <td>${dateOnly(income.fechaHora)}</td>
@@ -1771,7 +1842,6 @@ function renderIncomeRecords() {
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-income" data-income-id="${escapeHtml(income.ingresoID)}" type="button">Ver</button>
-              ${editable ? `<button class="secondary-btn compact date-income" data-income-id="${escapeHtml(income.ingresoID)}" type="button">Fecha</button>` : ""}
             </div>
           </td>
         </tr>
@@ -1998,11 +2068,13 @@ function renderCash() {
   const rows = dbTable("cierres")
     .slice()
     .sort((a, b) => `${dateOnly(b.fechaHoraCierre) || ""} ${b.cierreID || ""}`.localeCompare(`${dateOnly(a.fechaHoraCierre) || ""} ${a.cierreID || ""}`));
-  if (!rows.length) return renderEmpty(target, 10, "No hay cierres registrados.");
+  if (!rows.length) return renderEmpty(target, 11, "No hay cierres registrados.");
   target.innerHTML = rows
     .map((closing) => {
       const date = dateOnly(closing.fechaHoraCierre);
-      const expected = Number(closing.balanceTeorico) || dailyIncomeSummary(date).cash;
+      const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
+      const storedExpected = Number(closing.balanceTeorico);
+      const expected = Number.isFinite(storedExpected) ? storedExpected : accountActivityForDate(date, account).expected;
       const counted = Number(closing.balanceContado) || 0;
       const cardCounted = Number(closing.tarjetaContada) || 0;
       const expenses = Number(closing.egresos) || 0;
@@ -2017,6 +2089,7 @@ function renderCash() {
       return `
         <tr>
           <td>${date}</td>
+          <td>${escapeHtml(closing.cuentaCaja || "Caja registradora")}</td>
           <td>${money.format(expected)}</td>
           <td>${money.format(counted)}</td>
           <td>${money.format(cardCounted)}</td>
@@ -2070,14 +2143,34 @@ function confirmClosing(closingId) {
     return;
   }
   if (!confirm(`Confirmar el cierre de ${dateOnly(closing.fechaHoraCierre)} bloqueará la edición de facturas de ese día. ¿Continuar?`)) return;
-  closing.estado = "Cerrado";
-  closing.requiereConfirmacion = false;
-  closing.confirmadoPor = currentUserEmail();
-  closing.fechaConfirmacion = new Date().toISOString();
-  stampRecord(closing, "updated");
+  confirmClosingAndPrevious(closing);
   state = stateFromDatabase(database);
   saveState();
   renderAll();
+}
+
+function confirmClosingAndPrevious(closing) {
+  const date = dateOnly(closing.fechaHoraCierre);
+  const key = closing.cuentaID || normalize(closing.cuentaCaja || "");
+  const previousConfirmed = dbTable("cierres")
+    .filter((row) => row.cierreID !== closing.cierreID)
+    .filter((row) => (row.cuentaID || normalize(row.cuentaCaja || "")) === key)
+    .filter((row) => dateOnly(row.fechaHoraCierre) < date && !isClosingPendingConfirmation(row))
+    .sort((a, b) => String(b.fechaHoraCierre || "").localeCompare(String(a.fechaHoraCierre || "")))[0];
+  const startDate = previousConfirmed ? dateOnly(previousConfirmed.fechaHoraCierre) : "";
+  dbTable("cierres")
+    .filter((row) => (row.cuentaID || normalize(row.cuentaCaja || "")) === key)
+    .filter((row) => {
+      const rowDate = dateOnly(row.fechaHoraCierre);
+      return rowDate <= date && (!startDate || rowDate > startDate) && isClosingPendingConfirmation(row);
+    })
+    .forEach((row) => {
+      row.estado = "Cerrado";
+      row.requiereConfirmacion = false;
+      row.confirmadoPor = currentUserEmail();
+      row.fechaConfirmacion = new Date().toISOString();
+      stampRecord(row, "updated");
+    });
 }
 
 function startClosingConfirmation(closingId) {
@@ -2092,17 +2185,17 @@ function startClosingConfirmation(closingId) {
     return;
   }
   const date = dateOnly(closing.fechaHoraCierre);
+  const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
+  const activity = accountActivityForDate(date, account);
   const summary = dailyIncomeSummary(date);
-  const expenses = dbTable("egresos")
-    .filter((expense) => dateOnly(expense.fechaHora) === date)
-    .reduce((sum, expense) => sum + (Number(expense.monto) || 0), 0);
   byId("cash-form").classList.remove("hidden");
   byId("cash-edit-id").value = closing.cierreID;
   byId("cash-confirm-after-save").value = "true";
   byId("cash-submit").textContent = "Confirmar y cerrar";
   byId("cash-date").value = date;
-  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || summary.cash + expenses;
-  byId("cash-expenses").value = Number(closing.egresos) || expenses;
+  byId("cash-account").value = closing.cuentaCaja || account.nombreCuenta || "";
+  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || activity.expected;
+  byId("cash-expenses").value = Number(closing.egresos) || activity.expenses + activity.transferOut;
   byId("cash-card-counted").value = Number(closing.tarjetaContada) || summary.card;
   byId("cash-card-processor").value = closing.procesadorTarjeta || "";
   byId("cash-card-batch").value = closing.loteTarjeta || "";
@@ -2147,21 +2240,13 @@ function confirmPreviousPendingClosings() {
 }
 
 function showNewCashClosing() {
-  const currentClosing = closingForDate(today);
-  if (currentClosing && !isClosingPendingConfirmation(currentClosing)) {
-    alert("El cierre de hoy ya está confirmado. Administración debe quitar el cierre antes de editarlo.");
-    return;
-  }
-  if (currentClosing && isClosingPendingConfirmation(currentClosing)) {
-    startClosingEdit(currentClosing.cierreID);
-    return;
-  }
   byId("cash-form").classList.remove("hidden");
   byId("cash-form").reset();
   byId("cash-edit-id").value = "";
   byId("cash-confirm-after-save").value = "";
   byId("cash-submit").textContent = "Guardar cierre";
   byId("cash-date").value = today;
+  byId("cash-account").value = cashRegisterAccount()?.nombreCuenta || cashAccounts()[0]?.nombreCuenta || activeAccounts()[0]?.nombreCuenta || "";
   byId("cash-expenses").value = 0;
   byId("cash-card-counted").value = 0;
   byId("cash-transfer-counted").value = 0;
@@ -2176,6 +2261,7 @@ function hideCashClosingForm() {
   byId("cash-confirm-after-save").value = "";
   byId("cash-submit").textContent = "Guardar cierre";
   byId("cash-date").value = today;
+  byId("cash-account").value = "";
   resetCashBalancePreview();
 }
 
@@ -2195,6 +2281,7 @@ function startClosingEdit(closingId) {
   byId("cash-confirm-after-save").value = "";
   byId("cash-submit").textContent = "Actualizar cierre";
   byId("cash-date").value = dateOnly(closing.fechaHoraCierre);
+  byId("cash-account").value = closing.cuentaCaja || "";
   byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || 0;
   byId("cash-expenses").value = Number(closing.egresos) || 0;
   byId("cash-card-counted").value = Number(closing.tarjetaContada) || 0;
@@ -2277,7 +2364,7 @@ function renderExpenses() {
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-expense" type="button">Ver</button>
-              ${editable ? '<button class="secondary-btn compact edit-expense" type="button">Editar</button><button class="secondary-btn compact date-expense" type="button">Fecha</button>' : ""}
+              ${editable ? '<button class="secondary-btn compact edit-expense" type="button">Editar</button>' : ""}
             </div>
           </td>
         </tr>
@@ -4764,7 +4851,6 @@ function wireForms() {
     const invoiceId = row.dataset.invoiceId;
     if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
-    if (event.target.closest(".date-invoice")) changeInvoiceDate(invoiceId);
   });
 
   byId("invoice-admin-table").addEventListener("click", (event) => {
@@ -4840,11 +4926,7 @@ function wireForms() {
     const viewButton = event.target.closest(".view-income");
     if (viewButton) {
       openIncomeReport(viewButton.dataset.incomeId);
-      return;
     }
-    const button = event.target.closest(".date-income");
-    if (!button) return;
-    changeIncomeDate(button.dataset.incomeId);
   });
 
   byId("ar-table").addEventListener("click", (event) => {
@@ -4871,7 +4953,7 @@ function wireForms() {
 
   byId("generate-cash-balance").addEventListener("click", updateCashBalancePreview);
 
-  ["cash-counted", "cash-expenses", "cash-date"].forEach((id) => {
+  ["cash-counted", "cash-expenses", "cash-date", "cash-account"].forEach((id) => {
     byId(id).addEventListener("input", resetCashBalancePreview);
   });
 
@@ -5150,7 +5232,6 @@ function wireForms() {
     if (!row) return;
     if (event.target.closest(".view-expense")) openExpenseReport(row.dataset.expenseId);
     if (event.target.closest(".edit-expense")) startExpenseEdit(row.dataset.expenseId);
-    if (event.target.closest(".date-expense")) changeExpenseDate(row.dataset.expenseId);
   });
 
   byId("inventory-form").addEventListener("submit", (event) => {
@@ -5440,16 +5521,28 @@ function wireForms() {
     const editId = byId("cash-edit-id").value;
     const confirmAfterSave = byId("cash-confirm-after-save").value === "true";
     const date = byId("cash-date").value;
+    const accountName = byId("cash-account").value.trim();
+    const account = findAccountByName(accountName);
+    if (!account) {
+      alert("Selecciona la cuenta o caja que se está cerrando.");
+      byId("cash-account").focus();
+      return;
+    }
     const summary = dailyIncomeSummary(date);
-    const expected = summary.cash;
+    const activity = accountActivityForDate(date, account);
+    const expected = activity.expected;
     const initialCounted = Number(byId("cash-counted").value);
     const cardCounted = Number(byId("cash-card-counted").value) || 0;
     const cardProcessorName = byId("cash-card-processor").value.trim();
     const transferCounted = Number(byId("cash-transfer-counted").value) || 0;
     const expenses = Number(byId("cash-expenses").value) || 0;
-    const closingId = editId || nextDbId("cierres", "cierreID", "CIE");
-    const existingClosing = editId ? dbTable("cierres").find((row) => row.cierreID === editId) : null;
-    const account = accountForPayment("efectivo");
+    const sameDateAccountClosing = closingForDateAndAccount(date, account);
+    if (!editId && sameDateAccountClosing && !isClosingPendingConfirmation(sameDateAccountClosing)) {
+      alert("Esa cuenta ya tiene cierre confirmado en esa fecha. Administración debe quitar o abrir el cierre antes de editarlo.");
+      return;
+    }
+    const existingClosing = editId ? dbTable("cierres").find((row) => row.cierreID === editId) : sameDateAccountClosing || null;
+    const closingId = existingClosing?.cierreID || nextDbId("cierres", "cierreID", "CIE");
     if (cardCounted > 0 && !findProcessorByName(cardProcessorName)) {
       alert("Selecciona la compañía de tarjeta creada en Base de datos para poder calcular su comisión.");
       byId("cash-card-processor").focus();
@@ -5458,6 +5551,7 @@ function wireForms() {
     if (
       !cashBalanceDraft ||
       cashBalanceDraft.date !== date ||
+      cashBalanceDraft.account !== account.nombreCuenta ||
       cashBalanceDraft.counted !== initialCounted ||
       cashBalanceDraft.expenses !== expenses
     ) {
@@ -5484,6 +5578,7 @@ function wireForms() {
     const difference = counted - expenses - expected;
     const shortage = Math.max(0, -difference);
     const surplus = Math.max(0, difference);
+    const isRegisterClosing = normalize(account.nombreCuenta).includes("registradora");
     if (shortage > 0) {
       alert("El monto rectificado todavía queda por debajo del efectivo esperado. Debes introducir el monto completivo antes de guardar el cierre.");
       byId("cash-rectified-counted").focus();
@@ -5510,12 +5605,12 @@ function wireForms() {
       requiereConfirmacion: Boolean(editId && !confirmAfterSave),
       loteTarjeta: byId("cash-card-batch").value.trim(),
       tarjetaContada: cardCounted,
-      tarjetaEsperada: summary.card,
+      tarjetaEsperada: isRegisterClosing ? summary.card : 0,
       procesadorTarjeta: cardProcessorName,
       comisionTarjetaPorcentaje: processorFeeRate(findProcessorByName(cardProcessorName)),
       transferenciaContada: transferCounted,
-      transferenciaEsperada: summary.transfer,
-      creditoGenerado: summary.credit,
+      transferenciaEsperada: isRegisterClosing ? summary.transfer : 0,
+      creditoGenerado: isRegisterClosing ? summary.credit : 0,
       motivoFaltante: shortageNote,
       observaciones: byId("cash-note").value.trim(),
     };
@@ -5545,8 +5640,11 @@ function wireForms() {
     if (existingClosing) {
       Object.assign(existingClosing, closingPayload);
       stampRecord(existingClosing, "updated");
+      if (confirmAfterSave) confirmClosingAndPrevious(existingClosing);
     } else {
-      dbTable("cierres").push(stampRecord({ cierreID: closingId, ...closingPayload }));
+      const newClosing = stampRecord({ cierreID: closingId, ...closingPayload });
+      dbTable("cierres").push(newClosing);
+      if (!editId || confirmAfterSave) confirmClosingAndPrevious(newClosing);
     }
     state = stateFromDatabase(database);
     event.target.reset();
@@ -5813,6 +5911,7 @@ async function init() {
   byId("reservation-date").value = today;
   byId("payment-cash-date").value = today;
   byId("cash-date").value = today;
+  byId("cash-account").value = cashRegisterAccount()?.nombreCuenta || cashAccounts()[0]?.nombreCuenta || activeAccounts()[0]?.nombreCuenta || "";
   byId("card-reconciliation-date").value = today;
   byId("expense-date").value = today;
   byId("inventory-entry-date").value = today;
