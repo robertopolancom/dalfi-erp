@@ -114,6 +114,7 @@ let supabaseClient = null;
 let supabaseSession = null;
 let remoteSaveTimer = null;
 let remoteSaveInFlight = false;
+let remoteRefreshTimer = null;
 let isLoadingRemote = false;
 
 async function loadDatabase() {
@@ -214,6 +215,37 @@ async function loadRemoteDatabase() {
   } finally {
     isLoadingRemote = false;
   }
+}
+
+function isUserEditingForm() {
+  const active = document.activeElement;
+  return Boolean(active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName));
+}
+
+async function refreshRemoteDatabase({ force = false } = {}) {
+  if (!isSupabaseReady() || !database || remoteSaveInFlight || isLoadingRemote) return false;
+  if (!force && isUserEditingForm()) return false;
+  try {
+    const remoteDatabase = await loadRemoteDatabase();
+    if (!remoteDatabase) return false;
+    database = remoteDatabase;
+    ensureDatabaseShape();
+    state = stateFromDatabase(database);
+    localStorage.setItem(dbStorageKey, JSON.stringify(database));
+    localStorage.setItem(appStorageKey, JSON.stringify(state));
+    renderAll();
+    updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
+    return true;
+  } catch (error) {
+    console.warn("No se pudo refrescar Supabase.", error);
+    updateSyncStatus("Error leyendo Supabase", "error");
+    return false;
+  }
+}
+
+function startRemoteRefreshLoop() {
+  if (remoteRefreshTimer) return;
+  remoteRefreshTimer = window.setInterval(() => refreshRemoteDatabase(), 30000);
 }
 
 function scheduleRemoteSave() {
@@ -656,8 +688,22 @@ function activeAccounts() {
 }
 
 function isBankAccount(account) {
-  const text = normalize(`${account?.tipoCuenta || ""} ${account?.tipoProducto || ""} ${account?.nombreCuenta || ""}`);
-  return text.includes("banco") || text.includes("ahorro") || text.includes("corriente");
+  if (!account) return false;
+  const text = normalize(
+    `${account.tipoCuenta || ""} ${account.tipoProducto || ""} ${account.nombreCuenta || ""} ${account.entidad || ""} ${account.numeroCuenta || ""}`,
+  );
+  if (text.includes("caja") || text.includes("efectivo")) return false;
+  return (
+    text.includes("banco") ||
+    text.includes("bancari") ||
+    text.includes("ahorro") ||
+    text.includes("corriente") ||
+    text.includes("banreservas") ||
+    text.includes("popular") ||
+    text.includes("bhd") ||
+    text.includes("scotia") ||
+    Boolean(account.numeroCuenta && !String(account.numeroCuenta).toUpperCase().startsWith("CAJA"))
+  );
 }
 
 function isCashAccount(account) {
@@ -1071,13 +1117,9 @@ function outstanding(invoice) {
 }
 
 function cashExpectedFor(date) {
-  const invoiceCash = state.invoices
-    .filter((invoice) => invoice.date === date && invoice.payment === "efectivo")
-    .reduce((sum, invoice) => sum + invoice.paid, 0);
-  const arCash = state.payments
-    .filter((payment) => payment.date === date && payment.method === "efectivo")
-    .reduce((sum, payment) => sum + payment.amount, 0);
-  return invoiceCash + arCash;
+  return confirmedIncomeOn(date)
+    .filter((income) => normalize(income.metodoPago) === "efectivo")
+    .reduce((sum, income) => sum + (Number(income.montoNeto) || Number(income.montoBruto) || 0), 0);
 }
 
 function dailyIncomeSummary(date) {
@@ -1085,8 +1127,9 @@ function dailyIncomeSummary(date) {
   const receivables = dbTable("cuentasCobrar").filter((row) => dateOnly(row.fechaOrigen) === date && Number(row.balancePendiente) > 0);
   const byMethod = income.reduce(
     (summary, row) => {
+      const rawMethod = normalize(row.metodoPago);
       const method = normalizePayment(row.metodoPago);
-      if (method === "efectivo") summary.cash += Number(row.montoNeto) || 0;
+      if (rawMethod === "efectivo") summary.cash += Number(row.montoNeto) || 0;
       if (method === "tarjeta") summary.card += Number(row.montoBruto) || 0;
       if (method === "transferencia") summary.transfer += Number(row.montoNeto) || 0;
       return summary;
@@ -3712,6 +3755,7 @@ function wireAuth() {
     } else {
       await saveRemoteDatabase();
     }
+    startRemoteRefreshLoop();
     if (isPasswordResetRequired()) {
       byId("password-change-form").dataset.mode = "forced";
     }
@@ -4130,6 +4174,31 @@ function getInvoiceLines() {
   });
 }
 
+function invoiceTotalsFromLines(lines, generalExtra = 0, generalDiscountPercent = 0) {
+  const servicesTotal = lines.reduce((sum, line) => sum + line.qty * line.price, 0);
+  const extrasTotal = lines.reduce((sum, line) => sum + line.extra, 0);
+  const lineDiscounts = lines.reduce((sum, line) => sum + line.discount, 0);
+  const generalDiscountBase = Math.max(0, servicesTotal + extrasTotal - lineDiscounts);
+  const generalDiscountAmount = Math.min(generalDiscountBase, generalDiscountBase * ((Number(generalDiscountPercent) || 0) / 100));
+  const discountTotal = lineDiscounts + generalDiscountAmount;
+  const grandTotal = Math.max(0, servicesTotal + extrasTotal + generalExtra - discountTotal);
+  return { servicesTotal, extrasTotal, lineDiscounts, generalDiscountAmount, discountTotal, grandTotal };
+}
+
+function invoiceCommissionAllocations(lines, generalDiscountAmount = 0) {
+  const bases = lines.map((line) => Math.max(0, line.qty * line.price + line.extra - line.discount));
+  const totalBase = bases.reduce((sum, value) => sum + value, 0);
+  return lines.map((line, index) => {
+    const share = totalBase > 0 ? bases[index] / totalBase : 0;
+    const generalDiscountShare = Math.min(bases[index], Number((generalDiscountAmount * share).toFixed(2)));
+    return {
+      lineNetBeforeGeneral: bases[index],
+      generalDiscountShare,
+      commissionableSubtotal: Math.max(0, bases[index] - generalDiscountShare),
+    };
+  });
+}
+
 function applyGeneralDiscountPercent() {
   const percent = Number(byId("invoice-general-discount-percent")?.value) || 0;
   if (percent <= 0) return;
@@ -4151,15 +4220,12 @@ function updateInvoiceLineOptionalFields(line) {
 }
 
 function updateInvoiceTotals() {
-  applyGeneralDiscountPercent();
   const lines = getInvoiceLines();
   const payments = getPaymentLines();
-  const servicesTotal = lines.reduce((sum, line) => sum + line.qty * line.price, 0);
-  const extrasTotal = lines.reduce((sum, line) => sum + line.extra, 0);
-  const discountsTotal = lines.reduce((sum, line) => sum + line.discount, 0);
   const generalExtra = Number(byId("invoice-general-extra")?.value) || 0;
+  const generalDiscountPercent = Number(byId("invoice-general-discount-percent")?.value) || 0;
   const tip = Number(byId("invoice-tip").value) || 0;
-  const grandTotal = Math.max(0, servicesTotal + extrasTotal + generalExtra - discountsTotal);
+  const { servicesTotal, extrasTotal, discountTotal, grandTotal } = invoiceTotalsFromLines(lines, generalExtra, generalDiscountPercent);
   const totalWithTip = grandTotal + tip;
   const paidTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
   const pendingTotal = Math.max(0, grandTotal - paidTotal);
@@ -4170,7 +4236,7 @@ function updateInvoiceTotals() {
   });
   byId("invoice-services-total").textContent = money.format(servicesTotal);
   byId("invoice-extras-total").textContent = money.format(extrasTotal);
-  byId("invoice-discounts-total").textContent = money.format(discountsTotal);
+  byId("invoice-discounts-total").textContent = money.format(discountTotal);
   byId("invoice-general-extra-total").textContent = money.format(generalExtra);
   byId("invoice-base-total").textContent = money.format(grandTotal);
   byId("invoice-grand-total").textContent = money.format(grandTotal);
@@ -4329,11 +4395,13 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
   }
   const clientRecord = findClientByName(client) || ensureClient(client);
   const firstStaff = ensureStaffRecord(lines[0].staff);
+  const allocations = invoiceCommissionAllocations(lines, totals.generalDiscountAmount || 0);
   database.data.facturaDetalle = dbTable("facturaDetalle").filter((detail) => detail.facturaID !== invoiceId);
-  lines.forEach((line) => {
+  lines.forEach((line, index) => {
     ensureService(line.service, line.price);
     const serviceRecord = findServiceByName(line.service);
     const staffRecord = ensureStaffRecord(line.staff);
+    const allocation = allocations[index] || {};
     dbTable("facturaDetalle").push(stampRecord({
       detalleID: nextDbId("facturaDetalle", "detalleID", "DET"),
       facturaID: invoiceId,
@@ -4347,7 +4415,10 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
       extraConcepto_50: line.extraNote,
       deduccionMonto: line.discount,
       deduccionConcepto_50: line.discountNote,
-      subtotal: line.subtotal,
+      deduccionGeneralMonto: allocation.generalDiscountShare || 0,
+      subtotalAntesDescuentoGeneral: allocation.lineNetBeforeGeneral || line.subtotal,
+      subtotal: allocation.commissionableSubtotal ?? line.subtotal,
+      montoComisionable: allocation.commissionableSubtotal ?? line.subtotal,
     }));
   });
   invoice.clienteID = clientRecord?.clienteID || invoice.clienteID || "";
@@ -4362,6 +4433,7 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
   invoice.adicionalGeneralMonto = totals.generalExtra;
   invoice.adicionalGeneralDetalle = totals.generalExtraNote;
   invoice.descuentoGeneralPorcentaje = totals.generalDiscountPercent;
+  invoice.descuentoGeneralMonto = totals.generalDiscountAmount || 0;
   invoice.totalConPropina = totals.total + previousTip;
   invoice.observaciones = note;
   stampRecord(invoice, "updated");
@@ -5094,13 +5166,11 @@ function wireForms() {
       byId("invoice-general-extra-note").focus();
       return;
     }
-    const servicesTotal = lines.reduce((sum, line) => sum + line.qty * line.price, 0);
-    const extrasTotal = lines.reduce((sum, line) => sum + line.extra, 0);
-    const discount = lines.reduce((sum, line) => sum + line.discount, 0);
-    const total = Math.max(0, servicesTotal + extrasTotal + generalExtra - discount);
+    const totals = invoiceTotalsFromLines(lines, generalExtra, generalDiscountPercent);
+    const { servicesTotal, extrasTotal, discountTotal: discount, grandTotal: total } = totals;
     const totalWithTip = total + tip;
     if (editId) {
-      saveEditedInvoice(editId, client, lines, { total, generalExtra, generalExtraNote, generalDiscountPercent }, note);
+      saveEditedInvoice(editId, client, lines, { total, generalExtra, generalExtraNote, generalDiscountPercent, generalDiscountAmount: totals.generalDiscountAmount }, note);
       return;
     }
     const confirmedPaid = payments.filter((payment) => isConfirmedPaymentMethod(payment.method)).reduce((sum, payment) => sum + payment.amount, 0);
@@ -5125,12 +5195,14 @@ function wireForms() {
     const clientRecord = reservationClientRecord || findClientByName(client);
     const firstStaff = ensureStaffRecord(lines[0].staff);
     const detailRecords = [];
+    const allocations = invoiceCommissionAllocations(lines, totals.generalDiscountAmount);
 
-    lines.forEach((line) => {
+    lines.forEach((line, index) => {
       ensureService(line.service, line.price);
       const serviceRecord = findServiceByName(line.service);
       const staffRecord = ensureStaffRecord(line.staff);
       const detailId = nextDbId("facturaDetalle", "detalleID", "DET");
+      const allocation = allocations[index] || {};
       const detail = {
         detalleID: detailId,
         facturaID: invoiceId,
@@ -5144,7 +5216,10 @@ function wireForms() {
         extraConcepto_50: line.extraNote,
         deduccionMonto: line.discount,
         deduccionConcepto_50: line.discountNote,
-        subtotal: line.subtotal,
+        deduccionGeneralMonto: allocation.generalDiscountShare || 0,
+        subtotalAntesDescuentoGeneral: allocation.lineNetBeforeGeneral || line.subtotal,
+        subtotal: allocation.commissionableSubtotal ?? line.subtotal,
+        montoComisionable: allocation.commissionableSubtotal ?? line.subtotal,
       };
       detailRecords.push(detail);
       dbTable("facturaDetalle").push(stampRecord(detail));
@@ -5179,6 +5254,7 @@ function wireForms() {
       adicionalGeneralMonto: generalExtra,
       adicionalGeneralDetalle: generalExtraNote,
       descuentoGeneralPorcentaje: generalDiscountPercent,
+      descuentoGeneralMonto: totals.generalDiscountAmount,
       totalConPropina: totalWithTip,
       cierreID: "Cierre no creado",
       observaciones: note,
@@ -6431,6 +6507,11 @@ async function init() {
   wireForms();
   wireSearches();
   wireNumberFieldFocus();
+  window.addEventListener("focus", () => refreshRemoteDatabase());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshRemoteDatabase();
+  });
+  startRemoteRefreshLoop();
   attachSearchableLookups();
   if (!document.querySelector(".invoice-line")) addInvoiceLine();
   if (!document.querySelector(".payment-line")) addPaymentLine();
