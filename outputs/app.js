@@ -1540,6 +1540,11 @@ function ensureCashModuleMarkup() {
           Observación
           <textarea id="cash-note" rows="3"></textarea>
         </label>
+        <div class="row-actions hidden" id="cash-view-actions">
+          <button class="secondary-btn" id="cash-modify-closing" type="button">Modificar</button>
+          <button class="primary-btn" id="cash-confirm-closing" type="button">Confirmar cierre</button>
+          <button class="secondary-btn" id="cash-open-closing" type="button">Abrir cierre</button>
+        </div>
         <button class="primary-btn" id="cash-submit" type="submit">Guardar cierre</button>
         <button class="secondary-btn" id="cancel-cash-closing" type="button">Cancelar</button>
       </form>
@@ -2305,10 +2310,6 @@ function renderCash() {
       const surplus = Number(closing.sobranteCaja) || 0;
       const difference = Number(closing.diferencia) || counted - expenses - expected;
       const status = closing?.estado || "Cerrado";
-      const isOpen = isClosingOpenForEdits(closing);
-      const canManage = canManageInvoices();
-      const canConfirm = canConfirmClosings();
-      const pendingConfirmation = isClosingPendingConfirmation(closing);
       return `
         <tr>
           <td>${date}</td>
@@ -2324,10 +2325,6 @@ function renderCash() {
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Ver</button>
-              ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact edit-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Editar</button>` : ""}
-              ${canManage && !isOpen ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Abrir</button>` : ""}
-              ${canConfirm && pendingConfirmation ? `<button class="secondary-btn compact confirm-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Confirmar</button>` : ""}
-              ${canManage && !pendingConfirmation ? `<button class="secondary-btn compact void-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Quitar cierre</button>` : ""}
             </div>
           </td>
         </tr>
@@ -2352,6 +2349,7 @@ function openClosingForEdit(closingId) {
   state = stateFromDatabase(database);
   saveState();
   renderAll();
+  startClosingEdit(closingId);
 }
 
 function confirmClosing(closingId) {
@@ -2407,28 +2405,8 @@ function startClosingConfirmation(closingId) {
     alert("Este cierre ya está confirmado.");
     return;
   }
-  const date = dateOnly(closing.fechaHoraCierre);
-  const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
-  const activity = accountActivityForDate(date, account);
-  const summary = dailyIncomeSummary(date);
-  byId("cash-form").classList.remove("hidden");
-  byId("cash-edit-id").value = closing.cierreID;
-  byId("cash-confirm-after-save").value = "true";
-  byId("cash-submit").textContent = "Confirmar y cerrar";
-  byId("cash-date").value = date;
-  byId("cash-account").value = closing.cuentaCaja || account.nombreCuenta || "";
-  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || activity.expected;
-  byId("cash-expenses").value = Number(closing.egresos) || activity.expenses + activity.transferOut;
-  byId("cash-card-counted").value = Number(closing.tarjetaContada) || summary.card;
-  byId("cash-card-processor").value = closing.procesadorTarjeta || "";
-  byId("cash-card-batch").value = closing.loteTarjeta || "";
-  byId("cash-transfer-counted").value = Number(closing.transferenciaContada) || summary.transfer;
-  byId("cash-note").value = closing.observaciones || "";
-  byId("cash-shortage-note").value = closing.motivoFaltante || "";
-  byId("cash-rectified-counted").value = Number(closing.balanceContadoRectificado) || "";
-  resetCashBalancePreview();
+  loadClosingIntoCashForm(closing, { readOnly: false, confirmAfterSave: true, submitText: "Confirmar y cerrar" });
   byId("cash-counted").focus();
-  byId("cash-form").scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
 function voidClosing(closingId) {
@@ -2465,9 +2443,12 @@ function confirmPreviousPendingClosings() {
 function showNewCashClosing() {
   byId("cash-form").classList.remove("hidden");
   byId("cash-form").reset();
+  setCashFormReadOnly(false);
+  setClosingViewActions(null);
   byId("cash-edit-id").value = "";
   byId("cash-confirm-after-save").value = "";
   byId("cash-submit").textContent = "Guardar cierre";
+  byId("cash-submit").classList.remove("hidden");
   byId("cash-date").value = today;
   byId("cash-account").value = cashRegisterAccount()?.nombreCuenta || cashAccounts()[0]?.nombreCuenta || activeAccounts()[0]?.nombreCuenta || "";
   byId("cash-expenses").value = 0;
@@ -2480,12 +2461,87 @@ function showNewCashClosing() {
 function hideCashClosingForm() {
   byId("cash-form").classList.add("hidden");
   byId("cash-form").reset();
+  setCashFormReadOnly(false);
+  setClosingViewActions(null);
   byId("cash-edit-id").value = "";
   byId("cash-confirm-after-save").value = "";
   byId("cash-submit").textContent = "Guardar cierre";
+  byId("cash-submit").classList.remove("hidden");
   byId("cash-date").value = today;
   byId("cash-account").value = "";
   resetCashBalancePreview();
+}
+
+function cashFormFieldIds() {
+  return [
+    "cash-date",
+    "cash-account",
+    "cash-counted",
+    "cash-expenses",
+    "generate-cash-balance",
+    "cash-shortage-note",
+    "cash-rectified-counted",
+    "cash-card-counted",
+    "cash-card-processor",
+    "cash-card-batch",
+    "cash-transfer-counted",
+    "cash-note",
+  ];
+}
+
+function setCashFormReadOnly(readOnly) {
+  cashFormFieldIds().forEach((id) => {
+    const field = byId(id);
+    if (field) field.disabled = readOnly;
+  });
+}
+
+function setClosingViewActions(closing) {
+  const actions = byId("cash-view-actions");
+  if (!actions) return;
+  const pending = isClosingPendingConfirmation(closing);
+  const canConfirm = canConfirmClosings();
+  const canManage = canManageInvoices();
+  actions.classList.toggle("hidden", !closing);
+  byId("cash-modify-closing").classList.toggle("hidden", !(closing && pending && canConfirm));
+  byId("cash-confirm-closing").classList.toggle("hidden", !(closing && pending && canConfirm));
+  byId("cash-open-closing").classList.toggle("hidden", !(closing && !pending && canManage));
+  byId("cash-modify-closing").dataset.closingId = closing?.cierreID || "";
+  byId("cash-confirm-closing").dataset.closingId = closing?.cierreID || "";
+  byId("cash-open-closing").dataset.closingId = closing?.cierreID || "";
+}
+
+function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave = false, submitText = "Actualizar cierre" } = {}) {
+  const date = dateOnly(closing.fechaHoraCierre);
+  const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
+  const activity = accountActivityForDate(date, account);
+  const summary = dailyIncomeSummary(date);
+  byId("cash-form").classList.remove("hidden");
+  byId("cash-edit-id").value = closing.cierreID;
+  byId("cash-confirm-after-save").value = confirmAfterSave ? "true" : "";
+  byId("cash-submit").textContent = submitText;
+  byId("cash-submit").classList.toggle("hidden", readOnly);
+  byId("cash-date").value = date;
+  byId("cash-account").value = closing.cuentaCaja || account.nombreCuenta || "";
+  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || (confirmAfterSave ? activity.expected : 0);
+  byId("cash-expenses").value = Number(closing.egresos) || (confirmAfterSave ? activity.expenses + activity.transferOut : 0);
+  byId("cash-card-counted").value = Number(closing.tarjetaContada) || (confirmAfterSave ? summary.card : 0);
+  byId("cash-card-processor").value = closing.procesadorTarjeta || "";
+  byId("cash-card-batch").value = closing.loteTarjeta || "";
+  byId("cash-transfer-counted").value = Number(closing.transferenciaContada) || (confirmAfterSave ? summary.transfer : 0);
+  byId("cash-note").value = closing.observaciones || "";
+  byId("cash-shortage-note").value = closing.motivoFaltante || "";
+  byId("cash-rectified-counted").value = Number(closing.balanceContadoRectificado) || "";
+  resetCashBalancePreview();
+  setCashFormReadOnly(readOnly);
+  setClosingViewActions(readOnly ? closing : null);
+  byId("cash-form").scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function viewClosingInForm(closingId) {
+  const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
+  if (!closing) return;
+  loadClosingIntoCashForm(closing, { readOnly: true, submitText: "Guardar cierre" });
 }
 
 function startClosingEdit(closingId) {
@@ -2499,21 +2555,7 @@ function startClosingEdit(closingId) {
     alert("Este cierre está confirmado. Administración debe quitar el cierre antes de editarlo.");
     return;
   }
-  byId("cash-form").classList.remove("hidden");
-  byId("cash-edit-id").value = closing.cierreID;
-  byId("cash-confirm-after-save").value = "";
-  byId("cash-submit").textContent = "Actualizar cierre";
-  byId("cash-date").value = dateOnly(closing.fechaHoraCierre);
-  byId("cash-account").value = closing.cuentaCaja || "";
-  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || 0;
-  byId("cash-expenses").value = Number(closing.egresos) || 0;
-  byId("cash-card-counted").value = Number(closing.tarjetaContada) || 0;
-  byId("cash-card-processor").value = closing.procesadorTarjeta || "";
-  byId("cash-card-batch").value = closing.loteTarjeta || "";
-  byId("cash-transfer-counted").value = Number(closing.transferenciaContada) || 0;
-  byId("cash-note").value = closing.observaciones || "";
-  byId("cash-shortage-note").value = closing.motivoFaltante || "";
-  byId("cash-rectified-counted").value = Number(closing.balanceContadoRectificado) || "";
+  loadClosingIntoCashForm(closing, { readOnly: false, submitText: "Actualizar cierre" });
   updateCashBalancePreview();
 }
 
@@ -5505,11 +5547,23 @@ function wireForms() {
     const voidButton = event.target.closest(".void-closing");
     const viewButton = event.target.closest(".view-closing");
     const editButton = event.target.closest(".edit-closing");
-    if (viewButton) openClosingReport(viewButton.dataset.closingId);
+    if (viewButton) viewClosingInForm(viewButton.dataset.closingId);
     if (editButton) startClosingEdit(editButton.dataset.closingId);
     if (openButton) openClosingForEdit(openButton.dataset.closingId);
     if (confirmButton) startClosingConfirmation(confirmButton.dataset.closingId);
     if (voidButton) voidClosing(voidButton.dataset.closingId);
+  });
+  byId("cash-modify-closing")?.addEventListener("click", (event) => {
+    const closingId = event.currentTarget.dataset.closingId;
+    if (closingId) startClosingEdit(closingId);
+  });
+  byId("cash-confirm-closing")?.addEventListener("click", (event) => {
+    const closingId = event.currentTarget.dataset.closingId;
+    if (closingId) startClosingConfirmation(closingId);
+  });
+  byId("cash-open-closing")?.addEventListener("click", (event) => {
+    const closingId = event.currentTarget.dataset.closingId;
+    if (closingId) openClosingForEdit(closingId);
   });
 
   byId("new-cash-closing")?.addEventListener("click", showNewCashClosing);
