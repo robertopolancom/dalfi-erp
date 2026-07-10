@@ -28,6 +28,14 @@ const money = new Intl.NumberFormat("es-DO", {
   style: "currency",
   currency: "DOP",
 });
+
+function functionEndpoint(name) {
+  const configuredBase = String(window.DALFI_FUNCTION_BASE || "").replace(/\/$/, "");
+  if (configuredBase) return `${configuredBase}/${name}`;
+  if (location.hostname.includes("netlify.app")) return `/.netlify/functions/${name}`;
+  return `/api/${name}`;
+}
+
 const dateLabel = new Intl.DateTimeFormat("es-DO", {
   timeZone: "America/Santo_Domingo",
   weekday: "long",
@@ -3716,7 +3724,7 @@ function wireAuth() {
     const message = byId("forgot-password-message");
     message.textContent = "Validando reset...";
     try {
-      const response = await fetch("/.netlify/functions/password-reset-status", {
+      const response = await fetch(functionEndpoint("password-reset-status"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
@@ -3847,7 +3855,7 @@ function wireUserAdmin() {
     listMessage.textContent = "Cargando usuarios...";
     listMessage.className = "form-message";
     try {
-      const response = await fetch("/.netlify/functions/users", {
+      const response = await fetch(functionEndpoint("users"), {
         headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
       });
       const result = await response.json().catch(() => ({}));
@@ -3911,7 +3919,7 @@ function wireUserAdmin() {
 
     listMessage.textContent = "Guardando usuario...";
     listMessage.className = "form-message";
-    const response = await fetch("/.netlify/functions/users", {
+    const response = await fetch(functionEndpoint("users"), {
       method: "PATCH",
       headers: authHeaders(),
       body: JSON.stringify(payload),
@@ -3935,7 +3943,7 @@ function wireUserAdmin() {
     };
     listMessage.textContent = "Generando contraseña temporal...";
     listMessage.className = "form-message";
-    const response = await fetch("/.netlify/functions/users", {
+    const response = await fetch(functionEndpoint("users"), {
       method: "PATCH",
       headers: authHeaders(),
       body: JSON.stringify(payload),
@@ -3961,7 +3969,7 @@ function wireUserAdmin() {
     message.textContent = "Creando usuario...";
     message.className = "form-message";
     try {
-      const response = await fetch("/.netlify/functions/create-user", {
+      const response = await fetch(functionEndpoint("create-user"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
