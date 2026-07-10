@@ -1,3 +1,8 @@
 name = "dalfi-erp"
 pages_build_output_dir = "outputs"
 compatibility_date = "2026-07-09"
+
+[vars]
+SUPABASE_URL = "https://lcqxbhlkqtjlwsedarej.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_By4TvJ5mz1bLHZ9nXVat5Q_hHLRGezI"
+ADMIN_EMAILS = "robertopolanco03@gmail.com,dalfiiguz1220@gmail.com"
