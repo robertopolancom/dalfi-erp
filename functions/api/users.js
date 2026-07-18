@@ -47,7 +47,7 @@ async function requireAdmin(request, env) {
   const sessionUser = await sessionResponse.json();
   const requesterEmail = normalizeEmail(sessionUser.email);
   const requesterRole = String(sessionUser.user_metadata?.role || "").toLowerCase();
-  const requesterIsAdmin = adminEmails.includes(requesterEmail) || ["administradora", "administrador", "propietario"].includes(requesterRole);
+  const requesterIsAdmin = adminEmails.includes(requesterEmail) || ["administradora", "administrador", "propietaria", "propietario"].includes(requesterRole);
   if (!requesterIsAdmin) {
     return { error: json({ error: "Tu usuario no esta autorizado para administrar usuarios." }, 403) };
   }
@@ -164,6 +164,16 @@ export async function onRequestPatch({ request, env }) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     return json({ error: body.msg || body.message || body.error_description || body.error || "No se pudo actualizar el usuario." }, response.status);
+  }
+
+  if (resetPassword) {
+    await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}/logout`, {
+      method: "POST",
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+      },
+    }).catch(() => null);
   }
 
   return json({ user: toPublicUser(body), temporaryPassword: resetPassword ? temporaryPassword : undefined });

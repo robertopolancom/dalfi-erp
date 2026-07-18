@@ -704,9 +704,16 @@ function isBankAccount(account) {
   return (
     text.includes("banco") ||
     text.includes("bancari") ||
+    text.includes("cuenta banco") ||
+    text.includes("cuenta bancaria") ||
     text.includes("ahorro") ||
     text.includes("corriente") ||
+    text.includes("cta") ||
+    text.includes("iban") ||
+    text.includes("asociacion") ||
+    text.includes("asociación") ||
     text.includes("banreservas") ||
+    text.includes("reservas") ||
     text.includes("popular") ||
     text.includes("bhd") ||
     text.includes("scotia") ||
@@ -720,7 +727,9 @@ function isCashAccount(account) {
 }
 
 function bankAccounts() {
-  return activeAccounts().filter(isBankAccount);
+  const banks = activeAccounts().filter(isBankAccount);
+  if (banks.length) return banks;
+  return activeAccounts().filter((account) => !isCashAccount(account));
 }
 
 function cashAccounts() {
@@ -781,8 +790,17 @@ function currentUserEmail() {
   return supabaseSession?.user?.email || "local";
 }
 
+const privilegedRoleKeys = new Set(["administradora", "administrador", "propietaria", "propietario"]);
+
+function currentUserRecord() {
+  const email = normalize(currentUserEmail());
+  if (!email || email === "local") return null;
+  return dbTable("usuarios").find((row) => normalize(row.email || row.correo || row.correoElectronico) === email);
+}
+
 function currentUserRole() {
-  return supabaseSession?.user?.user_metadata?.role || "";
+  const userRecord = currentUserRecord();
+  return userRecord?.rol || userRecord?.role || userRecord?.perfil || supabaseSession?.user?.user_metadata?.role || "";
 }
 
 function currentRoleKey() {
@@ -791,12 +809,11 @@ function currentRoleKey() {
 
 function canManageInvoices() {
   if (!supabaseClient || !supabaseSession) return true;
-  return ["administradora", "administrador", "propietario"].includes(currentRoleKey());
+  return privilegedRoleKeys.has(currentRoleKey());
 }
 
 function canConfirmClosings() {
-  if (!supabaseClient || !supabaseSession) return true;
-  return ["operador", "operadora", "administradora", "administrador", "propietario"].includes(currentRoleKey());
+  return canManageInvoices();
 }
 
 function closingForDateAndAccount(date, account) {
@@ -827,7 +844,7 @@ function isClosingPendingConfirmation(closing) {
 
 function invoiceOperationalDate(invoiceId) {
   const invoice = dbTable("facturas").find((item) => item.facturaID === invoiceId);
-  return dateOnly(invoice?.fechaHora);
+  return dateOnly(invoice?.fechaOperacion || invoice?.fechaHora);
 }
 
 function canEditInvoice(invoiceId) {
@@ -1012,6 +1029,37 @@ function renderEmpty(target, colspan, message) {
   target.innerHTML = `<tr><td colspan="${colspan}" class="empty">${message}</td></tr>`;
 }
 
+function safeRender(name, renderFn) {
+  try {
+    renderFn();
+  } catch (error) {
+    console.error(`Error renderizando ${name}`, error);
+    const activeView = document.querySelector(".view.active");
+    if (activeView && String(name).toLowerCase().includes("cierres")) {
+      activeView.innerHTML = `
+        <section class="panel">
+          <div class="panel-head">
+            <h3>No se pudo cargar ${escapeHtml(name)}</h3>
+          </div>
+          <p class="form-message error">${escapeHtml(error?.message || String(error))}</p>
+        </section>
+      `;
+    }
+  }
+}
+
+function ensureViewShell(viewId) {
+  let view = byId(viewId);
+  if (view) return view;
+  const host = document.querySelector(".main") || document.querySelector("main") || document.body;
+  if (!host) return null;
+  view = document.createElement("section");
+  view.id = viewId;
+  view.className = "view";
+  host.appendChild(view);
+  return view;
+}
+
 function ensureClient(name, phone = "", options = {}) {
   const clean = name.trim();
   if (!clean) return null;
@@ -1074,6 +1122,38 @@ function reservationRecordById(reservationId) {
   return { stateRecord, dbRecord, record: stateRecord || dbRecord };
 }
 
+function resetReservationEditState(form = byId("reservation-form")) {
+  if (!form) return;
+  const editField = byId("reservation-edit-id");
+  if (editField) editField.value = "";
+  const title = form.querySelector(".panel-head h3");
+  if (title) title.textContent = "Nueva reserva";
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.textContent = "Guardar reserva";
+}
+
+function startReservationEdit(reservationId) {
+  const { record } = reservationRecordById(reservationId);
+  const form = byId("reservation-form");
+  if (!record || !form) return;
+  byId("reservation-edit-id").value = reservationId;
+  form.dataset.clientId = record.clientId || record.clienteID || "";
+  byId("reservation-client-search").value = record.client || record.clienteNombre || "";
+  byId("reservation-client-phone").value = record.phone || record.telefono || "";
+  byId("reservation-client-email").value = record.email || record.correo || "";
+  byId("reservation-source").value = record.source || record.canalOrigen || "Presencial";
+  byId("reservation-service-search").value = record.service || record.servicio || "";
+  byId("reservation-date").value = record.date || record.fecha || today;
+  byId("reservation-time").value = record.time || record.hora || "";
+  byId("reservation-staff").value = record.staff || record.colaboradorNombre || "";
+  byId("reservation-note").value = record.note || record.observaciones || "";
+  const title = form.querySelector(".panel-head h3");
+  if (title) title.textContent = "Editar reserva";
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.textContent = "Guardar cambios";
+  form.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
 function fillReservationClientFromRecord(client) {
   if (!client) return false;
   byId("reservation-form").dataset.clientId = client.clienteID || "";
@@ -1125,9 +1205,9 @@ function outstanding(invoice) {
 }
 
 function cashExpectedFor(date) {
-  return confirmedIncomeOn(date)
-    .filter((income) => normalize(income.metodoPago) === "efectivo")
-    .reduce((sum, income) => sum + (Number(income.montoNeto) || Number(income.montoBruto) || 0), 0);
+  const register = cashRegisterAccount() || cashAccounts()[0] || activeAccounts().find((account) => normalize(account.tipo).includes("caja"));
+  if (!register) return 0;
+  return accountActivityForDate(date, register).expected;
 }
 
 function dailyIncomeSummary(date) {
@@ -1210,6 +1290,20 @@ function ensureProvisionalClosings() {
       if (automaticClosingEligible(date)) dates.add(date);
     });
   });
+  dbTable("cierres").forEach((closing) => {
+    const date = dateOnly(closing.fechaHoraCierre);
+    if (date) dates.add(date);
+  });
+  const sortedDates = [...dates].filter(Boolean).sort();
+  const eligibleEnd = automaticClosingEligible(today) ? today : datePlusDaysFrom(today, -1);
+  const startDate = sortedDates[0] || eligibleEnd;
+  let cursor = startDate;
+  let guard = 0;
+  while (cursor && eligibleEnd && cursor <= eligibleEnd && guard < 370) {
+    if (automaticClosingEligible(cursor)) dates.add(cursor);
+    cursor = datePlusDaysFrom(cursor, 1);
+    guard += 1;
+  }
   let created = 0;
   const accounts = activeAccounts();
   const fallbackAccount = accountForPayment("efectivo");
@@ -1243,10 +1337,11 @@ function ensureProvisionalClosings() {
         transferenciaContada: 0,
         transferenciaEsperada: isRegister ? summary.transfer : 0,
         creditoGenerado: isRegister ? summary.credit : 0,
+        detalleColaboradores: closingCollaboratorSummary(date),
         estado: "Pendiente de confirmacion",
         requiereConfirmacion: true,
         provisional: true,
-        observaciones: "Generado automáticamente porque el día tenía registros y no se confirmó cierre.",
+        observaciones: "Generado automaticamente porque el dia quedo pendiente de cierre.",
       }));
       created += 1;
     });
@@ -1413,8 +1508,7 @@ function updateCashBalancePreview() {
   const expected = activity.expected;
   const counted = Number(countedRaw) || 0;
   const expenses = Number(byId("cash-expenses").value) || 0;
-  const effectiveCounted = counted - expenses;
-  const difference = effectiveCounted - expected;
+  const difference = counted - expected;
   const shortage = Math.max(0, -difference);
   const surplus = Math.max(0, difference);
   cashBalanceDraft = { date, account: account.nombreCuenta || "", expected, counted, expenses, difference, shortage, surplus, generatedAt: new Date().toISOString() };
@@ -1430,16 +1524,113 @@ function updateCashBalancePreview() {
 
 function resetCashBalancePreview() {
   cashBalanceDraft = null;
-  byId("cash-balance-panel").classList.add("hidden");
-  byId("cash-shortage-label").classList.add("hidden");
-  byId("cash-shortage-note").value = "";
-  byId("cash-rectified-counted").value = "";
+  byId("cash-balance-panel")?.classList.add("hidden");
+  byId("cash-shortage-label")?.classList.add("hidden");
+  if (byId("cash-shortage-note")) byId("cash-shortage-note").value = "";
+  if (byId("cash-rectified-counted")) byId("cash-rectified-counted").value = "";
+}
+
+function closingCollaboratorSummary(date) {
+  if (!date) return [];
+  const grouped = new Map();
+  const ensureRow = (id, name) => {
+    const key = id || name || "sin-colaboradora";
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        id: key,
+        name: name || "Sin colaboradora",
+        services: 0,
+        billing: 0,
+        commissionable: 0,
+        tips: 0,
+      });
+    }
+    return grouped.get(key);
+  };
+  dbTable("facturaDetalle").forEach((detail) => {
+    const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
+    if (!invoice || dateOnly(invoice.fechaHora) !== date || normalize(invoice.estado) === "anulada") return;
+    const row = ensureRow(detail.colaboradorID, detail.colaboradorNombre);
+    row.services += 1;
+    row.billing += Number(detail.subtotalAntesDescuentoGeneral ?? detail.subtotal) || 0;
+    row.commissionable += Number(detail.montoComisionable ?? detail.subtotal) || 0;
+  });
+  dbTable("propinas").forEach((tip) => {
+    if (dateOnly(tip.fechaHora) !== date) return;
+    const row = ensureRow(tip.colaboradorID, tip.colaboradorNombre);
+    row.tips += Number(tip.montoNetoPagar ?? tip.montoBruto ?? tip.monto) || 0;
+  });
+  return Array.from(grouped.values()).sort((a, b) => normalize(a.name).localeCompare(normalize(b.name)));
+}
+
+function updateClosingCollaboratorDetails(date) {
+  const target = byId("cash-collaborator-detail");
+  if (!target) return;
+  const rows = closingCollaboratorSummary(date);
+  target.classList.remove("hidden");
+  if (!date) {
+    target.innerHTML = `
+      <div class="summary-row">
+        <span>Detalle por colaboradora</span>
+        <strong>Selecciona una fecha</strong>
+      </div>
+    `;
+    return;
+  }
+  if (!rows.length) {
+    target.innerHTML = `
+      <div class="summary-row">
+        <span>Detalle por colaboradora</span>
+        <strong>Sin servicios o propinas para ${date}</strong>
+      </div>
+    `;
+    return;
+  }
+  target.innerHTML = `
+    <div class="summary-row">
+      <span>Detalle por colaboradora</span>
+      <strong>${date}</strong>
+    </div>
+    <div class="table-wrap compact-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Colaboradora</th>
+            <th>Servicios</th>
+            <th>Facturado</th>
+            <th>Comisionable</th>
+            <th>Propina</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `
+                <tr>
+                  <td>${escapeHtml(row.name)}</td>
+                  <td>${row.services}</td>
+                  <td>${money.format(row.billing)}</td>
+                  <td>${money.format(row.commissionable)}</td>
+                  <td>${money.format(row.tips)}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function ensureCashModuleMarkup() {
-  const cashView = byId("cash");
-  if (!cashView) return;
-  if (cashView.querySelector("#cash-table") && cashView.querySelector("#new-cash-closing")) return;
+  const cashView = ensureViewShell("cash");
+  if (!cashView) return null;
+  if (cashView.querySelector("#cash-table") && cashView.querySelector("#new-cash-closing")) {
+    ensureCashViewActionsMarkup();
+    bindCashViewActionButtons();
+    bindCashTableActions(cashView.querySelector("#cash-table"));
+    return cashView;
+  }
   cashView.innerHTML = `
     <section class="panel panel-wide cash-list-panel">
       <div class="panel-head">
@@ -1518,6 +1709,7 @@ function ensureCashModuleMarkup() {
             <strong id="cash-surplus-preview">RD$0.00</strong>
           </div>
         </section>
+        <section class="invoice-summary hidden" id="cash-collaborator-detail"></section>
         <label class="hidden" id="cash-shortage-label">
           Motivo del faltante
           <textarea id="cash-shortage-note" rows="3" placeholder="Documentar por qué faltó efectivo en caja"></textarea>
@@ -1558,6 +1750,75 @@ function ensureCashModuleMarkup() {
       </form>
     </div>
   `;
+  ensureCashViewActionsMarkup();
+  bindCashViewActionButtons();
+  bindCashTableActions(cashView.querySelector("#cash-table"));
+  return cashView;
+}
+
+function cashTableTarget() {
+  const cashView = ensureCashModuleMarkup() || ensureViewShell("cash");
+  return cashView?.querySelector("#cash-table") || byId("cash-table");
+}
+
+function ensureCashViewActionsMarkup() {
+  const form = byId("cash-form");
+  if (!form || byId("cash-view-actions")) return;
+  const submitButton = byId("cash-submit");
+  if (!submitButton) return;
+  const actions = document.createElement("div");
+  actions.className = "row-actions hidden";
+  actions.id = "cash-view-actions";
+  actions.innerHTML = `
+    <button class="secondary-btn" id="cash-modify-closing" type="button">Modificar</button>
+    <button class="primary-btn" id="cash-confirm-closing" type="button">Confirmar cierre</button>
+    <button class="secondary-btn" id="cash-open-closing" type="button">Abrir cierre</button>
+  `;
+  submitButton.before(actions);
+}
+
+function bindCashViewActionButtons() {
+  const modifyButton = byId("cash-modify-closing");
+  if (modifyButton && !modifyButton.dataset.bound) {
+    modifyButton.dataset.bound = "true";
+    modifyButton.addEventListener("click", (event) => {
+      const closingId = event.currentTarget.dataset.closingId;
+      if (closingId) startClosingEdit(closingId);
+    });
+  }
+  const confirmButton = byId("cash-confirm-closing");
+  if (confirmButton && !confirmButton.dataset.bound) {
+    confirmButton.dataset.bound = "true";
+    confirmButton.addEventListener("click", (event) => {
+      const closingId = event.currentTarget.dataset.closingId;
+      if (closingId) startClosingConfirmation(closingId);
+    });
+  }
+  const openButton = byId("cash-open-closing");
+  if (openButton && !openButton.dataset.bound) {
+    openButton.dataset.bound = "true";
+    openButton.addEventListener("click", (event) => {
+      const closingId = event.currentTarget.dataset.closingId;
+      if (closingId) openClosingForEdit(closingId);
+    });
+  }
+}
+
+function bindCashTableActions(table = byId("cash-table")) {
+  if (!table || table.dataset.bound === "true") return;
+  table.dataset.bound = "true";
+  table.addEventListener("click", (event) => {
+    const openButton = event.target.closest(".open-closing");
+    const confirmButton = event.target.closest(".confirm-closing");
+    const voidButton = event.target.closest(".void-closing");
+    const viewButton = event.target.closest(".view-closing");
+    const editButton = event.target.closest(".edit-closing");
+    if (viewButton) viewClosingInForm(viewButton.dataset.closingId);
+    if (editButton) startClosingEdit(editButton.dataset.closingId);
+    if (openButton) openClosingForEdit(openButton.dataset.closingId);
+    if (confirmButton) startClosingConfirmation(confirmButton.dataset.closingId);
+    if (voidButton) voidClosing(voidButton.dataset.closingId);
+  });
 }
 
 function renderDatalists() {
@@ -2122,13 +2383,21 @@ function handlePendingTransferAction(button, action) {
   const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === button.dataset.cxcId);
   if (!cxc) return;
   if (action === "confirm") {
+    const depositDate = prompt("Fecha de entrada a cuenta (YYYY-MM-DD)", today);
+    if (depositDate === null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(depositDate)) {
+      alert("Introduce una fecha valida en formato YYYY-MM-DD.");
+      return;
+    }
     const amount = Number(cxc.balancePendiente) || 0;
     const clientRecord = dbTable("clientes").find((client) => client.clienteID === cxc.deudorID) || findClientByName(cxc.deudorNombre);
     cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + amount;
     cxc.balancePendiente = 0;
     cxc.estado = "Saldada";
-    cxc.observaciones = `${cxc.observaciones || ""} Transferencia confirmada ${new Date().toISOString()}`.trim();
-    addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", amount, "transferencia_confirmada", "Transferencia confirmada desde cuentas por cobrar", "", cxc.cuentaDestino || "");
+    cxc.fechaPago = depositDate;
+    cxc.fechaEntradaCuenta = depositDate;
+    cxc.observaciones = `${cxc.observaciones || ""} Transferencia confirmada ${depositDate}`.trim();
+    addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", amount, "transferencia_confirmada", "Transferencia confirmada desde cuentas por cobrar", "", cxc.cuentaDestino || "", depositDate, cxc.cxCID || "");
   }
   if (action === "decline") {
     cxc.tipoCxC = "Crédito cliente";
@@ -2159,6 +2428,7 @@ function renderAppointments(target, rows, emptyMessage) {
           </div>
           <div class="row-actions">
             <span>${reservation.invoiceId ? `Factura ${reservation.invoiceId}` : reservation.date}</span>
+            <button class="secondary-btn compact edit-reservation" data-reservation-id="${reservation.id}" type="button">Editar</button>
             ${reservation.invoiceId ? "" : `<button class="secondary-btn compact invoice-reservation" data-reservation-id="${reservation.id}" type="button">Facturar</button>`}
           </div>
         </article>
@@ -2293,52 +2563,98 @@ function renderPayroll() {
 }
 
 function renderCash() {
-  ensureCashModuleMarkup();
-  const target = byId("cash")?.querySelector("#cash-table");
-  if (!target) return;
-  const created = ensureProvisionalClosings();
-  if (created) {
-    state = stateFromDatabase(database);
-    saveState();
-  }
-  const rows = dbTable("cierres")
-    .slice()
-    .sort((a, b) => `${dateOnly(b.fechaHoraCierre) || ""} ${b.cierreID || ""}`.localeCompare(`${dateOnly(a.fechaHoraCierre) || ""} ${a.cierreID || ""}`));
-  if (!rows.length) return renderEmpty(target, 11, "No hay cierres registrados. Usa Crear cierres por dia/cuenta para generarlos desde los registros existentes.");
-  target.innerHTML = rows
-    .map((closing) => {
-      const date = dateOnly(closing.fechaHoraCierre);
-      const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
-      const storedExpected = Number(closing.balanceTeorico);
-      const expected = Number.isFinite(storedExpected) ? storedExpected : accountActivityForDate(date, account).expected;
-      const counted = Number(closing.balanceContado) || 0;
-      const cardCounted = Number(closing.tarjetaContada) || 0;
-      const expenses = Number(closing.egresos) || 0;
-      const shortage = Number(closing.cuadreFaltante) || 0;
-      const surplus = Number(closing.sobranteCaja) || 0;
-      const difference = Number(closing.diferencia) || counted - expenses - expected;
-      const status = closing?.estado || "Cerrado";
-      return `
-        <tr>
-          <td>${date}</td>
-          <td>${escapeHtml(closing.cuentaCaja || "Caja registradora")}</td>
-          <td>${money.format(expected)}</td>
-          <td>${money.format(counted)}</td>
-          <td>${money.format(cardCounted)}</td>
-          <td>${money.format(expenses)}</td>
-          <td class="amount danger">${money.format(shortage)}</td>
-          <td class="amount gold">${money.format(surplus)}</td>
-          <td class="amount ${difference < 0 ? "danger" : "gold"}">${money.format(difference)}</td>
-          <td>${escapeHtml(status)}</td>
-          <td>
-            <div class="row-actions">
-              <button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Ver</button>
+  let target = null;
+  try {
+    target = cashTableTarget();
+    if (!target) {
+      const cashView = ensureViewShell("cash");
+      if (cashView) {
+        cashView.innerHTML = `
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <h3>Cierres diarios por caja/cuenta</h3>
             </div>
-          </td>
-        </tr>
-      `;
-    })
-    .join("");
+            <p class="form-message error">No se pudo inicializar el listado de cierres. Recarga la pantalla y vuelve a entrar a Cierres de caja.</p>
+          </section>
+        `;
+      }
+      return;
+    }
+    bindCashTableActions(target);
+    renderEmpty(target, 11, "Cargando cierres...");
+    if (supabaseClient && supabaseSession && !canManageInvoices()) {
+      renderEmpty(target, 11, "Solo administradores y propietarios pueden ver los cierres.");
+      return;
+    }
+    const created = ensureProvisionalClosings();
+    if (created) {
+      state = stateFromDatabase(database);
+      saveState();
+    }
+    const rows = dbTable("cierres")
+      .slice()
+      .sort((a, b) => `${dateOnly(b.fechaHoraCierre) || ""} ${b.cierreID || ""}`.localeCompare(`${dateOnly(a.fechaHoraCierre) || ""} ${a.cierreID || ""}`));
+    if (!rows.length) return renderEmpty(target, 11, "No hay cierres registrados. Usa Crear cierres automaticos para generarlos desde los registros existentes.");
+    target.innerHTML = rows
+      .map((closing) => {
+        const date = dateOnly(closing.fechaHoraCierre);
+        const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
+        const storedExpected = Number(closing.balanceTeorico);
+        const expected = Number.isFinite(storedExpected) ? storedExpected : accountActivityForDate(date, account).expected;
+        const counted = Number(closing.balanceContado) || 0;
+        const cardCounted = Number(closing.tarjetaContada) || 0;
+        const expenses = Number(closing.egresos) || 0;
+        const shortage = Number(closing.cuadreFaltante) || 0;
+        const surplus = Number(closing.sobranteCaja) || 0;
+        const hasStoredDifference = closing.diferencia !== undefined && closing.diferencia !== null && closing.diferencia !== "";
+        const difference = hasStoredDifference ? Number(closing.diferencia) || 0 : counted - expected;
+        const status = closing?.estado || "Cerrado";
+        const pending = isClosingPendingConfirmation(closing);
+        const actions = [
+          `<button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Ver</button>`,
+          pending && canConfirmClosings() ? `<button class="secondary-btn compact edit-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Editar</button>` : "",
+          pending && canConfirmClosings() ? `<button class="secondary-btn compact confirm-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Confirmar</button>` : "",
+          !pending && canManageInvoices() ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Abrir</button>` : "",
+        ].filter(Boolean).join("");
+        return `
+          <tr>
+            <td>${date}</td>
+            <td>${escapeHtml(closing.cuentaCaja || "Caja registradora")}</td>
+            <td>${money.format(expected)}</td>
+            <td>${money.format(counted)}</td>
+            <td>${money.format(cardCounted)}</td>
+            <td>${money.format(expenses)}</td>
+            <td class="amount danger">${money.format(shortage)}</td>
+            <td class="amount gold">${money.format(surplus)}</td>
+            <td class="amount ${difference < 0 ? "danger" : "gold"}">${money.format(difference)}</td>
+            <td>${escapeHtml(status)}</td>
+            <td>
+              <div class="row-actions">
+                ${actions}
+              </div>
+            </td>
+          </tr>
+        `;
+      })
+      .join("");
+  } catch (error) {
+    console.error("Error cargando cierres", error);
+    if (target) {
+      renderEmpty(target, 11, `No se pudo cargar el listado de cierres: ${escapeHtml(error?.message || String(error))}`);
+    } else {
+      const cashView = ensureViewShell("cash");
+      if (cashView) {
+        cashView.innerHTML = `
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <h3>Cierres diarios por caja/cuenta</h3>
+            </div>
+            <p class="form-message error">No se pudo cargar el modulo de cierres: ${escapeHtml(error?.message || String(error))}</p>
+          </section>
+        `;
+      }
+    }
+  }
 }
 
 function openClosingForEdit(closingId) {
@@ -2362,7 +2678,7 @@ function openClosingForEdit(closingId) {
 
 function confirmClosing(closingId) {
   if (!canConfirmClosings()) {
-    alert("Solo operadores autorizados, administración o propietario pueden confirmar cierres.");
+    alert("Solo administración o propietario pueden confirmar cierres.");
     return;
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
@@ -2404,7 +2720,7 @@ function confirmClosingAndPrevious(closing) {
 
 function startClosingConfirmation(closingId) {
   if (!canConfirmClosings()) {
-    alert("Solo operadores autorizados, administración o propietario pueden confirmar cierres.");
+    alert("Solo administracion o propietario pueden confirmar cierres.");
     return;
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
@@ -2438,17 +2754,32 @@ function voidClosing(closingId) {
 
 function confirmPreviousPendingClosings() {
   if (!canConfirmClosings()) {
-    alert("Solo operadores autorizados, administración o propietario pueden crear cierres pendientes.");
+    alert("Solo administración o propietario pueden crear cierres pendientes.");
     return;
   }
   const created = ensureProvisionalClosings();
   state = stateFromDatabase(database);
   saveState();
   renderAll();
-  alert(created ? `Se crearon ${created} cierre(s) pendiente(s) por día y cuenta/caja con registros.` : "Todos los días y cuentas/cajas con registros ya tienen cierre creado.");
+  alert(created ? `Se crearon ${created} cierre(s) pendiente(s) por dia y cuenta/caja.` : "Todos los dias y cuentas/cajas pendientes ya tienen cierre creado.");
 }
 
 function showNewCashClosing() {
+  const created = ensureProvisionalClosings();
+  state = stateFromDatabase(database);
+  if (created) saveState();
+  const defaultAccount = cashRegisterAccount() || cashAccounts()[0] || activeAccounts()[0] || null;
+  const existingClosing = closingForDateAndAccount(today, defaultAccount);
+  if (existingClosing) {
+    loadClosingIntoCashForm(existingClosing, {
+      readOnly: !isClosingPendingConfirmation(existingClosing),
+      confirmAfterSave: false,
+      submitText: isClosingPendingConfirmation(existingClosing) ? "Actualizar cierre" : "Guardar cierre",
+    });
+    if (!isClosingPendingConfirmation(existingClosing)) setClosingViewActions(existingClosing);
+    byId("cash-counted")?.focus();
+    return;
+  }
   byId("cash-form").classList.remove("hidden");
   byId("cash-form").reset();
   setCashFormReadOnly(false);
@@ -2463,6 +2794,7 @@ function showNewCashClosing() {
   byId("cash-card-counted").value = 0;
   byId("cash-transfer-counted").value = 0;
   resetCashBalancePreview();
+  updateClosingCollaboratorDetails(today);
   byId("cash-counted").focus();
 }
 
@@ -2478,6 +2810,7 @@ function hideCashClosingForm() {
   byId("cash-date").value = today;
   byId("cash-account").value = "";
   resetCashBalancePreview();
+  byId("cash-collaborator-detail")?.classList.add("hidden");
 }
 
 function cashFormFieldIds() {
@@ -2541,6 +2874,7 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   byId("cash-shortage-note").value = closing.motivoFaltante || "";
   byId("cash-rectified-counted").value = Number(closing.balanceContadoRectificado) || "";
   resetCashBalancePreview();
+  updateClosingCollaboratorDetails(date);
   setCashFormReadOnly(readOnly);
   setClosingViewActions(readOnly ? closing : null);
   byId("cash-form").scrollIntoView({ block: "start", behavior: "smooth" });
@@ -3557,22 +3891,22 @@ function renderSettings() {
 }
 
 function renderAll() {
-  renderDatalists();
-  renderDashboard();
-  renderInvoices();
-  renderInvoiceAdmin();
-  renderReceivables();
-  renderIncomeRecords();
-  renderPendingTransfers();
-  renderReservations();
-  renderPayroll();
-  renderCash();
-  renderCardReconciliation();
-  renderExpenses();
-  renderInventory();
-  renderFixedAssets();
-  renderReports();
-  renderSettings();
+  safeRender("datalists", renderDatalists);
+  safeRender("dashboard", renderDashboard);
+  safeRender("facturacion", renderInvoices);
+  safeRender("administracion de facturas", renderInvoiceAdmin);
+  safeRender("cuentas por cobrar", renderReceivables);
+  safeRender("registros de ingresos", renderIncomeRecords);
+  safeRender("transferencias pendientes", renderPendingTransfers);
+  safeRender("citas", renderReservations);
+  safeRender("nomina", renderPayroll);
+  safeRender("cierres de caja", renderCash);
+  safeRender("conciliacion de tarjetas", renderCardReconciliation);
+  safeRender("egresos", renderExpenses);
+  safeRender("inventario", renderInventory);
+  safeRender("activos fijos", renderFixedAssets);
+  safeRender("reportes", renderReports);
+  safeRender("base de datos", renderSettings);
 }
 
 function lookupValuesFor(listId) {
@@ -3657,12 +3991,17 @@ function attachSearchableLookups() {
 function wireNavigation() {
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => {
+      const view = byId(button.dataset.view);
+      if (!view) {
+        console.error(`No existe la vista ${button.dataset.view}`);
+        return;
+      }
       document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
       document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
       button.classList.add("active");
-      byId(button.dataset.view).classList.add("active");
+      view.classList.add("active");
       byId("view-title").textContent = button.textContent;
-      if (button.dataset.view === "cash") renderCash();
+      if (button.dataset.view === "cash") safeRender("cierres de caja", renderCash);
     });
   });
 }
@@ -3826,11 +4165,11 @@ function wireAuth() {
       await saveRemoteDatabase();
     }
     startRemoteRefreshLoop();
-    if (isPasswordResetRequired()) {
-      byId("password-change-form").dataset.mode = "forced";
-    }
     updateAuthUi();
     renderAll();
+    if (isPasswordResetRequired()) {
+      resetPasswordPanel("forced");
+    }
   });
 }
 
@@ -3887,6 +4226,7 @@ function wireUserAdmin() {
               <select class="user-role-input compact-input">
                 <option value="operador" ${user.role === "operador" ? "selected" : ""}>Operador</option>
                 <option value="administradora" ${user.role === "administradora" ? "selected" : ""}>Administradora</option>
+                <option value="propietaria" ${user.role === "propietaria" ? "selected" : ""}>Propietaria</option>
                 <option value="propietario" ${user.role === "propietario" ? "selected" : ""}>Propietario</option>
               </select>
             </td>
@@ -3926,11 +4266,13 @@ function wireUserAdmin() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "No se pudo actualizar el usuario.");
-    listMessage.textContent = result.temporaryPassword
+    const successText = result.temporaryPassword
       ? `Contraseña temporal generada: ${result.temporaryPassword}`
       : "Usuario actualizado.";
-    listMessage.className = "form-message success";
     await loadUsers();
+    listMessage.textContent = successText;
+    listMessage.className = "form-message success";
+    if (result.temporaryPassword) alert(successText);
   };
 
   const resetUserPassword = async (row) => {
@@ -3950,9 +4292,14 @@ function wireUserAdmin() {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "No se pudo resetear la contraseña.");
-    listMessage.textContent = `Contraseña temporal generada: ${result.temporaryPassword}. Entrégala al usuario para que cree su contraseña nueva.`;
-    listMessage.className = "form-message success";
+    if (!result.temporaryPassword) {
+      throw new Error("La función respondió sin contraseña temporal. Revisa SUPABASE_SERVICE_ROLE_KEY en Cloudflare Pages y vuelve a desplegar.");
+    }
+    const successText = `Contraseña temporal generada: ${result.temporaryPassword}. El usuario debe salir, iniciar con esa clave temporal y crear su contraseña nueva.`;
     await loadUsers();
+    listMessage.textContent = successText;
+    listMessage.className = "form-message success";
+    alert(successText);
   };
 
   form.addEventListener("submit", async (event) => {
@@ -4448,13 +4795,18 @@ function startInvoiceEdit(invoiceId) {
 }
 
 function saveEditedInvoice(invoiceId, client, lines, totals, note) {
-  if (!canEditInvoice(invoiceId)) {
-    alert("No se puede guardar. El día está cerrado o tu usuario no tiene permisos administrativos.");
-    return false;
-  }
   const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
   if (!invoice) return false;
-  const currentDate = dateOnly(invoice.fechaHora);
+  const currentDate = dateOnly(invoice.fechaOperacion || invoice.fechaHora);
+  if (!canEditInvoice(invoiceId)) {
+    const closing = closingForDate(currentDate);
+    if (closing && !isClosingOpenForEdits(closing)) {
+      alert("No se puede editar esta factura porque el cierre de ese dia esta confirmado. Administracion debe abrir el cierre en Cierres de caja antes de modificarla.");
+    } else {
+      alert("No se puede guardar. Tu usuario no tiene permisos administrativos.");
+    }
+    return false;
+  }
   const targetDate = canManageInvoices() ? (byId("invoice-date")?.value || currentDate || today) : currentDate;
   if (targetDate !== currentDate) {
     if (!canEditRecordDate(currentDate) || !canEditRecordDate(targetDate)) {
@@ -4463,6 +4815,8 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
     }
     moveLinkedRecordsForInvoices([invoice], currentDate, targetDate);
   }
+  invoice.fechaHora = withDateOnly(invoice.fechaHora || dateTimeForOperationalDate(targetDate), targetDate);
+  invoice.fechaOperacion = targetDate;
   const clientRecord = findClientByName(client) || ensureClient(client);
   const firstStaff = ensureStaffRecord(lines[0].staff);
   const allocations = invoiceCommissionAllocations(lines, totals.generalDiscountAmount || 0);
@@ -5209,7 +5563,7 @@ function wireForms() {
     if (!client || !lines.length) return;
     const payments = getPaymentLines().filter((payment) => payment.amount > 0);
     const invoiceDate = canManageInvoices() ? (byId("invoice-date")?.value || today) : today;
-    if (!isClosingOpenForEdits(closingForDate(invoiceDate))) {
+    if (!editId && !isClosingOpenForEdits(closingForDate(invoiceDate))) {
       alert("No se puede crear factura en esa fecha porque el cierre está confirmado. Administración debe abrir el cierre antes de registrar o editar.");
       byId("invoice-date")?.focus();
       return;
@@ -5549,30 +5903,8 @@ function wireForms() {
   });
 
   ensureCashModuleMarkup();
-  byId("cash-table")?.addEventListener("click", (event) => {
-    const openButton = event.target.closest(".open-closing");
-    const confirmButton = event.target.closest(".confirm-closing");
-    const voidButton = event.target.closest(".void-closing");
-    const viewButton = event.target.closest(".view-closing");
-    const editButton = event.target.closest(".edit-closing");
-    if (viewButton) viewClosingInForm(viewButton.dataset.closingId);
-    if (editButton) startClosingEdit(editButton.dataset.closingId);
-    if (openButton) openClosingForEdit(openButton.dataset.closingId);
-    if (confirmButton) startClosingConfirmation(confirmButton.dataset.closingId);
-    if (voidButton) voidClosing(voidButton.dataset.closingId);
-  });
-  byId("cash-modify-closing")?.addEventListener("click", (event) => {
-    const closingId = event.currentTarget.dataset.closingId;
-    if (closingId) startClosingEdit(closingId);
-  });
-  byId("cash-confirm-closing")?.addEventListener("click", (event) => {
-    const closingId = event.currentTarget.dataset.closingId;
-    if (closingId) startClosingConfirmation(closingId);
-  });
-  byId("cash-open-closing")?.addEventListener("click", (event) => {
-    const closingId = event.currentTarget.dataset.closingId;
-    if (closingId) openClosingForEdit(closingId);
-  });
+  bindCashTableActions();
+  bindCashViewActionButtons();
 
   byId("new-cash-closing")?.addEventListener("click", showNewCashClosing);
   byId("cancel-cash-closing")?.addEventListener("click", hideCashClosingForm);
@@ -5612,7 +5944,10 @@ function wireForms() {
   byId("generate-cash-balance")?.addEventListener("click", updateCashBalancePreview);
 
   ["cash-counted", "cash-expenses", "cash-date", "cash-account"].forEach((id) => {
-    byId(id)?.addEventListener("input", resetCashBalancePreview);
+    byId(id)?.addEventListener("input", () => {
+      resetCashBalancePreview();
+      if (id === "cash-date") updateClosingCollaboratorDetails(byId("cash-date").value);
+    });
   });
 
   byId("card-reconciliation-form").addEventListener("submit", (event) => {
@@ -5996,6 +6331,11 @@ function wireForms() {
   });
 
   byId("reservation-list").addEventListener("click", (event) => {
+    const editButton = event.target.closest(".edit-reservation");
+    if (editButton) {
+      startReservationEdit(editButton.dataset.reservationId);
+      return;
+    }
     const button = event.target.closest(".invoice-reservation");
     if (!button) return;
     populateInvoiceFromReservation(button.dataset.reservationId);
@@ -6024,11 +6364,16 @@ function wireForms() {
     if (staff && !state.staff.includes(staff)) state.staff.push(staff);
     const isProvisional = !clientRecord;
     const serviceRecord = findServiceByName(service);
-    const reservationId = nextDbId("reservas", "reservaID", "RES");
-    state.reservations.push({
+    const editId = byId("reservation-edit-id")?.value || "";
+    const currentReservation = editId ? reservationRecordById(editId) : null;
+    const reservationId = editId || nextDbId("reservas", "reservaID", "RES");
+    const reservationDate = byId("reservation-date").value;
+    const reservationTime = byId("reservation-time").value;
+    const reservationNote = byId("reservation-note").value.trim();
+    const statePayload = {
       id: reservationId,
-      date: byId("reservation-date").value,
-      time: byId("reservation-time").value,
+      date: reservationDate,
+      time: reservationTime,
       clientId: clientRecord?.clienteID || "",
       client: clientRecord?.nombreCompleto || client,
       phone,
@@ -6038,12 +6383,13 @@ function wireForms() {
       serviceId: serviceRecord?.servicioID || "",
       service,
       staff,
-      note: byId("reservation-note").value.trim(),
-    });
-    dbTable("reservas").push(stampRecord({
+      note: reservationNote,
+      invoiceId: currentReservation?.record?.invoiceId || currentReservation?.record?.facturaID || "",
+    };
+    const dbPayload = {
       reservaID: reservationId,
-      fecha: byId("reservation-date").value,
-      hora: byId("reservation-time").value,
+      fecha: reservationDate,
+      hora: reservationTime,
       clienteID: clientRecord?.clienteID || "",
       clienteNombre: clientRecord?.nombreCompleto || client,
       telefono: phone,
@@ -6053,10 +6399,26 @@ function wireForms() {
       servicioID: serviceRecord?.servicioID || "",
       servicio: service,
       colaboradorNombre: staff,
-      facturaID: "",
-      observaciones: byId("reservation-note").value.trim(),
-    }));
+      facturaID: currentReservation?.record?.facturaID || currentReservation?.record?.invoiceId || "",
+      observaciones: reservationNote,
+    };
+    if (editId) {
+      const stateIndex = state.reservations.findIndex((reservation) => reservation.id === editId);
+      if (stateIndex >= 0) state.reservations[stateIndex] = statePayload;
+      else state.reservations.push(statePayload);
+      const existingDb = dbTable("reservas").find((row) => row.reservaID === editId);
+      if (existingDb) {
+        Object.assign(existingDb, dbPayload);
+        stampRecord(existingDb, "updated");
+      } else {
+        dbTable("reservas").push(stampRecord(dbPayload));
+      }
+    } else {
+      state.reservations.push(statePayload);
+      dbTable("reservas").push(stampRecord(dbPayload));
+    }
     event.target.reset();
+    resetReservationEditState(event.target);
     delete event.target.dataset.clientId;
     delete byId("reservation-client-phone").dataset.autofilled;
     delete byId("reservation-client-email").dataset.autofilled;
@@ -6217,7 +6579,7 @@ function wireForms() {
       byId("generate-cash-balance").focus();
       return;
     }
-    const initialDifference = initialCounted - expenses - expected;
+    const initialDifference = initialCounted - expected;
     const initialShortage = Math.max(0, -initialDifference);
     const shortageNote = byId("cash-shortage-note").value.trim();
     const rectifiedRaw = byId("cash-rectified-counted").value;
@@ -6233,7 +6595,7 @@ function wireForms() {
     }
     const rectifiedCounted = initialShortage > 0 ? Number(rectifiedRaw) || 0 : 0;
     const counted = initialShortage > 0 ? rectifiedCounted : initialCounted;
-    const difference = counted - expenses - expected;
+    const difference = counted - expected;
     const shortage = Math.max(0, -difference);
     const surplus = Math.max(0, difference);
     const isRegisterClosing = normalize(account.nombreCuenta).includes("registradora");
@@ -6563,8 +6925,9 @@ function wireNumberFieldFocus() {
 async function init() {
   await loadDatabase();
   ensureCashModuleMarkup();
-  ensureProvisionalClosings();
+  const provisionalClosingChanges = ensureProvisionalClosings();
   state = loadState();
+  if (provisionalClosingChanges) state = stateFromDatabase(database);
   saveState();
   byId("today-label").textContent = dateLabel.format(new Date(`${today}T12:00:00`));
   byId("invoice-date").value = today;

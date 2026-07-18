@@ -47,7 +47,7 @@ async function requireAdmin(request, env, action = "crear usuarios") {
   const sessionUser = await sessionResponse.json();
   const requesterEmail = normalizeEmail(sessionUser.email);
   const requesterRole = String(sessionUser.user_metadata?.role || "").toLowerCase();
-  const requesterIsAdmin = adminEmails.includes(requesterEmail) || ["administradora", "administrador", "propietario"].includes(requesterRole);
+  const requesterIsAdmin = adminEmails.includes(requesterEmail) || ["administradora", "administrador", "propietaria", "propietario"].includes(requesterRole);
   if (!requesterIsAdmin) {
     return { error: json({ error: `Tu usuario no esta autorizado para ${action}.` }, 403) };
   }

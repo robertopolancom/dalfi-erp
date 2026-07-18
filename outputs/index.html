@@ -580,6 +580,7 @@
               <div class="panel-head">
                 <h3>Nueva reserva</h3>
               </div>
+              <input id="reservation-edit-id" type="hidden" />
               <label>
                 Cliente
                 <input id="reservation-client-search" list="clients-list" placeholder="Buscar o digitar cliente" required />
@@ -1012,6 +1013,7 @@
                   <strong id="cash-surplus-preview">RD$0.00</strong>
                 </div>
               </section>
+              <section class="invoice-summary hidden" id="cash-collaborator-detail"></section>
               <label class="hidden" id="cash-shortage-label">
                 Motivo del faltante
                 <textarea id="cash-shortage-note" rows="3" placeholder="Documentar por qué faltó efectivo en caja"></textarea>
@@ -1042,6 +1044,11 @@
                 Observación
                 <textarea id="cash-note" rows="3"></textarea>
               </label>
+              <div class="row-actions hidden" id="cash-view-actions">
+                <button class="secondary-btn" id="cash-modify-closing" type="button">Modificar</button>
+                <button class="primary-btn" id="cash-confirm-closing" type="button">Confirmar cierre</button>
+                <button class="secondary-btn" id="cash-open-closing" type="button">Abrir cierre</button>
+              </div>
               <button class="primary-btn" id="cash-submit" type="submit">Guardar cierre</button>
               <button class="secondary-btn" id="cancel-cash-closing" type="button">Cancelar</button>
             </form>
@@ -1654,6 +1661,7 @@
                   <select id="new-user-role">
                     <option value="operador">Operador</option>
                     <option value="administradora">Administradora</option>
+                    <option value="propietaria">Propietaria</option>
                     <option value="propietario">Propietario</option>
                   </select>
                 </label>
@@ -1734,6 +1742,6 @@
     </datalist>
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=20260709-cxc-receipts-cash"></script>
+    <script src="app.js?v=20260718-closures-backfill"></script>
   </body>
 </html>
