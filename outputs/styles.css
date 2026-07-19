@@ -371,6 +371,10 @@ body.password-change-required #password-change-panel {
   font-size: 13px;
 }
 
+tr.needs-review {
+  background: rgba(185, 128, 22, 0.08);
+}
+
 .form-panel {
   padding-bottom: 18px;
 }

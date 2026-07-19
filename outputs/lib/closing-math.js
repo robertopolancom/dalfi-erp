@@ -150,6 +150,90 @@
     return balance > 0 && status !== "saldada";
   }
 
+  // A partir de aqui: modelo de "exactamente dos cierres por dia" (register =
+  // caja registradora, treasury = consolidado de valores y tesoreria).
+
+  const CLOSING_TYPES = ["register", "treasury"];
+
+  function closingTypeDedupeKey(businessDate, closingType) {
+    return `${businessDate}::${closingType}`;
+  }
+
+  // Dado el listado de cierres YA filtrados a una fecha, dice cuales de los
+  // dos tipos (register/treasury) todavia faltan por crear ese dia. Llamarla
+  // varias veces sobre el mismo listado nunca pide crear un tipo que ya
+  // existe: es la base de la generacion idempotente.
+  function missingClosingTypesForDate(existingClosingsForDate) {
+    const present = new Set((existingClosingsForDate || []).map((c) => c.closingType).filter(Boolean));
+    return CLOSING_TYPES.filter((type) => !present.has(type));
+  }
+
+  // Determina el tipo de un cierre antiguo (anterior a este modelo) que no
+  // tiene closingType, sin borrar ni fusionar nada. Si al inferir el tipo
+  // resulta que esa fecha ya tiene otro cierre de ese mismo tipo, se marca
+  // needsReview en vez de perder el registro o sobreescribir el existente.
+  function normalizeLegacyClosingType(closing, { isRegisterAccountName, occupiedTypesForDate } = {}) {
+    if (closing.closingType) return { closingType: closing.closingType, needsReview: Boolean(closing.needsReview) };
+    const inferred = isRegisterAccountName && isRegisterAccountName(closing.cuentaCaja) ? "register" : "treasury";
+    const occupied = typeof occupiedTypesForDate === "function" ? occupiedTypesForDate(inferred) : false;
+    return { closingType: inferred, needsReview: Boolean(occupied) };
+  }
+
+  function addDaysToIsoDate(dateStr, days) {
+    const date = new Date(`${dateStr}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  }
+
+  // Rango de cierres consolidados de tesoreria pendientes de confirmar entre
+  // el dia siguiente al ultimo confirmado (si existe) y la fecha objetivo.
+  // closings: [{ businessDate, pending }]. Nunca incluye fechas ya
+  // confirmadas: por eso la confirmacion en rango es idempotente (correrla
+  // dos veces la segunda vez encuentra un rango vacio).
+  function pendingTreasuryRange(closings, targetDate) {
+    const sorted = (closings || []).slice().sort((a, b) => String(a.businessDate).localeCompare(String(b.businessDate)));
+    const lastConfirmed = sorted
+      .filter((c) => !c.pending && c.businessDate <= targetDate)
+      .sort((a, b) => String(b.businessDate).localeCompare(String(a.businessDate)))[0];
+    const startDate = lastConfirmed ? addDaysToIsoDate(lastConfirmed.businessDate, 1) : null;
+    return sorted
+      .filter((c) => c.pending && c.businessDate <= targetDate && (!startDate || c.businessDate >= startDate))
+      .map((c) => c.businessDate);
+  }
+
+  // Antes de confirmar un rango de cierres consolidados, cada fecha del
+  // rango debe tener su cierre de caja registradora ya confirmado.
+  // registerStatusByDate(date) debe devolver "confirmed" | "pending" | "missing".
+  function missingRegisterDatesForRange(dates, registerStatusByDate) {
+    return (dates || []).filter((date) => registerStatusByDate(date) !== "confirmed");
+  }
+
+  // Suma el detalle de las cuentas de un cierre consolidado de tesoreria en
+  // sus totales generales, sin duplicar nada (cada cuenta aporta una sola vez).
+  function buildTreasuryTotals(cuentas) {
+    return (cuentas || []).reduce(
+      (totals, row) => ({
+        saldoInicial: totals.saldoInicial + (Number(row.saldoInicial) || 0),
+        ingresos: totals.ingresos + (Number(row.ingresos) || 0),
+        egresos: totals.egresos + (Number(row.egresos) || 0),
+        transferenciasRecibidas: totals.transferenciasRecibidas + (Number(row.transferenciasRecibidas) || 0),
+        transferenciasEnviadas: totals.transferenciasEnviadas + (Number(row.transferenciasEnviadas) || 0),
+        saldoEsperado: totals.saldoEsperado + (Number(row.saldoEsperado) || 0),
+        saldoReal: totals.saldoReal + (Number(row.saldoReal) || 0),
+        diferencia: totals.diferencia + (Number(row.diferencia) || 0),
+      }),
+      { saldoInicial: 0, ingresos: 0, egresos: 0, transferenciasRecibidas: 0, transferenciasEnviadas: 0, saldoEsperado: 0, saldoReal: 0, diferencia: 0 },
+    );
+  }
+
+  // Roles reconocidos actualmente por el sistema con privilegios para
+  // gestionar cierres (los dos tipos), usuarios y facturas confirmadas.
+  const PRIVILEGED_ROLES = new Set(["administradora", "administrador", "propietaria", "propietario"]);
+
+  function isPrivilegedRole(role) {
+    return PRIVILEGED_ROLES.has(String(role || "").trim().toLowerCase());
+  }
+
   return {
     localDateStringInZone,
     nowPartsInZone,
@@ -166,5 +250,13 @@
     sumCollaboratorTotals,
     isValidIsoDate,
     canConfirmTransfer,
+    closingTypeDedupeKey,
+    missingClosingTypesForDate,
+    normalizeLegacyClosingType,
+    addDaysToIsoDate,
+    pendingTreasuryRange,
+    missingRegisterDatesForRange,
+    buildTreasuryTotals,
+    isPrivilegedRole,
   };
 });

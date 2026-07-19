@@ -14,10 +14,16 @@ const ALLOWED_ACTIONS = new Set([
   "invoice_edit_blocked",
   "reservation_edit",
   "closing_attempt_shortage",
-  "closing_confirm",
+  "closing_register_confirm",
+  "closing_treasury_confirm_range",
+  "closing_treasury_confirm_blocked",
   "closing_reopen",
   "closing_surplus",
+  "closing_catchup_run",
   "transfer_confirm",
+  "create_client_from_invoice",
+  "create_client",
+  "edit_client",
 ]);
 
 export async function onRequestPost({ request, env }) {

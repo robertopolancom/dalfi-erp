@@ -34,6 +34,11 @@ como pide el encargo de este cambio.
   (mismo criterio que el catch-up del navegador: cualquier dia anterior a
   hoy en hora de America/Santo_Domingo, o el dia de hoy solo en su ultimo
   minuto) y escribe un registro en `erp_audit_log` con cuantos cierres creo.
+- Desde julio 2026 el modelo es de **exactamente dos cierres por dia**:
+  `closingType: "register"` (caja registradora) y `closingType: "treasury"`
+  (consolidado de bancos, caja fuerte, caja chica y demas cuentas). El
+  endpoint nunca crea un cierre por cuenta, y tambien normaliza (sin borrar
+  datos) los cierres antiguos que no tengan `closingType` todavia.
 - Ese endpoint valida el secreto contra `env.CLOSING_CRON_SECRET`. Sin esa
   variable configurada, responde 500 en vez de ejecutar nada.
 

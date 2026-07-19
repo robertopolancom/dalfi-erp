@@ -212,49 +212,6 @@
                 <input id="invoice-client-search" list="clients-list" placeholder="Buscar o digitar cliente" autocomplete="off" required />
                 <div class="readonly-hint" id="invoice-client-summary">Selecciona un cliente para ver nombre y teléfono.</div>
               </div>
-              <div class="quick-create hidden" id="invoice-client-create">
-                <div class="form-row">
-                  <label>
-                    Nombre
-                    <input id="quick-client-first-name" />
-                  </label>
-                  <label>
-                    Apellido
-                    <input id="quick-client-last-name" />
-                  </label>
-                </div>
-                <div class="form-row">
-                  <label>
-                    Teléfono
-                    <input id="quick-client-phone" placeholder="Teléfono" />
-                  </label>
-                  <label>
-                    Sexo
-                    <select id="quick-client-sex">
-                      <option value="">No especificado</option>
-                      <option value="Femenino">Femenino</option>
-                      <option value="Masculino">Masculino</option>
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  Correo
-                  <input id="quick-client-email" type="email" />
-                </label>
-                <label>
-                  Dirección
-                  <textarea id="quick-client-address" rows="2"></textarea>
-                </label>
-                <label>
-                  Observaciones
-                  <textarea id="quick-client-notes" rows="2"></textarea>
-                </label>
-                <div class="quick-actions">
-                  <button class="secondary-btn" id="cancel-invoice-client" type="button">Cancelar</button>
-                  <button class="primary-btn inline" id="save-invoice-client" type="button">Guardar cliente</button>
-                </div>
-              </div>
-
               <section class="invoice-lines">
                 <div class="section-title-row">
                   <h4>Servicios de la factura</h4>
@@ -950,8 +907,8 @@
           <section class="panel panel-wide cash-list-panel">
             <div class="panel-head">
               <div>
-                <h3>Cierres diarios por caja/cuenta</h3>
-                <p class="panel-note">Cuadres pendientes y confirmados por día, caja registradora, cajas, bancos y cuentas.</p>
+                <h3>Cierres diarios</h3>
+                <p class="panel-note">Exactamente dos cierres por día: caja registradora y consolidado de valores y tesorería (bancos, caja fuerte, caja chica y otras cuentas viven dentro del detalle del consolidado).</p>
               </div>
               <div class="panel-actions">
                 <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Crear cierres automáticos</button>
@@ -963,7 +920,7 @@
                 <thead>
                   <tr>
                     <th>Fecha</th>
-                    <th>Cuenta</th>
+                    <th>Tipo</th>
                     <th>Esperado</th>
                     <th>Contado</th>
                     <th>Tarjeta</th>
@@ -985,15 +942,12 @@
               <input id="cash-edit-id" type="hidden" />
               <input id="cash-confirm-after-save" type="hidden" />
               <div class="panel-head">
-                <h3>Cierre de caja</h3>
+                <h3>Cierre de caja registradora</h3>
               </div>
+              <input id="cash-account" type="hidden" />
               <label>
                 Fecha
                 <input id="cash-date" type="date" required />
-              </label>
-              <label>
-                Cuenta / caja
-                <input id="cash-account" list="accounts-list" placeholder="Seleccionar cuenta o caja" required />
               </label>
               <label>
                 Monto real contado en caja
@@ -1380,6 +1334,10 @@
                 </label>
               </div>
               <label>
+                Fecha de nacimiento
+                <input id="client-birthdate" type="date" />
+              </label>
+              <label>
                 Correo
                 <input id="client-email" type="email" />
               </label>
@@ -1468,6 +1426,10 @@
                   <input id="staff-start-date" type="date" />
                 </label>
               </div>
+              <label>
+                Fecha de nacimiento
+                <input id="staff-birthdate" type="date" />
+              </label>
               <div class="payroll-box">
                 <h4>Umbrales de comisión asignados</h4>
                 <div id="staff-commission-thresholds" class="check-list"></div>

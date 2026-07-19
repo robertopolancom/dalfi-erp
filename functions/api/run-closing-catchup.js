@@ -4,11 +4,17 @@ import { insertAuditLog } from "./_lib/audit.js";
 // (ver CRON.md en la raiz del proyecto para el paso a paso de como crearlo).
 // No depende de que ningun navegador tenga la app abierta: genera los cierres
 // diarios "sin confirmar" que falten directamente contra Supabase, usando la
-// llave de servicio. Esto es un port reducido de ensureProvisionalClosings()
-// en outputs/app.js: cubre la creacion de cierres faltantes por caja/cuenta
-// activa con sus totales teoricos y el detalle por colaboradora, pero no
-// reproduce el resto de la logica de negocio del navegador (facturacion,
-// nomina, etc.) porque este endpoint solo necesita esa parte.
+// llave de servicio.
+//
+// Modelo: por cada fecha vencida sin cierres se crean EXACTAMENTE dos
+// registros — uno closingType:"register" (caja registradora) y uno
+// closingType:"treasury" (consolidado de bancos, caja fuerte, caja chica y
+// demas cuentas) — nunca uno por cuenta. Esto es un port reducido de
+// ensureProvisionalClosings()/normalizeLegacyClosings() en outputs/app.js:
+// cubre la generacion y la normalizacion de cierres antiguos sin closingType,
+// pero no reproduce el resto de la logica de negocio del navegador
+// (facturacion, nomina, confirmacion, etc.) porque este endpoint solo
+// necesita esa parte.
 //
 // Seguridad: requiere un header "x-cron-secret" que coincida con la variable
 // de entorno CLOSING_CRON_SECRET configurada en Cloudflare Pages. Sin ese
@@ -76,11 +82,39 @@ function nextId(rows, field, prefix) {
   return id;
 }
 
+function accountKey(account) {
+  return account?.cuentaID || normalize(account?.nombreCuenta || "");
+}
+
 function recordMatchesAccount(row, account, nameFields, idFields) {
-  const key = account.cuentaID || normalize(account.nombreCuenta || "");
-  const accountName = normalize(account.nombreCuenta || "");
+  const key = accountKey(account);
+  const accountName = normalize(account?.nombreCuenta || "");
   if (!key && !accountName) return false;
   return idFields.some((field) => row[field] && row[field] === key) || nameFields.some((field) => accountName && normalize(row[field]) === accountName);
+}
+
+function isCashAccountName(account) {
+  const text = normalize(`${account?.tipoCuenta || ""} ${account?.tipoProducto || ""} ${account?.nombreCuenta || ""}`);
+  return text.includes("caja") || text.includes("efectivo");
+}
+
+function isBankAccountName(account) {
+  const text = normalize(`${account?.tipoCuenta || ""} ${account?.tipoProducto || ""} ${account?.nombreCuenta || ""}`);
+  return !isCashAccountName(account) && (text.includes("banco") || Boolean(account?.numeroCuenta));
+}
+
+function registerAccountFor(data) {
+  const active = (data.cuentas || []).filter((account) => normalize(account.estado || "Activo") === "activo");
+  const named = active.find((account) => normalize(account.nombreCuenta).includes("registradora"));
+  if (named) return named;
+  const cash = active.find(isCashAccountName);
+  return cash || active[0] || null;
+}
+
+function treasuryAccountsFor(data, register) {
+  const active = (data.cuentas || []).filter((account) => normalize(account.estado || "Activo") === "activo");
+  const registerKey = register ? accountKey(register) : null;
+  return active.filter((account) => accountKey(account) !== registerKey);
 }
 
 function accountActivityForDate(data, date, account) {
@@ -150,6 +184,110 @@ function closingCollaboratorSummary(data, date) {
     .sort((a, b) => normalize(a.name).localeCompare(normalize(b.name)));
 }
 
+function isClosingPendingConfirmation(closing) {
+  const status = normalize(closing?.estado);
+  return Boolean(closing?.requiereConfirmacion) || status.includes("abierto") || status.includes("provisional") || status.includes("pendiente");
+}
+
+function closingBusinessDate(closing) {
+  return closing?.businessDate || dateOnly(closing?.fechaHoraCierre);
+}
+
+function isRegisterAccountName(name, register) {
+  if (!name) return false;
+  if (register && normalize(name) === normalize(register.nombreCuenta || "")) return true;
+  return normalize(name).includes("registradora");
+}
+
+// Igual que normalizeLegacyClosings() en outputs/app.js: a los cierres
+// antiguos sin closingType se les asigna uno sin borrar ni fusionar nada. Si
+// ya hay otro cierre normalizado del mismo tipo para esa fecha, se marca
+// needsReview en vez de perder el registro.
+function normalizeLegacyClosings(data, register) {
+  const rows = data.cierres || [];
+  const legacy = rows.filter((closing) => !closing.closingType);
+  if (!legacy.length) return 0;
+  const sorted = legacy.slice().sort((a, b) => String(a.fechaCreacion || a.fechaHoraCierre || "").localeCompare(String(b.fechaCreacion || b.fechaHoraCierre || "")));
+  let normalized = 0;
+  sorted.forEach((closing) => {
+    const businessDate = closingBusinessDate(closing);
+    const inferred = isRegisterAccountName(closing.cuentaCaja, register) ? "register" : "treasury";
+    const occupied = rows.some((other) => other !== closing && other.closingType === inferred && closingBusinessDate(other) === businessDate);
+    closing.closingType = inferred;
+    closing.businessDate = businessDate;
+    if (occupied) closing.needsReview = true;
+    closing.actualizadoPor = "cron:closing-catchup";
+    closing.fechaActualizacion = new Date().toISOString();
+    normalized += 1;
+  });
+  return normalized;
+}
+
+function registerClosingForDate(data, date) {
+  return (data.cierres || []).find((c) => !c.needsReview && c.closingType === "register" && closingBusinessDate(c) === date);
+}
+
+function treasuryClosingForDate(data, date) {
+  return (data.cierres || []).find((c) => !c.needsReview && c.closingType === "treasury" && closingBusinessDate(c) === date);
+}
+
+function previousTreasurySaldoFor(data, account, beforeDate) {
+  const key = accountKey(account);
+  const previous = (data.cierres || [])
+    .filter((c) => c.closingType === "treasury" && !c.needsReview)
+    .filter((c) => closingBusinessDate(c) < beforeDate)
+    .filter((c) => !isClosingPendingConfirmation(c))
+    .sort((a, b) => String(b.businessDate || "").localeCompare(String(a.businessDate || "")))[0];
+  const row = previous?.cuentas?.find((item) => accountKey({ cuentaID: item.cuentaID, nombreCuenta: item.nombreCuenta }) === key);
+  return Number(row?.saldoReal) || 0;
+}
+
+function buildTreasuryAccountDetail(data, date, account) {
+  const activity = accountActivityForDate(data, date, account);
+  const saldoInicial = previousTreasurySaldoFor(data, account, date);
+  const saldoEsperado = saldoInicial + activity.income + activity.transferIn - activity.expenses - activity.transferOut;
+  return {
+    cuentaID: account.cuentaID || "",
+    nombreCuenta: account.nombreCuenta || "",
+    tipoCuenta: account.tipoCuenta || (isBankAccountName(account) ? "Banco" : "Custodia"),
+    saldoInicial,
+    ingresos: activity.income,
+    egresos: activity.expenses,
+    transferenciasRecibidas: activity.transferIn,
+    transferenciasEnviadas: activity.transferOut,
+    ajustes: 0,
+    saldoEsperado,
+    saldoReal: saldoEsperado,
+    diferencia: 0,
+    observaciones: "",
+  };
+}
+
+function buildTreasuryTotals(cuentas) {
+  return (cuentas || []).reduce(
+    (totals, row) => ({
+      saldoInicial: totals.saldoInicial + (Number(row.saldoInicial) || 0),
+      ingresos: totals.ingresos + (Number(row.ingresos) || 0),
+      egresos: totals.egresos + (Number(row.egresos) || 0),
+      transferenciasRecibidas: totals.transferenciasRecibidas + (Number(row.transferenciasRecibidas) || 0),
+      transferenciasEnviadas: totals.transferenciasEnviadas + (Number(row.transferenciasEnviadas) || 0),
+      saldoEsperado: totals.saldoEsperado + (Number(row.saldoEsperado) || 0),
+      saldoReal: totals.saldoReal + (Number(row.saldoReal) || 0),
+      diferencia: totals.diferencia + (Number(row.diferencia) || 0),
+    }),
+    { saldoInicial: 0, ingresos: 0, egresos: 0, transferenciasRecibidas: 0, transferenciasEnviadas: 0, saldoEsperado: 0, saldoReal: 0, diferencia: 0 },
+  );
+}
+
+function defaultInitialCashFor(data, account, beforeDate) {
+  const previous = (data.cierres || [])
+    .filter((c) => dateOnly(c.fechaHoraCierre) < beforeDate)
+    .filter((c) => recordMatchesAccount(c, account, ["cuentaCaja"], ["cuentaID"]))
+    .filter((c) => !isClosingPendingConfirmation(c))
+    .sort((a, b) => String(b.fechaHoraCierre || "").localeCompare(String(a.fechaHoraCierre || "")))[0];
+  return Number(previous?.balanceContado) || 0;
+}
+
 function stamp(record) {
   const now = new Date().toISOString();
   record.creadoPor = "cron:closing-catchup";
@@ -205,11 +343,13 @@ export async function onRequestPost({ request, env }) {
   }
 
   const data = document.data;
+  data.cierres = data.cierres || [];
   const today = localDateStringInZone(new Date());
   const { hour, minute } = nowPartsInZone(new Date());
-  const activeAccounts = (data.cuentas || []).filter((account) => normalize(account.estado || "Activo") === "activo");
 
-  const existingDates = new Set((data.cierres || []).map((closing) => dateOnly(closing.fechaHoraCierre)).filter(Boolean));
+  const normalized = normalizeLegacyClosings(data, registerAccountFor(data));
+
+  const existingDates = new Set(data.cierres.map((closing) => closingBusinessDate(closing)).filter(Boolean));
   const transactionDates = new Set();
   [
     ["facturas", "fechaHora"],
@@ -235,40 +375,41 @@ export async function onRequestPost({ request, env }) {
     guard += 1;
   }
 
-  data.cierres = data.cierres || [];
   let created = 0;
+  const register = registerAccountFor(data);
+  const treasuryAccounts = treasuryAccountsFor(data, register);
   [...candidateDates].sort().forEach((date) => {
     if (!isEligible(date, today, hour, minute)) return;
     const summary = dailyIncomeSummary(data, date);
-    activeAccounts.forEach((account) => {
-      if (!account?.nombreCuenta) return;
-      const alreadyExists = data.cierres.some((closing) => dateOnly(closing.fechaHoraCierre) === date && recordMatchesAccount(closing, account, ["cuentaCaja"], ["cuentaID"]));
-      if (alreadyExists) return;
-      const activity = accountActivityForDate(data, date, account);
-      const isRegister = normalize(account.nombreCuenta).includes("registradora");
+    if (register?.nombreCuenta && !registerClosingForDate(data, date)) {
+      const activity = accountActivityForDate(data, date, register);
+      const montoInicial = defaultInitialCashFor(data, register, date);
+      const expected = montoInicial + activity.income + activity.transferIn - activity.expenses - activity.transferOut;
       data.cierres.push(stamp({
         cierreID: nextId(data.cierres, "cierreID", "CIE"),
+        closingType: "register",
+        businessDate: date,
         fechaHoraCierre: `${date}T23:59:00`,
         cajero: "Cierre provisional automatico (cron Cloudflare)",
-        cuentaCaja: account.nombreCuenta || "Caja registradora",
-        cuentaID: account.cuentaID || "",
-        balanceInicial: 0,
+        cuentaCaja: register.nombreCuenta || "Caja registradora",
+        cuentaID: register.cuentaID || "",
+        balanceInicial: montoInicial,
         ingresosConfirmados: activity.income + activity.transferIn,
         egresos: activity.expenses + activity.transferOut,
-        balanceTeorico: activity.expected,
+        balanceTeorico: expected,
         balanceContado: 0,
         conteoInicial: 0,
         balanceContadoRectificado: 0,
-        diferenciaInicial: -activity.expected,
-        diferencia: -activity.expected,
-        cuadreFaltante: Math.max(0, activity.expected),
-        cuadreFaltanteInicial: Math.max(0, activity.expected),
+        diferenciaInicial: -expected,
+        diferencia: -expected,
+        cuadreFaltante: Math.max(0, expected),
+        cuadreFaltanteInicial: Math.max(0, expected),
         sobranteCaja: 0,
         tarjetaContada: 0,
-        tarjetaEsperada: isRegister ? summary.card : 0,
+        tarjetaEsperada: summary.card,
         transferenciaContada: 0,
-        transferenciaEsperada: isRegister ? summary.transfer : 0,
-        creditoGenerado: isRegister ? summary.credit : 0,
+        transferenciaEsperada: summary.transfer,
+        creditoGenerado: summary.credit,
         detalleColaboradores: closingCollaboratorSummary(data, date),
         estado: "Pendiente de confirmacion",
         requiereConfirmacion: true,
@@ -276,10 +417,27 @@ export async function onRequestPost({ request, env }) {
         observaciones: "Generado automaticamente por el cron de Cloudflare porque el dia quedo pendiente de cierre.",
       }));
       created += 1;
-    });
+    }
+    if (!treasuryClosingForDate(data, date)) {
+      const cuentas = treasuryAccounts.map((account) => buildTreasuryAccountDetail(data, date, account));
+      data.cierres.push(stamp({
+        cierreID: nextId(data.cierres, "cierreID", "CIE"),
+        closingType: "treasury",
+        businessDate: date,
+        fechaHoraCierre: `${date}T23:59:00`,
+        registerClosingID: registerClosingForDate(data, date)?.cierreID || "",
+        cuentas,
+        totales: buildTreasuryTotals(cuentas),
+        estado: "Pendiente de confirmacion",
+        requiereConfirmacion: true,
+        provisional: true,
+        observaciones: "Generado automaticamente por el cron de Cloudflare porque el dia quedo pendiente de cierre.",
+      }));
+      created += 1;
+    }
   });
 
-  if (created > 0) {
+  if (created > 0 || normalized > 0) {
     try {
       await saveDocument(supabaseUrl, serviceRoleKey, document);
     } catch (error) {
@@ -291,15 +449,15 @@ export async function onRequestPost({ request, env }) {
     tableName: "cierres",
     entityId: today,
     action: "closing_catchup_run",
-    newData: { created, date: today },
+    newData: { created, normalized, date: today },
     userId: null,
     userEmail: "cron:closing-catchup",
     userRole: "system",
     success: true,
-    note: `Ejecucion automatica via cron. Cierres creados: ${created}.`,
+    note: `Ejecucion automatica via cron. Cierres creados: ${created}. Cierres antiguos normalizados: ${normalized}.`,
   }).catch(() => null);
 
-  return json({ ok: true, created });
+  return json({ ok: true, created, normalized });
 }
 
 export async function onRequest() {

@@ -13,6 +13,12 @@ const {
   sumCollaboratorTotals,
   isValidIsoDate,
   canConfirmTransfer,
+  missingClosingTypesForDate,
+  normalizeLegacyClosingType,
+  pendingTreasuryRange,
+  missingRegisterDatesForRange,
+  buildTreasuryTotals,
+  isPrivilegedRole,
 } = require("../outputs/lib/closing-math.js");
 
 test("computeExpectedCash: suma fondo inicial mas entradas menos salidas", () => {
@@ -135,4 +141,109 @@ test("isClosingOpenForEdits: bloquea edicion de facturas de un cierre confirmado
   assert.equal(isClosingOpenForEdits(null), true, "sin cierre, el dia sigue abierto");
   assert.equal(isClosingOpenForEdits({ estado: "Pendiente de confirmacion" }), true);
   assert.equal(isClosingOpenForEdits({ estado: "Cerrado" }), false, "un cierre confirmado bloquea edicion");
+});
+
+// ---------------------------------------------------------------------
+// Modelo de "exactamente dos cierres por dia" (register + treasury)
+// ---------------------------------------------------------------------
+
+test("missingClosingTypesForDate: un dia sin cierres necesita register y treasury", () => {
+  assert.deepEqual(missingClosingTypesForDate([]), ["register", "treasury"]);
+});
+
+test("missingClosingTypesForDate: nunca pide mas de dos tipos ni repite uno ya creado", () => {
+  assert.deepEqual(missingClosingTypesForDate([{ closingType: "register" }]), ["treasury"]);
+  assert.deepEqual(missingClosingTypesForDate([{ closingType: "register" }, { closingType: "treasury" }]), []);
+});
+
+test("missingClosingTypesForDate: es idempotente (correrlo de nuevo no vuelve a pedir lo ya creado)", () => {
+  const existing = [{ closingType: "register" }, { closingType: "treasury" }];
+  assert.deepEqual(missingClosingTypesForDate(existing), []);
+  assert.deepEqual(missingClosingTypesForDate(existing), []); // segunda corrida: sigue vacio
+});
+
+test("buildTreasuryTotals: suma el detalle de multiples cuentas sin duplicar", () => {
+  const cuentas = [
+    { saldoInicial: 1000, ingresos: 500, egresos: 200, transferenciasRecibidas: 0, transferenciasEnviadas: 100, saldoEsperado: 1200, saldoReal: 1200, diferencia: 0 },
+    { saldoInicial: 300, ingresos: 0, egresos: 50, transferenciasRecibidas: 100, transferenciasEnviadas: 0, saldoEsperado: 350, saldoReal: 340, diferencia: -10 },
+  ];
+  const totals = buildTreasuryTotals(cuentas);
+  assert.equal(totals.saldoInicial, 1300);
+  assert.equal(totals.ingresos, 500);
+  assert.equal(totals.egresos, 250);
+  assert.equal(totals.transferenciasRecibidas, 100);
+  assert.equal(totals.transferenciasEnviadas, 100);
+  assert.equal(totals.saldoEsperado, 1550);
+  assert.equal(totals.saldoReal, 1540);
+  assert.equal(totals.diferencia, -10);
+});
+
+test("normalizeLegacyClosingType: infiere el tipo de un cierre antiguo sin closingType", () => {
+  const isRegisterAccountName = (name) => String(name || "").toLowerCase().includes("registradora");
+  const register = normalizeLegacyClosingType({ cuentaCaja: "Caja Registradora" }, { isRegisterAccountName, occupiedTypesForDate: () => false });
+  assert.equal(register.closingType, "register");
+  assert.equal(register.needsReview, false);
+  const treasury = normalizeLegacyClosingType({ cuentaCaja: "Banco Popular" }, { isRegisterAccountName, occupiedTypesForDate: () => false });
+  assert.equal(treasury.closingType, "treasury");
+});
+
+test("normalizeLegacyClosingType: si ya hay otro cierre del mismo tipo ese dia, marca needsReview y no pierde el registro", () => {
+  const isRegisterAccountName = () => false;
+  const result = normalizeLegacyClosingType({ cuentaCaja: "Banco BHD" }, { isRegisterAccountName, occupiedTypesForDate: (type) => type === "treasury" });
+  assert.equal(result.closingType, "treasury");
+  assert.equal(result.needsReview, true);
+});
+
+test("normalizeLegacyClosingType: respeta closingType si ya existia (no lo vuelve a inferir)", () => {
+  const result = normalizeLegacyClosingType({ closingType: "treasury", needsReview: true }, {});
+  assert.equal(result.closingType, "treasury");
+  assert.equal(result.needsReview, true);
+});
+
+test("missingRegisterDatesForRange: detecta fechas con caja registradora sin confirmar", () => {
+  const status = { "2026-07-10": "confirmed", "2026-07-11": "pending", "2026-07-12": "missing" };
+  const missing = missingRegisterDatesForRange(["2026-07-10", "2026-07-11", "2026-07-12"], (date) => status[date]);
+  assert.deepEqual(missing, ["2026-07-11", "2026-07-12"]);
+});
+
+test("missingRegisterDatesForRange: rango vacio cuando todos los register estan confirmados", () => {
+  const missing = missingRegisterDatesForRange(["2026-07-10", "2026-07-11"], () => "confirmed");
+  assert.deepEqual(missing, []);
+});
+
+test("pendingTreasuryRange: confirmar el 15 de julio arrastra el rango pendiente desde el 10", () => {
+  const closings = [
+    { businessDate: "2026-07-09", pending: false },
+    { businessDate: "2026-07-10", pending: true },
+    { businessDate: "2026-07-11", pending: true },
+    { businessDate: "2026-07-12", pending: true },
+    { businessDate: "2026-07-13", pending: true },
+    { businessDate: "2026-07-14", pending: true },
+    { businessDate: "2026-07-15", pending: true },
+  ];
+  const range = pendingTreasuryRange(closings, "2026-07-15");
+  assert.deepEqual(range, ["2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15"]);
+});
+
+test("pendingTreasuryRange: la confirmacion en rango es idempotente (correrla dos veces no repite fechas)", () => {
+  const closings = [
+    { businessDate: "2026-07-09", pending: false },
+    { businessDate: "2026-07-10", pending: true },
+  ];
+  const firstRun = pendingTreasuryRange(closings, "2026-07-10");
+  assert.deepEqual(firstRun, ["2026-07-10"]);
+  // Simula que la confirmacion ya se aplico: el cierre deja de estar pendiente.
+  closings[1].pending = false;
+  const secondRun = pendingTreasuryRange(closings, "2026-07-10");
+  assert.deepEqual(secondRun, [], "no debe volver a confirmar un dia ya confirmado");
+});
+
+test("isPrivilegedRole: solo administradora/administrador/propietaria/propietario gestionan cierres", () => {
+  assert.equal(isPrivilegedRole("administradora"), true);
+  assert.equal(isPrivilegedRole("Administrador"), true);
+  assert.equal(isPrivilegedRole("propietaria"), true);
+  assert.equal(isPrivilegedRole("PROPIETARIO"), true);
+  assert.equal(isPrivilegedRole("operador"), false);
+  assert.equal(isPrivilegedRole("contabilidad"), false);
+  assert.equal(isPrivilegedRole(""), false);
 });
