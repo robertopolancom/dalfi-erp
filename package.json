@@ -1,5 +1,6 @@
 {
   "scripts": {
-    "build": "node scripts/write-supabase-config.mjs"
+    "build": "node scripts/write-supabase-config.mjs",
+    "test": "node --test"
   }
 }

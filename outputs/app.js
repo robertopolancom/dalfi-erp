@@ -283,6 +283,50 @@ async function saveRemoteDatabase() {
   }
 }
 
+// Registra acciones sensibles en erp_audit_log a traves de la funcion server-side
+// de Cloudflare (functions/api/audit-log.js), que revalida quien llama contra su
+// JWT en vez de confiar en lo que mande el navegador. Si esa funcion no responde
+// (por ejemplo, todavia no se desplego en este entorno), se guarda un respaldo
+// persistente dentro del mismo documento (nunca solo en console.log) para no
+// perder el rastro de la accion.
+async function logAudit(action, { entity = "app", entityId = "", oldData = null, newData = null, note = "", success = true } = {}) {
+  const entry = {
+    action,
+    entity,
+    entityId: String(entityId || ""),
+    oldData,
+    newData,
+    note: note ? String(note).slice(0, 500) : "",
+    success,
+  };
+  if (isSupabaseReady()) {
+    try {
+      const response = await fetch(functionEndpoint("audit-log"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+        body: JSON.stringify(entry),
+      });
+      if (response.ok) return true;
+      console.warn("La funcion de auditoria respondio con error, se guarda respaldo local.", await response.text().catch(() => ""));
+    } catch (error) {
+      console.warn("No se pudo registrar auditoria remota, se guarda respaldo local.", error);
+    }
+  }
+  if (database) {
+    database.data.auditLogLocal ||= [];
+    database.data.auditLogLocal.push({
+      id: uid("AUD", database.data.auditLogLocal),
+      ...entry,
+      usuario: currentUserEmail(),
+      rol: currentRoleKey(),
+      fecha: new Date().toISOString(),
+    });
+    if (database.data.auditLogLocal.length > 500) database.data.auditLogLocal = database.data.auditLogLocal.slice(-500);
+    saveState();
+  }
+  return false;
+}
+
 function updateSyncStatus(message, mode = "") {
   const status = byId("sync-status");
   if (!status) return;
@@ -333,6 +377,8 @@ function ensureDatabaseShape() {
   if (!database.data.inventario) database.data.inventario = [];
   if (!database.data.inventarioMovimientos) database.data.inventarioMovimientos = [];
   if (!database.data.activosFijos) database.data.activosFijos = [];
+  if (!database.data.auditLogLocal) database.data.auditLogLocal = [];
+  if (!database.data.cierreIntentos) database.data.cierreIntentos = [];
   database.data.procesadores.forEach((processor) => {
     if (processor.comisionPorcentaje === undefined) processor.comisionPorcentaje = 0.028;
     if (!processor.estado) processor.estado = "Activo";
@@ -781,6 +827,29 @@ function accountActivityForDate(date, account) {
   return { income, expenses, transferIn, transferOut, expected: income + transferIn - expenses - transferOut };
 }
 
+// Listado detallado (no solo el total) de lo que compone las entradas y
+// salidas de una cuenta en una fecha, para el boton "Ver detalle" del
+// formulario de cierre.
+function accountActivityDetailForDate(date, account) {
+  const incomeRows = dbTable("ingresos")
+    .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmado") === "confirmado")
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaDestino"], ["cuentaDestinoID"]))
+    .map((row) => ({ label: `${row.tipoIngreso || "Ingreso"} · ${row.metodoPago || ""} · ${row.clienteNombre || ""}`.trim(), amount: Number(row.montoNeto) || Number(row.montoBruto) || 0 }));
+  const transferInRows = dbTable("transferencias")
+    .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaDestino"], ["cuentaDestinoID"]))
+    .map((row) => ({ label: `Transferencia recibida de ${row.cuentaOrigen || "otra cuenta"}`, amount: Number(row.monto) || 0 }));
+  const expenseRows = dbTable("egresos")
+    .filter((row) => dateOnly(row.fechaHora) === date)
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    .map((row) => ({ label: `${row.tipoEgreso || "Egreso"} · ${row.concepto || ""}`.trim(), amount: Number(row.monto) || 0 }));
+  const transferOutRows = dbTable("transferencias")
+    .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")
+    .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    .map((row) => ({ label: `Transferencia enviada a ${row.cuentaDestino || "otra cuenta"}`, amount: Number(row.monto) || 0 }));
+  return { incomeRows: [...incomeRows, ...transferInRows], expenseRows: [...expenseRows, ...transferOutRows] };
+}
+
 function inputSingleOrBlank(input, values) {
   if (!input) return;
   input.value = values.length === 1 ? values[0] : "";
@@ -822,6 +891,19 @@ function closingForDateAndAccount(date, account) {
     .find((closing) => recordMatchesAccount(closing, account, ["cuentaCaja"], ["cuentaID"]));
 }
 
+// El fondo de caja de un dia normalmente es lo que quedo contado (y
+// confirmado) el dia anterior para esa misma cuenta. Si no hay un cierre
+// confirmado previo (primera vez que se cierra esa cuenta), el fondo inicial
+// es 0.
+function defaultInitialCashFor(account, beforeDate) {
+  const previous = dbTable("cierres")
+    .filter((closing) => dateOnly(closing.fechaHoraCierre) < beforeDate)
+    .filter((closing) => recordMatchesAccount(closing, account, ["cuentaCaja"], ["cuentaID"]))
+    .filter((closing) => !isClosingPendingConfirmation(closing))
+    .sort((a, b) => String(b.fechaHoraCierre || "").localeCompare(String(a.fechaHoraCierre || "")))[0];
+  return Number(previous?.balanceContado) || 0;
+}
+
 function closingForDate(date) {
   return dbTable("cierres")
     .filter((closing) => dateOnly(closing.fechaHoraCierre) === date)
@@ -833,13 +915,11 @@ function closingForDate(date) {
 }
 
 function isClosingOpenForEdits(closing) {
-  const status = normalize(closing?.estado);
-  return !closing || closing?.requiereConfirmacion || status.includes("abierto") || status.includes("provisional") || status.includes("pendiente");
+  return DalfiClosingMath.isClosingOpenForEdits(closing);
 }
 
 function isClosingPendingConfirmation(closing) {
-  const status = normalize(closing?.estado);
-  return Boolean(closing?.requiereConfirmacion) || status.includes("abierto") || status.includes("provisional") || status.includes("pendiente");
+  return DalfiClosingMath.isClosingPendingConfirmation(closing);
 }
 
 function invoiceOperationalDate(invoiceId) {
@@ -1122,6 +1202,17 @@ function reservationRecordById(reservationId) {
   return { stateRecord, dbRecord, record: stateRecord || dbRecord };
 }
 
+// Las reservas antiguas no tienen un campo de estado explicito. Para no
+// romperlas, se infiere: si ya tienen una factura asociada se consideran
+// completadas; si no, programadas. Las reservas nuevas siempre guardan su
+// propio estado explicitamente.
+function reservationStatus(record) {
+  if (!record) return "Programada";
+  const explicit = record.status || record.estado;
+  if (explicit) return explicit;
+  return record.invoiceId || record.facturaID ? "Completada" : "Programada";
+}
+
 function resetReservationEditState(form = byId("reservation-form")) {
   if (!form) return;
   const editField = byId("reservation-edit-id");
@@ -1130,6 +1221,8 @@ function resetReservationEditState(form = byId("reservation-form")) {
   if (title) title.textContent = "Nueva reserva";
   const submitButton = form.querySelector('button[type="submit"]');
   if (submitButton) submitButton.textContent = "Guardar reserva";
+  const statusField = byId("reservation-status");
+  if (statusField) statusField.value = "Programada";
 }
 
 function startReservationEdit(reservationId) {
@@ -1146,11 +1239,17 @@ function startReservationEdit(reservationId) {
   byId("reservation-date").value = record.date || record.fecha || today;
   byId("reservation-time").value = record.time || record.hora || "";
   byId("reservation-staff").value = record.staff || record.colaboradorNombre || "";
+  byId("reservation-status").value = reservationStatus(record);
   byId("reservation-note").value = record.note || record.observaciones || "";
   const title = form.querySelector(".panel-head h3");
   if (title) title.textContent = "Editar reserva";
   const submitButton = form.querySelector('button[type="submit"]');
   if (submitButton) submitButton.textContent = "Guardar cambios";
+  const message = byId("reservation-form-message");
+  if (message) {
+    message.textContent = "";
+    message.className = "form-message";
+  }
   form.scrollIntoView({ block: "start", behavior: "smooth" });
 }
 
@@ -1256,10 +1355,11 @@ function confirmedIncomeOn(date) {
 }
 
 function automaticClosingEligible(date) {
-  if (!date || date > today) return false;
-  if (date < today) return true;
-  const now = new Date();
-  return now.getHours() > 23 || (now.getHours() === 23 && now.getMinutes() >= 59);
+  // Antes esto usaba new Date().getHours() en la hora local del dispositivo,
+  // no en America/Santo_Domingo, por lo que el corte del "ultimo minuto del
+  // dia" ocurria a una hora distinta segun donde estuviera cada navegador.
+  const { hour, minute } = DalfiClosingMath.nowPartsInZone(new Date(), "America/Santo_Domingo");
+  return DalfiClosingMath.isAutomaticClosingEligible({ date, today, hour, minute });
 }
 
 function removePrematureProvisionalClosings() {
@@ -1347,6 +1447,35 @@ function ensureProvisionalClosings() {
     });
   });
   return created + removed;
+}
+
+// Los cierres sin confirmar guardan una fotografia de los totales del dia
+// (ingresosConfirmados, egresos, balanceTeorico, detalle por colaboradora) en
+// el momento en que se crearon. Si despues se edita o registra una factura,
+// egreso o transferencia de ese mismo dia, esa fotografia queda desactualizada.
+// Esta funcion la refresca para cualquier cierre de ese dia que siga pendiente
+// de confirmacion; los cierres ya confirmados quedan congelados y no se tocan.
+function refreshPendingClosingsForDate(date) {
+  if (!date) return 0;
+  let refreshed = 0;
+  dbTable("cierres")
+    .filter((closing) => dateOnly(closing.fechaHoraCierre) === date && isClosingPendingConfirmation(closing))
+    .forEach((closing) => {
+      const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
+      const activity = accountActivityForDate(date, account);
+      const summary = dailyIncomeSummary(date);
+      const isRegister = normalize(account.nombreCuenta || "").includes("registradora");
+      closing.ingresosConfirmados = activity.income + activity.transferIn;
+      closing.egresos = activity.expenses + activity.transferOut;
+      closing.balanceTeorico = activity.expected;
+      closing.tarjetaEsperada = isRegister ? summary.card : 0;
+      closing.transferenciaEsperada = isRegister ? summary.transfer : 0;
+      closing.creditoGenerado = isRegister ? summary.credit : 0;
+      closing.detalleColaboradores = closingCollaboratorSummary(date);
+      stampRecord(closing, "updated");
+      refreshed += 1;
+    });
+  return refreshed;
 }
 
 function moveInvoicesBetweenDates(sourceDate, targetDate) {
@@ -1495,6 +1624,17 @@ function moveTodayInvoicesToYesterday() {
   if (moved > 0) alert(`Listo. Se movieron ${moved} factura(s) de ${sourceDate} a ${targetDate}.`);
 }
 
+function renderCashActivityDetailList(target, rows) {
+  if (!target) return;
+  if (!rows.length) {
+    target.innerHTML = `<p class="empty">Sin movimientos.</p>`;
+    return;
+  }
+  target.innerHTML = rows
+    .map((row) => `<div class="summary-row"><span>${escapeHtml(row.label || "-")}</span><strong>${money.format(row.amount)}</strong></div>`)
+    .join("");
+}
+
 function updateCashBalancePreview() {
   const countedRaw = byId("cash-counted").value;
   const panel = byId("cash-balance-panel");
@@ -1505,18 +1645,30 @@ function updateCashBalancePreview() {
   const date = byId("cash-date").value || today;
   const account = findAccountByName(byId("cash-account").value) || accountForPayment("efectivo");
   const activity = accountActivityForDate(date, account);
-  const expected = activity.expected;
+  const montoInicial = Number(byId("cash-initial")?.value) || 0;
+  const entradasEfectivo = activity.income + activity.transferIn;
+  const salidasEfectivo = activity.expenses + activity.transferOut;
+  const expected = DalfiClosingMath.computeExpectedCash({ montoInicial, entradasEfectivo, salidasEfectivo });
   const counted = Number(countedRaw) || 0;
   const expenses = Number(byId("cash-expenses").value) || 0;
-  const difference = counted - expected;
-  const shortage = Math.max(0, -difference);
-  const surplus = Math.max(0, difference);
-  cashBalanceDraft = { date, account: account.nombreCuenta || "", expected, counted, expenses, difference, shortage, surplus, generatedAt: new Date().toISOString() };
+  const { difference, shortage, surplus } = DalfiClosingMath.computeDifference(counted, expected);
+  cashBalanceDraft = { date, account: account.nombreCuenta || "", montoInicial, expected, counted, expenses, difference, shortage, surplus, generatedAt: new Date().toISOString() };
 
+  byId("cash-initial-preview").textContent = money.format(montoInicial);
+  byId("cash-income-preview").textContent = money.format(entradasEfectivo);
+  byId("cash-expenses-preview").textContent = money.format(salidasEfectivo);
   byId("cash-expected-preview").textContent = money.format(expected);
   byId("cash-difference-preview").textContent = money.format(difference);
   byId("cash-shortage-preview").textContent = money.format(shortage);
   byId("cash-surplus-preview").textContent = money.format(surplus);
+  byId("cash-user-preview").textContent = currentUserEmail();
+  const editingClosing = dbTable("cierres").find((row) => row.cierreID === byId("cash-edit-id").value);
+  byId("cash-confirmed-at-preview").textContent = editingClosing?.fechaConfirmacion ? new Date(editingClosing.fechaConfirmacion).toLocaleString("es-DO") : "Sin confirmar";
+
+  const detail = accountActivityDetailForDate(date, account);
+  renderCashActivityDetailList(byId("cash-income-detail"), detail.incomeRows);
+  renderCashActivityDetailList(byId("cash-expense-detail"), detail.expenseRows);
+
   panel.classList.remove("hidden");
   byId("cash-shortage-label").classList.toggle("hidden", shortage <= 0);
   if (shortage > 0) byId("cash-rectified-counted").value = "";
@@ -1526,41 +1678,40 @@ function resetCashBalancePreview() {
   cashBalanceDraft = null;
   byId("cash-balance-panel")?.classList.add("hidden");
   byId("cash-shortage-label")?.classList.add("hidden");
+  byId("cash-income-detail")?.classList.add("hidden");
+  byId("cash-expense-detail")?.classList.add("hidden");
   if (byId("cash-shortage-note")) byId("cash-shortage-note").value = "";
   if (byId("cash-rectified-counted")) byId("cash-rectified-counted").value = "";
 }
 
+// Aggregation en si (sumas, deduplicado de facturas, total desglosado) vive
+// en DalfiClosingMath.summarizeCollaborators para poder probarla con
+// node:test; aqui solo se arman las filas de entrada a partir de la base de
+// datos del navegador.
 function closingCollaboratorSummary(date) {
   if (!date) return [];
-  const grouped = new Map();
-  const ensureRow = (id, name) => {
-    const key = id || name || "sin-colaboradora";
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        id: key,
-        name: name || "Sin colaboradora",
-        services: 0,
-        billing: 0,
-        commissionable: 0,
-        tips: 0,
-      });
-    }
-    return grouped.get(key);
-  };
-  dbTable("facturaDetalle").forEach((detail) => {
-    const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
-    if (!invoice || dateOnly(invoice.fechaHora) !== date || normalize(invoice.estado) === "anulada") return;
-    const row = ensureRow(detail.colaboradorID, detail.colaboradorNombre);
-    row.services += 1;
-    row.billing += Number(detail.subtotalAntesDescuentoGeneral ?? detail.subtotal) || 0;
-    row.commissionable += Number(detail.montoComisionable ?? detail.subtotal) || 0;
-  });
-  dbTable("propinas").forEach((tip) => {
-    if (dateOnly(tip.fechaHora) !== date) return;
-    const row = ensureRow(tip.colaboradorID, tip.colaboradorNombre);
-    row.tips += Number(tip.montoNetoPagar ?? tip.montoBruto ?? tip.monto) || 0;
-  });
-  return Array.from(grouped.values()).sort((a, b) => normalize(a.name).localeCompare(normalize(b.name)));
+  const detailRows = dbTable("facturaDetalle")
+    .filter((detail) => {
+      const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
+      return invoice && dateOnly(invoice.fechaHora) === date && normalize(invoice.estado) !== "anulada";
+    })
+    .map((detail) => ({
+      collaboratorId: detail.colaboradorID,
+      collaboratorName: detail.colaboradorNombre,
+      invoiceId: detail.facturaID,
+      billing: Number(detail.subtotalAntesDescuentoGeneral ?? detail.subtotal) || 0,
+      commissionable: Number(detail.montoComisionable ?? detail.subtotal) || 0,
+      extra: Number(detail.extraMonto) || 0,
+      discount: (Number(detail.deduccionMonto) || 0) + (Number(detail.deduccionGeneralMonto) || 0),
+    }));
+  const tipRows = dbTable("propinas")
+    .filter((tip) => dateOnly(tip.fechaHora) === date)
+    .map((tip) => ({
+      collaboratorId: tip.colaboradorID,
+      collaboratorName: tip.colaboradorNombre,
+      amount: Number(tip.montoNetoPagar ?? tip.montoBruto ?? tip.monto) || 0,
+    }));
+  return DalfiClosingMath.summarizeCollaborators(detailRows, tipRows);
 }
 
 function updateClosingCollaboratorDetails(date) {
@@ -1586,6 +1737,7 @@ function updateClosingCollaboratorDetails(date) {
     `;
     return;
   }
+  const totalGeneral = DalfiClosingMath.sumCollaboratorTotals(rows);
   target.innerHTML = `
     <div class="summary-row">
       <span>Detalle por colaboradora</span>
@@ -1598,20 +1750,32 @@ function updateClosingCollaboratorDetails(date) {
             <th>Colaboradora</th>
             <th>Servicios</th>
             <th>Facturado</th>
-            <th>Comisionable</th>
             <th>Propina</th>
+            <th>Total</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
           ${rows
             .map(
-              (row) => `
+              (row, index) => `
                 <tr>
                   <td>${escapeHtml(row.name)}</td>
                   <td>${row.services}</td>
                   <td>${money.format(row.billing)}</td>
-                  <td>${money.format(row.commissionable)}</td>
                   <td>${money.format(row.tips)}</td>
+                  <td>${money.format(row.total)}</td>
+                  <td><button class="secondary-btn compact toggle-collaborator-detail" data-index="${index}" type="button">Ver detalle</button></td>
+                </tr>
+                <tr class="collaborator-detail-row hidden" data-detail-index="${index}">
+                  <td colspan="6">
+                    <div class="simple-list">
+                      <div class="summary-row"><span>Facturas</span><strong>${row.invoiceIds.map(escapeHtml).join(", ") || "-"}</strong></div>
+                      <div class="summary-row"><span>Comisionable</span><strong>${money.format(row.commissionable)}</strong></div>
+                      <div class="summary-row"><span>Extras</span><strong>${money.format(row.extras)}</strong></div>
+                      <div class="summary-row"><span>Descuentos</span><strong>${money.format(row.discounts)}</strong></div>
+                    </div>
+                  </td>
                 </tr>
               `,
             )
@@ -1619,7 +1783,18 @@ function updateClosingCollaboratorDetails(date) {
         </tbody>
       </table>
     </div>
+    <div class="summary-row total">
+      <span>Total generado por todas las colaboradoras</span>
+      <strong>${money.format(totalGeneral)}</strong>
+    </div>
   `;
+  target.querySelectorAll(".toggle-collaborator-detail").forEach((button) => {
+    button.addEventListener("click", () => {
+      const detailRow = target.querySelector(`.collaborator-detail-row[data-detail-index="${button.dataset.index}"]`);
+      detailRow?.classList.toggle("hidden");
+      button.textContent = detailRow?.classList.contains("hidden") ? "Ver detalle" : "Ocultar";
+    });
+  });
 }
 
 function ensureCashModuleMarkup() {
@@ -1680,10 +1855,14 @@ function ensureCashModuleMarkup() {
           Cuenta / caja
           <input id="cash-account" list="accounts-list" placeholder="Seleccionar cuenta o caja" required />
         </label>
+        <label>
+          Monto real contado en caja
+          <input id="cash-counted" type="number" min="0" step="0.01" required />
+        </label>
         <div class="form-row">
           <label>
-            Monto contado inicial
-            <input id="cash-counted" type="number" min="0" step="0.01" required />
+            Monto inicial (fondo de caja)
+            <input id="cash-initial" type="number" min="0" step="0.01" value="0" />
           </label>
           <label>
             Gastos del día
@@ -1692,6 +1871,22 @@ function ensureCashModuleMarkup() {
         </div>
         <button class="secondary-btn" id="generate-cash-balance" type="button">Generar cuadre de efectivo</button>
         <section class="invoice-summary hidden" id="cash-balance-panel">
+          <div class="summary-row">
+            <span>Monto inicial</span>
+            <strong id="cash-initial-preview">RD$0.00</strong>
+          </div>
+          <div class="summary-row">
+            <span>Ingresos totales en efectivo</span>
+            <strong id="cash-income-preview">RD$0.00</strong>
+            <button class="secondary-btn compact" id="toggle-cash-income-detail" type="button">Ver detalle</button>
+          </div>
+          <div class="simple-list hidden" id="cash-income-detail"></div>
+          <div class="summary-row">
+            <span>Egresos totales</span>
+            <strong id="cash-expenses-preview">RD$0.00</strong>
+            <button class="secondary-btn compact" id="toggle-cash-expense-detail" type="button">Ver detalle</button>
+          </div>
+          <div class="simple-list hidden" id="cash-expense-detail"></div>
           <div class="summary-row">
             <span>Efectivo esperado en caja</span>
             <strong id="cash-expected-preview">RD$0.00</strong>
@@ -1707,6 +1902,14 @@ function ensureCashModuleMarkup() {
           <div class="summary-row">
             <span>Sobrante de caja</span>
             <strong id="cash-surplus-preview">RD$0.00</strong>
+          </div>
+          <div class="summary-row">
+            <span>Usuario que realiza el cierre</span>
+            <strong id="cash-user-preview">-</strong>
+          </div>
+          <div class="summary-row">
+            <span>Fecha y hora de confirmación</span>
+            <strong id="cash-confirmed-at-preview">Sin confirmar</strong>
           </div>
         </section>
         <section class="invoice-summary hidden" id="cash-collaborator-detail"></section>
@@ -2379,25 +2582,64 @@ function renderPendingTransfers() {
     .join("");
 }
 
+// La confirmacion de una transferencia pendiente pide la fecha real en que el
+// dinero entro a la cuenta (accountEntryDate) mediante un dialogo, en vez de
+// un prompt() del navegador. canConfirmTransfer se revisa dos veces: al abrir
+// el dialogo y de nuevo justo antes de aplicar el cambio, para no confirmar
+// dos veces la misma transferencia si otra sesion ya la proceso mientras el
+// dialogo estaba abierto.
+function openTransferConfirmDialog(cxcId) {
+  const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === cxcId);
+  const dialog = byId("transfer-confirm-dialog");
+  if (!cxc || !dialog) return;
+  if (!DalfiClosingMath.canConfirmTransfer(cxc)) {
+    alert("Esta transferencia ya fue confirmada anteriormente.");
+    renderAll();
+    return;
+  }
+  dialog.dataset.cxcId = cxcId;
+  byId("transfer-confirm-summary").textContent =
+    `${cxc.deudorNombre || "Cliente"} · ${money.format(Number(cxc.balancePendiente) || 0)} · Factura ${cxc.facturaID || cxc.cxCID}`;
+  byId("transfer-confirm-date").value = today;
+  byId("transfer-confirm-message").textContent = "";
+  byId("transfer-confirm-message").className = "form-message";
+  dialog.showModal();
+  byId("transfer-confirm-date").focus();
+}
+
+function confirmPendingTransfer(cxcId, depositDate) {
+  const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === cxcId);
+  if (!cxc) throw new Error("Esta transferencia ya no existe.");
+  if (!DalfiClosingMath.canConfirmTransfer(cxc)) throw new Error("Esta transferencia ya fue confirmada.");
+  if (!DalfiClosingMath.isValidIsoDate(depositDate)) throw new Error("Introduce una fecha valida.");
+  const amount = Number(cxc.balancePendiente) || 0;
+  const clientRecord = dbTable("clientes").find((client) => client.clienteID === cxc.deudorID) || findClientByName(cxc.deudorNombre);
+  cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + amount;
+  cxc.balancePendiente = 0;
+  cxc.estado = "Saldada";
+  cxc.fechaPago = depositDate;
+  cxc.fechaEntradaCuenta = depositDate;
+  cxc.accountEntryDate = depositDate;
+  cxc.confirmadoPor = currentUserEmail();
+  cxc.fechaConfirmacionTransferencia = new Date().toISOString();
+  cxc.observaciones = `${cxc.observaciones || ""} Transferencia confirmada ${depositDate} por ${currentUserEmail()}.`.trim();
+  stampRecord(cxc, "updated");
+  addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", amount, "transferencia_confirmada", "Transferencia confirmada desde cuentas por cobrar", "", cxc.cuentaDestino || "", depositDate, cxc.cxCID || "");
+  refreshPendingClosingsForDate(depositDate);
+  logAudit("transfer_confirm", {
+    entity: "cuentasCobrar",
+    entityId: cxcId,
+    newData: { accountEntryDate: depositDate, monto: amount, cliente: cxc.deudorNombre },
+    success: true,
+  });
+}
+
 function handlePendingTransferAction(button, action) {
   const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === button.dataset.cxcId);
   if (!cxc) return;
   if (action === "confirm") {
-    const depositDate = prompt("Fecha de entrada a cuenta (YYYY-MM-DD)", today);
-    if (depositDate === null) return;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(depositDate)) {
-      alert("Introduce una fecha valida en formato YYYY-MM-DD.");
-      return;
-    }
-    const amount = Number(cxc.balancePendiente) || 0;
-    const clientRecord = dbTable("clientes").find((client) => client.clienteID === cxc.deudorID) || findClientByName(cxc.deudorNombre);
-    cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + amount;
-    cxc.balancePendiente = 0;
-    cxc.estado = "Saldada";
-    cxc.fechaPago = depositDate;
-    cxc.fechaEntradaCuenta = depositDate;
-    cxc.observaciones = `${cxc.observaciones || ""} Transferencia confirmada ${depositDate}`.trim();
-    addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", amount, "transferencia_confirmada", "Transferencia confirmada desde cuentas por cobrar", "", cxc.cuentaDestino || "", depositDate, cxc.cxCID || "");
+    openTransferConfirmDialog(cxc.cxCID);
+    return;
   }
   if (action === "decline") {
     cxc.tipoCxC = "Crédito cliente";
@@ -2405,6 +2647,7 @@ function handlePendingTransferAction(button, action) {
     cxc.fechaVencimiento = today;
     cxc.estado = "Pendiente";
     cxc.observaciones = `${cxc.observaciones || ""} Transferencia declinada ${new Date().toISOString()}. No completada; deuda vencida inmediata.`.trim();
+    stampRecord(cxc, "updated");
   }
   state = stateFromDatabase(database);
   saveState();
@@ -2417,8 +2660,10 @@ function renderAppointments(target, rows, emptyMessage) {
     return;
   }
   target.innerHTML = rows
-    .map(
-      (reservation) => `
+    .map((reservation) => {
+      const status = reservationStatus(reservation);
+      const statusClass = status === "Cancelada" || status === "No asistió" ? "danger" : status === "Completada" ? "success" : "warning";
+      return `
         <article class="appointment">
           <time>${reservation.time}</time>
           <div>
@@ -2427,13 +2672,14 @@ function renderAppointments(target, rows, emptyMessage) {
             <span>${reservation.phone || ""} ${reservation.provisional ? "· Cliente provisional" : ""} ${reservation.source ? `· ${reservation.source}` : ""} ${reservation.note ? `· ${reservation.note}` : ""}</span>
           </div>
           <div class="row-actions">
+            <span class="status-pill ${statusClass}">${escapeHtml(status)}</span>
             <span>${reservation.invoiceId ? `Factura ${reservation.invoiceId}` : reservation.date}</span>
             <button class="secondary-btn compact edit-reservation" data-reservation-id="${reservation.id}" type="button">Editar</button>
             ${reservation.invoiceId ? "" : `<button class="secondary-btn compact invoice-reservation" data-reservation-id="${reservation.id}" type="button">Facturar</button>`}
           </div>
         </article>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -2664,12 +2910,46 @@ function openClosingForEdit(closingId) {
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
   if (!closing) return;
-  if (!confirm(`Abrir el cierre de ${dateOnly(closing.fechaHoraCierre)} permitirá editar facturas de ese día. ¿Continuar?`)) return;
+  if (isClosingPendingConfirmation(closing)) {
+    alert("Este cierre ya está sin confirmar; no hace falta reabrirlo.");
+    return;
+  }
+  const reason = prompt(`¿Por qué reabres el cierre de ${dateOnly(closing.fechaHoraCierre)}? Esto permitirá editar facturas de ese día.`, "");
+  if (reason === null) return;
+  if (!reason.trim()) {
+    alert("Debes indicar el motivo de la reapertura.");
+    return;
+  }
+  const previousConfirmation = {
+    tipo: "confirmacion",
+    por: closing.confirmadoPor || "",
+    fecha: closing.fechaConfirmacion || "",
+  };
+  const reopening = {
+    tipo: "reapertura",
+    por: currentUserEmail(),
+    fecha: new Date().toISOString(),
+    motivo: reason.trim(),
+  };
+  closing.historialCierre = Array.isArray(closing.historialCierre) ? closing.historialCierre : [];
+  if (closing.confirmadoPor && !closing.historialCierre.some((entry) => entry.tipo === "confirmacion" && entry.fecha === closing.fechaConfirmacion)) {
+    closing.historialCierre.push(previousConfirmation);
+  }
+  closing.historialCierre.push(reopening);
   closing.estado = "Abierto para edición";
   closing.requiereConfirmacion = true;
   closing.abiertoPor = currentUserEmail();
-  closing.fechaApertura = new Date().toISOString();
+  closing.fechaApertura = reopening.fecha;
+  closing.motivoReapertura = reason.trim();
   stampRecord(closing, "updated");
+  logAudit("closing_reopen", {
+    entity: "cierres",
+    entityId: closingId,
+    oldData: previousConfirmation,
+    newData: reopening,
+    note: reason.trim(),
+    success: true,
+  });
   state = stateFromDatabase(database);
   saveState();
   renderAll();
@@ -2714,7 +2994,15 @@ function confirmClosingAndPrevious(closing) {
       row.requiereConfirmacion = false;
       row.confirmadoPor = currentUserEmail();
       row.fechaConfirmacion = new Date().toISOString();
+      row.historialCierre = Array.isArray(row.historialCierre) ? row.historialCierre : [];
+      row.historialCierre.push({ tipo: "confirmacion", por: row.confirmadoPor, fecha: row.fechaConfirmacion });
       stampRecord(row, "updated");
+      logAudit("closing_confirm", {
+        entity: "cierres",
+        entityId: row.cierreID,
+        newData: { confirmadoPor: row.confirmadoPor, fechaConfirmacion: row.fechaConfirmacion, cuadreFaltante: row.cuadreFaltante, sobranteCaja: row.sobranteCaja },
+        success: true,
+      });
     });
 }
 
@@ -2765,6 +3053,10 @@ function confirmPreviousPendingClosings() {
 }
 
 function showNewCashClosing() {
+  if (!canManageInvoices()) {
+    alert("Solo administradores y propietarios pueden hacer cierres de caja.");
+    return;
+  }
   const created = ensureProvisionalClosings();
   state = stateFromDatabase(database);
   if (created) saveState();
@@ -2782,6 +3074,7 @@ function showNewCashClosing() {
   }
   byId("cash-form").classList.remove("hidden");
   byId("cash-form").reset();
+  delete byId("cash-form").dataset.recordVersion;
   setCashFormReadOnly(false);
   setClosingViewActions(null);
   byId("cash-edit-id").value = "";
@@ -2790,6 +3083,7 @@ function showNewCashClosing() {
   byId("cash-submit").classList.remove("hidden");
   byId("cash-date").value = today;
   byId("cash-account").value = cashRegisterAccount()?.nombreCuenta || cashAccounts()[0]?.nombreCuenta || activeAccounts()[0]?.nombreCuenta || "";
+  byId("cash-initial").value = defaultInitialCashFor(defaultAccount, today);
   byId("cash-expenses").value = 0;
   byId("cash-card-counted").value = 0;
   byId("cash-transfer-counted").value = 0;
@@ -2809,6 +3103,7 @@ function hideCashClosingForm() {
   byId("cash-submit").classList.remove("hidden");
   byId("cash-date").value = today;
   byId("cash-account").value = "";
+  byId("cash-initial").value = 0;
   resetCashBalancePreview();
   byId("cash-collaborator-detail")?.classList.add("hidden");
 }
@@ -2818,6 +3113,7 @@ function cashFormFieldIds() {
     "cash-date",
     "cash-account",
     "cash-counted",
+    "cash-initial",
     "cash-expenses",
     "generate-cash-balance",
     "cash-shortage-note",
@@ -2858,13 +3154,17 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   const activity = accountActivityForDate(date, account);
   const summary = dailyIncomeSummary(date);
   byId("cash-form").classList.remove("hidden");
+  byId("cash-form").dataset.recordVersion = closing.fechaActualizacion || closing.fechaCreacion || "";
   byId("cash-edit-id").value = closing.cierreID;
   byId("cash-confirm-after-save").value = confirmAfterSave ? "true" : "";
   byId("cash-submit").textContent = submitText;
   byId("cash-submit").classList.toggle("hidden", readOnly);
   byId("cash-date").value = date;
   byId("cash-account").value = closing.cuentaCaja || account.nombreCuenta || "";
-  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || (confirmAfterSave ? activity.expected : 0);
+  const montoInicialForForm = Number(closing.balanceInicial) || defaultInitialCashFor(account, date);
+  byId("cash-initial").value = montoInicialForForm;
+  const expectedForPrefill = DalfiClosingMath.computeExpectedCash({ montoInicial: montoInicialForForm, entradasEfectivo: activity.income + activity.transferIn, salidasEfectivo: activity.expenses + activity.transferOut });
+  byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || (confirmAfterSave ? expectedForPrefill : 0);
   byId("cash-expenses").value = Number(closing.egresos) || (confirmAfterSave ? activity.expenses + activity.transferOut : 0);
   byId("cash-card-counted").value = Number(closing.tarjetaContada) || (confirmAfterSave ? summary.card : 0);
   byId("cash-card-processor").value = closing.procesadorTarjeta || "";
@@ -2873,7 +3173,7 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   byId("cash-note").value = closing.observaciones || "";
   byId("cash-shortage-note").value = closing.motivoFaltante || "";
   byId("cash-rectified-counted").value = Number(closing.balanceContadoRectificado) || "";
-  resetCashBalancePreview();
+  updateCashBalancePreview();
   updateClosingCollaboratorDetails(date);
   setCashFormReadOnly(readOnly);
   setClosingViewActions(readOnly ? closing : null);
@@ -2881,6 +3181,10 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
 }
 
 function viewClosingInForm(closingId) {
+  if (!canManageInvoices()) {
+    alert("Solo administradores y propietarios pueden ver los cierres.");
+    return;
+  }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
   if (!closing) return;
   loadClosingIntoCashForm(closing, { readOnly: true, submitText: "Guardar cierre" });
@@ -4275,7 +4579,18 @@ function wireUserAdmin() {
     if (result.temporaryPassword) alert(successText);
   };
 
+  const setRowBusy = (row, busy) => {
+    row.querySelectorAll("button").forEach((button) => {
+      button.disabled = busy;
+    });
+    row.classList.toggle("row-busy", busy);
+  };
+
   const resetUserPassword = async (row) => {
+    const targetEmail = row.querySelector(".user-email-input").value.trim() || "este usuario";
+    if (!confirm(`¿Confirmas resetear la contraseña de ${targetEmail}? Se generará una contraseña temporal y el usuario deberá cambiarla al entrar.`)) {
+      return null;
+    }
     const payload = {
       id: row.dataset.userId,
       fullName: row.querySelector(".user-name-input").value.trim(),
@@ -4300,6 +4615,7 @@ function wireUserAdmin() {
     listMessage.textContent = successText;
     listMessage.className = "form-message success";
     alert(successText);
+    return result;
   };
 
   form.addEventListener("submit", async (event) => {
@@ -4342,6 +4658,8 @@ function wireUserAdmin() {
   listTarget?.addEventListener("click", async (event) => {
     const row = event.target.closest("tr[data-user-id]");
     if (!row) return;
+    if (row.classList.contains("row-busy")) return;
+    setRowBusy(row, true);
     try {
       if (event.target.closest(".save-user")) {
         await saveUserRow(row);
@@ -4353,8 +4671,14 @@ function wireUserAdmin() {
         await resetUserPassword(row);
       }
     } catch (error) {
+      // El mensaje inline es facil de pasar por alto junto a la tabla, asi que
+      // tambien se muestra con alert() para que un error real nunca parezca que
+      // "no paso nada".
       listMessage.textContent = error.message;
       listMessage.className = "form-message error";
+      alert(`No se pudo completar la accion: ${error.message}`);
+    } finally {
+      setRowBusy(row, false);
     }
   });
 
@@ -4737,6 +5061,7 @@ function ensureStaffRecord(name) {
 
 function clearInvoiceFormAfterSubmit() {
   byId("invoice-form").reset();
+  delete byId("invoice-form").dataset.editVersion;
   byId("invoice-edit-id").value = "";
   byId("invoice-date").value = today;
   byId("invoice-submit-button").textContent = "Crear factura";
@@ -4767,12 +5092,19 @@ function fillInvoiceLine(lineElement, detail) {
 
 function startInvoiceEdit(invoiceId) {
   if (!canEditInvoice(invoiceId)) {
-    alert("Esta factura no se puede editar. Si el día ya fue cerrado, primero abre el cierre desde Cierres de caja.");
+    alert("Esta factura no puede editarse porque pertenece a un cierre de caja confirmado.");
+    logAudit("invoice_edit_blocked", {
+      entity: "facturas",
+      entityId: invoiceId,
+      success: false,
+      note: "Intento de abrir edición de una factura con cierre confirmado.",
+    });
     return;
   }
   const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
   if (!invoice) return;
   const details = dbTable("facturaDetalle").filter((detail) => detail.facturaID === invoiceId);
+  byId("invoice-form").dataset.editVersion = invoice.fechaActualizacion || invoice.fechaCreacion || "";
   byId("invoice-edit-id").value = invoiceId;
   byId("invoice-date").value = dateOnly(invoice.fechaHora) || today;
   byId("invoice-client-search").value = invoice.clienteNombre || "";
@@ -4796,17 +5128,41 @@ function startInvoiceEdit(invoiceId) {
 
 function saveEditedInvoice(invoiceId, client, lines, totals, note) {
   const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
-  if (!invoice) return false;
+  if (!invoice) {
+    alert("Esta factura ya no existe. Puede que otra persona la haya eliminado o movido. Actualiza la pantalla e intenta de nuevo.");
+    return false;
+  }
   const currentDate = dateOnly(invoice.fechaOperacion || invoice.fechaHora);
   if (!canEditInvoice(invoiceId)) {
     const closing = closingForDate(currentDate);
-    if (closing && !isClosingOpenForEdits(closing)) {
-      alert("No se puede editar esta factura porque el cierre de ese dia esta confirmado. Administracion debe abrir el cierre en Cierres de caja antes de modificarla.");
-    } else {
-      alert("No se puede guardar. Tu usuario no tiene permisos administrativos.");
-    }
+    const blockedByClosing = closing && !isClosingOpenForEdits(closing);
+    alert(
+      blockedByClosing
+        ? "Esta factura no puede editarse porque pertenece a un cierre de caja confirmado."
+        : "No se puede guardar. Tu usuario no tiene permisos administrativos.",
+    );
+    logAudit("invoice_edit_blocked", {
+      entity: "facturas",
+      entityId: invoiceId,
+      success: false,
+      note: blockedByClosing ? "Cierre de caja confirmado para esa fecha." : "Usuario sin permisos administrativos.",
+    });
     return false;
   }
+  const editVersion = byId("invoice-form").dataset.editVersion || "";
+  const currentVersion = invoice.fechaActualizacion || invoice.fechaCreacion || "";
+  if (editVersion && currentVersion && editVersion !== currentVersion) {
+    const keepGoing = confirm(
+      "Esta factura fue modificada por otra persona despues de que abriste este formulario. Si continuas, tus cambios reemplazaran los de esa otra edicion. ¿Deseas continuar de todas formas?",
+    );
+    if (!keepGoing) return false;
+  }
+  const oldSnapshot = {
+    totalFacturado: invoice.totalFacturado,
+    totalCxC: invoice.totalCxC,
+    clienteNombre: invoice.clienteNombre,
+    fechaOperacion: currentDate,
+  };
   const targetDate = canManageInvoices() ? (byId("invoice-date")?.value || currentDate || today) : currentDate;
   if (targetDate !== currentDate) {
     if (!canEditRecordDate(currentDate) || !canEditRecordDate(targetDate)) {
@@ -4861,6 +5217,15 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
   invoice.totalConPropina = totals.total + previousTip;
   invoice.observaciones = note;
   stampRecord(invoice, "updated");
+  refreshPendingClosingsForDate(currentDate);
+  if (targetDate !== currentDate) refreshPendingClosingsForDate(targetDate);
+  logAudit("invoice_edit", {
+    entity: "facturas",
+    entityId: invoiceId,
+    oldData: oldSnapshot,
+    newData: { totalFacturado: invoice.totalFacturado, totalCxC: invoice.totalCxC, clienteNombre: invoice.clienteNombre, fechaOperacion: targetDate },
+    success: true,
+  });
   state = stateFromDatabase(database);
   clearInvoiceFormAfterSubmit();
   saveState();
@@ -5781,6 +6146,7 @@ function wireForms() {
         estadoPagoNomina: "Pendiente",
       }));
     });
+    refreshPendingClosingsForDate(invoiceDate);
     state = stateFromDatabase(database);
     activeReservationInvoiceId = "";
     clearInvoiceFormAfterSubmit();
@@ -5909,6 +6275,11 @@ function wireForms() {
   byId("new-cash-closing")?.addEventListener("click", showNewCashClosing);
   byId("cancel-cash-closing")?.addEventListener("click", hideCashClosingForm);
   byId("confirm-previous-closings")?.addEventListener("click", confirmPreviousPendingClosings);
+  byId("toggle-cash-income-detail")?.addEventListener("click", () => byId("cash-income-detail")?.classList.toggle("hidden"));
+  byId("toggle-cash-expense-detail")?.addEventListener("click", () => byId("cash-expense-detail")?.classList.toggle("hidden"));
+  byId("cash-initial")?.addEventListener("input", () => {
+    if (byId("cash-counted").value !== "") updateCashBalancePreview();
+  });
 
   byId("income-table").addEventListener("click", (event) => {
     const viewButton = event.target.closest(".view-income");
@@ -5933,6 +6304,28 @@ function wireForms() {
     const button = confirmButton || declineButton;
     if (!button) return;
     handlePendingTransferAction(button, confirmButton ? "confirm" : "decline");
+  });
+
+  byId("transfer-confirm-cancel")?.addEventListener("click", () => {
+    byId("transfer-confirm-dialog")?.close();
+  });
+
+  byId("transfer-confirm-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const dialog = byId("transfer-confirm-dialog");
+    const cxcId = dialog?.dataset.cxcId || "";
+    const depositDate = byId("transfer-confirm-date").value;
+    const message = byId("transfer-confirm-message");
+    try {
+      confirmPendingTransfer(cxcId, depositDate);
+      state = stateFromDatabase(database);
+      saveState();
+      dialog.close();
+      renderAll();
+    } catch (error) {
+      message.textContent = error.message || "No se pudo confirmar la transferencia.";
+      message.className = "form-message error";
+    }
   });
 
   byId("card-reconciliation-table").addEventListener("click", (event) => {
@@ -6343,12 +6736,25 @@ function wireForms() {
 
   byId("reservation-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    const formMessage = byId("reservation-form-message");
+    const setMessage = (text, kind = "") => {
+      if (!formMessage) return;
+      formMessage.textContent = text;
+      formMessage.className = kind ? `form-message ${kind}` : "form-message";
+    };
     let client = byId("reservation-client-search").value.trim();
     const service = byId("reservation-service-search").value.trim();
     const staff = byId("reservation-staff").value.trim();
     const phone = byId("reservation-client-phone").value.trim();
     const email = byId("reservation-client-email").value.trim();
     const source = byId("reservation-source").value;
+    const status = byId("reservation-status")?.value || "Programada";
+    const reservationDateValue = byId("reservation-date").value;
+    const reservationTimeValue = byId("reservation-time").value;
+    if (!client || !service || !staff || !reservationDateValue || !reservationTimeValue) {
+      setMessage("Completa cliente, servicio, técnico/a, fecha y hora antes de guardar.", "error");
+      return;
+    }
     const existingByPhone = findClientByPhone(phone);
     const existingByName = findClientByName(client);
     let clientRecord = existingByPhone || existingByName || null;
@@ -6366,9 +6772,15 @@ function wireForms() {
     const serviceRecord = findServiceByName(service);
     const editId = byId("reservation-edit-id")?.value || "";
     const currentReservation = editId ? reservationRecordById(editId) : null;
+    if (editId && !currentReservation?.record) {
+      setMessage("Esta cita ya no existe (puede que otra persona la haya eliminado). Se actualizó la agenda.", "error");
+      resetReservationEditState(event.target);
+      renderAll();
+      return;
+    }
     const reservationId = editId || nextDbId("reservas", "reservaID", "RES");
-    const reservationDate = byId("reservation-date").value;
-    const reservationTime = byId("reservation-time").value;
+    const reservationDate = reservationDateValue;
+    const reservationTime = reservationTimeValue;
     const reservationNote = byId("reservation-note").value.trim();
     const statePayload = {
       id: reservationId,
@@ -6383,6 +6795,7 @@ function wireForms() {
       serviceId: serviceRecord?.servicioID || "",
       service,
       staff,
+      status,
       note: reservationNote,
       invoiceId: currentReservation?.record?.invoiceId || currentReservation?.record?.facturaID || "",
     };
@@ -6399,33 +6812,41 @@ function wireForms() {
       servicioID: serviceRecord?.servicioID || "",
       servicio: service,
       colaboradorNombre: staff,
+      estado: status,
       facturaID: currentReservation?.record?.facturaID || currentReservation?.record?.invoiceId || "",
       observaciones: reservationNote,
     };
-    if (editId) {
-      const stateIndex = state.reservations.findIndex((reservation) => reservation.id === editId);
-      if (stateIndex >= 0) state.reservations[stateIndex] = statePayload;
-      else state.reservations.push(statePayload);
-      const existingDb = dbTable("reservas").find((row) => row.reservaID === editId);
-      if (existingDb) {
-        Object.assign(existingDb, dbPayload);
-        stampRecord(existingDb, "updated");
+    try {
+      if (editId) {
+        const stateIndex = state.reservations.findIndex((reservation) => reservation.id === editId);
+        if (stateIndex >= 0) state.reservations[stateIndex] = statePayload;
+        else state.reservations.push(statePayload);
+        const existingDb = dbTable("reservas").find((row) => row.reservaID === editId);
+        if (existingDb) {
+          Object.assign(existingDb, dbPayload);
+          stampRecord(existingDb, "updated");
+        } else {
+          dbTable("reservas").push(stampRecord(dbPayload));
+        }
+        logAudit("reservation_edit", { entity: "reservas", entityId: editId, newData: dbPayload, success: true });
       } else {
+        state.reservations.push(statePayload);
         dbTable("reservas").push(stampRecord(dbPayload));
       }
-    } else {
-      state.reservations.push(statePayload);
-      dbTable("reservas").push(stampRecord(dbPayload));
+      event.target.reset();
+      resetReservationEditState(event.target);
+      delete event.target.dataset.clientId;
+      delete byId("reservation-client-phone").dataset.autofilled;
+      delete byId("reservation-client-email").dataset.autofilled;
+      byId("reservation-date").value = today;
+      byId("reservation-source").value = "Presencial";
+      saveState();
+      renderAll();
+      setMessage(editId ? "Cita actualizada correctamente." : "Cita guardada correctamente.", "success");
+    } catch (error) {
+      console.error("Error guardando la cita", error);
+      setMessage(`No se pudo guardar la cita: ${error.message || error}`, "error");
     }
-    event.target.reset();
-    resetReservationEditState(event.target);
-    delete event.target.dataset.clientId;
-    delete byId("reservation-client-phone").dataset.autofilled;
-    delete byId("reservation-client-email").dataset.autofilled;
-    byId("reservation-date").value = today;
-    byId("reservation-source").value = "Presencial";
-    saveState();
-    renderAll();
   });
 
   byId("payroll-form").addEventListener("submit", (event) => {
@@ -6538,6 +6959,10 @@ function wireForms() {
 
   byId("cash-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administradores y propietarios pueden guardar cierres de caja.");
+      return;
+    }
     const editId = byId("cash-edit-id").value;
     const confirmAfterSave = byId("cash-confirm-after-save").value === "true";
     const date = byId("cash-date").value;
@@ -6550,7 +6975,10 @@ function wireForms() {
     }
     const summary = dailyIncomeSummary(date);
     const activity = accountActivityForDate(date, account);
-    const expected = activity.expected;
+    const montoInicial = Number(byId("cash-initial").value) || 0;
+    const entradasEfectivo = activity.income + activity.transferIn;
+    const salidasEfectivo = activity.expenses + activity.transferOut;
+    const expected = DalfiClosingMath.computeExpectedCash({ montoInicial, entradasEfectivo, salidasEfectivo });
     const initialCounted = Number(byId("cash-counted").value);
     const cardCounted = Number(byId("cash-card-counted").value) || 0;
     const cardProcessorName = byId("cash-card-processor").value.trim();
@@ -6562,6 +6990,17 @@ function wireForms() {
       return;
     }
     const existingClosing = editId ? dbTable("cierres").find((row) => row.cierreID === editId) : sameDateAccountClosing || null;
+    if (editId && !existingClosing) {
+      alert("Este cierre ya no existe (puede que otra persona lo haya modificado). Se actualizó la lista de cierres.");
+      hideCashClosingForm();
+      renderAll();
+      return;
+    }
+    const formVersion = byId("cash-form").dataset.recordVersion || "";
+    if (existingClosing && formVersion && existingClosing.fechaActualizacion && formVersion !== existingClosing.fechaActualizacion) {
+      const keepGoing = confirm("Este cierre fue modificado por otra persona después de que abriste este formulario. Si continúas, tus valores reemplazarán esa otra edición. ¿Deseas continuar?");
+      if (!keepGoing) return;
+    }
     const closingId = existingClosing?.cierreID || nextDbId("cierres", "cierreID", "CIE");
     if (cardCounted > 0 && !findProcessorByName(cardProcessorName)) {
       alert("Selecciona la compañía de tarjeta creada en Base de datos para poder calcular su comisión.");
@@ -6573,7 +7012,8 @@ function wireForms() {
       cashBalanceDraft.date !== date ||
       cashBalanceDraft.account !== account.nombreCuenta ||
       cashBalanceDraft.counted !== initialCounted ||
-      cashBalanceDraft.expenses !== expenses
+      cashBalanceDraft.expenses !== expenses ||
+      cashBalanceDraft.montoInicial !== montoInicial
     ) {
       alert("Primero debes generar el cuadre de efectivo para documentar el intento.");
       byId("generate-cash-balance").focus();
@@ -6595,23 +7035,44 @@ function wireForms() {
     }
     const rectifiedCounted = initialShortage > 0 ? Number(rectifiedRaw) || 0 : 0;
     const counted = initialShortage > 0 ? rectifiedCounted : initialCounted;
-    const difference = counted - expected;
-    const shortage = Math.max(0, -difference);
-    const surplus = Math.max(0, difference);
+    const { difference, shortage, surplus } = DalfiClosingMath.computeDifference(counted, expected);
     const isRegisterClosing = normalize(account.nombreCuenta).includes("registradora");
+
+    // Si sigue faltando efectivo despues de documentar el motivo y rectificar
+    // el conteo, el cierre NO se confirma, pero tampoco se descarta: se
+    // guarda como pendiente con los valores tal cual quedaron, y se deja un
+    // registro persistente del intento fallido (no solo en pantalla).
     if (shortage > 0) {
-      alert("El monto rectificado todavía queda por debajo del efectivo esperado. Debes introducir el monto completivo antes de guardar el cierre.");
-      byId("cash-rectified-counted").focus();
-      return;
+      const attempt = {
+        intentoID: nextDbId("cierreIntentos", "intentoID", "INT"),
+        cuenta: account.nombreCuenta || "",
+        cuentaID: account.cuentaID || "",
+        fecha: date,
+        montoEsperado: expected,
+        montoReal: counted,
+        faltante: shortage,
+        usuario: currentUserEmail(),
+        fechaHora: new Date().toISOString(),
+        observacion: shortageNote,
+      };
+      dbTable("cierreIntentos").push(attempt);
+      logAudit("closing_attempt_shortage", {
+        entity: "cierres",
+        entityId: closingId,
+        newData: attempt,
+        success: false,
+        note: `Intento de cierre con faltante de ${money.format(shortage)} en ${account.nombreCuenta}.`,
+      });
     }
+
     const closingPayload = {
       fechaHoraCierre: `${date}T23:59:00`,
       cajero: defaultStaffRecord().nombreCompleto || "",
       cuentaCaja: account.nombreCuenta || "Caja Operaciones",
       cuentaID: account.cuentaID || "",
-      balanceInicial: 0,
-      ingresosConfirmados: expected,
-      egresos: expenses,
+      balanceInicial: montoInicial,
+      ingresosConfirmados: entradasEfectivo,
+      egresos: salidasEfectivo,
       balanceTeorico: expected,
       balanceContado: counted,
       conteoInicial: initialCounted,
@@ -6621,8 +7082,8 @@ function wireForms() {
       cuadreFaltante: shortage,
       cuadreFaltanteInicial: initialShortage,
       sobranteCaja: surplus,
-      estado: editId && !confirmAfterSave ? "Pendiente de confirmacion" : "Cerrado",
-      requiereConfirmacion: Boolean(editId && !confirmAfterSave),
+      estado: shortage > 0 || (editId && !confirmAfterSave) ? "Pendiente de confirmacion" : "Cerrado",
+      requiereConfirmacion: Boolean(shortage > 0 || (editId && !confirmAfterSave)),
       loteTarjeta: byId("cash-card-batch").value.trim(),
       tarjetaContada: cardCounted,
       tarjetaEsperada: isRegisterClosing ? summary.card : 0,
@@ -6632,46 +7093,80 @@ function wireForms() {
       transferenciaEsperada: isRegisterClosing ? summary.transfer : 0,
       creditoGenerado: isRegisterClosing ? summary.credit : 0,
       motivoFaltante: shortageNote,
+      detalleColaboradores: closingCollaboratorSummary(date),
       observaciones: byId("cash-note").value.trim(),
     };
-    if (!editId || confirmAfterSave) {
+    // Solo se confirma cuando la persona pidio explicitamente confirmar
+    // (boton "Confirmar cierre" / "Confirmar y cerrar") y no hay faltante
+    // pendiente. Guardar por primera vez ya NO confirma automaticamente.
+    const willConfirmNow = confirmAfterSave && shortage <= 0;
+    if (willConfirmNow) {
       closingPayload.confirmadoPor = currentUserEmail();
       closingPayload.fechaConfirmacion = new Date().toISOString();
     }
-    if (surplus > 0 && !existingClosing) {
-      dbTable("ingresos").push(stampRecord({
-        ingresoID: nextDbId("ingresos", "ingresoID", "ING"),
-        fechaHora: new Date().toISOString(),
-        fechaEntradaCaja: date,
-        tipoIngreso: "Sobrante en cierre de caja",
-        facturaID: "",
-        clienteID: "",
-        clienteNombre: "",
-        metodoPago: "efectivo",
-        cuentaDestinoID: account.cuentaID || "",
-        cuentaDestino: account.nombreCuenta || "Caja registradora",
-        montoBruto: surplus,
-        retencion: 0,
-        montoNeto: surplus,
-        estado: "Confirmado",
-        observaciones: "Excedente contado en cierre",
-      }));
+
+    // El sobrante se registra en un unico ingreso vinculado al ID del
+    // cierre: si se vuelve a guardar el mismo cierre (todavia sin confirmar)
+    // se actualiza ese mismo ingreso en vez de duplicarlo, y si el
+    // recalculo ya no arroja sobrante, se anula.
+    const existingSurplusIncome = dbTable("ingresos").find((row) => row.cierreID === closingId && row.tipoIngreso === "Sobrante en cierre de caja");
+    if (surplus > 0) {
+      if (existingSurplusIncome) {
+        existingSurplusIncome.montoBruto = surplus;
+        existingSurplusIncome.montoNeto = surplus;
+        existingSurplusIncome.fechaEntradaCaja = date;
+        existingSurplusIncome.estado = "Confirmado";
+        stampRecord(existingSurplusIncome, "updated");
+      } else {
+        dbTable("ingresos").push(stampRecord({
+          ingresoID: nextDbId("ingresos", "ingresoID", "ING"),
+          fechaHora: new Date().toISOString(),
+          fechaEntradaCaja: date,
+          tipoIngreso: "Sobrante en cierre de caja",
+          cierreID: closingId,
+          facturaID: "",
+          clienteID: "",
+          clienteNombre: "",
+          metodoPago: "efectivo",
+          cuentaDestinoID: account.cuentaID || "",
+          cuentaDestino: account.nombreCuenta || "Caja registradora",
+          montoBruto: surplus,
+          retencion: 0,
+          montoNeto: surplus,
+          estado: "Confirmado",
+          observaciones: "Excedente contado en cierre",
+        }));
+      }
+      logAudit("closing_surplus", {
+        entity: "cierres",
+        entityId: closingId,
+        newData: { surplus, date, cuenta: account.nombreCuenta },
+        success: true,
+      });
+    } else if (existingSurplusIncome) {
+      existingSurplusIncome.montoBruto = 0;
+      existingSurplusIncome.montoNeto = 0;
+      existingSurplusIncome.estado = "Anulado";
+      stampRecord(existingSurplusIncome, "updated");
     }
+
     if (existingClosing) {
       Object.assign(existingClosing, closingPayload);
       stampRecord(existingClosing, "updated");
-      if (confirmAfterSave) confirmClosingAndPrevious(existingClosing);
+      if (willConfirmNow) confirmClosingAndPrevious(existingClosing);
     } else {
       const newClosing = stampRecord({ cierreID: closingId, ...closingPayload });
       dbTable("cierres").push(newClosing);
-      if (!editId || confirmAfterSave) confirmClosingAndPrevious(newClosing);
+      if (willConfirmNow) confirmClosingAndPrevious(newClosing);
     }
     state = stateFromDatabase(database);
     event.target.reset();
+    delete byId("cash-form").dataset.recordVersion;
     byId("cash-edit-id").value = "";
     byId("cash-confirm-after-save").value = "";
     byId("cash-submit").textContent = "Guardar cierre";
     byId("cash-date").value = today;
+    byId("cash-initial").value = 0;
     byId("cash-expenses").value = 0;
     byId("cash-card-counted").value = 0;
     byId("cash-transfer-counted").value = 0;
@@ -6679,6 +7174,13 @@ function wireForms() {
     byId("cash-form").classList.add("hidden");
     saveState();
     renderAll();
+    if (shortage > 0) {
+      alert(`El cierre quedó guardado SIN CONFIRMAR porque todavía falta ${money.format(shortage)} en caja. Queda registrado el intento para revisión.`);
+    } else if (willConfirmNow) {
+      alert("Cierre confirmado correctamente.");
+    } else {
+      alert("Cierre guardado sin confirmar. Usa \"Confirmar cierre\" cuando el cuadre esté correcto.");
+    }
   });
 
   byId("client-form").addEventListener("submit", saveClientCatalog);

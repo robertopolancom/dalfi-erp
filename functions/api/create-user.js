@@ -1,3 +1,5 @@
+import { insertAuditLog } from "./_lib/audit.js";
+
 const normalizeEmail = (value = "") => value.trim().toLowerCase();
 
 const json = (body, status = 200) =>
@@ -52,13 +54,13 @@ async function requireAdmin(request, env, action = "crear usuarios") {
     return { error: json({ error: `Tu usuario no esta autorizado para ${action}.` }, 403) };
   }
 
-  return { supabaseUrl, serviceRoleKey, requesterEmail };
+  return { supabaseUrl, serviceRoleKey, requesterEmail, requesterId: sessionUser.id, requesterRole };
 }
 
 export async function onRequestPost({ request, env }) {
   const context = await requireAdmin(request, env);
   if (context.error) return context.error;
-  const { supabaseUrl, serviceRoleKey, requesterEmail } = context;
+  const { supabaseUrl, serviceRoleKey, requesterEmail, requesterId, requesterRole } = context;
 
   let payload = {};
   try {
@@ -99,8 +101,34 @@ export async function onRequestPost({ request, env }) {
 
   const created = await createResponse.json().catch(() => ({}));
   if (!createResponse.ok) {
-    return json({ error: created.msg || created.error_description || created.error || "No se pudo crear el usuario." }, createResponse.status);
+    const failureMessage = created.msg || created.error_description || created.error || "No se pudo crear el usuario.";
+    await insertAuditLog(env, {
+      tableName: "usuarios",
+      entityId: email,
+      action: "create_user",
+      oldData: null,
+      newData: null,
+      userId: requesterId,
+      userEmail: requesterEmail,
+      userRole: requesterRole,
+      success: false,
+      note: `Intento de creacion de usuario fallido: ${failureMessage}`,
+    }).catch(() => null);
+    return json({ error: failureMessage }, createResponse.status);
   }
+
+  await insertAuditLog(env, {
+    tableName: "usuarios",
+    entityId: created.id || email,
+    action: "create_user",
+    oldData: null,
+    newData: { email: created.email || email, role, created_by: requesterEmail },
+    userId: requesterId,
+    userEmail: requesterEmail,
+    userRole: requesterRole,
+    success: true,
+    note: `Usuario creado con contrasena temporal por ${requesterEmail}.`,
+  }).catch(() => null);
 
   return json({ id: created.id, email: created.email || email, temporaryPassword: password });
 }

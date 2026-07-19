@@ -623,10 +623,21 @@
                 <input id="reservation-staff" list="staff-list" placeholder="Buscar técnico/a" required />
               </label>
               <label>
+                Estado de la cita
+                <select id="reservation-status">
+                  <option value="Programada">Programada</option>
+                  <option value="Confirmada">Confirmada</option>
+                  <option value="Completada">Completada</option>
+                  <option value="Cancelada">Cancelada</option>
+                  <option value="No asistió">No asistió</option>
+                </select>
+              </label>
+              <label>
                 Observaciones
                 <textarea id="reservation-note" rows="3" placeholder="Notas de la reserva"></textarea>
               </label>
               <button class="primary-btn" type="submit">Guardar reserva</button>
+              <p class="form-message" id="reservation-form-message"></p>
             </form>
 
             <section class="panel">
@@ -984,10 +995,14 @@
                 Cuenta / caja
                 <input id="cash-account" list="accounts-list" placeholder="Seleccionar cuenta o caja" required />
               </label>
+              <label>
+                Monto real contado en caja
+                <input id="cash-counted" type="number" min="0" step="0.01" required />
+              </label>
               <div class="form-row">
                 <label>
-                  Monto contado inicial
-                  <input id="cash-counted" type="number" min="0" step="0.01" required />
+                  Monto inicial (fondo de caja)
+                  <input id="cash-initial" type="number" min="0" step="0.01" value="0" />
                 </label>
                 <label>
                   Gastos del día
@@ -996,6 +1011,22 @@
               </div>
               <button class="secondary-btn" id="generate-cash-balance" type="button">Generar cuadre de efectivo</button>
               <section class="invoice-summary hidden" id="cash-balance-panel">
+                <div class="summary-row">
+                  <span>Monto inicial</span>
+                  <strong id="cash-initial-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Ingresos totales en efectivo</span>
+                  <strong id="cash-income-preview">RD$0.00</strong>
+                  <button class="secondary-btn compact" id="toggle-cash-income-detail" type="button">Ver detalle</button>
+                </div>
+                <div class="simple-list hidden" id="cash-income-detail"></div>
+                <div class="summary-row">
+                  <span>Egresos totales</span>
+                  <strong id="cash-expenses-preview">RD$0.00</strong>
+                  <button class="secondary-btn compact" id="toggle-cash-expense-detail" type="button">Ver detalle</button>
+                </div>
+                <div class="simple-list hidden" id="cash-expense-detail"></div>
                 <div class="summary-row">
                   <span>Efectivo esperado en caja</span>
                   <strong id="cash-expected-preview">RD$0.00</strong>
@@ -1011,6 +1042,14 @@
                 <div class="summary-row">
                   <span>Sobrante de caja</span>
                   <strong id="cash-surplus-preview">RD$0.00</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Usuario que realiza el cierre</span>
+                  <strong id="cash-user-preview">-</strong>
+                </div>
+                <div class="summary-row">
+                  <span>Fecha y hora de confirmación</span>
+                  <strong id="cash-confirmed-at-preview">Sin confirmar</strong>
                 </div>
               </section>
               <section class="invoice-summary hidden" id="cash-collaborator-detail"></section>
@@ -1740,8 +1779,28 @@
       <option value="Efectivo"></option>
       <option value="Tarjeta"></option>
     </datalist>
+
+    <dialog id="transfer-confirm-dialog" class="app-dialog">
+      <form class="panel form-panel" id="transfer-confirm-form" method="dialog">
+        <div class="panel-head">
+          <h3>Confirmar transferencia</h3>
+        </div>
+        <p id="transfer-confirm-summary" class="panel-note"></p>
+        <label>
+          Fecha de entrada a cuenta
+          <input id="transfer-confirm-date" type="date" required />
+        </label>
+        <p class="form-message" id="transfer-confirm-message"></p>
+        <div class="form-row">
+          <button class="primary-btn" id="transfer-confirm-accept" type="submit">Confirmar transferencia</button>
+          <button class="secondary-btn" id="transfer-confirm-cancel" type="button">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=20260718-closures-backfill"></script>
+    <script src="lib/closing-math.js?v=20260719-auditoria"></script>
+    <script src="app.js?v=20260719-auditoria"></script>
   </body>
 </html>

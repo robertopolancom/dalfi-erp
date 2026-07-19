@@ -1,3 +1,5 @@
+import { insertAuditLog } from "./_lib/audit.js";
+
 const normalizeEmail = (value = "") => value.trim().toLowerCase();
 
 const json = (body, status = 200) =>
@@ -52,7 +54,7 @@ async function requireAdmin(request, env) {
     return { error: json({ error: "Tu usuario no esta autorizado para administrar usuarios." }, 403) };
   }
 
-  return { supabaseUrl, serviceRoleKey, requesterEmail };
+  return { supabaseUrl, serviceRoleKey, requesterEmail, requesterId: sessionUser.id, requesterRole };
 }
 
 function isInactive(user) {
@@ -95,7 +97,7 @@ export async function onRequestGet({ request, env }) {
 export async function onRequestPatch({ request, env }) {
   const context = await requireAdmin(request, env);
   if (context.error) return context.error;
-  const { supabaseUrl, serviceRoleKey, requesterEmail } = context;
+  const { supabaseUrl, serviceRoleKey, requesterEmail, requesterId, requesterRole } = context;
 
   let payload = {};
   try {
@@ -163,7 +165,22 @@ export async function onRequestPatch({ request, env }) {
 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    return json({ error: body.msg || body.message || body.error_description || body.error || "No se pudo actualizar el usuario." }, response.status);
+    const failureMessage = body.msg || body.message || body.error_description || body.error || "No se pudo actualizar el usuario.";
+    if (resetPassword) {
+      await insertAuditLog(env, {
+        tableName: "usuarios",
+        entityId: userId,
+        action: "reset_password",
+        oldData: { email: currentUser.email },
+        newData: null,
+        userId: requesterId,
+        userEmail: requesterEmail,
+        userRole: requesterRole,
+        success: false,
+        note: failureMessage,
+      }).catch(() => null);
+    }
+    return json({ error: failureMessage }, response.status);
   }
 
   if (resetPassword) {
@@ -173,6 +190,20 @@ export async function onRequestPatch({ request, env }) {
         apikey: serviceRoleKey,
         Authorization: `Bearer ${serviceRoleKey}`,
       },
+    }).catch(() => null);
+
+    // No se guarda la contrasena en la auditoria, solo el hecho de que se reseteo.
+    await insertAuditLog(env, {
+      tableName: "usuarios",
+      entityId: userId,
+      action: "reset_password",
+      oldData: { email: currentUser.email, password_reset_required: Boolean(currentMetadata.password_reset_required) },
+      newData: { email: body.email, password_reset_required: true, password_reset_reason: update.user_metadata.password_reset_reason },
+      userId: requesterId,
+      userEmail: requesterEmail,
+      userRole: requesterRole,
+      success: true,
+      note: `Contrasena temporal generada por ${requesterEmail} para ${body.email || currentUser.email}.`,
     }).catch(() => null);
   }
 
