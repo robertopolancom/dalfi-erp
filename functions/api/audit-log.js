@@ -24,6 +24,8 @@ const ALLOWED_ACTIONS = new Set([
   "create_client_from_invoice",
   "create_client",
   "edit_client",
+  "expense_create",
+  "expense_edit",
 ]);
 
 export async function onRequestPost({ request, env }) {

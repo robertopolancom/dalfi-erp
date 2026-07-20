@@ -234,6 +234,110 @@
     return PRIVILEGED_ROLES.has(String(role || "").trim().toLowerCase());
   }
 
+  // Roles que pueden REVISAR (solo lectura) el modulo de Cuentas sin ser
+  // privilegiados: no pueden borrar movimientos, alterar balances, reabrir
+  // cierres, modificar usuarios ni confirmar tesoreria (eso sigue exigiendo
+  // isPrivilegedRole en cada funcion de negocio, no solo ocultar el menu).
+  const ACCOUNT_REVIEW_ROLES = new Set(["contador", "contadora"]);
+
+  function canReviewAccounts(role, explicitPermissionFlag = false) {
+    if (isPrivilegedRole(role)) return true;
+    if (ACCOUNT_REVIEW_ROLES.has(String(role || "").trim().toLowerCase())) return true;
+    return Boolean(explicitPermissionFlag);
+  }
+
+  // Formula centralizada de "presentacion clara" de una factura. Los
+  // descuentos nunca dejan el total de servicios en negativo (se recorta en
+  // 0), y la propina se suma UNA sola vez, aparte del ajuste de servicios.
+  // precioListadoServicios/totalAdicionales/totalDescuentos/propina/
+  // totalPagado son montos ya sumados (el llamador decide de donde salen:
+  // lineas en vivo del formulario, o campos guardados de una factura vieja).
+  function computeInvoiceBreakdown({
+    precioListadoServicios = 0,
+    totalAdicionales = 0,
+    totalDescuentos = 0,
+    propina = 0,
+    totalPagado = 0,
+  } = {}) {
+    const listado = Number(precioListadoServicios) || 0;
+    const adicionales = Number(totalAdicionales) || 0;
+    const descuentos = Number(totalDescuentos) || 0;
+    const subtotalAntesDeDescuentos = listado + adicionales;
+    const totalServiciosAjustado = Math.max(0, subtotalAntesDeDescuentos - descuentos);
+    const propinaNum = Math.max(0, Number(propina) || 0);
+    const totalGeneral = totalServiciosAjustado + propinaNum;
+    const pagado = Number(totalPagado) || 0;
+    const montoPendiente = Math.max(0, totalGeneral - pagado);
+    const sobrepago = Math.max(0, pagado - totalGeneral);
+    return {
+      precioListadoServicios: listado,
+      totalAdicionales: adicionales,
+      totalDescuentos: descuentos,
+      subtotalAntesDeDescuentos,
+      totalServiciosAjustado,
+      propina: propinaNum,
+      totalGeneral,
+      totalPagado: pagado,
+      montoPendiente,
+      sobrepago,
+      estaPagada: montoPendiente <= 0,
+    };
+  }
+
+  // Balance final calculado de una cuenta en un dia:
+  // balanceInicial + ingresos + transferenciasEntrantes - egresos -
+  // transferenciasSalientes + ajustesNetos. Las transferencias internas ya
+  // deben venir separadas de ingresos/egresos generales por el llamador,
+  // para no contarlas dos veces.
+  function computeAccountDailyBalance({
+    balanceInicial = 0,
+    ingresos = 0,
+    egresos = 0,
+    transferenciasEntrantes = 0,
+    transferenciasSalientes = 0,
+    ajustesNetos = 0,
+  } = {}) {
+    const inicial = Number(balanceInicial) || 0;
+    const ing = Number(ingresos) || 0;
+    const eg = Number(egresos) || 0;
+    const transIn = Number(transferenciasEntrantes) || 0;
+    const transOut = Number(transferenciasSalientes) || 0;
+    const ajustes = Number(ajustesNetos) || 0;
+    const balanceFinalCalculado = inicial + ing + transIn - eg - transOut + ajustes;
+    return {
+      balanceInicial: inicial,
+      ingresos: ing,
+      egresos: eg,
+      transferenciasEntrantes: transIn,
+      transferenciasSalientes: transOut,
+      ajustesNetos: ajustes,
+      balanceFinalCalculado,
+    };
+  }
+
+  // Saldo acumulado deterministico de una lista de movimientos: ordena por
+  // fecha, luego por createdAt, luego por un id estable, y va sumando
+  // ingreso-egreso en ese orden. No muta la lista de entrada.
+  function sortMovementsDeterministically(movements) {
+    return (movements || [])
+      .slice()
+      .sort((a, b) => {
+        const dateDiff = String(a.date || "").localeCompare(String(b.date || ""));
+        if (dateDiff) return dateDiff;
+        const createdDiff = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+        if (createdDiff) return createdDiff;
+        return String(a.id || "").localeCompare(String(b.id || ""));
+      });
+  }
+
+  function buildRunningBalance(movements, openingBalance = 0) {
+    let running = Number(openingBalance) || 0;
+    return sortMovementsDeterministically(movements).map((movement) => {
+      running += (Number(movement.income) || 0) - (Number(movement.expense) || 0);
+      return { ...movement, runningBalance: running };
+    });
+  }
+
   return {
     localDateStringInZone,
     nowPartsInZone,
@@ -258,5 +362,10 @@
     missingRegisterDatesForRange,
     buildTreasuryTotals,
     isPrivilegedRole,
+    canReviewAccounts,
+    computeInvoiceBreakdown,
+    computeAccountDailyBalance,
+    sortMovementsDeterministically,
+    buildRunningBalance,
   };
 });

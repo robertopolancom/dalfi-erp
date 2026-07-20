@@ -329,6 +329,34 @@ body.password-change-required #password-change-panel {
   grid-column: 1 / -1;
 }
 
+.accounts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+
+.account-card {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.account-card h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.account-card .account-balance {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.account-card .account-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .panel {
   min-width: 0;
   overflow: hidden;
@@ -959,6 +987,7 @@ th {
   .settings-grid,
   .report-filters,
   .report-summary,
+  .accounts-grid,
   .auth-panel,
   .auth-form {
     grid-template-columns: 1fr;

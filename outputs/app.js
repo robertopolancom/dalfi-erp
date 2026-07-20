@@ -404,6 +404,7 @@ function updateAuthUi() {
   document.body.classList.toggle("auth-required", !connected);
   document.body.classList.toggle("password-change-required", passwordChangeRequired);
   document.querySelectorAll(".admin-only").forEach((item) => item.classList.toggle("hidden", !canManage));
+  document.querySelectorAll(".accounts-review-only").forEach((item) => item.classList.toggle("hidden", !canReviewAccountsUser()));
   byId("open-login").classList.toggle("hidden", connected);
   byId("open-password-change").classList.toggle("hidden", !connected);
   byId("logout-button").classList.toggle("hidden", !connected);
@@ -970,6 +971,18 @@ function canManageInvoices() {
 
 function canConfirmClosings() {
   return canManageInvoices();
+}
+
+// Acceso de solo lectura al modulo de Cuentas: privilegiados y
+// contador/contadora lo tienen siempre; cualquier otro rol solo si tiene el
+// permiso explicito canReviewAccounts marcado en Usuarios. Nunca habilita
+// escritura: confirmar tesoreria, reabrir cierres, borrar movimientos, etc.
+// siguen exigiendo canManageInvoices()/canConfirmClosings() por separado, en
+// cada funcion de negocio, no solo aqui.
+function canReviewAccountsUser() {
+  if (!supabaseClient || !supabaseSession) return true;
+  const explicitFlag = Boolean(supabaseSession?.user?.user_metadata?.canReviewAccounts) || Boolean(currentUserRecord()?.canReviewAccounts);
+  return DalfiClosingMath.canReviewAccounts(currentRoleKey(), explicitFlag);
 }
 
 function closingBusinessDate(closing) {
@@ -2467,17 +2480,88 @@ function invoiceReportData(invoiceId) {
   return { invoice, dbInvoice, details, payments };
 }
 
+// Reconstruye el desglose claro de una factura YA GUARDADA (nueva o vieja) a
+// partir de los campos persistidos, y lo pasa por la MISMA formula pura
+// (DalfiClosingMath.computeInvoiceBreakdown) que usa la vista previa en vivo
+// del formulario (updateInvoiceTotals). precioBase en facturaDetalle es un
+// snapshot congelado al momento de facturar: si una factura vieja no tiene
+// ese campo (dato previo a este snapshot), se usa subtotal como respaldo
+// seguro para no mostrar 0 donde en realidad hubo un monto real.
+function invoiceBreakdownForStoredInvoice(invoiceId) {
+  const dbInvoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
+  const details = dbTable("facturaDetalle").filter((row) => row.facturaID === invoiceId);
+  const tips = dbTable("propinas").filter((row) => row.facturaID === invoiceId);
+  const payments = dbTable("ingresos").filter((row) => row.facturaID === invoiceId);
+  const precioListadoServicios = details.reduce((sum, line) => {
+    const listed = line.precioBase !== undefined && line.precioBase !== null ? Number(line.precioBase) || 0 : Number(line.subtotal) || 0;
+    return sum + listed * (Number(line.cantidad) || 1);
+  }, 0);
+  const lineExtras = details.reduce((sum, line) => sum + (Number(line.extraMonto) || 0), 0);
+  const generalExtra = Number(dbInvoice?.adicionalGeneralMonto) || 0;
+  const lineDiscounts = details.reduce((sum, line) => sum + (Number(line.deduccionMonto) || 0), 0);
+  const generalDiscount = Number(dbInvoice?.descuentoGeneralMonto) || 0;
+  const totalFacturado = Number(dbInvoice?.totalFacturado) || 0;
+  const totalConPropina =
+    dbInvoice?.totalConPropina !== undefined && dbInvoice?.totalConPropina !== null
+      ? Number(dbInvoice.totalConPropina) || 0
+      : totalFacturado + tips.reduce((sum, tip) => sum + (Number(tip.montoBruto) || 0), 0);
+  const propina = Math.max(0, totalConPropina - totalFacturado);
+  const totalPagado = Number(dbInvoice?.totalPagadoConfirmado) || 0;
+  const breakdown = DalfiClosingMath.computeInvoiceBreakdown({
+    precioListadoServicios,
+    totalAdicionales: lineExtras + generalExtra,
+    totalDescuentos: lineDiscounts + generalDiscount,
+    propina,
+    totalPagado,
+  });
+  return { dbInvoice, details, tips, payments, breakdown, lineExtras, generalExtra, lineDiscounts, generalDiscount };
+}
+
 function invoiceReportHtml(invoiceId) {
-  const { invoice, dbInvoice, details, payments } = invoiceReportData(invoiceId);
+  const { invoice, dbInvoice } = invoiceReportData(invoiceId);
   if (!invoice && !dbInvoice) return "<p>Factura no encontrada.</p>";
+  const { details, tips, payments, breakdown, lineExtras, generalExtra, lineDiscounts, generalDiscount } = invoiceBreakdownForStoredInvoice(invoiceId);
   const client = invoice?.client || dbInvoice?.clienteNombre || "";
   const date = invoice?.date || dateOnly(dbInvoice?.fechaHora);
-  const total = Number(invoice?.total ?? dbInvoice?.totalFacturado) || 0;
-  const paid = Number(invoice?.paid ?? dbInvoice?.totalPagadoConfirmado) || 0;
   const note = invoice?.note || dbInvoice?.observaciones || "";
   const lines = details.length
     ? details
-    : [{ servicio: invoice?.service || "Servicio", colaboradorNombre: dbInvoice?.colaboradorNombre || "", subtotal: total }];
+    : [{ servicio: invoice?.service || "Servicio", colaboradorNombre: dbInvoice?.colaboradorNombre || "", precioBase: breakdown.precioListadoServicios }];
+  const discountRows = [
+    ...details
+      .filter((line) => Number(line.deduccionMonto) > 0)
+      .map((line) => ({
+        motivo: line.deduccionConcepto_50 || "Descuento de línea",
+        tipo: "Monto fijo",
+        valor: Number(line.deduccionMonto) || 0,
+        linea: line.servicio || "",
+      })),
+    ...(generalDiscount > 0
+      ? [
+          {
+            motivo: "Descuento general de la factura",
+            tipo: dbInvoice?.descuentoGeneralPorcentaje ? `Porcentaje (${dbInvoice.descuentoGeneralPorcentaje}%)` : "Monto fijo",
+            valor: generalDiscount,
+            linea: "Toda la factura",
+          },
+        ]
+      : []),
+  ];
+  const extraRows = [
+    ...details
+      .filter((line) => Number(line.extraMonto) > 0)
+      .map((line) => ({
+        nombre: line.extraConcepto_50 || "Adicional de línea",
+        valor: Number(line.extraMonto) || 0,
+        linea: line.servicio || "",
+        colaboradora: line.colaboradorNombre || "",
+      })),
+    ...(generalExtra > 0
+      ? [{ nombre: dbInvoice?.adicionalGeneralDetalle || "Adicional general", valor: generalExtra, linea: "Toda la factura", colaboradora: "" }]
+      : []),
+  ];
+  const estaPagada = breakdown.estaPagada;
+  const paymentMethodLabel = { efectivo: "Efectivo", tarjeta: "Tarjeta", transferencia: "Transferencia", transferencia_confirmada: "Transferencia", balance: "Balance a favor", sobrante: "Sobrante" };
   return `
     <section class="invoice-report">
       <h1>Dalfi Studio Nails</h1>
@@ -2486,24 +2570,80 @@ function invoiceReportHtml(invoiceId) {
       <h2>Factura ${escapeHtml(invoiceId)}</h2>
       <p><strong>Fecha:</strong> ${escapeHtml(date || "")}</p>
       <p><strong>Cliente:</strong> ${escapeHtml(client)}</p>
+      <h3>1. Servicios y precios listados</h3>
       <table>
-        <thead><tr><th>Servicio</th><th>Colaborador/a</th><th>Monto</th></tr></thead>
+        <thead><tr><th>Servicio</th><th>Colaborador/a</th><th>Precio listado</th></tr></thead>
         <tbody>
           ${lines
             .map(
-              (line) => `<tr><td>${escapeHtml(line.servicio || "")}</td><td>${escapeHtml(line.colaboradorNombre || "")}</td><td>${money.format(Number(line.subtotal) || 0)}</td></tr>`,
+              (line) =>
+                `<tr><td>${escapeHtml(line.servicio || "")}</td><td>${escapeHtml(line.colaboradorNombre || "")}</td><td>${money.format(
+                  line.precioBase !== undefined && line.precioBase !== null ? Number(line.precioBase) || 0 : Number(line.subtotal) || 0,
+                )}</td></tr>`,
             )
             .join("")}
         </tbody>
       </table>
       <div class="invoice-totals">
-        <p><strong>Total:</strong> ${money.format(total)}</p>
-        <p><strong>Pagado confirmado:</strong> ${money.format(paid)}</p>
-        <p><strong>Balance:</strong> ${money.format(Math.max(0, total - paid))}</p>
+        <p><strong>2. Total precio listado de servicios:</strong> ${money.format(breakdown.precioListadoServicios)}</p>
+      </div>
+      <h3>3. Adicionales</h3>
+      ${
+        extraRows.length
+          ? `<table>
+              <thead><tr><th>Adicional</th><th>Línea</th><th>Colaboradora</th><th>Monto</th></tr></thead>
+              <tbody>${extraRows
+                .map((row) => `<tr><td>${escapeHtml(row.nombre)}</td><td>${escapeHtml(row.linea)}</td><td>${escapeHtml(row.colaboradora)}</td><td>${money.format(row.valor)}</td></tr>`)
+                .join("")}</tbody>
+            </table>`
+          : "<p>Sin adicionales.</p>"
+      }
+      <div class="invoice-totals"><p><strong>Total de adicionales:</strong> ${money.format(breakdown.totalAdicionales)}</p></div>
+      <div class="invoice-totals"><p><strong>4. Subtotal antes de descuentos:</strong> ${money.format(breakdown.subtotalAntesDeDescuentos)}</p></div>
+      <h3>5. Descuentos</h3>
+      ${
+        discountRows.length
+          ? `<table>
+              <thead><tr><th>Motivo</th><th>Tipo</th><th>Línea</th><th>Valor</th></tr></thead>
+              <tbody>${discountRows
+                .map((row) => `<tr><td>${escapeHtml(row.motivo)}</td><td>${escapeHtml(row.tipo)}</td><td>${escapeHtml(row.linea)}</td><td>${money.format(row.valor)}</td></tr>`)
+                .join("")}</tbody>
+            </table>`
+          : "<p>Sin descuentos.</p>"
+      }
+      <div class="invoice-totals"><p><strong>Total de descuentos:</strong> ${money.format(breakdown.totalDescuentos)}</p></div>
+      <div class="invoice-totals"><p><strong>6. Total de servicios (después de ajustes):</strong> ${money.format(breakdown.totalServiciosAjustado)}</p></div>
+      <h3>8. Propina</h3>
+      ${
+        breakdown.propina > 0
+          ? `<p><strong>Monto de propina:</strong> ${money.format(breakdown.propina)}</p>
+             ${
+               tips.length
+                 ? `<table>
+                      <thead><tr><th>Colaboradora</th><th>Método</th><th>Monto</th><th>Retención tarjeta</th><th>Neto a pagar</th></tr></thead>
+                      <tbody>${tips
+                        .map(
+                          (tip) =>
+                            `<tr><td>${escapeHtml(tip.colaboradorNombre || "")}</td><td>${escapeHtml(paymentMethodLabel[tip.metodoPago] || tip.metodoPago || "")}</td><td>${money.format(Number(tip.montoBruto) || 0)}</td><td>${money.format(Number(tip.retencion20Tarjeta) || 0)}</td><td>${money.format(Number(tip.montoNetoPagar) || 0)}</td></tr>`,
+                        )
+                        .join("")}</tbody>
+                    </table>`
+                 : `<p>Propina registrada en la factura, pendiente de cobro/distribución por colaboradora.</p>`
+             }
+             <p>Incluida en el total general.</p>`
+          : `<p>Sin propina (propina = ${money.format(0)}).</p>`
+      }
+      <div class="invoice-totals">
+        <p><strong>9. ${estaPagada ? "Total pagado" : "Total por pagar"}:</strong> ${money.format(breakdown.totalGeneral)}</p>
+        <p><strong>10. Pagado:</strong> ${money.format(breakdown.totalPagado)}</p>
+        ${!estaPagada ? `<p><strong>11. Pendiente:</strong> ${money.format(breakdown.montoPendiente)}</p>` : ""}
+        ${breakdown.sobrepago > 0 ? `<p><strong>Sobrepago:</strong> ${money.format(breakdown.sobrepago)}</p>` : ""}
       </div>
       ${
         payments.length
-          ? `<h3>Pagos</h3><ul>${payments.map((payment) => `<li>${escapeHtml(payment.metodoPago || "")}: ${money.format(Number(payment.montoBruto) || Number(payment.montoNeto) || 0)}</li>`).join("")}</ul>`
+          ? `<h3>12. Desglose por método de pago</h3><ul>${payments
+              .map((payment) => `<li>${escapeHtml(paymentMethodLabel[payment.metodoPago] || payment.metodoPago || "")}: ${money.format(Number(payment.montoNeto) || Number(payment.montoBruto) || 0)}</li>`)
+              .join("")}</ul>`
           : ""
       }
       ${note ? `<p><strong>Nota:</strong> ${escapeHtml(note)}</p>` : ""}
@@ -4030,6 +4170,225 @@ function accountPeriodSummary(account, start, end) {
   return { opening, income, expense, transferIn, transferOut, closing, transactions };
 }
 
+// ---------------------------------------------------------------------------
+// Modulo "Cuentas": resumen de balances y movimientos, de solo lectura.
+// Reutiliza el mismo modelo de datos y las mismas funciones de balance que
+// ya usan cierres/reportes (accountAvailableBalance, accountActivityForDate,
+// accountTransactions/accountOpeningBalance/accountPeriodSummary,
+// defaultInitialCashFor, previousTreasurySaldoFor) en vez de duplicarlas.
+// ---------------------------------------------------------------------------
+
+function accountCategory(account) {
+  if (isRegisterAccountName(account?.nombreCuenta)) return "registradora";
+  const tipo = normalize(account?.tipoCuenta || "");
+  if (tipo.includes("fuerte")) return "cajaFuerte";
+  if (tipo.includes("chica")) return "cajaChica";
+  if (isBankAccount(account)) return "banco";
+  return isCashAccount(account) ? "otraCaja" : "otro";
+}
+
+function accountCategoryLabel(category) {
+  return (
+    {
+      registradora: "Caja registradora",
+      cajaChica: "Caja chica",
+      cajaFuerte: "Caja fuerte",
+      banco: "Banco",
+      otraCaja: "Otra caja",
+      otro: "Otra cuenta",
+    }[category] || "Otra cuenta"
+  );
+}
+
+function accountsConsolidatedSummary() {
+  const totals = { registradora: 0, cajaChica: 0, cajaFuerte: 0, banco: 0, otros: 0 };
+  activeAccounts().forEach((account) => {
+    const balance = accountAvailableBalance(account.nombreCuenta);
+    const category = accountCategory(account);
+    if (category === "registradora") totals.registradora += balance;
+    else if (category === "cajaChica") totals.cajaChica += balance;
+    else if (category === "cajaFuerte") totals.cajaFuerte += balance;
+    else if (category === "banco") totals.banco += balance;
+    else totals.otros += balance;
+  });
+  const total = totals.registradora + totals.cajaChica + totals.cajaFuerte + totals.banco + totals.otros;
+  return { ...totals, total };
+}
+
+function lastMovementForAccount(account) {
+  const rows = accountTransactions(account, "0001-01-01", "9999-12-31", true);
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
+// Cierre CONFIRMADO mas reciente que incluye esta cuenta: el de caja
+// registradora si es esa cuenta, o el detalle de esta cuenta dentro del
+// consolidado de tesoreria mas reciente. No mira cierres pendientes/needsReview:
+// esos todavia no son una conciliacion real.
+function lastReconciliationForAccount(account) {
+  if (isRegisterAccountName(account.nombreCuenta)) {
+    const closing = dbTable("cierres")
+      .filter((row) => row.closingType === "register" && !row.needsReview && row.confirmadoPor)
+      .sort((a, b) => String(b.businessDate || "").localeCompare(String(a.businessDate || "")))[0];
+    if (!closing) return null;
+    return { date: closing.businessDate, diferencia: Number(closing.diferencia) || 0 };
+  }
+  const closings = dbTable("cierres")
+    .filter((row) => row.closingType === "treasury" && !row.needsReview && row.confirmadoPor)
+    .sort((a, b) => String(b.businessDate || "").localeCompare(String(a.businessDate || "")));
+  for (const closing of closings) {
+    const detail = (closing.cuentas || []).find((row) => accountKey({ cuentaID: row.cuentaID, nombreCuenta: row.nombreCuenta }) === accountKey(account));
+    if (detail) return { date: closing.businessDate, diferencia: Number(detail.diferencia) || 0 };
+  }
+  return null;
+}
+
+function accountsOverviewFilters() {
+  return {
+    accountName: byId("accounts-filter-account")?.value.trim() || "",
+    type: byId("accounts-filter-type")?.value || "",
+    movement: byId("accounts-filter-movement")?.value || "",
+    start: byId("accounts-filter-start")?.value || today,
+    end: byId("accounts-filter-end")?.value || today,
+  };
+}
+
+function filteredAccountsForOverview(filters) {
+  return activeAccounts()
+    .filter((account) => !filters.accountName || normalize(account.nombreCuenta).includes(normalize(filters.accountName)))
+    .filter((account) => !filters.type || accountCategory(account) === filters.type);
+}
+
+function renderAccountsDailyBalancePanel(filters, accounts) {
+  const hint = byId("accounts-daily-balance-hint");
+  const summary = byId("accounts-daily-balance-summary");
+  const singleAccount = accounts.length === 1 ? accounts[0] : null;
+  if (filters.start !== filters.end || !singleAccount) {
+    hint.classList.remove("hidden");
+    summary.innerHTML = "";
+    return;
+  }
+  hint.classList.add("hidden");
+  const date = filters.start;
+  const activity = accountActivityForDate(date, singleAccount);
+  const balanceInicial = isRegisterAccountName(singleAccount.nombreCuenta)
+    ? defaultInitialCashFor(singleAccount, date)
+    : previousTreasurySaldoFor(singleAccount, date);
+  const daily = DalfiClosingMath.computeAccountDailyBalance({
+    balanceInicial,
+    ingresos: activity.income,
+    egresos: activity.expenses,
+    transferenciasEntrantes: activity.transferIn,
+    transferenciasSalientes: activity.transferOut,
+    ajustesNetos: 0,
+  });
+  const closingForDateValue = isRegisterAccountName(singleAccount.nombreCuenta) ? registerClosingForDate(date) : treasuryClosingForDate(date);
+  const confirmedDetail =
+    closingForDateValue?.closingType === "treasury"
+      ? (closingForDateValue.cuentas || []).find((row) => accountKey({ cuentaID: row.cuentaID, nombreCuenta: row.nombreCuenta }) === accountKey(singleAccount))
+      : closingForDateValue;
+  const isConfirmed = Boolean(closingForDateValue) && !isClosingPendingConfirmation(closingForDateValue);
+  const balanceReal = isConfirmed ? Number(confirmedDetail?.saldoReal ?? confirmedDetail?.balanceContado) || 0 : null;
+  const rows = [
+    ["1. Balance inicial del día", daily.balanceInicial],
+    ["2. Total de ingresos del día", daily.ingresos],
+    ["3. Total de egresos del día", daily.egresos],
+    ["4. Transferencias entrantes", daily.transferenciasEntrantes],
+    ["5. Transferencias salientes", daily.transferenciasSalientes],
+    ["6. Ajustes", daily.ajustesNetos],
+    ["7. Balance final calculado", daily.balanceFinalCalculado],
+  ];
+  if (balanceReal !== null) {
+    rows.push(["8. Balance real/conciliado", balanceReal]);
+    rows.push(["9. Diferencia", balanceReal - daily.balanceFinalCalculado]);
+  }
+  summary.innerHTML =
+    rows.map(([label, value]) => `<div class="summary-row"><span>${escapeHtml(label)}</span><strong>${money.format(value)}</strong></div>`).join("") +
+    `<div class="summary-row"><span>10. Estado del cierre</span><strong>${escapeHtml(
+      !closingForDateValue ? "Sin cierre generado" : isConfirmed ? "Confirmado" : "Pendiente de confirmación",
+    )}</strong></div>`;
+}
+
+function renderAccountsMovementsTable(filters, accounts) {
+  let rows = [];
+  accounts.forEach((account) => {
+    const opening = accountOpeningBalance(account, filters.start);
+    const movements = accountTransactions(account, filters.start, filters.end)
+      .filter((row) => !filters.movement || row.type === filters.movement)
+      .map((row) => ({ ...row, income: row.credit, expense: row.debit, id: `${accountKey(account)}-${row.reference}-${row.date}` }));
+    rows = rows.concat(DalfiClosingMath.buildRunningBalance(movements, opening).map((row) => ({ ...row, accountName: account.nombreCuenta })));
+  });
+  rows = DalfiClosingMath.sortMovementsDeterministically(rows);
+  byId("accounts-movements-table").innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `
+            <tr>
+              <td>${escapeHtml(row.date)}</td>
+              <td>${escapeHtml(row.accountName)}</td>
+              <td>${escapeHtml(row.type)}</td>
+              <td>${escapeHtml(row.description)}</td>
+              <td>${escapeHtml(row.reference)}</td>
+              <td class="amount">${row.credit ? money.format(row.credit) : "-"}</td>
+              <td class="amount danger">${row.debit ? money.format(row.debit) : "-"}</td>
+              <td class="amount">${money.format(row.runningBalance)}</td>
+            </tr>
+          `,
+        )
+        .join("")
+    : '<tr><td class="empty" colspan="8">Sin movimientos en el rango o filtro elegido.</td></tr>';
+}
+
+function renderAccountsView() {
+  const section = byId("accounts-overview");
+  if (!section) return;
+  const cardsTarget = byId("accounts-cards");
+  const consolidatedTarget = byId("accounts-consolidated");
+  if (!canReviewAccountsUser()) {
+    consolidatedTarget.innerHTML = "";
+    cardsTarget.innerHTML = '<p class="empty">No tienes permiso para ver el módulo de Cuentas.</p>';
+    byId("accounts-movements-table").innerHTML = "";
+    byId("accounts-daily-balance-summary").innerHTML = "";
+    byId("accounts-daily-balance-hint").classList.remove("hidden");
+    return;
+  }
+  const consolidated = accountsConsolidatedSummary();
+  consolidatedTarget.innerHTML = [
+    ["Efectivo caja registradora", consolidated.registradora],
+    ["Efectivo caja chica", consolidated.cajaChica],
+    ["Efectivo caja fuerte", consolidated.cajaFuerte],
+    ["Saldo en bancos", consolidated.banco],
+    ["Total general de valores", consolidated.total],
+  ]
+    .map(([label, value]) => `<article class="metric"><span>${escapeHtml(label)}</span><strong>${money.format(value)}</strong></article>`)
+    .join("");
+
+  const filters = accountsOverviewFilters();
+  const accounts = filteredAccountsForOverview(filters);
+  cardsTarget.innerHTML = accounts.length
+    ? accounts
+        .map((account) => {
+          const balance = accountAvailableBalance(account.nombreCuenta);
+          const lastMovement = lastMovementForAccount(account);
+          const reconciliation = lastReconciliationForAccount(account);
+          const hasDifference = reconciliation && Math.abs(reconciliation.diferencia) > 0.009;
+          return `
+            <article class="panel account-card">
+              <h4>${escapeHtml(account.nombreCuenta)}</h4>
+              <span class="account-meta">${escapeHtml(accountCategoryLabel(accountCategory(account)))} · ${escapeHtml(account.estado || "Activo")}</span>
+              <span class="account-balance">${money.format(balance)}</span>
+              <span class="account-meta">Último movimiento: ${lastMovement ? `${escapeHtml(lastMovement.date)} · ${escapeHtml(lastMovement.type)}` : "Sin movimientos"}</span>
+              <span class="account-meta">Última conciliación: ${reconciliation ? escapeHtml(reconciliation.date) : "Sin cierre confirmado"}</span>
+              ${hasDifference ? `<span class="account-meta danger">Diferencia pendiente: ${money.format(reconciliation.diferencia)}</span>` : ""}
+            </article>
+          `;
+        })
+        .join("")
+    : '<p class="empty">No hay cuentas activas que coincidan con el filtro.</p>';
+
+  renderAccountsDailyBalancePanel(filters, accounts);
+  renderAccountsMovementsTable(filters, accounts);
+}
+
 function renderExecutiveReport(start, end) {
   const invoices = dbTable("facturas").filter((row) => inRangeDate(row.fechaHora, start, end));
   const income = dbTable("ingresos").filter((row) => inRangeDate(row.fechaHora, start, end) && normalize(row.estado || "Confirmado") === "confirmado");
@@ -4642,6 +5001,7 @@ function renderAll() {
   safeRender("cierres de caja", renderCash);
   safeRender("conciliacion de tarjetas", renderCardReconciliation);
   safeRender("egresos", renderExpenses);
+  safeRender("cuentas balance", renderAccountsView);
   safeRender("inventario", renderInventory);
   safeRender("activos fijos", renderFixedAssets);
   safeRender("reportes", renderReports);
@@ -4741,6 +5101,7 @@ function wireNavigation() {
       view.classList.add("active");
       byId("view-title").textContent = button.textContent;
       if (button.dataset.view === "cash") safeRender("cierres de caja", renderCash);
+      if (button.dataset.view === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
     });
   });
 }
@@ -4942,7 +5303,7 @@ function wireUserAdmin() {
       listMessage.textContent = "Usuarios cargados.";
       listMessage.className = "form-message success";
     } catch (error) {
-      listTarget.innerHTML = '<tr><td class="empty" colspan="7">No se pudo cargar usuarios.</td></tr>';
+      listTarget.innerHTML = '<tr><td class="empty" colspan="8">No se pudo cargar usuarios.</td></tr>';
       listMessage.textContent = error.message;
       listMessage.className = "form-message error";
     }
@@ -4950,7 +5311,7 @@ function wireUserAdmin() {
 
   const renderUsersList = (users) => {
     if (!users.length) {
-      listTarget.innerHTML = '<tr><td class="empty" colspan="7">No hay usuarios registrados.</td></tr>';
+      listTarget.innerHTML = '<tr><td class="empty" colspan="8">No hay usuarios registrados.</td></tr>';
       return;
     }
     listTarget.innerHTML = users
@@ -4973,6 +5334,12 @@ function wireUserAdmin() {
             <td><span class="status-pill ${pendingPassword ? "warning" : "success"}">${pendingPassword ? "Debe cambiar" : "Definitiva"}</span></td>
             <td><input class="user-password-input compact-input" type="password" minlength="6" placeholder="Opcional" /></td>
             <td>
+              <label title="Ver Cuentas sin ser rol privilegiado ni contador/a">
+                <input type="checkbox" class="user-review-accounts-input" ${user.canReviewAccounts ? "checked" : ""} />
+                Revisar cuentas
+              </label>
+            </td>
+            <td>
               <div class="row-actions">
                 <button class="secondary-btn compact save-user" type="button">Guardar</button>
                 <button class="secondary-btn compact reset-user-password" type="button">Resetear</button>
@@ -4993,6 +5360,7 @@ function wireUserAdmin() {
       email: row.querySelector(".user-email-input").value.trim(),
       role: row.querySelector(".user-role-input").value,
       password: row.querySelector(".user-password-input").value,
+      canReviewAccounts: row.querySelector(".user-review-accounts-input").checked,
     };
     if (estado) payload.estado = estado;
 
@@ -5400,11 +5768,21 @@ function updateInvoiceTotals() {
   const generalDiscountPercent = Number(byId("invoice-general-discount-percent")?.value) || 0;
   const tip = Number(byId("invoice-tip").value) || 0;
   const { servicesTotal, extrasTotal, discountTotal, grandTotal } = invoiceTotalsFromLines(lines, generalExtra, generalDiscountPercent);
-  const totalWithTip = grandTotal + tip;
   const paidTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
-  const pendingTotal = Math.max(0, grandTotal - paidTotal);
+  // Misma formula central que usa la factura ya guardada al verla/imprimirla
+  // (invoiceBreakdownForStoredInvoice -> DalfiClosingMath.computeInvoiceBreakdown),
+  // para que la vista previa del formulario nunca difiera del resultado impreso.
+  const breakdown = DalfiClosingMath.computeInvoiceBreakdown({
+    precioListadoServicios: servicesTotal,
+    totalAdicionales: extrasTotal + generalExtra,
+    totalDescuentos: discountTotal,
+    propina: tip,
+    totalPagado: paidTotal,
+  });
+  const totalWithTip = breakdown.totalGeneral;
+  const pendingTotal = breakdown.montoPendiente;
   const overpay = Math.max(0, paidTotal - grandTotal);
-  const finalOverpay = Math.max(0, paidTotal - totalWithTip);
+  const finalOverpay = breakdown.sobrepago;
   lines.forEach((line) => {
     line.element.querySelector(".line-subtotal").value = money.format(line.subtotal);
   });
@@ -6849,17 +7227,45 @@ function wireForms() {
   ["expense-source", "expense-destination", "expense-amount"].forEach((id) => {
     byId(id).addEventListener("input", updateExpenseBalancePreview);
   });
+  let expenseSubmitInFlight = false;
   byId("expense-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    // Evita doble registro por doble clic o doble submit mientras el guardado
+    // anterior todavia esta en curso.
+    if (expenseSubmitInFlight) return;
     const editId = byId("expense-edit-id").value;
     const type = byId("expense-type").value;
-    const amount = Number(byId("expense-amount").value) || 0;
+    const rawAmount = byId("expense-amount").value;
+    const amount = Number(rawAmount);
     const source = byId("expense-source").value.trim();
     const destination = byId("expense-destination").value.trim();
     const destinationType = byId("expense-destination-type").value;
     const concept = byId("expense-concept").value.trim();
     const note = byId("expense-note").value.trim();
-    if (!amount || !source || !concept) return;
+    const expenseDate = byId("expense-date").value;
+    // Antes esta validacion era "if (!amount || !source || !concept) return;":
+    // un return mudo, sin alert ni foco, indistinguible de un boton roto. Cada
+    // caso ahora avisa exactamente que falta.
+    if (rawAmount === "" || !Number.isFinite(amount) || amount <= 0) {
+      alert("Ingresa un monto de egreso mayor que cero.");
+      byId("expense-amount").focus();
+      return;
+    }
+    if (!source) {
+      alert("Selecciona la cuenta o caja de origen del egreso.");
+      byId("expense-source").focus();
+      return;
+    }
+    if (!concept) {
+      alert("Describe el concepto del egreso.");
+      byId("expense-concept").focus();
+      return;
+    }
+    if (!DalfiClosingMath.isValidIsoDate(expenseDate)) {
+      alert("La fecha del egreso no es válida.");
+      byId("expense-date").focus();
+      return;
+    }
     const sourceAccountSelected = findAccountByName(source);
     if (!sourceAccountSelected) {
       alert("Selecciona una cuenta o caja origen válida.");
@@ -6901,120 +7307,167 @@ function wireForms() {
       const sourceDate = dateOnly(existingExpense.fechaHora);
       const targetDate = byId("expense-date").value;
       if (!closingAllowsDateChange(sourceDate, targetDate)) return;
-      Object.assign(existingExpense, {
-        fechaHora: withDateOnly(existingExpense.fechaHora, targetDate),
-        tipoEgreso: type,
-        cuentaOrigenID: sourceAccountSelected?.cuentaID || "",
-        cuentaOrigen: source,
-        cuentaDestinoID: destinationAccountSelected?.cuentaID || "",
-        cuentaDestino: destination,
-        concepto,
-        monto: amount,
-        observaciones: note,
-      });
-      stampRecord(existingExpense, "updated");
-      event.target.reset();
-      byId("expense-edit-id").value = "";
-      byId("expense-submit").textContent = "Guardar egreso";
-      byId("expense-date").value = today;
-      updateExpenseOptionalFields();
-      updateExpenseBalancePreview();
-      state = stateFromDatabase(database);
-      saveState();
-      renderAll();
-      return;
     }
-    const expenseId = nextDbId("egresos", "egresoID", "EGR");
-    const sourceAccount = sourceAccountSelected;
-    const destinationAccount = destinationAccountSelected || findAccountByName(destination);
-    const row = {
-      id: expenseId,
-      date: byId("expense-date").value,
-      type,
-      source,
-      destination,
-      concept,
-      amount,
-      note,
-    };
-    state.expenses.push(row);
-    dbTable("egresos").push(stampRecord({
-      egresoID: expenseId,
-      fechaHora: `${row.date}T12:00:00`,
-      tipoEgreso: type,
-      cuentaOrigenID: sourceAccount?.cuentaID || "",
-      cuentaOrigen: source,
-      cuentaDestinoID: destinationAccount?.cuentaID || "",
-      cuentaDestino: destination,
-      concepto,
-      monto: amount,
-      estado: "Registrado",
-      observaciones: note,
-    }));
-    if (type === "transferencia") {
-      dbTable("transferencias").push(stampRecord({
-        transferenciaID: nextDbId("transferencias", "transferenciaID", "TRF"),
+    const submitButton = byId("expense-submit");
+    const originalSubmitLabel = submitButton.textContent;
+    expenseSubmitInFlight = true;
+    submitButton.disabled = true;
+    submitButton.textContent = "Guardando...";
+    try {
+      if (existingExpense) {
+        const targetDate = byId("expense-date").value;
+        const sourceDate = dateOnly(existingExpense.fechaHora);
+        const oldData = { ...existingExpense };
+        Object.assign(existingExpense, {
+          fechaHora: withDateOnly(existingExpense.fechaHora, targetDate),
+          tipoEgreso: type,
+          cuentaOrigenID: sourceAccountSelected?.cuentaID || "",
+          cuentaOrigen: source,
+          cuentaDestinoID: destinationAccountSelected?.cuentaID || "",
+          cuentaDestino: destination,
+          concepto: concept,
+          monto: amount,
+          observaciones: note,
+        });
+        stampRecord(existingExpense, "updated");
+        refreshPendingClosingsForDate(sourceDate);
+        refreshPendingClosingsForDate(targetDate);
+        logAudit("expense_edit", {
+          entity: "egresos",
+          entityId: existingExpense.egresoID,
+          oldData,
+          newData: existingExpense,
+          success: true,
+        });
+        event.target.reset();
+        byId("expense-edit-id").value = "";
+        submitButton.textContent = "Guardar egreso";
+        byId("expense-date").value = today;
+        updateExpenseOptionalFields();
+        updateExpenseBalancePreview();
+        state = stateFromDatabase(database);
+        saveState();
+        renderAll();
+        return;
+      }
+      const expenseId = nextDbId("egresos", "egresoID", "EGR");
+      const sourceAccount = sourceAccountSelected;
+      const destinationAccount = destinationAccountSelected || findAccountByName(destination);
+      const row = {
+        id: expenseId,
+        date: byId("expense-date").value,
+        type,
+        source,
+        destination,
+        concept,
+        amount,
+        note,
+      };
+      state.expenses.push(row);
+      const expenseRecord = stampRecord({
+        egresoID: expenseId,
         fechaHora: `${row.date}T12:00:00`,
+        tipoEgreso: type,
         cuentaOrigenID: sourceAccount?.cuentaID || "",
         cuentaOrigen: source,
         cuentaDestinoID: destinationAccount?.cuentaID || "",
         cuentaDestino: destination,
+        concepto: concept,
         monto: amount,
-        estado: "Confirmada",
-        observaciones: note || concept,
-      }));
-    }
-    if (type === "avance") {
-      const staffRecord = advanceStaff;
-      const supplierRecord = advanceSupplier;
-      if (staffRecord) {
-        const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
-        dbTable("cuentasCobrar").push(stampRecord({
-          cxCID: cxcId,
-          fechaOrigen: new Date().toISOString(),
-          tipoCxC: "Avance colaborador",
-          deudorTipo: "Colaborador",
-          deudorID: staffRecord.colaboradorID,
-          deudorNombre: staffRecord.nombreCompleto,
-          facturaID: "",
-          pagoID: "",
-          montoOriginal: amount,
-          montoAplicado: 0,
-          balancePendiente: amount,
-          estado: "Pendiente",
-          concepto: `Avance autorizado: ${concept}`,
-          fechaVencimiento: today,
+        estado: "Registrado",
+        observaciones: note,
+      });
+      dbTable("egresos").push(expenseRecord);
+      if (type === "transferencia") {
+        dbTable("transferencias").push(stampRecord({
+          transferenciaID: nextDbId("transferencias", "transferenciaID", "TRF"),
+          fechaHora: `${row.date}T12:00:00`,
+          cuentaOrigenID: sourceAccount?.cuentaID || "",
+          cuentaOrigen: source,
+          cuentaDestinoID: destinationAccount?.cuentaID || "",
+          cuentaDestino: destination,
+          monto: amount,
+          estado: "Confirmada",
+          observaciones: note || concept,
         }));
       }
-      if (supplierRecord) {
-        const supplierName = supplierRecord.nombre || supplierRecord.nombreCompleto || supplierRecord.empresa || supplierRecord.suplidorNombre;
-        const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
-        dbTable("cuentasCobrar").push(stampRecord({
-          cxCID: cxcId,
-          fechaOrigen: new Date().toISOString(),
-          tipoCxC: "Avance suplidor",
-          deudorTipo: "Suplidor",
-          deudorID: supplierRecord.suplidorID || supplierRecord.proveedorID || "",
-          deudorNombre: supplierName,
-          facturaID: "",
-          pagoID: "",
-          montoOriginal: amount,
-          montoAplicado: 0,
-          balancePendiente: amount,
-          estado: "Pendiente",
-          concepto: `Avance a suplidor: ${concept}`,
-          fechaVencimiento: today,
-        }));
+      if (type === "avance") {
+        const staffRecord = advanceStaff;
+        const supplierRecord = advanceSupplier;
+        if (staffRecord) {
+          const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
+          dbTable("cuentasCobrar").push(stampRecord({
+            cxCID: cxcId,
+            fechaOrigen: new Date().toISOString(),
+            tipoCxC: "Avance colaborador",
+            deudorTipo: "Colaborador",
+            deudorID: staffRecord.colaboradorID,
+            deudorNombre: staffRecord.nombreCompleto,
+            facturaID: "",
+            pagoID: "",
+            montoOriginal: amount,
+            montoAplicado: 0,
+            balancePendiente: amount,
+            estado: "Pendiente",
+            concepto: `Avance autorizado: ${concept}`,
+            fechaVencimiento: today,
+          }));
+        }
+        if (supplierRecord) {
+          const supplierName = supplierRecord.nombre || supplierRecord.nombreCompleto || supplierRecord.empresa || supplierRecord.suplidorNombre;
+          const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
+          dbTable("cuentasCobrar").push(stampRecord({
+            cxCID: cxcId,
+            fechaOrigen: new Date().toISOString(),
+            tipoCxC: "Avance suplidor",
+            deudorTipo: "Suplidor",
+            deudorID: supplierRecord.suplidorID || supplierRecord.proveedorID || "",
+            deudorNombre: supplierName,
+            facturaID: "",
+            pagoID: "",
+            montoOriginal: amount,
+            montoAplicado: 0,
+            balancePendiente: amount,
+            estado: "Pendiente",
+            concepto: `Avance a suplidor: ${concept}`,
+            fechaVencimiento: today,
+          }));
+        }
       }
+      refreshPendingClosingsForDate(row.date);
+      logAudit("expense_create", {
+        entity: "egresos",
+        entityId: expenseId,
+        newData: expenseRecord,
+        success: true,
+      });
+      event.target.reset();
+      byId("expense-edit-id").value = "";
+      submitButton.textContent = "Guardar egreso";
+      byId("expense-date").value = today;
+      updateExpenseOptionalFields();
+      updateExpenseBalancePreview();
+      saveState();
+      renderAll();
+    } catch (error) {
+      console.error("No se pudo guardar el egreso.", error);
+      logAudit(existingExpense ? "expense_edit" : "expense_create", {
+        entity: "egresos",
+        entityId: editId || "",
+        newData: { type, source, destination, concept, amount, date: byId("expense-date").value },
+        success: false,
+        note: error?.message || String(error),
+      });
+      alert(`No se pudo guardar el egreso: ${error?.message || "error inesperado"}. Intenta de nuevo.`);
+    } finally {
+      expenseSubmitInFlight = false;
+      submitButton.disabled = false;
+      // Los caminos de exito ya dejaron el texto correcto ("Guardar egreso");
+      // si seguia en "Guardando..." es porque el catch interrumpio antes de
+      // llegar ahi, asi que se restaura la etiqueta que tenia el boton al
+      // entrar (por ejemplo "Guardar cambios" si se estaba editando).
+      if (submitButton.textContent === "Guardando...") submitButton.textContent = originalSubmitLabel;
     }
-    event.target.reset();
-    byId("expense-edit-id").value = "";
-    byId("expense-submit").textContent = "Guardar egreso";
-    byId("expense-date").value = today;
-    updateExpenseOptionalFields();
-    updateExpenseBalancePreview();
-    saveState();
-    renderAll();
   });
 
   byId("expense-table").addEventListener("click", (event) => {
@@ -7851,6 +8304,8 @@ async function init() {
   byId("asset-acquired-date").value = today;
   byId("report-start").value = `${month}-01`;
   byId("report-end").value = today;
+  byId("accounts-filter-start").value = today;
+  byId("accounts-filter-end").value = today;
   byId("payroll-period").value = month;
   byId("staff-start-date").value = today;
   updateAuthUi();
@@ -7862,6 +8317,7 @@ async function init() {
   wireForms();
   wireSearches();
   wireNumberFieldFocus();
+  byId("accounts-filter-apply")?.addEventListener("click", renderAccountsView);
   window.addEventListener("focus", () => refreshRemoteDatabase());
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {

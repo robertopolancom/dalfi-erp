@@ -28,6 +28,7 @@
           <button class="nav-item" data-view="cash" type="button">Cierres de caja</button>
           <button class="nav-item" data-view="card-reconciliation" type="button">Conciliación tarjetas</button>
           <button class="nav-item" data-view="expenses" type="button">Egresos</button>
+          <button class="nav-item accounts-review-only hidden" data-view="accounts-overview" type="button">Cuentas</button>
           <button class="nav-item" data-view="inventory" type="button">Inventario</button>
           <button class="nav-item" data-view="fixed-assets" type="button">Activos fijos</button>
           <button class="nav-item" data-view="reports" type="button">Reportes</button>
@@ -1206,6 +1207,92 @@
           </div>
         </section>
 
+        <section id="accounts-overview" class="view">
+          <div class="metrics-grid" id="accounts-consolidated"></div>
+
+          <div class="dashboard-grid">
+            <section class="panel panel-wide">
+              <div class="panel-head">
+                <h3>Filtros</h3>
+              </div>
+              <div class="report-filters">
+                <label>
+                  Desde
+                  <input id="accounts-filter-start" type="date" />
+                </label>
+                <label>
+                  Hasta
+                  <input id="accounts-filter-end" type="date" />
+                </label>
+                <label>
+                  Cuenta
+                  <input id="accounts-filter-account" list="accounts-list" placeholder="Todas las cuentas" />
+                </label>
+                <label>
+                  Tipo de cuenta
+                  <select id="accounts-filter-type">
+                    <option value="">Todos</option>
+                    <option value="registradora">Caja registradora</option>
+                    <option value="cajaChica">Caja chica</option>
+                    <option value="cajaFuerte">Caja fuerte</option>
+                    <option value="banco">Bancos</option>
+                  </select>
+                </label>
+                <label>
+                  Movimiento
+                  <select id="accounts-filter-movement">
+                    <option value="">Todos</option>
+                    <option value="Ingreso">Ingresos</option>
+                    <option value="Egreso">Egresos</option>
+                    <option value="Transferencia entrada">Transferencias entrada</option>
+                    <option value="Transferencia salida">Transferencias salida</option>
+                  </select>
+                </label>
+                <button class="primary-btn inline" id="accounts-filter-apply" type="button">Aplicar filtros</button>
+              </div>
+              <p class="panel-note">Los balances diarios y de rango usan la zona horaria America/Santo_Domingo, la misma que usan los cierres.</p>
+            </section>
+
+            <section class="panel panel-wide" id="accounts-daily-balance-panel">
+              <div class="panel-head">
+                <h3>Balance diario</h3>
+              </div>
+              <p class="panel-note" id="accounts-daily-balance-hint">Elige una sola fecha (Desde = Hasta) y una cuenta específica en los filtros para ver el balance inicial y final de ese día.</p>
+              <div class="report-summary" id="accounts-daily-balance-summary"></div>
+            </section>
+
+            <section class="panel panel-wide">
+              <div class="panel-head">
+                <h3>Cuentas y cajas</h3>
+              </div>
+              <div class="accounts-grid" id="accounts-cards"></div>
+            </section>
+
+            <section class="panel panel-wide">
+              <div class="panel-head">
+                <h3>Movimientos</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Cuenta</th>
+                      <th>Tipo</th>
+                      <th>Detalle</th>
+                      <th>Referencia</th>
+                      <th>Entrada</th>
+                      <th>Salida</th>
+                      <th>Saldo acumulado</th>
+                    </tr>
+                  </thead>
+                  <tbody id="accounts-movements-table"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+        </section>
+
         <section id="reports" class="view">
           <div class="dashboard-grid">
             <section class="panel panel-wide">
@@ -1691,11 +1778,12 @@
                       <th>Estado</th>
                       <th>Clave</th>
                       <th>Contraseña temporal</th>
+                      <th>Cuentas</th>
                       <th>Acciones</th>
                     </tr>
                   </thead>
                   <tbody id="users-list">
-                    <tr><td class="empty" colspan="7">Pulsa Actualizar para cargar usuarios.</td></tr>
+                    <tr><td class="empty" colspan="8">Pulsa Actualizar para cargar usuarios.</td></tr>
                   </tbody>
                 </table>
               </div>

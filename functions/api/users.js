@@ -69,6 +69,7 @@ function toPublicUser(user) {
     email: user.email,
     fullName: user.user_metadata?.full_name || "",
     role: user.user_metadata?.role || "operador",
+    canReviewAccounts: Boolean(user.user_metadata?.canReviewAccounts),
     estado: isInactive(user) ? "Inactivo" : "Activo",
     passwordResetRequired: Boolean(user.user_metadata?.password_reset_required),
     createdAt: user.created_at,
@@ -137,12 +138,18 @@ export async function onRequestPatch({ request, env }) {
     update.password = temporaryPassword;
   }
 
+  const hasCanReviewAccounts = Object.prototype.hasOwnProperty.call(payload, "canReviewAccounts");
   update.user_metadata = {
     ...currentMetadata,
     full_name: fullName,
     role,
     updated_by: requesterEmail,
   };
+  // Permiso explicito de solo-lectura para el modulo de Cuentas, ademas del
+  // acceso ya otorgado a roles privilegiados/contable por rol. No habilita
+  // ninguna accion de escritura: esas siguen exigiendo isPrivilegedRole en
+  // cada funcion de negocio, no solo este flag.
+  if (hasCanReviewAccounts) update.user_metadata.canReviewAccounts = Boolean(payload.canReviewAccounts);
   if (temporaryPassword) {
     update.user_metadata.password_reset_required = true;
     update.user_metadata.password_reset_reason = resetPassword ? "admin_reset" : "admin_password_update";
