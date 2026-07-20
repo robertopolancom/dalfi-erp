@@ -135,6 +135,11 @@ let remoteSaveTimer = null;
 let remoteSaveInFlight = false;
 let remoteRefreshTimer = null;
 let isLoadingRemote = false;
+// Ultimo updated_at conocido de erp_records: permite que el poll periodico
+// pregunte solo por esta columna (unos bytes) antes de traer el documento
+// jsonb completo, en vez de descargarlo entero cada 30s aunque nadie haya
+// cambiado nada. Ver refreshRemoteDatabase().
+let lastKnownRemoteUpdatedAt = null;
 
 async function loadDatabase() {
   initSupabaseClient();
@@ -236,6 +241,20 @@ async function loadRemoteDatabase() {
   }
 }
 
+// Consulta liviana (solo la columna updated_at, no el jsonb completo) para
+// que el poll periodico pueda detectar "nadie cambio nada" sin pagar el
+// costo de descargar el documento entero cada vez.
+async function fetchRemoteUpdatedAt() {
+  const { data, error } = await supabaseClient
+    .from("erp_records")
+    .select("updated_at")
+    .eq("table_name", remoteTableName)
+    .eq("record_key", remoteRecordKey)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.updated_at || null;
+}
+
 function isUserEditingForm() {
   const active = document.activeElement;
   return Boolean(active && ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName));
@@ -245,9 +264,21 @@ async function refreshRemoteDatabase({ force = false } = {}) {
   if (!isSupabaseReady() || !database || remoteSaveInFlight || isLoadingRemote) return false;
   if (!force && isUserEditingForm()) return false;
   try {
-    const remoteDatabase = await loadRemoteDatabase();
-    if (!remoteDatabase) return false;
-    database = remoteDatabase;
+    if (!force && lastKnownRemoteUpdatedAt) {
+      const remoteUpdatedAt = await fetchRemoteUpdatedAt();
+      if (remoteUpdatedAt && remoteUpdatedAt === lastKnownRemoteUpdatedAt) return false;
+    }
+    isLoadingRemote = true;
+    const { data: row, error } = await supabaseClient
+      .from("erp_records")
+      .select("data, updated_at")
+      .eq("table_name", remoteTableName)
+      .eq("record_key", remoteRecordKey)
+      .maybeSingle();
+    if (error) throw error;
+    if (!row?.data) return false;
+    database = row.data;
+    lastKnownRemoteUpdatedAt = row.updated_at || lastKnownRemoteUpdatedAt;
     ensureDatabaseShape();
     state = stateFromDatabase(database);
     localStorage.setItem(dbStorageKey, JSON.stringify(database));
@@ -259,12 +290,24 @@ async function refreshRemoteDatabase({ force = false } = {}) {
     console.warn("No se pudo refrescar Supabase.", error);
     updateSyncStatus("Error leyendo Supabase", "error");
     return false;
+  } finally {
+    isLoadingRemote = false;
   }
 }
 
+// El poll de fondo solo corre mientras la pestana esta visible: se detiene
+// en visibilitychange (document.hidden) y se reinicia al volver, para no
+// seguir descargando el documento completo cada 30s desde una pestana
+// minimizada u olvidada de fondo toda la noche.
 function startRemoteRefreshLoop() {
-  if (remoteRefreshTimer) return;
+  if (remoteRefreshTimer || document.hidden) return;
   remoteRefreshTimer = window.setInterval(() => refreshRemoteDatabase(), 30000);
+}
+
+function stopRemoteRefreshLoop() {
+  if (!remoteRefreshTimer) return;
+  window.clearInterval(remoteRefreshTimer);
+  remoteRefreshTimer = null;
 }
 
 function scheduleRemoteSave() {
@@ -283,8 +326,16 @@ async function saveRemoteDatabase() {
       record_key: remoteRecordKey,
       data: database,
     };
-    const { error } = await supabaseClient.from("erp_records").upsert(payload, { onConflict: "table_name,record_key" });
+    const { data: row, error } = await supabaseClient
+      .from("erp_records")
+      .upsert(payload, { onConflict: "table_name,record_key" })
+      .select("updated_at")
+      .maybeSingle();
     if (error) throw error;
+    // Guarda el updated_at que acaba de fijar nuestro propio guardado para
+    // que el proximo poll de 30s no se confunda y vuelva a traer el
+    // documento completo solo porque nosotros mismos lo cambiamos.
+    if (row?.updated_at) lastKnownRemoteUpdatedAt = row.updated_at;
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
   } catch (error) {
     console.error("No se pudo guardar en Supabase.", error);
@@ -7813,7 +7864,12 @@ async function init() {
   wireNumberFieldFocus();
   window.addEventListener("focus", () => refreshRemoteDatabase());
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refreshRemoteDatabase();
+    if (document.hidden) {
+      stopRemoteRefreshLoop();
+    } else {
+      refreshRemoteDatabase();
+      startRemoteRefreshLoop();
+    }
   });
   startRemoteRefreshLoop();
   attachSearchableLookups();

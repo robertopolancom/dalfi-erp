@@ -15,7 +15,10 @@ create table if not exists erp_records (
 );
 
 create index if not exists erp_records_table_name_idx on erp_records (table_name);
-create index if not exists erp_records_data_gin_idx on erp_records using gin (data);
+-- No hay indice GIN sobre "data": esta tabla siempre se lee/escribe por la
+-- fila unica (table_name, record_key), nunca filtrando dentro del jsonb, asi
+-- que ese indice solo agregaria costo de escritura sin beneficio de
+-- consulta (ver supabase/migrations/2026-07-20_drop_unused_gin_index.sql).
 
 create table if not exists erp_audit_log (
   id uuid primary key default gen_random_uuid(),
