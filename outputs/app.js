@@ -6276,6 +6276,8 @@ function updateInvoiceTotals() {
   byId("invoice-final-overpay-total").textContent = money.format(finalOverpay);
   byId("overpay-policy-label").classList.toggle("hidden", finalOverpay <= 0);
   renderTipAllocation(lines, tip);
+  const clientRecord = findClientByName(byId("invoice-client-search")?.value.trim() || "");
+  renderInvoicePriorDebtSummary(clientRecord, totalWithTip);
 }
 
 function renderTipAllocation(lines, tip) {
@@ -6846,6 +6848,35 @@ function mapReceivablesForAllocation(receivables) {
   }));
 }
 
+// Bloque informativo de Facturacion (factura nueva): muestra por separado el
+// total de ESTA factura, la deuda anterior del cliente (misma lista que usa
+// el cobro general, clientAllReceivables) y la suma de ambos como "total
+// general a pagar hoy". Puramente informativo -nunca se escribe en
+// facturaDetalle/subtotal/servicios/adicionales/descuentos/propina/total ni
+// en el totalCxC de la factura nueva-, por eso vive fuera de invoiceTotals.
+function renderInvoicePriorDebtSummary(clientRecord, currentInvoiceTotal) {
+  const container = byId("invoice-prior-debt-summary");
+  const rowsTarget = byId("invoice-prior-debt-rows");
+  if (!container || !rowsTarget) return;
+  if (!clientRecord) {
+    container.classList.add("hidden");
+    rowsTarget.innerHTML = "";
+    return;
+  }
+  const receivables = clientAllReceivables(clientRecord);
+  const priorDebtTotal = receivables.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
+  container.classList.remove("hidden");
+  byId("invoice-current-total-preview").textContent = money.format(currentInvoiceTotal);
+  byId("invoice-prior-debt-total").textContent = money.format(priorDebtTotal);
+  byId("invoice-grand-total-with-prior-debt").textContent = money.format(priorDebtTotal + currentInvoiceTotal);
+  rowsTarget.innerHTML = receivables
+    .map((cxc) => {
+      const label = cxc.esPropinaPendiente ? `Propina — factura ${cxc.facturaID || cxc.cxCID}` : `Factura ${cxc.facturaID || cxc.cxCID}`;
+      return `<div class="list-item"><span>${escapeHtml(label)} · ${dateOnly(cxc.fechaOrigen) || "-"}</span><span>${money.format(Number(cxc.balancePendiente) || 0)}</span></div>`;
+    })
+    .join("");
+}
+
 // Medios de pago validos DESDE ESTE FORMULARIO (distinto del formulario de
 // facturas: aqui todas las lineas ya representan dinero CONFIRMADO, nunca
 // credito ni transferencia pendiente sin confirmar -esas se gestionan por
@@ -7254,7 +7285,10 @@ function wireForms() {
     byId("client-form").reset();
     const shouldReturnToInvoice = byId("client-form").dataset.returnToInvoice === "true";
     delete byId("client-form").dataset.returnToInvoice;
-    if (shouldReturnToInvoice) byId("invoice-client-search").value = client.nombreCompleto || fullName;
+    if (shouldReturnToInvoice) {
+      byId("invoice-client-search").value = client.nombreCompleto || fullName;
+      updateInvoiceTotals();
+    }
     closeDataForms();
     let clientAuditAction = "edit_client";
     let clientAuditNote = "Cliente editado.";
@@ -7334,6 +7368,7 @@ function wireForms() {
     byId("invoice-client-summary").textContent = client
       ? `${client.nombreCompleto || ""} · ${client.telefono || "Sin teléfono"}`
       : "Cliente nuevo o no encontrado en base de datos.";
+    updateInvoiceTotals();
   });
 
   ["invoice-general-extra", "invoice-general-extra-note", "invoice-general-discount-percent"].forEach((id) => {
@@ -7593,25 +7628,30 @@ function wireForms() {
 
     // Politica vigente desde julio 2026: LA PROPINA SE COBRA Y SE REGISTRA
     // DE ULTIMO. El dinero confirmado se aplica siempre en este orden:
-    // 1) CxC anteriores del cliente, 2) base de esta factura (servicios +
-    // adicionales - descuentos), 3) propina de esta factura. Mientras quede
-    // pendiente 1 o 2, nunca se reconoce propina cobrada. Solo cuentan
-    // lineas CONFIRMADAS (nunca credito, nunca transferencia pendiente,
-    // nunca "balance" por encima de lo que el cliente realmente tiene).
-    const olderReceivablesOutstanding = dbTable("cuentasCobrar")
-      .filter((cxc) => cxc.deudorTipo === "Cliente" && cxc.deudorID === clientRecord?.clienteID && Number(cxc.balancePendiente) > 0)
-      .reduce((sum, cxc) => sum + (Number(cxc.balancePendiente) || 0), 0);
+    // 1) CxC anteriores del cliente (de la mas antigua a la mas nueva, base
+    // antes que propina pendiente dentro de cada factura), 2) base de esta
+    // factura (servicios + adicionales - descuentos), 3) propina de esta
+    // factura. Mientras quede pendiente 1 o 2, nunca se reconoce propina
+    // cobrada. Solo cuentan lineas CONFIRMADAS (nunca credito, nunca
+    // transferencia pendiente, nunca "balance" por encima de lo que el
+    // cliente realmente tiene). Se usa el MISMO algoritmo puro que el cobro
+    // general de cliente desde Facturacion (DalfiClosingMath.allocateClientPaymentFIFO,
+    // ver openClientReceiptFromBilling): nunca dos algoritmos financieros
+    // distintos para el mismo reparto.
+    const priorReceivables = clientAllReceivables(clientRecord);
+    const priorDebtBeforePayment = priorReceivables.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
+    const priorBalancesBeforePayment = new Map(priorReceivables.map((row) => [row.cxCID, Number(row.balancePendiente) || 0]));
     const availableBalance = clientBalance(clientRecord?.clienteID);
     const confirmedPayments = payments.filter((paymentLine) => isConfirmedPaymentMethod(paymentLine.method));
-    const allocation = DalfiClosingMath.allocateConfirmedPayment({
-      paymentLines: confirmedPayments.map((paymentLine) => ({
+    const allocation = DalfiClosingMath.allocateClientPaymentFIFO({
+      confirmedPaymentLines: confirmedPayments.map((paymentLine) => ({
         method: paymentLine.method,
         amount: paymentLine.method === "balance" ? Math.min(paymentLine.amount, availableBalance) : paymentLine.amount,
       })),
-      olderReceivablesOutstanding,
-      currentInvoiceBaseOutstanding: total,
-      invoiceTipTotal: tip,
-      invoiceTipAlreadyCollected: 0,
+      priorClientReceivables: mapReceivablesForAllocation(priorReceivables),
+      currentInvoiceBase: total,
+      currentInvoiceTip: tip,
+      currentInvoiceTipCollected: 0,
     });
 
     confirmedPayments.forEach((paymentLine, index) => {
@@ -7672,8 +7712,17 @@ function wireForms() {
     const cardTipPortion = allocation.lineAllocations
       .filter((lineAllocation) => lineAllocation.method === "tarjeta")
       .reduce((sum, lineAllocation) => sum + lineAllocation.tip, 0);
-    collectInvoiceTip(invoiceRecord, allocation.tipCollectedNow, { cardPortion: cardTipPortion, source: invoiceId });
-    invoiceRecord.estadoFactura = invoiceRecord.totalCxC > 0 || invoiceRecord.propinaPendiente > 0 ? "Parcial" : "Pagada";
+    collectInvoiceTip(invoiceRecord, allocation.amountAppliedToCurrentTip, { cardPortion: cardTipPortion, source: invoiceId });
+    // Pendiente: no se aplico NINGUN pago confirmado a esta factura todavia
+    // (todo el dinero, si hubo, se fue a deuda anterior). Parcial: recibio
+    // algo pero queda saldo (base o propina). Pagada: base y propina
+    // completas. Mismo vocabulario que cuentasCobrar.estado (ver linea 4328).
+    invoiceRecord.estadoFactura =
+      invoiceRecord.totalPagadoConfirmado <= 0 && invoiceRecord.propinaCobrada <= 0
+        ? "Pendiente"
+        : invoiceRecord.totalCxC > 0 || invoiceRecord.propinaPendiente > 0
+          ? "Parcial"
+          : "Pagada";
 
     // Si queda propina pendiente, se registra como su PROPIA cuenta por
     // cobrar (separada de la CxC de base): asi un pago futuro puede
@@ -7709,6 +7758,36 @@ function wireForms() {
       }
     }
     stampRecord(invoiceRecord, "updated");
+    // Una sola auditoria por factura creada (no una por cada CxC anterior
+    // afectada): incluye cuanto de la deuda anterior se cubrio con este
+    // mismo pago y que facturas anteriores quedaron afectadas, sin volcar
+    // erp_records completo ni datos sensibles.
+    const priorInvoicesAffected = [
+      ...new Set(
+        priorReceivables
+          .filter((row) => (priorBalancesBeforePayment.get(row.cxCID) || 0) - (Number(row.balancePendiente) || 0) > 0)
+          .map((row) => row.facturaID)
+          .filter(Boolean),
+      ),
+    ];
+    logAudit("invoice_created", {
+      entity: "facturas",
+      entityId: invoiceId,
+      newData: {
+        clienteID: clientRecord?.clienteID || "",
+        totalFactura: totalWithTip,
+        deudaAnteriorAgregada: priorDebtBeforePayment,
+        pagoConfirmadoTotal: allocation.totalApplied + allocation.unappliedAmount,
+        aplicadoACxCAnteriores: allocation.amountAppliedToPriorReceivables,
+        facturasAnterioresAfectadas: priorInvoicesAffected,
+        aplicadoABaseNueva: allocation.amountAppliedToCurrentBase,
+        aplicadoAPropinaNueva: allocation.amountAppliedToCurrentTip,
+        saldoBaseNuevo: invoiceRecord.totalCxC,
+        saldoPropinaNuevo: invoiceRecord.propinaPendiente,
+      },
+      note: `Factura ${invoiceId} creada. Deuda anterior del cliente: ${money.format(priorDebtBeforePayment)}. Total general cobrado hoy: ${money.format(priorDebtBeforePayment + totalWithTip)}.`,
+      success: true,
+    });
     refreshPendingClosingsForDate(invoiceDate);
     state = stateFromDatabase(database);
     activeReservationInvoiceId = "";

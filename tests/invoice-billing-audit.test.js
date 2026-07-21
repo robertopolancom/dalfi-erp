@@ -82,7 +82,10 @@ test("invoiceRecord.totalCxC/estadoFactura se calculan UNA SOLA VEZ, a partir de
   const assignments = submitHandler.match(/invoiceRecord\.totalCxC\s*=/g) || [];
   assert.strictEqual(assignments.length, 1, "totalCxC debe asignarse exactamente una vez en el submit (fuera del bloque inicial en 0 del literal)");
   assert.match(submitHandler, /invoiceRecord\.totalCxC = Math\.max\(0, total - paid\);/);
-  assert.match(submitHandler, /invoiceRecord\.estadoFactura = invoiceRecord\.totalCxC > 0 \|\| invoiceRecord\.propinaPendiente > 0 \? "Parcial" : "Pagada";/);
+  assert.match(
+    submitHandler,
+    /invoiceRecord\.estadoFactura =\s*invoiceRecord\.totalPagadoConfirmado <= 0 && invoiceRecord\.propinaCobrada <= 0\s*\? "Pendiente"\s*: invoiceRecord\.totalCxC > 0 \|\| invoiceRecord\.propinaPendiente > 0\s*\? "Parcial"\s*: "Pagada";/,
+  );
 });
 
 test("totalPagadoConfirmado + totalCxC siempre suma exactamente 'total' (consistencia aritmetica de la factura recien creada, ahora con propina separada)", () => {

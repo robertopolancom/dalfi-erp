@@ -316,23 +316,23 @@ test("no lee el DOM, no persiste, no crea registros: es una funcion pura de clos
 // closing-cash-confirm-state.test.js — sin DOM real en este runner).
 // ===================================================================
 
-test("el submit de factura calcula olderReceivablesOutstanding real (suma de CxC del cliente) antes de repartir el pago", () => {
-  assert.match(submitHandler, /const olderReceivablesOutstanding = dbTable\("cuentasCobrar"\)/);
-  assert.match(submitHandler, /cxc\.deudorTipo === "Cliente" && cxc\.deudorID === clientRecord\?\.clienteID && Number\(cxc\.balancePendiente\) > 0/);
+test("el submit de factura calcula la deuda anterior real del cliente (clientAllReceivables, misma lista que el cobro general) antes de repartir el pago", () => {
+  assert.match(submitHandler, /const priorReceivables = clientAllReceivables\(clientRecord\);/);
 });
 
-test("el submit de factura llama a DalfiClosingMath.allocateConfirmedPayment con currentInvoiceBaseOutstanding: total e invoiceTipTotal: tip (nunca al reves)", () => {
-  assert.match(submitHandler, /DalfiClosingMath\.allocateConfirmedPayment\(\{/);
-  assert.match(submitHandler, /currentInvoiceBaseOutstanding: total,/);
-  assert.match(submitHandler, /invoiceTipTotal: tip,/);
-  assert.match(submitHandler, /invoiceTipAlreadyCollected: 0,/);
+test("el submit de factura llama a DalfiClosingMath.allocateClientPaymentFIFO con currentInvoiceBase: total e currentInvoiceTip: tip (nunca al reves) — mismo algoritmo que el cobro general", () => {
+  assert.match(submitHandler, /DalfiClosingMath\.allocateClientPaymentFIFO\(\{/);
+  assert.match(submitHandler, /currentInvoiceBase: total,/);
+  assert.match(submitHandler, /currentInvoiceTip: tip,/);
+  assert.match(submitHandler, /currentInvoiceTipCollected: 0,/);
+  assert.doesNotMatch(submitHandler, /DalfiClosingMath\.allocateConfirmedPayment\(/, "la creacion de factura ya no debe llamar allocateConfirmedPayment directamente");
 });
 
-test("las lineas credito/transferencia_pendiente se excluyen del reparto (solo isConfirmedPaymentMethod entra a allocateConfirmedPayment)", () => {
+test("las lineas credito/transferencia_pendiente se excluyen del reparto (solo isConfirmedPaymentMethod entra a allocateClientPaymentFIFO)", () => {
   const filterIdx = submitHandler.indexOf("const confirmedPayments = payments.filter((paymentLine) => isConfirmedPaymentMethod(paymentLine.method));");
   assert.ok(filterIdx >= 0);
-  const allocateIdx = submitHandler.indexOf("DalfiClosingMath.allocateConfirmedPayment(");
-  assert.ok(allocateIdx > filterIdx, "el filtro debe ocurrir antes de construir la entrada de allocateConfirmedPayment");
+  const allocateIdx = submitHandler.indexOf("DalfiClosingMath.allocateClientPaymentFIFO(");
+  assert.ok(allocateIdx > filterIdx, "el filtro debe ocurrir antes de construir la entrada de allocateClientPaymentFIFO");
 });
 
 test("'balance a favor' se limita a lo que el cliente REALMENTE tiene (Math.min con clientBalance) antes de entrar al reparto", () => {
@@ -357,7 +357,7 @@ test("propina pendiente al crear la factura se registra como CxC PROPIA y separa
 test("collectInvoiceTip() se llama con cardPortion = suma de lineAllocations de metodo tarjeta (para prorratear la retencion solo sobre lo financiado por tarjeta)", () => {
   assert.match(submitHandler, /const cardTipPortion = allocation\.lineAllocations/);
   assert.match(submitHandler, /\.filter\(\(lineAllocation\) => lineAllocation\.method === "tarjeta"\)/);
-  assert.match(submitHandler, /collectInvoiceTip\(invoiceRecord, allocation\.tipCollectedNow, \{ cardPortion: cardTipPortion, source: invoiceId \}\);/);
+  assert.match(submitHandler, /collectInvoiceTip\(invoiceRecord, allocation\.amountAppliedToCurrentTip, \{ cardPortion: cardTipPortion, source: invoiceId \}\);/);
 });
 
 test("35-37. la cuenta por pagar de nomina SOLO se genera por propina cobrada (collectInvoiceTip acota a dbInvoice.propinaPendiente, nunca inventa mas)", () => {

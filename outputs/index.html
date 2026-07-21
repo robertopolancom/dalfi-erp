@@ -225,6 +225,23 @@
                 <input id="invoice-client-search" list="clients-list" placeholder="Buscar o digitar cliente" autocomplete="off" required />
                 <div class="readonly-hint" id="invoice-client-summary">Selecciona un cliente para ver nombre y teléfono.</div>
               </div>
+
+              <section class="invoice-summary compact-summary hidden" id="invoice-prior-debt-summary" aria-live="polite">
+                <div class="summary-row">
+                  <span>Total de esta factura</span>
+                  <output id="invoice-current-total-preview">RD$0.00</output>
+                </div>
+                <div class="summary-row">
+                  <span>Cuentas por cobrar anteriores del cliente</span>
+                  <output id="invoice-prior-debt-total">RD$0.00</output>
+                </div>
+                <div class="summary-row total">
+                  <span>Total general a pagar hoy</span>
+                  <output id="invoice-grand-total-with-prior-debt">RD$0.00</output>
+                </div>
+                <p class="panel-note">La deuda anterior es solo informativa: no se agrega al total legal de esta factura, se cobra aparte con el mismo dinero recibido hoy.</p>
+                <div class="simple-list" id="invoice-prior-debt-rows"></div>
+              </section>
               <section class="invoice-lines">
                 <div class="section-title-row">
                   <h4>Servicios de la factura</h4>
@@ -1887,6 +1904,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260721-cobro-general-fifo"></script>
-    <script src="app.js?v=20260721-cobro-general-fifo"></script>
+    <script src="app.js?v=20260721-deuda-anterior-facturacion"></script>
   </body>
 </html>
