@@ -363,7 +363,8 @@ test("collectInvoiceTip() se llama con cardPortion = suma de lineAllocations de 
 test("35-37. la cuenta por pagar de nomina SOLO se genera por propina cobrada (collectInvoiceTip acota a dbInvoice.propinaPendiente, nunca inventa mas)", () => {
   const fnSource = extractFunction("collectInvoiceTip");
   assert.match(fnSource, /const toCollect = Math\.min\(pendingBefore, Math\.max\(0, Number\(amount\) \|\| 0\)\);/);
-  assert.match(fnSource, /if \(!dbInvoice \|\| toCollect <= 0\) return \{ collected: 0, allocations: \[\] \};/);
+  assert.match(fnSource, /if \(toCollect <= 0\) return \{ collected: 0, allocations: \[\] \};/);
+  assert.match(fnSource, /if \(!dbInvoice\) return \{ collected: 0, allocations: \[\] \};/);
 });
 
 test("37. estado inicial de la cuenta por pagar es 'Pendiente' (equivalente existente a pending_payroll)", () => {

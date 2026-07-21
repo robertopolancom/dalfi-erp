@@ -126,6 +126,12 @@ let state = structuredClone(fallbackSeed);
 let invoiceLineCounter = 0;
 let paymentLineCounter = 0;
 let incomePaymentLineCounter = 0;
+// Identificador local unico (no persistido) para cada porcion de "balance a
+// favor" aplicada a una CxC anterior: balance a favor no genera un pagoID
+// real (no crea addConfirmedPayment), asi que este contador es lo que le da
+// identidad estable a cada aplicacion para la idempotencia de propinas
+// (ver applyClientReceivablesFirst/collectInvoiceTip).
+let balanceApplicationCounter = 0;
 let cashBalanceDraft = null;
 let reportGenerated = false;
 let activeReservationInvoiceId = "";
@@ -1344,7 +1350,12 @@ function applyClientReceivablesFirst(clientRecord, clientName, amount, method, n
     cxc.balancePendiente = Math.max(0, pending - applied);
     cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
     stampRecord(cxc, "updated");
-    if (recordAsIncome) addConfirmedPayment(cxc.facturaID || "", clientRecord, clientName, applied, method, note, processorName, accountName, cashDate);
+    // El pagoID real (cuando hay uno) identifica esta aplicacion de forma
+    // unica; cxc.cxCID por si solo NO alcanza como "source" de idempotencia
+    // porque la MISMA CxC puede recibir varios pagos distintos a lo largo
+    // del tiempo. balanceApplicationCounter cubre el camino sin
+    // addConfirmedPayment (balance a favor, que no genera pagoID).
+    const paymentId = recordAsIncome ? addConfirmedPayment(cxc.facturaID || "", clientRecord, clientName, applied, method, note, processorName, accountName, cashDate) : `balance-${++balanceApplicationCounter}`;
     // Si la CxC anterior saldada era "Propina pendiente" de OTRA factura, el
     // dinero que llega hasta ahi tambien cuenta como propina cobrada de
     // ESA factura vieja: la propina se cobra de ultimo dentro de cada
@@ -1353,7 +1364,7 @@ function applyClientReceivablesFirst(clientRecord, clientName, amount, method, n
     // anterior como cualquier otra.
     if (cxc.esPropinaPendiente) {
       const olderInvoice = dbTable("facturas").find((row) => row.facturaID === cxc.facturaID);
-      if (olderInvoice) collectInvoiceTip(olderInvoice, applied, { source: cxc.cxCID || "" });
+      if (olderInvoice) collectInvoiceTip(olderInvoice, applied, { source: `${cxc.cxCID || ""}:${paymentId}` });
     }
     remaining -= applied;
   });
@@ -2676,7 +2687,13 @@ function invoiceBreakdownForStoredInvoice(invoiceId) {
       ? Number(dbInvoice.totalConPropina) || 0
       : totalFacturado + tips.reduce((sum, tip) => sum + (Number(tip.montoBruto) || 0), 0);
   const propina = Math.max(0, totalConPropina - totalFacturado);
-  const totalPagado = Number(dbInvoice?.totalPagadoConfirmado) || 0;
+  // totalPagadoConfirmado ya NO incluye la propina (queda separada en
+  // propinaCobrada, ver la politica "la propina se cobra de ultimo"): si
+  // aqui solo se sumara totalPagadoConfirmado, el desglose impreso
+  // mostraria como "pendiente" propina que YA se cobro. Facturas historicas
+  // sin propinaCobrada caen a 0 (equivalente al comportamiento anterior,
+  // donde totalPagadoConfirmado ya incluia cualquier propina cobrada).
+  const totalPagado = (Number(dbInvoice?.totalPagadoConfirmado) || 0) + (Number(dbInvoice?.propinaCobrada) || 0);
   const breakdown = DalfiClosingMath.computeInvoiceBreakdown({
     precioListadoServicios,
     totalAdicionales: lineExtras + generalExtra,
@@ -3062,7 +3079,14 @@ function downloadInvoiceImage(invoiceId) {
 
 function renderReceivables() {
   const query = byId("ar-search").value;
+  // Solo deuda del CLIENTE: la CxC del procesador de tarjeta (deudorTipo:
+  // "Procesador tarjeta") tiene su propio reporte dedicado
+  // (renderCardReceivablesReport) y nunca debe mezclarse aqui con lo que un
+  // cliente debe -ni siquiera para mostrarla, mucho menos para quedar
+  // seleccionable en el <select> de "cobrar CxC" de abajo, que es
+  // exclusivamente para clientes-.
   const rows = dbTable("cuentasCobrar")
+    .filter((cxc) => cxc.deudorTipo === "Cliente")
     .filter((cxc) => Number(cxc.balancePendiente) > 0)
     .filter((cxc) => matches(cxc, query, ["cxCID", "facturaID", "deudorNombre", "concepto", "tipoCxC"]))
     .sort((a, b) => `${dateOnly(b.fechaOrigen) || ""} ${b.cxCID || ""}`.localeCompare(`${dateOnly(a.fechaOrigen) || ""} ${a.cxCID || ""}`));
@@ -6811,9 +6835,22 @@ function fillPaymentGoalFromSelection() {
 // propinas (nunca crea una segunda), y nunca puede superar invoiceTipTotal
 // porque toCollect esta acotado por dbInvoice.propinaPendiente.
 function collectInvoiceTip(dbInvoice, amount, { cardPortion = 0, source = "" } = {}) {
+  if (!dbInvoice) return { collected: 0, allocations: [] };
+  // Idempotencia por "source" (paymentId/cxCID/invoiceId que financio esta
+  // cobranza): si YA existe una entrada en pagosAplicados con este mismo
+  // source para esta factura, no se vuelve a procesar -sin importar cuantas
+  // veces se llame esta funcion con los mismos argumentos (doble submit,
+  // reintento, confirmacion repetida de la misma transferencia, re-render).
+  // Cada paymentId/receiptId aparece una sola vez dentro de pagosAplicados[].
+  if (source) {
+    const alreadyApplied = dbTable("propinas").some(
+      (row) => row.facturaID === dbInvoice.facturaID && Array.isArray(row.pagosAplicados) && row.pagosAplicados.some((entry) => entry.source === source),
+    );
+    if (alreadyApplied) return { collected: 0, allocations: [] };
+  }
   const pendingBefore = Math.max(0, Number(dbInvoice.propinaPendiente) || 0);
   const toCollect = Math.min(pendingBefore, Math.max(0, Number(amount) || 0));
-  if (!dbInvoice || toCollect <= 0) return { collected: 0, allocations: [] };
+  if (toCollect <= 0) return { collected: 0, allocations: [] };
   const distribution = Array.isArray(dbInvoice.distribucionPropina) ? dbInvoice.distribucionPropina : [];
   const declaredTotal = distribution.reduce((sum, entry) => sum + (Number(entry.monto) || 0), 0);
   const safeCardPortion = Math.max(0, Math.min(toCollect, Number(cardPortion) || 0));
@@ -6918,7 +6955,14 @@ function reverseInvoiceTipCollection(dbInvoice, cxc) {
   return totalReversed;
 }
 
-function syncInvoicePaymentFromReceivable(cxc, applied) {
+// paymentId (el pagoID que YA se genero para este cobro especifico, ver
+// applyReceivablePaymentLines/applyClientReceivablesFirst) identifica de
+// forma UNICA cada aplicacion: cxc.cxCID por si solo NO alcanza como
+// "source" de idempotencia porque una misma CxC de propina pendiente puede
+// recibir varios pagos parciales distintos a lo largo del tiempo (todos
+// comparten el mismo cxCID). Sin paymentId, un segundo pago legitimo contra
+// la misma CxC se confundiria con un reintento del primero y se ignoraria.
+function syncInvoicePaymentFromReceivable(cxc, applied, paymentId = "") {
   if (!cxc?.facturaID || applied <= 0) return;
   const invoice = state.invoices.find((item) => item.id === cxc.facturaID);
   if (invoice) invoice.paid = Math.min(invoice.total, (Number(invoice.paid) || 0) + applied);
@@ -6929,7 +6973,7 @@ function syncInvoicePaymentFromReceivable(cxc, applied) {
   // totalPagadoConfirmado/totalCxC, que siguen representando solo la base
   // de la factura (servicios + adicionales - descuentos), nunca la propina.
   if (cxc.esPropinaPendiente) {
-    collectInvoiceTip(dbInvoice, applied, { source: cxc.cxCID || "" });
+    collectInvoiceTip(dbInvoice, applied, { source: paymentId || cxc.cxCID || "" });
     stampRecord(dbInvoice, "updated");
     return;
   }
@@ -6979,8 +7023,13 @@ function applyReceivablePaymentLines(receivables, amountToApply, paymentLines, c
       cxc.balancePendiente = Math.max(0, (Number(cxc.balancePendiente) || 0) - applied);
       cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
       stampRecord(cxc, "updated");
-      syncInvoicePaymentFromReceivable(cxc, applied);
-      addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", applied, line.method, "Cobro cuenta por cobrar", line.processor, line.account, cashDate, cxc.cxCID);
+      // addConfirmedPayment() ANTES: su pagoID identifica de forma unica
+      // esta aplicacion especifica (ver comentario de
+      // syncInvoicePaymentFromReceivable), necesario para que dos pagos
+      // parciales distintos contra la MISMA CxC (mismo cxCID) no se
+      // confundan como si fueran el mismo evento.
+      const paymentId = addConfirmedPayment(cxc.facturaID || "", clientRecord, cxc.deudorNombre || "", applied, line.method, "Cobro cuenta por cobrar", line.processor, line.account, cashDate, cxc.cxCID);
+      syncInvoicePaymentFromReceivable(cxc, applied, paymentId);
       line.remaining -= applied;
       pending -= applied;
       remainingToApply -= applied;
@@ -7458,18 +7507,34 @@ function wireForms() {
         addReceivable(invoiceId, { clienteID: processor.procesadorID || "" }, processor.nombre || "Procesador tarjeta", paymentLine.amount, "CxC procesador tarjeta", "", invoiceDate);
       }
     });
-    // Credito y transferencia pendiente NUNCA participan del reparto (no son
-    // dinero confirmado): conservan su flujo propio, sin cambios.
-    payments
-      .filter((paymentLine) => paymentLine.method === "transferencia_pendiente")
-      .forEach((paymentLine) => addReceivable(invoiceId, clientRecord, client, paymentLine.amount, "Transferencia pendiente por confirmar", paymentLine.account, invoiceDate));
-    payments
-      .filter((paymentLine) => paymentLine.method === "credito")
-      .forEach((paymentLine) => addReceivable(invoiceId, clientRecord, client, paymentLine.amount, `Crédito cliente vence ${paymentLine.dueDate || datePlusDaysFrom(invoiceDate, 7)}`, "", invoiceDate));
-
     paid = Math.min(total, allocation.amountAppliedToCurrentBase);
     invoiceRecord.totalPagadoConfirmado = paid;
     invoiceRecord.totalCxC = Math.max(0, total - paid);
+
+    // Credito y transferencia pendiente NUNCA participan del reparto (no son
+    // dinero confirmado), pero la CxC que generan debe representar la
+    // deuda REAL restante (invoiceRecord.totalCxC), nunca ciegamente el
+    // monto que la persona escribio en esa linea: si la base ya quedo
+    // cubierta con dinero confirmado (o con una CxC anterior), declarar
+    // credito/transferencia pendiente de mas no debe inventar una deuda
+    // fantasma que despues no cuadre con invoiceRecord.totalCxC (sumar las
+    // filas de cuentasCobrar de esta factura por "saldo base" SIEMPRE debe
+    // dar exactamente invoiceRecord.totalCxC, ni un centavo mas). Se
+    // procesan en el orden en que la persona las agrego, cada una tomando
+    // solo lo que todavia falte.
+    let baseShortfallRemaining = invoiceRecord.totalCxC;
+    payments
+      .filter((paymentLine) => paymentLine.method === "transferencia_pendiente" || paymentLine.method === "credito")
+      .forEach((paymentLine) => {
+        const amountForThisLine = Math.min(paymentLine.amount, baseShortfallRemaining);
+        baseShortfallRemaining = Math.max(0, baseShortfallRemaining - amountForThisLine);
+        if (amountForThisLine <= 0) return;
+        if (paymentLine.method === "transferencia_pendiente") {
+          addReceivable(invoiceId, clientRecord, client, amountForThisLine, "Transferencia pendiente por confirmar", paymentLine.account, invoiceDate);
+        } else {
+          addReceivable(invoiceId, clientRecord, client, amountForThisLine, `Crédito cliente vence ${paymentLine.dueDate || datePlusDaysFrom(invoiceDate, 7)}`, "", invoiceDate);
+        }
+      });
 
     const cardTipPortion = allocation.lineAllocations
       .filter((lineAllocation) => lineAllocation.method === "tarjeta")
