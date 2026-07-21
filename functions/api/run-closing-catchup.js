@@ -279,13 +279,19 @@ function buildTreasuryTotals(cuentas) {
   );
 }
 
+// Debe mantenerse en sincronia con defaultInitialCashFor() en outputs/app.js
+// (que a su vez delega en DalfiClosingMath.resolveRegisterOpeningCash): si
+// no hay cierre confirmado anterior, el fondo de caja del cierre provisional
+// generado por el cron usa el balance de apertura configurado de la cuenta
+// en vez de asumir 0 a ciegas.
 function defaultInitialCashFor(data, account, beforeDate) {
   const previous = (data.cierres || [])
     .filter((c) => dateOnly(c.fechaHoraCierre) < beforeDate)
     .filter((c) => recordMatchesAccount(c, account, ["cuentaCaja"], ["cuentaID"]))
     .filter((c) => !isClosingPendingConfirmation(c))
     .sort((a, b) => String(b.fechaHoraCierre || "").localeCompare(String(a.fechaHoraCierre || "")))[0];
-  return Number(previous?.balanceContado) || 0;
+  if (previous) return Number(previous.balanceContado) || 0;
+  return Number(account?.balanceInicial) || 0;
 }
 
 function stamp(record) {

@@ -1091,17 +1091,23 @@ function closingForDateAndAccount(date, account) {
     .find((closing) => recordMatchesAccount(closing, account, ["cuentaCaja"], ["cuentaID"]));
 }
 
-// El fondo de caja de un dia normalmente es lo que quedo contado (y
-// confirmado) el dia anterior para esa misma cuenta. Si no hay un cierre
-// confirmado previo (primera vez que se cierra esa cuenta), el fondo inicial
-// es 0.
+// Unica fuente confiable del "monto inicial" (fondo de caja) de un cierre de
+// caja registradora. NUNCA debe leerse de un input del formulario: el fondo
+// de caja de un dia es lo que quedo contado y CONFIRMADO el dia anterior
+// para esa misma cuenta (un cierre pendiente/provisional no cuenta, ver el
+// filtro isClosingPendingConfirmation de abajo). Si no hay ningun cierre
+// confirmado previo (primera vez que se cierra esa cuenta), se usa el
+// balance de apertura configurado en Base de datos > Cuentas
+// (cuentas.balanceInicial); si tampoco existe, el resultado es 0 (regla
+// existente, ahora documentada explicitamente en
+// DalfiClosingMath.resolveRegisterOpeningCash).
 function defaultInitialCashFor(account, beforeDate) {
   const previous = dbTable("cierres")
     .filter((closing) => dateOnly(closing.fechaHoraCierre) < beforeDate)
     .filter((closing) => recordMatchesAccount(closing, account, ["cuentaCaja"], ["cuentaID"]))
     .filter((closing) => !isClosingPendingConfirmation(closing))
     .sort((a, b) => String(b.fechaHoraCierre || "").localeCompare(String(a.fechaHoraCierre || "")))[0];
-  return Number(previous?.balanceContado) || 0;
+  return DalfiClosingMath.resolveRegisterOpeningCash({ previousClosing: previous, accountOpeningBalance: account?.balanceInicial });
 }
 
 // Cierre de caja registradora de una fecha (a lo sumo uno). Se usa para
@@ -1981,7 +1987,10 @@ function updateCashBalancePreview() {
   const date = byId("cash-date").value || today;
   const account = findAccountByName(byId("cash-account").value) || accountForPayment("efectivo");
   const activity = accountActivityForDate(date, account);
-  const montoInicial = Number(byId("cash-initial")?.value) || 0;
+  // Fuente confiable, nunca el valor mostrado en el input (que es readonly
+  // y solo refleja este mismo calculo): ver defaultInitialCashFor().
+  const montoInicial = defaultInitialCashFor(account, date);
+  if (byId("cash-initial")) byId("cash-initial").value = montoInicial;
   const entradasEfectivo = activity.income + activity.transferIn;
   const salidasEfectivo = activity.expenses + activity.transferOut;
   const expected = DalfiClosingMath.computeExpectedCash({ montoInicial, entradasEfectivo, salidasEfectivo });
@@ -2194,8 +2203,8 @@ function ensureCashModuleMarkup() {
         </label>
         <div class="form-row">
           <label>
-            Monto inicial (fondo de caja)
-            <input id="cash-initial" type="number" min="0" step="0.01" value="0" />
+            Monto inicial (fondo de caja) — calculado, no editable
+            <input id="cash-initial" type="number" min="0" step="0.01" value="0" readonly aria-readonly="true" tabindex="-1" />
           </label>
           <label>
             Gastos del día
@@ -3823,7 +3832,14 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   byId("cash-submit").classList.toggle("hidden", readOnly);
   byId("cash-date").value = date;
   byId("cash-account").value = closing.cuentaCaja || account.nombreCuenta || "";
-  const montoInicialForForm = Number(closing.balanceInicial) || defaultInitialCashFor(account, date);
+  // Si el cierre esta abierto para edicion (nuevo, pendiente, o reabierto),
+  // el monto inicial SIEMPRE se recalcula desde la fuente confiable, nunca
+  // desde closing.balanceInicial ya guardado (que pudo haberse guardado con
+  // el bug anterior, o simplemente haber quedado desactualizado si aparecio
+  // un cierre anterior nuevo). Solo al ver un cierre YA CONFIRMADO en modo
+  // de solo lectura se muestra el valor historico congelado tal cual quedo,
+  // sin recalcularlo ni reescribirlo (nunca se alteran cierres confirmados).
+  const montoInicialForForm = readOnly ? Number(closing.balanceInicial) || 0 : defaultInitialCashFor(account, date);
   byId("cash-initial").value = montoInicialForForm;
   const expectedForPrefill = DalfiClosingMath.computeExpectedCash({ montoInicial: montoInicialForForm, entradasEfectivo: activity.income + activity.transferIn, salidasEfectivo: activity.expenses + activity.transferOut });
   byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || (confirmAfterSave ? expectedForPrefill : 0);
@@ -7173,9 +7189,19 @@ function wireForms() {
   byId("confirm-previous-closings")?.addEventListener("click", confirmPreviousPendingClosings);
   byId("toggle-cash-income-detail")?.addEventListener("click", () => byId("cash-income-detail")?.classList.toggle("hidden"));
   byId("toggle-cash-expense-detail")?.addEventListener("click", () => byId("cash-expense-detail")?.classList.toggle("hidden"));
-  byId("cash-initial")?.addEventListener("input", () => {
-    if (byId("cash-counted").value !== "") updateCashBalancePreview();
-  });
+  // "Monto inicial" es readonly y siempre calculado (ver
+  // defaultInitialCashFor()): estos listeners son defensa en profundidad
+  // ademas del atributo readonly del HTML, para que ni tecleando, ni con las
+  // flechas del input numerico, ni pegando, se pueda alterar su valor. La
+  // fuente de verdad real de todas formas nunca es este input: el submit y
+  // el cuadre de efectivo recalculan el monto inicial de nuevo cada vez.
+  const cashInitialInput = byId("cash-initial");
+  if (cashInitialInput) {
+    ["keydown", "paste"].forEach((eventName) => {
+      cashInitialInput.addEventListener(eventName, (event) => event.preventDefault());
+    });
+    cashInitialInput.addEventListener("wheel", (event) => event.preventDefault(), { passive: false });
+  }
 
   byId("income-table").addEventListener("click", (event) => {
     const viewButton = event.target.closest(".view-income");
@@ -7235,7 +7261,14 @@ function wireForms() {
   ["cash-counted", "cash-expenses", "cash-date", "cash-account"].forEach((id) => {
     byId(id)?.addEventListener("input", () => {
       resetCashBalancePreview();
-      if (id === "cash-date") updateClosingCollaboratorDetails(byId("cash-date").value);
+      if (id === "cash-date") {
+        updateClosingCollaboratorDetails(byId("cash-date").value);
+        // El fondo de caja depende de la fecha (busca el cierre anterior a
+        // esa fecha): si la fecha cambia, el "Monto inicial" mostrado debe
+        // recalcularse para esa nueva fecha, nunca quedarse con el valor de
+        // la fecha anterior.
+        byId("cash-initial").value = defaultInitialCashFor(registerAccount(), byId("cash-date").value || today);
+      }
     });
   });
 
@@ -7946,7 +7979,11 @@ function wireForms() {
     }
     const summary = dailyIncomeSummary(date);
     const activity = accountActivityForDate(date, account);
-    const montoInicial = Number(byId("cash-initial").value) || 0;
+    // NUNCA se lee de byId("cash-initial").value (readonly y, aunque no lo
+    // fuera, no es una fuente confiable): se recalcula aqui mismo, en el
+    // momento de guardar/confirmar, para no depender de lo que haya quedado
+    // pintado en el formulario ni de un valor manipulado desde el navegador.
+    const montoInicial = defaultInitialCashFor(account, date);
     const entradasEfectivo = activity.income + activity.transferIn;
     const salidasEfectivo = activity.expenses + activity.transferOut;
     const expected = DalfiClosingMath.computeExpectedCash({ montoInicial, entradasEfectivo, salidasEfectivo });
@@ -7978,13 +8015,26 @@ function wireForms() {
       byId("cash-card-processor").focus();
       return;
     }
+    // Si el monto inicial recalculado ahora mismo ya no coincide con el que
+    // se uso para generar el cuadre en pantalla, es porque apareció un
+    // cierre anterior confirmado nuevo (u otro cambio en la fuente
+    // confiable) despues de abrir este formulario: no se confirma con un
+    // monto esperado desactualizado, se pide regenerar el cuadre primero.
+    if (cashBalanceDraft && cashBalanceDraft.montoInicial !== montoInicial) {
+      alert(
+        "El fondo de caja inicial cambió desde que abriste este formulario (probablemente se confirmó un cierre anterior). Genera el cuadre de efectivo de nuevo antes de guardar o confirmar.",
+      );
+      resetCashBalancePreview();
+      byId("cash-initial").value = montoInicial;
+      byId("generate-cash-balance").focus();
+      return;
+    }
     if (
       !cashBalanceDraft ||
       cashBalanceDraft.date !== date ||
       cashBalanceDraft.account !== account.nombreCuenta ||
       cashBalanceDraft.counted !== initialCounted ||
-      cashBalanceDraft.expenses !== expenses ||
-      cashBalanceDraft.montoInicial !== montoInicial
+      cashBalanceDraft.expenses !== expenses
     ) {
       alert("Primero debes generar el cuadre de efectivo para documentar el intento.");
       byId("generate-cash-balance").focus();

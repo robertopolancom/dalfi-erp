@@ -50,6 +50,22 @@
     return (Number(montoInicial) || 0) + (Number(entradasEfectivo) || 0) - (Number(salidasEfectivo) || 0);
   }
 
+  // Fuente confiable del "monto inicial" (fondo de caja) de un cierre de caja
+  // registradora. NUNCA debe venir de un input editable por el usuario:
+  //   A. Si existe un cierre anterior CONFIRMADO de la misma caja, el monto
+  //      inicial es el saldo final confirmado (balanceContado) de ese cierre.
+  //      Un cierre pendiente/provisional/reabierto NO cuenta como anterior
+  //      (el llamador ya debe excluirlos antes de pasar previousClosing).
+  //   B. Si no existe ningun cierre anterior confirmado, se usa el balance de
+  //      apertura configurado en la cuenta (cuentas.balanceInicial).
+  //   C. Si tampoco hay balance de apertura configurado, el resultado es 0 —
+  //      es la misma regla seria hoy (no se inventa un saldo), simplemente
+  //      documentada aqui explicitamente.
+  function resolveRegisterOpeningCash({ previousClosing, accountOpeningBalance = 0 } = {}) {
+    if (previousClosing) return Number(previousClosing.balanceContado) || 0;
+    return Number(accountOpeningBalance) || 0;
+  }
+
   function computeDifference(counted, expected) {
     const countedNum = Number(counted) || 0;
     const expectedNum = Number(expected) || 0;
@@ -343,6 +359,7 @@
     nowPartsInZone,
     isAutomaticClosingEligible,
     computeExpectedCash,
+    resolveRegisterOpeningCash,
     computeDifference,
     canConfirmClosing,
     closingIdentityKey,
