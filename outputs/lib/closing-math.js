@@ -473,6 +473,107 @@
     };
   }
 
+  // Compara dos "receivables" (CxC reales del cliente O el par virtual
+  // base/propina de la factura que se esta creando) para el orden FIFO
+  // GLOBAL: fecha de origen -> factura -> base antes de propina DENTRO de
+  // esa misma factura -> id estable como ultimo desempate. Exportada junto
+  // a allocateClientPaymentFIFO para que el llamador pueda presentar la
+  // misma previsualizacion FIFO sin reimplementar el orden.
+  function compareReceivablesFIFO(a, b) {
+    const dateCompare = String(a?.fechaOrigen || "").localeCompare(String(b?.fechaOrigen || ""));
+    if (dateCompare !== 0) return dateCompare;
+    const invoiceCompare = String(a?.invoiceId || "").localeCompare(String(b?.invoiceId || ""));
+    if (invoiceCompare !== 0) return invoiceCompare;
+    const kindRank = (kind) => (kind === "tip" ? 1 : 0);
+    const kindCompare = kindRank(a?.kind) - kindRank(b?.kind);
+    if (kindCompare !== 0) return kindCompare;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  }
+
+  // "El pago se aplica desde la deuda mas antigua hasta la mas nueva", tanto
+  // para un recibo GENERAL de cliente (sin factura "actual") como para el
+  // guardado de una factura NUEVA con deuda anterior: es la MISMA funcion en
+  // ambos casos (nunca dos algoritmos distintos). priorClientReceivables es
+  // la lista REAL de CxC pendientes del cliente (cada una con
+  // {id, invoiceId, kind: "base"|"tip", amount, fechaOrigen}); currentInvoiceBase/
+  // currentInvoiceTip representan la factura que se esta creando AHORA
+  // MISMO, si aplica (0 cuando es un recibo general sin factura nueva) — se
+  // tratan como los items MAS RECIENTES de la cola FIFO (nunca se cobran
+  // antes que cualquier CxC anterior real), con base siempre antes que
+  // propina dentro de esa factura. Internamente reutiliza EXACTAMENTE la
+  // misma matematica ya probada de allocateConfirmedPayment (nunca duplica
+  // el algoritmo): solo reordena priorClientReceivables con
+  // compareReceivablesFIFO() antes de delegarle el calculo, y traduce su
+  // resultado a la forma mas rica que este flujo necesita (desglose por
+  // factura afectada, saldo anterior/posterior por item).
+  function allocateClientPaymentFIFO({
+    confirmedPaymentLines = [],
+    priorClientReceivables = [],
+    currentInvoiceBase = 0,
+    currentInvoiceTip = 0,
+    currentInvoiceTipCollected = 0,
+    methodPriority = DEFAULT_CONFIRMED_PAYMENT_METHOD_PRIORITY,
+  } = {}) {
+    const sanitizePositive = (value) => Math.max(0, sanitizeAmount(value));
+    const normalizedReceivables = (Array.isArray(priorClientReceivables) ? priorClientReceivables : [])
+      .map((row) => ({
+        id: row?.id || row?.cxCID || "",
+        invoiceId: row?.invoiceId || row?.facturaID || "",
+        kind: row?.kind === "tip" ? "tip" : "base",
+        amount: sanitizePositive(row?.amount ?? row?.balancePendiente),
+        fechaOrigen: row?.fechaOrigen || "",
+      }))
+      .filter((row) => row.amount > 0)
+      .sort(compareReceivablesFIFO);
+    const priorTotal = normalizedReceivables.reduce((sum, row) => sum + row.amount, 0);
+
+    const base = allocateConfirmedPayment({
+      paymentLines: confirmedPaymentLines,
+      olderReceivablesOutstanding: priorTotal,
+      olderReceivablesList: normalizedReceivables.map((row) => ({ cxCID: row.id, balancePendiente: row.amount, fechaOrigen: row.fechaOrigen })),
+      currentInvoiceBaseOutstanding: currentInvoiceBase,
+      invoiceTipTotal: currentInvoiceTip,
+      invoiceTipAlreadyCollected: currentInvoiceTipCollected,
+      methodPriority,
+    });
+
+    // allocateConfirmedPayment() ya devuelve allocationByReceivable en orden
+    // FIFO (reordena internamente con el mismo criterio de fecha, y como el
+    // sort es estable, respeta el orden fino -factura, base antes de
+    // propina- que ya trae normalizedReceivables): aqui solo se enriquece
+    // cada fila con la metadata real (invoiceId, kind, saldo anterior).
+    const byId = new Map(normalizedReceivables.map((row) => [row.id, row]));
+    const appliedById = new Map(base.allocationByReceivable.map((row) => [row.cxCID, row.amount]));
+    const resultingBalances = normalizedReceivables.map((row) => {
+      const amountApplied = appliedById.get(row.id) || 0;
+      return {
+        id: row.id,
+        invoiceId: row.invoiceId,
+        kind: row.kind,
+        previousBalance: row.amount,
+        amountApplied,
+        remainingBalance: Math.max(0, row.amount - amountApplied),
+      };
+    });
+    const allocationsToPriorReceivables = resultingBalances.filter((row) => row.amountApplied > 0);
+    const affectedInvoiceIds = [...new Set(allocationsToPriorReceivables.map((row) => row.invoiceId).filter(Boolean))];
+
+    return {
+      allocationsToPriorReceivables,
+      amountAppliedToPriorReceivables: base.amountAppliedToOlderReceivables,
+      amountAppliedToCurrentBase: base.amountAppliedToCurrentBase,
+      amountAppliedToCurrentTip: base.tipCollectedNow,
+      currentBaseRemaining: Math.max(0, sanitizePositive(currentInvoiceBase) - base.amountAppliedToCurrentBase),
+      currentTipRemaining: base.tipRemaining,
+      totalApplied: base.amountAppliedToOlderReceivables + base.amountAppliedToCurrentBase + base.tipCollectedNow,
+      unappliedAmount: base.unappliedAmount,
+      allocationByPaymentMethod: base.allocationByPaymentMethod,
+      affectedInvoiceIds,
+      resultingBalances,
+      lineAllocations: base.lineAllocations,
+    };
+  }
+
   // Balance final calculado de una cuenta en un dia:
   // balanceInicial + ingresos + transferenciasEntrantes - egresos -
   // transferenciasSalientes + ajustesNetos. Las transferencias internas ya
@@ -556,6 +657,8 @@
     canReviewAccounts,
     computeInvoiceBreakdown,
     allocateConfirmedPayment,
+    allocateClientPaymentFIFO,
+    compareReceivablesFIFO,
     DEFAULT_CONFIRMED_PAYMENT_METHOD_PRIORITY,
     computeAccountDailyBalance,
     sortMovementsDeterministically,

@@ -416,6 +416,12 @@ tr.needs-review {
   margin-bottom: 0;
 }
 
+/* Modulo Facturacion: mismo patron de espaciado que .cash-module-head para
+   el encabezado con el boton general "Registrar cobro de cliente". */
+.billing-module-head {
+  margin-bottom: 16px;
+}
+
 .form-panel {
   padding-bottom: 18px;
 }

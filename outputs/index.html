@@ -196,6 +196,18 @@
         </section>
 
         <section id="billing" class="view">
+          <section class="panel billing-module-head">
+            <div class="panel-head">
+              <div>
+                <h3>Facturación</h3>
+                <p class="panel-note">Un cobro general aplica el dinero recibido a todas las cuentas por cobrar del cliente, de la más antigua a la más reciente.</p>
+              </div>
+              <div class="panel-actions">
+                <button class="secondary-btn compact" id="open-client-receipt" type="button">Registrar cobro de cliente</button>
+              </div>
+            </div>
+          </section>
+
           <div class="work-grid">
             <form class="panel form-panel" id="invoice-form">
               <div class="panel-head">
@@ -392,8 +404,8 @@
                 <h3>Registrar cobro</h3>
               </div>
               <label>
-                Factura pendiente
-                <select id="payment-invoice" required></select>
+                Cliente
+                <input id="payment-client-search" list="clients-list" placeholder="Buscar por nombre, teléfono o ID" autocomplete="off" required />
               </label>
               <section class="invoice-summary compact-summary" id="payment-debt-summary">
                 <div class="summary-row">
@@ -401,21 +413,20 @@
                   <strong id="payment-client-name">-</strong>
                 </div>
                 <div class="summary-row">
-                  <span>Concepto</span>
-                  <strong id="payment-concept-preview">-</strong>
+                  <span>Facturas pendientes</span>
+                  <strong id="payment-invoice-count">0</strong>
                 </div>
                 <div class="summary-row">
-                  <span>Deuda factura seleccionada</span>
-                  <strong id="payment-invoice-debt">RD$0.00</strong>
-                </div>
-                <div class="summary-row">
-                  <span>Deuda total cliente</span>
+                  <span>Saldo total del cliente</span>
                   <strong id="payment-client-debt">RD$0.00</strong>
                 </div>
-                <p class="panel-note hidden" id="payment-older-debt-note" aria-live="polite">Este cliente tiene cuentas por cobrar anteriores: el pago se aplicará primero a esas, luego a esta factura y de último a la propina, según la prioridad ya vigente.</p>
+              </section>
+              <section class="invoice-summary hidden" id="payment-allocation-preview" aria-live="polite">
+                <p class="panel-note">El pago se aplica automáticamente de la deuda más antigua a la más reciente (primero la base de cada factura, la propina de último).</p>
+                <div class="simple-list" id="payment-allocation-rows"></div>
               </section>
               <label>
-                Monto a pagar
+                Monto recibido
                 <input id="payment-amount" type="number" min="0" step="0.01" required />
               </label>
               <label>
@@ -1875,7 +1886,7 @@
 
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="lib/closing-math.js?v=20260721-propina-de-ultimo"></script>
-    <script src="app.js?v=20260721-recibo-desde-facturacion"></script>
+    <script src="lib/closing-math.js?v=20260721-cobro-general-fifo"></script>
+    <script src="app.js?v=20260721-cobro-general-fifo"></script>
   </body>
 </html>

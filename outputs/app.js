@@ -2584,75 +2584,73 @@ function statusBadge(invoice) {
   return '<span class="badge pending">Pendiente</span>';
 }
 
-// Filas de cuentasCobrar del CLIENTE (nunca del procesador de tarjeta)
-// todavia con saldo, relacionadas con esta factura: puede haber hasta dos
-// (la de base y la de "Propina pendiente factura X", ver la politica "la
-// propina se cobra de ultimo"). Ambas se cobran con el MISMO formulario
-// existente, nunca con uno nuevo.
-function invoiceClientReceivables(facturaID) {
-  if (!facturaID) return [];
-  return dbTable("cuentasCobrar").filter((cxc) => cxc.facturaID === facturaID && cxc.deudorTipo === "Cliente" && Number(cxc.balancePendiente) > 0);
+// Todas las cuentasCobrar del CLIENTE (nunca del procesador de tarjeta, ni
+// de nomina) todavia con saldo, sin importar a que factura pertenezcan:
+// puede haber CxC de base y de "Propina pendiente factura X" mezcladas de
+// varias facturas (ver la politica "la propina se cobra de ultimo").
+// Reutiliza clientReceivablesFor() pasandole un objeto sintetico (nunca
+// duplica el filtro): al no traer cxCID, el desempate "CxC seleccionada
+// primero" de esa funcion no se activa, y el orden queda en FIFO puro por
+// fechaOrigen (que allocateClientPaymentFIFO vuelve a ordenar de forma mas
+// precisa de todas formas, asi que este orden aqui es solo informativo).
+function clientAllReceivables(clientRecord) {
+  if (!clientRecord?.clienteID) return [];
+  return clientReceivablesFor({ deudorID: clientRecord.clienteID, deudorNombre: clientRecord.nombreCompleto || "" });
 }
 
-// La CxC de BASE se prefiere sobre la de propina pendiente al preseleccionar
-// (nunca al reves): asi el flujo existente (clientReceivablesFor, que
-// siempre prioriza la CxC explicitamente seleccionada) sigue respetando
-// "base antes de propina" en vez de saltarsela.
-function preferredInvoiceReceivable(facturaID) {
-  const rows = invoiceClientReceivables(facturaID);
-  return rows.find((cxc) => !cxc.esPropinaPendiente) || rows[0] || null;
-}
-
-// Visibilidad del boton "Registrar recibo de ingreso": factura real, no
-// anulada (defensivo; hoy no existe ese estado, pero se verifica por si se
-// agrega mas adelante), con al menos una CxC de CLIENTE pendiente
-// relacionada, y permiso efectivo. Nunca se activa solo por una CxC del
-// procesador de tarjeta, una transferencia pendiente sin confirmar, una
-// obligacion de nomina, o una factura ya completamente pagada -todas esas
-// quedan excluidas por construccion, ya que invoiceClientReceivables() solo
-// mira deudorTipo:"Cliente" con balancePendiente > 0-.
-function canShowInvoiceReceiptButton(facturaID) {
-  if (!canManageInvoices()) return false;
-  const dbInvoice = dbTable("facturas").find((row) => row.facturaID === facturaID);
-  if (!dbInvoice) return false;
-  if (normalize(dbInvoice.estadoFactura || "") === "anulada") return false;
-  return invoiceClientReceivables(facturaID).length > 0;
+// Busca un cliente por nombre, telefono o identificador (en ese orden de
+// coincidencia exacta, luego por coincidencia parcial de nombre/telefono).
+function findClientBySearchTerm(term) {
+  const raw = String(term || "").trim();
+  if (!raw) return null;
+  const query = normalize(raw);
+  const clients = dbTable("clientes");
+  return (
+    clients.find((client) => normalize(client.nombreCompleto || "") === query) ||
+    clients.find((client) => normalize(client.telefono || "") === query) ||
+    clients.find((client) => client.clienteID === raw) ||
+    clients.find((client) => normalize(client.nombreCompleto || "").includes(query)) ||
+    clients.find((client) => normalize(client.telefono || "").includes(query)) ||
+    null
+  );
 }
 
 // Estado temporal (solo en memoria, nunca persistido) mientras el usuario
 // esta en el formulario de "Registrar cobro" porque llego desde el boton
-// "Registrar recibo de ingreso" de una factura en Facturacion. Simetrico a
+// general "Registrar cobro de cliente" de Facturacion. Simetrico a
 // cashPendingExpenseReturn/openAddExpenseFromClosing en el modulo Cierres.
-let invoicePendingReceiptReturn = null;
+// Ya NO depende de una factura especifica (ver correccion de f548985: el
+// flujo definitivo es un cobro general por cliente, aplicado FIFO a TODAS
+// sus cuentas por cobrar, nunca atado a abrir primero una factura).
+let clientPendingReceiptReturn = null;
 
-function openReceiptFromInvoice(invoiceId) {
-  if (!canShowInvoiceReceiptButton(invoiceId)) return;
-  const targetCxc = preferredInvoiceReceivable(invoiceId);
-  if (!targetCxc) return;
-  invoicePendingReceiptReturn = {
+function openClientReceiptFromBilling() {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede registrar cobros de cuentas por cobrar.");
+    return;
+  }
+  clientPendingReceiptReturn = {
     originView: "billing",
-    invoiceId,
     search: byId("invoice-search")?.value || "",
     scrollY: window.scrollY || 0,
   };
   switchToView("receivables");
-  renderReceivables();
-  byId("payment-invoice").value = targetCxc.cxCID;
-  fillPaymentGoalFromSelection();
+  byId("payment-client-search").value = "";
+  updatePaymentSummary();
   byId("payment-receipt-cancel")?.classList.remove("hidden");
-  revealFormAtTop(byId("payment-form"), { focusSelector: "#payment-amount" });
+  revealFormAtTop(byId("payment-form"), { focusSelector: "#payment-client-search" });
 }
 
 // Se llama tanto al cancelar (sin guardar nada) como despues de guardar el
 // recibo con exito, igual que returnToClosingAfterExpense() en Cierres.
-function returnToInvoiceAfterReceipt() {
+function returnToBillingAfterReceipt() {
   byId("payment-receipt-cancel")?.classList.add("hidden");
-  if (!invoicePendingReceiptReturn) {
+  if (!clientPendingReceiptReturn) {
     switchToView("receivables");
     return;
   }
-  const snapshot = invoicePendingReceiptReturn;
-  invoicePendingReceiptReturn = null;
+  const snapshot = clientPendingReceiptReturn;
+  clientPendingReceiptReturn = null;
   switchToView(snapshot.originView || "billing");
   if (byId("invoice-search")) byId("invoice-search").value = snapshot.search || "";
   renderInvoices();
@@ -2669,7 +2667,6 @@ function renderInvoices() {
   target.innerHTML = rows
     .map((invoice) => {
       const editable = canEditInvoice(invoice.id);
-      const showReceiptButton = canShowInvoiceReceiptButton(invoice.id);
       return `
         <tr data-invoice-id="${escapeHtml(invoice.id)}">
           <td>${invoice.id}</td>
@@ -2682,7 +2679,6 @@ function renderInvoices() {
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice" type="button">Ver</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice" type="button">Editar</button>' : ""}
-              ${showReceiptButton ? '<button class="secondary-btn compact receipt-invoice" type="button">Registrar recibo de ingreso</button>' : ""}
             </div>
           </td>
         </tr>
@@ -2918,11 +2914,6 @@ function invoiceReportHtml(invoiceId) {
 function openInvoiceReport(invoiceId) {
   const popup = window.open("", "_blank");
   if (!popup) return;
-  // El detalle/consulta de factura es esta misma ventana emergente: el
-  // boton "Registrar recibo de ingreso" solo se agrega si aplica (misma
-  // condicion que en el listado de Facturacion), usando el mismo patron ya
-  // establecido de window.opener.<funcion>() que "Guardar imagen".
-  const showReceiptButton = canShowInvoiceReceiptButton(invoiceId);
   popup.document.write(`
     <!doctype html>
     <html lang="es">
@@ -2946,7 +2937,6 @@ function openInvoiceReport(invoiceId) {
         <div class="report-actions">
           <button onclick="window.print()">Imprimir / guardar PDF</button>
           <button onclick="window.opener.downloadInvoiceImage('${escapeHtml(invoiceId)}')">Guardar imagen</button>
-          ${showReceiptButton ? `<button onclick="window.opener.openReceiptFromInvoice('${escapeHtml(invoiceId)}'); window.close();">Registrar recibo de ingreso</button>` : ""}
         </div>
         ${invoiceReportHtml(invoiceId)}
       </body>
@@ -3202,11 +3192,6 @@ function renderReceivables() {
       .join("");
   }
 
-  const select = byId("payment-invoice");
-  select.innerHTML = rows
-    .map((cxc) => `<option value="${cxc.cxCID}">${cxc.facturaID || cxc.cxCID} - ${cxc.deudorNombre} - ${money.format(Number(cxc.balancePendiente) || 0)}</option>`)
-    .join("");
-  if (!rows.length) select.innerHTML = '<option value="">No hay facturas pendientes</option>';
   updatePaymentSummary();
 }
 
@@ -6847,10 +6832,27 @@ function getIncomePaymentLines() {
   return rows.filter((row) => row.amount > 0);
 }
 
-function selectedReceivable() {
-  const selectedId = byId("payment-invoice")?.value || "";
-  return dbTable("cuentasCobrar").find((item) => item.cxCID === selectedId && Number(item.balancePendiente) > 0) || null;
+// Convierte filas reales de cuentasCobrar al formato que espera
+// DalfiClosingMath.allocateClientPaymentFIFO(). Compartida por la
+// previsualizacion en vivo y por el submit (que SIEMPRE la vuelve a calcular
+// fresca, nunca confia en lo que quedo pintado en pantalla).
+function mapReceivablesForAllocation(receivables) {
+  return receivables.map((cxc) => ({
+    id: cxc.cxCID,
+    invoiceId: cxc.facturaID || "",
+    kind: cxc.esPropinaPendiente ? "tip" : "base",
+    amount: Number(cxc.balancePendiente) || 0,
+    fechaOrigen: cxc.fechaOrigen || "",
+  }));
 }
+
+// Medios de pago validos DESDE ESTE FORMULARIO (distinto del formulario de
+// facturas: aqui todas las lineas ya representan dinero CONFIRMADO, nunca
+// credito ni transferencia pendiente sin confirmar -esas se gestionan por
+// separado, ver pendingTransferRows()/confirmPendingTransfer()-). Tarjeta
+// sigue al final para que solo financie propina cuando los demas no
+// alcancen, igual que en facturacion.
+const PAYMENT_FORM_METHOD_PRIORITY = ["efectivo", "transferencia", "tarjeta"];
 
 function clientReceivablesFor(cxc) {
   if (!cxc) return [];
@@ -6868,30 +6870,28 @@ function clientReceivablesFor(cxc) {
     });
 }
 
+// Resuelve el cliente actualmente escrito en #payment-client-search. Fuente
+// unica de verdad para saber "que cliente esta seleccionado" en este
+// formulario (nunca un <select> de una sola CxC: el flujo definitivo es
+// cliente -> TODAS sus CxC en FIFO, no factura por factura).
+function selectedPaymentClient() {
+  return findClientBySearchTerm(byId("payment-client-search")?.value || "");
+}
+
 function updatePaymentSummary() {
-  if (!byId("payment-invoice") || !byId("payment-amount")) return;
-  const cxc = selectedReceivable();
-  const clientRows = clientReceivablesFor(cxc);
-  const invoiceDebt = Number(cxc?.balancePendiente) || 0;
-  const clientDebt = clientRows.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
+  if (!byId("payment-client-search") || !byId("payment-amount")) return;
+  const clientRecord = selectedPaymentClient();
+  const receivables = clientAllReceivables(clientRecord);
+  const clientDebt = receivables.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
   const paymentGoal = Number(byId("payment-amount")?.value) || 0;
-  const linesTotal = getIncomePaymentLines().reduce((sum, line) => sum + line.amount, 0);
+  const paymentLines = getIncomePaymentLines();
+  const linesTotal = paymentLines.reduce((sum, line) => sum + line.amount, 0);
   const difference = linesTotal - paymentGoal;
 
-  if (byId("payment-client-name")) byId("payment-client-name").textContent = cxc?.deudorNombre || "-";
-  // Concepto: para la CxC de propina pendiente se muestra su propio
-  // concepto ("Propina pendiente factura X", ya mas especifico); para
-  // cualquier otra CxC de cliente, "Cobro de factura <referencia real>" —
-  // nunca se inventa un numero de factura que no exista.
-  if (byId("payment-concept-preview")) {
-    byId("payment-concept-preview").textContent = !cxc ? "-" : cxc.esPropinaPendiente ? cxc.concepto || cxc.tipoCxC || "Propina pendiente" : `Cobro de factura ${cxc.facturaID || cxc.cxCID}`;
-  }
-  if (byId("payment-invoice-debt")) byId("payment-invoice-debt").textContent = money.format(invoiceDebt);
+  if (byId("payment-client-name")) byId("payment-client-name").textContent = clientRecord?.nombreCompleto || "-";
+  if (byId("payment-invoice-count")) byId("payment-invoice-count").textContent = String(new Set(receivables.map((row) => row.facturaID).filter(Boolean)).size);
   if (byId("payment-client-debt")) byId("payment-client-debt").textContent = money.format(clientDebt);
-  // El pago siempre sigue la prioridad ya vigente (CxC anteriores -> base ->
-  // propina): esta nota solo informa cuando hay mas deuda del cliente
-  // ademas de la CxC seleccionada, nunca cambia el reparto real.
-  if (byId("payment-older-debt-note")) byId("payment-older-debt-note").classList.toggle("hidden", !cxc || clientDebt <= invoiceDebt + 0.005);
+  renderPaymentAllocationPreview(clientRecord, receivables, paymentLines);
   if (byId("payment-lines-total")) byId("payment-lines-total").textContent = money.format(linesTotal);
   if (byId("payment-lines-difference")) {
     byId("payment-lines-difference").textContent = money.format(difference);
@@ -6906,13 +6906,52 @@ function updatePaymentSummary() {
   }
 }
 
-function fillPaymentGoalFromSelection() {
-  const cxc = selectedReceivable();
+// Previsualizacion EN VIVO del reparto FIFO (seccion 7 del encargo): se
+// recalcula fresca en cada cambio de cliente/monto/medio/cuenta con la
+// MISMA funcion pura que ejecuta el submit real -nunca se persiste, nunca
+// se usa como fuente de verdad al guardar-.
+function renderPaymentAllocationPreview(clientRecord, receivables, paymentLines) {
+  const container = byId("payment-allocation-preview");
+  const rowsTarget = byId("payment-allocation-rows");
+  if (!container || !rowsTarget) return;
+  if (!clientRecord || !receivables.length) {
+    container.classList.add("hidden");
+    rowsTarget.innerHTML = "";
+    return;
+  }
+  container.classList.remove("hidden");
+  const confirmedLines = paymentLines.filter((line) => line.amount > 0).map((line) => ({ method: line.method, amount: line.amount }));
+  const allocation = DalfiClosingMath.allocateClientPaymentFIFO({
+    confirmedPaymentLines: confirmedLines,
+    priorClientReceivables: mapReceivablesForAllocation(receivables),
+    methodPriority: PAYMENT_FORM_METHOD_PRIORITY,
+  });
+  rowsTarget.innerHTML = allocation.resultingBalances
+    .map((row) => {
+      const cxc = receivables.find((item) => item.cxCID === row.id);
+      const label = row.kind === "tip" ? `Propina — factura ${row.invoiceId || row.id}` : `Factura ${row.invoiceId || row.id}`;
+      const estado = row.remainingBalance <= 0 ? "Saldada" : row.amountApplied > 0 ? "Parcial" : "Sin cambio";
+      return `
+        <div class="list-item">
+          <span>${escapeHtml(label)} · ${dateOnly(cxc?.fechaOrigen) || "-"}</span>
+          <span>${money.format(row.previousBalance)} → ${money.format(row.remainingBalance)} (aplicado ${money.format(row.amountApplied)}) · ${estado}</span>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+// Precarga el monto recibido con la deuda TOTAL del cliente (editable, para
+// permitir un pago parcial): mismo patron que fillPaymentGoalFromSelection
+// usaba con una sola CxC, ahora con el total de todas.
+function fillPaymentGoalFromClient() {
+  const clientRecord = selectedPaymentClient();
+  const receivables = clientAllReceivables(clientRecord);
+  const clientDebt = receivables.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
   const amountInput = byId("payment-amount");
   const methodAmountInput = byId("payment-method-amount");
-  const pending = Number(cxc?.balancePendiente) || 0;
-  amountInput.value = pending ? String(pending) : "";
-  methodAmountInput.value = pending ? String(pending) : "";
+  amountInput.value = clientDebt ? String(clientDebt) : "";
+  methodAmountInput.value = clientDebt ? String(clientDebt) : "";
   updatePaymentSummary();
 }
 
@@ -7688,8 +7727,8 @@ function wireForms() {
     const invoiceId = row.dataset.invoiceId;
     if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
-    if (event.target.closest(".receipt-invoice")) openReceiptFromInvoice(invoiceId);
   });
+  byId("open-client-receipt")?.addEventListener("click", openClientReceiptFromBilling);
 
   byId("invoice-admin-table").addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-invoice-id]");
@@ -7701,7 +7740,8 @@ function wireForms() {
   byId("admin-new-invoice").addEventListener("click", () => openAdminInvoiceEditor());
   byId("move-july-9-invoices").addEventListener("click", moveBuggedJuly9InvoicesToJuly8);
 
-  byId("payment-invoice").addEventListener("change", fillPaymentGoalFromSelection);
+  byId("payment-client-search").addEventListener("change", fillPaymentGoalFromClient);
+  byId("payment-client-search").addEventListener("input", updatePaymentSummary);
   byId("payment-amount").addEventListener("input", updatePaymentSummary);
   byId("payment-method-amount").addEventListener("input", updatePaymentSummary);
   byId("payment-overpay-policy").addEventListener("change", updatePaymentSummary);
@@ -7735,10 +7775,11 @@ function wireForms() {
       alert("Solo administración o propietario puede registrar cobros de cuentas por cobrar.");
       return;
     }
-    const selectedCxc = selectedReceivable();
-    if (!selectedCxc) {
-      alert("Selecciona una cuenta por cobrar pendiente.");
-      byId("payment-invoice").focus();
+    const clientRecord = selectedPaymentClient();
+    const receivables = clientAllReceivables(clientRecord);
+    if (!clientRecord || !receivables.length) {
+      alert("Busca y selecciona un cliente con cuentas por cobrar pendientes.");
+      byId("payment-client-search").focus();
       return;
     }
     const paymentLines = getIncomePaymentLines();
@@ -7780,20 +7821,37 @@ function wireForms() {
     paymentSubmitInFlight = true;
     byId("payment-submit").disabled = true;
     try {
-    const clientRows = clientReceivablesFor(selectedCxc);
-    const clientDebt = clientRows.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
+    const clientDebt = receivables.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
     const overpayPolicy = byId("payment-overpay-policy").value;
     const extraPaid = Math.max(0, linesTotal - paymentGoal);
     const applyExtraToCxc = overpayPolicy === "cxc" ? extraPaid : 0;
     const amountToDebt = Math.min(clientDebt, paymentGoal + applyExtraToCxc);
-    // applyReceivablePaymentLines() (y, dentro de ella,
-    // applyClientReceivablesFirst/addConfirmedPayment/syncInvoicePaymentFromReceivable)
-    // es el UNICO flujo de reparto: CxC anteriores -> base -> propina
-    // pendiente, en ese orden. Este formulario -sea que se haya abierto
-    // desde Cuentas por Cobrar o desde el boton "Registrar recibo de
-    // ingreso" de Facturacion- nunca implementa un segundo reparto.
-    const mutableLines = applyReceivablePaymentLines(clientRows, amountToDebt, paymentLines, cashDate);
-    const clientRecord = dbTable("clientes").find((client) => client.clienteID === selectedCxc.deudorID) || findClientByName(selectedCxc.deudorNombre);
+    // Mismo orden de prioridad que el reparto de facturacion: tarjeta
+    // financia de ultimo (asi solo paga CxC/propina cuando los demas
+    // medios ya no alcanzan). applyReceivablePaymentLines() (y, dentro de
+    // ella, addConfirmedPayment/syncInvoicePaymentFromReceivable) es el
+    // UNICO flujo de reparto: CxC del cliente de la mas antigua a la mas
+    // nueva, base antes que propina pendiente dentro de cada factura
+    // (clientAllReceivables ya llega ordenada por fechaOrigen).
+    const priorityRank = new Map(PAYMENT_FORM_METHOD_PRIORITY.map((method, rank) => [method, rank]));
+    const orderedLines = paymentLines.slice().sort((a, b) => (priorityRank.get(a.method) ?? 99) - (priorityRank.get(b.method) ?? 99));
+    const beforeBalances = new Map(receivables.map((row) => [row.cxCID, Number(row.balancePendiente) || 0]));
+    const mutableLines = applyReceivablePaymentLines(receivables, amountToDebt, orderedLines, cashDate);
+    const affected = receivables
+      .map((row) => ({ id: row.cxCID, invoiceId: row.facturaID || "", applied: (beforeBalances.get(row.cxCID) || 0) - (Number(row.balancePendiente) || 0) }))
+      .filter((row) => row.applied > 0);
+    const affectedInvoiceIds = [...new Set(affected.map((row) => row.invoiceId).filter(Boolean))];
+    const totalApplied = affected.reduce((sum, row) => sum + row.applied, 0);
+    // El procesador de tarjeta siempre debe el monto COMPLETO de la linea,
+    // sin importar entre cuantas facturas/CxC distintas se repartio ese
+    // dinero: una sola CxC general (sin facturaID propio) por linea de
+    // tarjeta, igual que en facturacion pero no atada a una factura.
+    paymentLines
+      .filter((line) => line.method === "tarjeta")
+      .forEach((line) => {
+        const processor = findProcessorByName(line.processor) || processorForPayment("tarjeta");
+        addReceivable("", { clienteID: processor.procesadorID || "" }, processor.nombre || "Procesador tarjeta", line.amount, "CxC procesador tarjeta", "", cashDate);
+      });
     const remainingExtra = mutableLines.reduce((sum, line) => sum + (Number(line.remaining) || 0), 0);
     if (remainingExtra > 0) {
       const finalPolicy = overpayPolicy === "balance" || overpayPolicy === "cxc" ? "balance" : "sobrante";
@@ -7801,19 +7859,19 @@ function wireForms() {
         if (line.remaining <= 0) return;
         if (finalPolicy === "balance") {
           adjustClientBalance(clientRecord?.clienteID, line.remaining);
-          createExtraIncome(line, line.remaining, clientRecord, selectedCxc.deudorNombre || "", cashDate, "Balance a favor de cliente", "Excedente de cobro aplicado a balance a favor");
+          createExtraIncome(line, line.remaining, clientRecord, clientRecord.nombreCompleto || "", cashDate, "Balance a favor de cliente", "Excedente de cobro aplicado a balance a favor");
         } else {
-          createExtraIncome(line, line.remaining, clientRecord, selectedCxc.deudorNombre || "", cashDate, "Sobrante de caja", "Excedente de cobro de cuenta por cobrar");
+          createExtraIncome(line, line.remaining, clientRecord, clientRecord.nombreCompleto || "", cashDate, "Sobrante de caja", "Excedente de cobro de cuenta por cobrar");
         }
       });
     }
-    // Reversar un cobro (voidReceivableReceipt) ya deja auditoria explicita;
-    // crearlo no la dejaba. Se audita aqui, una sola vez por submit exitoso.
+    // Un solo recibo (este submit) para varias CxC/facturas: se audita una
+    // vez, con la lista completa de facturas afectadas.
     logAudit("cxc_receipt_created", {
       entity: "cuentasCobrar",
-      entityId: selectedCxc.cxCID,
-      newData: { facturaID: selectedCxc.facturaID || "", cliente: selectedCxc.deudorNombre || "", montoAplicado: amountToDebt, fromInvoice: invoicePendingReceiptReturn?.invoiceId === selectedCxc.facturaID },
-      note: `Recibo de cobro aplicado a ${selectedCxc.cxCID} por ${money.format(amountToDebt)}.`,
+      entityId: affected.map((row) => row.id).join(","),
+      newData: { cliente: clientRecord.nombreCompleto || "", facturasAfectadas: affectedInvoiceIds, cuentasAfectadas: affected.map((row) => row.id), montoAplicado: totalApplied },
+      note: `Cobro general de cliente aplicado a ${affected.length} cuenta(s) por cobrar por ${money.format(totalApplied)}.`,
       success: true,
     });
     event.target.reset();
@@ -7824,7 +7882,7 @@ function wireForms() {
     updatePaymentSummary();
     saveState();
     renderAll();
-    if (invoicePendingReceiptReturn) returnToInvoiceAfterReceipt();
+    returnToBillingAfterReceipt();
     } finally {
       paymentSubmitInFlight = false;
       byId("payment-submit").disabled = false;
@@ -7832,7 +7890,7 @@ function wireForms() {
   });
   byId("payment-receipt-cancel")?.addEventListener("click", (event) => {
     event.preventDefault();
-    returnToInvoiceAfterReceipt();
+    returnToBillingAfterReceipt();
   });
 
   ensureCashModuleMarkup();
