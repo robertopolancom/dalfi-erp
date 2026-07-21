@@ -8,3 +8,6 @@ node_modules/
 work/
 __pycache__/
 *.pyc
+.wrangler/
+.dev.vars
+.dev.vars.*

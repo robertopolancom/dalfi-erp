@@ -1,0 +1,6 @@
+{
+  "name": "dalfi-erp-closing-cron",
+  "private": true,
+  "type": "module",
+  "description": "Worker de Cloudflare Cron Trigger que dispara /api/run-closing-catchup. Sin dependencias: usa solo fetch/AbortController/console, ya disponibles en el runtime de Workers."
+}

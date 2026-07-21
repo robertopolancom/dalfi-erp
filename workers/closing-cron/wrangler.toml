@@ -1,0 +1,29 @@
+# Worker independiente (NO Cloudflare Pages) para disparar el catch-up de
+# cierres cuando nadie tiene el ERP abierto en el navegador. Ver
+# workers/closing-cron/README.md para el paso a paso de configuracion y
+# despliegue (ninguno de esos pasos se ejecuto como parte de esta tarea).
+name = "dalfi-erp-closing-cron"
+main = "worker.js"
+compatibility_date = "2026-07-09"
+
+# Variable NO secreta: el dominio publico de Cloudflare Pages al que este
+# Worker le hace fetch(). Placeholder — reemplazar por el dominio real (por
+# ejemplo "https://dalfi-erp.pages.dev") al momento de desplegar.
+[vars]
+APP_BASE_URL = "https://example.pages.dev"
+
+# CLOSING_CRON_SECRET se configura por separado como Secret (nunca en este
+# archivo ni en Git): "wrangler secret put CLOSING_CRON_SECRET". Debe ser
+# EXACTAMENTE el mismo valor que env.CLOSING_CRON_SECRET en Cloudflare Pages
+# (el que ya usa functions/api/run-closing-catchup.js).
+
+# Propuesta conservadora (NO activada todavia): una vez al dia, justo despues
+# de terminar la operacion. Cloudflare Cron Triggers usan UTC. Republica
+# Dominicana no observa horario de verano (siempre UTC-4), asi que
+# "59 3 * * *" (03:59 UTC) equivale de forma estable a las 23:59 hora de
+# Santo Domingo, el mismo "ultimo minuto del dia" que ya usa
+# isAutomaticClosingEligible() en outputs/lib/closing-math.js y en el cron de
+# outputs/app.js/run-closing-catchup.js. Descomentar solo cuando el equipo
+# autorice activar el Cron Trigger real.
+# [triggers]
+# crons = ["59 3 * * *"]
