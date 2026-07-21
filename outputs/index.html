@@ -902,6 +902,8 @@
                   <input id="payroll-other-deductions" type="number" min="0" step="0.01" value="0" />
                 </label>
               </div>
+              <p class="panel-note hidden" id="payroll-tss-day15-note" aria-live="polite">La retención mensual de TSS del colaborador se aplicará en la nómina del día 30, no en esta quincena.</p>
+              <p class="panel-note hidden danger" id="payroll-tss-missing-note" aria-live="polite">No hay configuración TSS vigente para el período: esta nómina podrá guardarse y aprobarse, pero no podrá pagarse hasta que exista una configuración vigente.</p>
               <label>
                 Concepto otros descuentos
                 <input id="payroll-other-concept" list="payroll-discount-concept-list" placeholder="Bonificación negativa, uniforme, ajuste..." />
@@ -938,7 +940,7 @@
 
             <form class="panel form-panel" id="vacation-form">
               <div class="panel-head">
-                <h3>Vacaciones pagadas anticipadamente</h3>
+                <h3>Solicitar vacaciones</h3>
               </div>
               <label>
                 Colaborador/a
@@ -950,38 +952,88 @@
                   <input id="vacation-start" type="date" required />
                 </label>
                 <label>
-                  Días pagados
+                  Días
                   <input id="vacation-days" type="number" min="1" step="1" value="14" required />
                 </label>
               </div>
-              <div class="form-row">
-                <label>
-                  Valor diario
-                  <input id="vacation-daily-value" type="number" min="0" step="0.01" required />
-                </label>
-                <label>
-                  Monto a anticipar
-                  <output id="vacation-advance-amount">RD$0.00</output>
-                </label>
-              </div>
-              <label>
-                Cuenta que paga el anticipo
-                <input id="vacation-account" list="accounts-list" placeholder="Caja o banco" required />
-              </label>
               <label>
                 Observación
                 <input id="vacation-note" placeholder="Opcional" />
               </label>
-              <button class="primary-btn" type="submit">Registrar y pagar anticipo</button>
+              <button class="primary-btn" type="submit">Solicitar vacaciones</button>
+              <p class="panel-note">Solo registra la solicitud: no crea ningún movimiento de dinero. El anticipo se paga después, cuando la solicitud esté Aprobada.</p>
+            </form>
+
+            <form class="panel form-panel hidden" id="vacation-approve-form">
+              <div class="panel-head">
+                <h3>Aprobar vacaciones</h3>
+              </div>
+              <input id="vacation-approve-id" type="hidden" />
+              <p class="panel-note" id="vacation-approve-summary"></p>
+              <label>
+                Valor diario
+                <input id="vacation-approve-daily-value" type="number" min="0" step="0.01" required />
+              </label>
+              <label>
+                Monto a anticipar
+                <output id="vacation-approve-amount">RD$0.00</output>
+              </label>
+              <div class="row-actions">
+                <button class="primary-btn" type="submit">Aprobar</button>
+                <button class="secondary-btn" id="cancel-vacation-approve" type="button">Cancelar</button>
+              </div>
+            </form>
+
+            <form class="panel form-panel hidden" id="vacation-pay-form">
+              <div class="panel-head">
+                <h3>Pagar anticipo de vacaciones</h3>
+              </div>
+              <input id="vacation-pay-id" type="hidden" />
+              <p class="panel-note" id="vacation-pay-summary"></p>
+              <label>
+                Cuenta que paga el anticipo
+                <input id="vacation-pay-account" list="accounts-list" placeholder="Caja o banco" required />
+              </label>
+              <label>
+                Fecha real de pago
+                <input id="vacation-pay-date" type="date" required />
+              </label>
+              <div class="row-actions">
+                <button class="primary-btn" type="submit">Confirmar pago</button>
+                <button class="secondary-btn" id="cancel-vacation-pay" type="button">Cancelar</button>
+              </div>
               <p class="panel-note">Crea exactamente un egreso. Las quincenas que caigan dentro de estos días descontarán automáticamente la porción prepagada, para no pagar los mismos días dos veces.</p>
             </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Vacaciones registradas</h3>
+                <input class="inline-search" id="vacation-search" placeholder="Filtrar colaborador" />
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Colaborador/a</th>
+                      <th>Inicio</th>
+                      <th>Días</th>
+                      <th>Monto</th>
+                      <th>Estado</th>
+                      <th>Acción</th>
+                    </tr>
+                  </thead>
+                  <tbody id="vacation-table"></tbody>
+                </table>
+              </div>
+            </section>
 
             <form class="panel form-panel hidden" id="pay-payroll-form">
               <div class="panel-head">
                 <h3>Pagar nómina</h3>
               </div>
               <input id="pay-payroll-id" type="hidden" />
-              <p id="pay-payroll-summary" class="panel-note"></p>
+              <section class="invoice-summary" id="pay-payroll-summary" aria-live="polite"></section>
+              <p class="panel-note" id="pay-payroll-tss-note"></p>
               <label>
                 Cuenta que paga
                 <input id="pay-payroll-account" list="accounts-list" placeholder="Caja o banco" required />
@@ -1025,6 +1077,68 @@
                     </tr>
                   </thead>
                   <tbody id="payroll-table"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <form class="panel form-panel" id="collaborator-charge-form">
+              <div class="panel-head">
+                <h3>Cargo interno a colaborador</h3>
+                <p class="panel-note">Servicio consumido u otro concepto autorizado. Sin salida de caja/banco: crea únicamente la cuenta por cobrar. Para avances con dinero real (efectivo, salario, propina) usa Egresos → Avance autorizado.</p>
+              </div>
+              <label>
+                Colaborador/a
+                <input id="collaborator-charge-staff" list="staff-list" placeholder="Nombre" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Tipo
+                  <select id="collaborator-charge-type">
+                    <option value="Servicio cargado">Servicio cargado</option>
+                    <option value="Compra o consumo autorizado">Compra o consumo autorizado</option>
+                    <option value="Otro cargo">Otro cargo</option>
+                  </select>
+                </label>
+                <label>
+                  Monto
+                  <input id="collaborator-charge-amount" type="number" min="0" step="0.01" required />
+                </label>
+              </div>
+              <label>
+                Concepto
+                <input id="collaborator-charge-concept" placeholder="Descripción del cargo" required />
+              </label>
+              <button class="primary-btn" type="submit">Registrar cargo (sin salida de caja/banco)</button>
+            </form>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>CxC de colaboradores</h3>
+                <input class="inline-search" id="collaborator-receivable-search" placeholder="Filtrar colaborador o concepto" />
+              </div>
+              <div class="action-buttons">
+                <button class="secondary-btn compact collaborator-receivable-filter active" data-filter="pendientes" type="button">Pendientes</button>
+                <button class="secondary-btn compact collaborator-receivable-filter" data-filter="parciales" type="button">Parciales</button>
+                <button class="secondary-btn compact collaborator-receivable-filter" data-filter="pagadas" type="button">Pagadas</button>
+                <button class="secondary-btn compact collaborator-receivable-filter" data-filter="anuladas" type="button">Anuladas</button>
+                <button class="secondary-btn compact collaborator-receivable-filter" data-filter="todas" type="button">Todas</button>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Colaborador/a</th>
+                      <th>Concepto</th>
+                      <th>Tipo</th>
+                      <th>Fecha</th>
+                      <th>Original</th>
+                      <th>Aplicado</th>
+                      <th>Pendiente</th>
+                      <th>Estado</th>
+                      <th>Egreso</th>
+                    </tr>
+                  </thead>
+                  <tbody id="collaborator-receivable-table"></tbody>
                 </table>
               </div>
             </section>
@@ -1820,14 +1934,29 @@
                   <input id="tss-effective-date" type="date" required />
                 </label>
                 <label>
+                  Vigente hasta (opcional)
+                  <input id="tss-end-date" type="date" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label><input id="tss-bonus-subject" type="checkbox" /> Bonos sujetos a TSS por defecto</label>
+                <label><input id="tss-commission-subject" type="checkbox" /> Comisiones sujetas a TSS</label>
+              </div>
+              <div class="form-row">
+                <label>
                   Estado
                   <select id="tss-status">
                     <option value="Activo">Activo</option>
                     <option value="Inactivo">Inactivo</option>
                   </select>
                 </label>
+                <label>
+                  Observación
+                  <input id="tss-note" placeholder="Opcional" />
+                </label>
               </div>
               <button class="primary-btn" type="submit">Guardar configuración TSS</button>
+              <p class="panel-note">No modifica ninguna nómina ya pagada: cada nómina conserva la configuración vigente al momento en que se guardó.</p>
             </form>
 
             <form class="panel form-panel data-entry-form" id="processor-form">
@@ -2053,6 +2182,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260721-nomina-quincenal"></script>
-    <script src="app.js?v=20260721-nomina-quincenal"></script>
+    <script src="app.js?v=20260721-nomina-aprobacion-vacaciones"></script>
   </body>
 </html>

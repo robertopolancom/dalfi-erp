@@ -3440,6 +3440,7 @@ function activeTssConfig(date) {
     dbTable("configuracionTSS")
       .filter((row) => normalize(row.estado || "Activo") === "activo")
       .filter((row) => !row.fechaVigencia || row.fechaVigencia <= target)
+      .filter((row) => !row.fechaFin || row.fechaFin >= target)
       .sort((a, b) => String(b.fechaVigencia || "").localeCompare(String(a.fechaVigencia || "")))[0] || null
   );
 }
@@ -3518,7 +3519,7 @@ function createCollaboratorInternalCharge({ staffRecord, staffName, amount, conc
     fechaVencimiento: today,
   });
   dbTable("cuentasCobrar").push(record);
-  logAudit("collaborator_internal_charge_created", {
+  logAudit("collaborator_receivable_created", {
     entity: "cuentasCobrar",
     entityId: cxcId,
     newData: { colaboradorID: staffRecord?.colaboradorID || "", monto: safeAmount, concepto: concept },
@@ -3539,10 +3540,14 @@ function createCollaboratorInternalCharge({ staffRecord, staffName, amount, conc
 function addPayrollBonusLine() {
   const row = document.createElement("article");
   row.className = "payroll-bonus-line list-item";
+  // El checkbox arranca marcado o no segun la politica por defecto de la
+  // configuracion TSS vigente (bonoSujeto), pero sigue siendo editable por
+  // bono: la politica global es solo un punto de partida, no una regla fija.
+  const defaultSubject = Boolean(activeTssConfig(today)?.bonoSujeto);
   row.innerHTML = `
     <input class="payroll-bonus-concept" placeholder="Concepto del bono" />
     <input class="payroll-bonus-amount" type="number" min="0" step="0.01" value="0" />
-    <label class="payroll-bonus-tss-label"><input class="payroll-bonus-tss" type="checkbox" /> Sujeto a TSS</label>
+    <label class="payroll-bonus-tss-label"><input class="payroll-bonus-tss" type="checkbox" ${defaultSubject ? "checked" : ""} /> Sujeto a TSS</label>
     <button class="secondary-btn compact remove-payroll-bonus" type="button">Quitar</button>
   `;
   byId("payroll-bonus-list").appendChild(row);
@@ -3558,29 +3563,123 @@ function getPayrollBonusLines() {
     .filter((line) => line.amount > 0);
 }
 
-function updateVacationAdvancePreview() {
-  const days = Number(byId("vacation-days")?.value) || 0;
-  const dailyValue = Number(byId("vacation-daily-value")?.value) || 0;
-  byId("vacation-advance-amount").textContent = money.format(DalfiClosingMath.roundMoney(days * dailyValue));
+// Aprueba UN borrador: unica transicion permitida antes de poder pagar
+// (nunca Borrador -> Pagada directo). El snapshot ya quedo congelado al
+// Guardar (umbral, propinas incluidas, CxC seleccionadas, TSS), asi que
+// Aprobar no recalcula nada: solo exige permiso, exige que siga en
+// Borrador, cambia el estado y audita.
+function approvePayroll(payrollId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede aprobar nómina.");
+    return;
+  }
+  const payroll = dbTable("nomina").find((row) => row.nominaID === payrollId);
+  if (!payroll) return;
+  if (normalize(payroll.estado || "") !== "borrador") {
+    alert("Solo un borrador puede aprobarse.");
+    return;
+  }
+  payroll.estado = "Aprobada";
+  stampRecord(payroll, "updated");
+  logAudit("payroll_approved", {
+    entity: "nomina",
+    entityId: payrollId,
+    newData: { colaboradorID: payroll.colaboradorID, neto: Number(payroll.totalAPagar) || 0 },
+    note: `Nómina ${payrollId} aprobada para ${payroll.colaboradorNombre}.`,
+    success: true,
+  });
+  saveState();
+  renderAll();
+}
+
+// Reabre una nomina Aprobada de vuelta a Borrador: nunca desde Pagada.
+// Como nada se consumio todavia en Aprobada (ni propinas, ni CxC, ni
+// egreso), reabrir no necesita restaurar nada: es un simple cambio de
+// estado con motivo obligatorio y auditoria.
+function reopenPayroll(payrollId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede reabrir una nómina aprobada.");
+    return;
+  }
+  const payroll = dbTable("nomina").find((row) => row.nominaID === payrollId);
+  if (!payroll) return;
+  if (normalize(payroll.estado || "") !== "aprobada") {
+    alert("Solo una nómina Aprobada puede reabrirse (una Pagada requiere Revertir, no Reabrir).");
+    return;
+  }
+  const reason = prompt("Indica el motivo para reabrir esta nómina aprobada:");
+  if (!reason || !reason.trim()) {
+    alert("Reabrir requiere un motivo.");
+    return;
+  }
+  payroll.estado = "Borrador";
+  payroll.motivoReapertura = reason.trim();
+  stampRecord(payroll, "updated");
+  logAudit("payroll_reopened", {
+    entity: "nomina",
+    entityId: payrollId,
+    newData: { motivo: reason.trim() },
+    note: `Nómina ${payrollId} reabierta: ${reason.trim()}.`,
+    success: true,
+  });
+  saveState();
+  renderAll();
+}
+
+// Motivo por el que Pagar debe bloquearse por TSS, o "" si no aplica
+// bloqueo. Se evalua sobre el snapshot ya congelado (tssConfigId), nunca
+// recalculando en vivo: si al Guardar/Aprobar no habia configuracion
+// vigente, Pagar debe seguir bloqueado hasta que se cree una nueva
+// vigencia y esta nomina se re-guarde con ella.
+function payrollTssBlockReason(payroll) {
+  if (!payroll) return "";
+  if (payroll.payrollType === "first") return "";
+  if (payroll.tssConfigId) return "";
+  return "No puede pagarse esta nómina porque falta la configuración TSS vigente del período.";
 }
 
 // Abre el panel "Pagar nomina" para un payrollId especifico (debe estar en
-// estado Borrador): precarga un resumen de solo lectura, deja el resto de
-// la decision (cuenta, medio, fecha real) a quien va a confirmar el pago.
+// estado Aprobada, nunca Borrador ni Pagada): precarga un resumen de solo
+// lectura, deja el resto de la decision (cuenta, medio, fecha real) a
+// quien va a confirmar el pago.
 function openPayPayrollForm(payrollId) {
   if (!canManageInvoices()) {
     alert("Solo administración o propietario puede pagar nómina.");
     return;
   }
   const payroll = dbTable("nomina").find((row) => row.nominaID === payrollId);
-  if (!payroll || normalize(payroll.estado || "") !== "borrador") return;
+  if (!payroll || normalize(payroll.estado || "") !== "aprobada") return;
+  const blockReason = payrollTssBlockReason(payroll);
+  if (blockReason) {
+    alert(blockReason);
+    return;
+  }
   byId("pay-payroll-id").value = payrollId;
-  byId("pay-payroll-summary").textContent =
-    `${payroll.colaboradorNombre} · ${payroll.quincena} ${payroll.periodoInicio} a ${payroll.periodoFin} · Neto a pagar ${money.format(Number(payroll.totalAPagar) || 0)}`;
+  byId("pay-payroll-summary").innerHTML = payPayrollSummaryHtml(payroll);
   byId("pay-payroll-date").value = today;
   const form = byId("pay-payroll-form");
   form.classList.remove("hidden");
   revealFormAtTop(form, { focusSelector: "#pay-payroll-account" });
+}
+
+// Resumen final antes de pagar (seccion 12): todos los componentes que
+// forman el neto, en solo lectura, para que la confirmacion sea informada.
+function payPayrollSummaryHtml(payroll) {
+  const rows = [
+    ["Colaborador/a", payroll.colaboradorNombre],
+    ["Período", `${payroll.periodoInicio} a ${payroll.periodoFin}`],
+    ["Quincena", payroll.quincena],
+    ["Salario", money.format(Number(payroll.salarioQuincenal) || 0)],
+    ["Comisión", money.format(Number(payroll.comisionGenerada) || 0)],
+    ["Propinas", money.format(Number(payroll.propinaNetaMes) || 0)],
+    ["Bonos", money.format((payroll.bonos || []).reduce((sum, line) => sum + (Number(line.amount) || 0), 0))],
+    ["Ajuste vacaciones prepagadas", money.format(Number(payroll.vacationSalaryOffset) || 0)],
+    ["TSS del colaborador", money.format(Number(payroll.tssEmployeeDeduction) || 0)],
+    ["CxC descontada", money.format(Number(payroll.descuentoCxC) || 0)],
+    ["Otros descuentos", money.format((Number(payroll.descuentoAFP) || 0) + (Number(payroll.descuentoSeguro) || 0) + (Number(payroll.descuentoOtros) || 0))],
+    ["Neto a pagar", money.format(Number(payroll.totalAPagar) || 0)],
+  ];
+  return rows.map(([label, value]) => `<div class="summary-row"><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join("");
 }
 
 // Reversa UNA nomina PAGADA: exige permiso, exige motivo, revierte el
@@ -3656,6 +3755,209 @@ function revertPayrollPayment(payrollId) {
   renderAll();
 }
 
+// Abre el panel "Aprobar vacaciones" para una solicitud (debe estar
+// Solicitada): aqui es donde se captura el valor diario, no en la
+// solicitud original.
+function openVacationApproveForm(vacationId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede aprobar vacaciones.");
+    return;
+  }
+  const vacation = dbTable("vacaciones").find((row) => row.vacationId === vacationId);
+  if (!vacation || normalize(vacation.estado || "") !== "solicitada") return;
+  byId("vacation-approve-id").value = vacationId;
+  byId("vacation-approve-summary").textContent = `${vacation.colaboradorNombre} · ${vacation.fechaInicio} · ${vacation.diasPagados} días`;
+  byId("vacation-approve-daily-value").value = "";
+  byId("vacation-approve-amount").textContent = money.format(0);
+  const form = byId("vacation-approve-form");
+  form.classList.remove("hidden");
+  revealFormAtTop(form, { focusSelector: "#vacation-approve-daily-value" });
+}
+
+// Abre el panel "Pagar anticipo" para una solicitud Aprobada.
+function openVacationPayForm(vacationId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede pagar el anticipo de vacaciones.");
+    return;
+  }
+  const vacation = dbTable("vacaciones").find((row) => row.vacationId === vacationId);
+  if (!vacation || normalize(vacation.estado || "") !== "aprobada") return;
+  byId("vacation-pay-id").value = vacationId;
+  byId("vacation-pay-summary").textContent = `${vacation.colaboradorNombre} · ${vacation.diasPagados} días · Monto ${money.format(Number(vacation.montoAnticipado) || 0)}`;
+  byId("vacation-pay-date").value = today;
+  const form = byId("vacation-pay-form");
+  form.classList.remove("hidden");
+  revealFormAtTop(form, { focusSelector: "#vacation-pay-account" });
+}
+
+// Marca disfrutadas unas vacaciones YA pagadas: simple cambio de estado,
+// no mueve dinero (el anticipo ya se pago), solo documenta que el
+// colaborador efectivamente tomo esos dias.
+function markVacationEnjoyed(vacationId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede marcar vacaciones como disfrutadas.");
+    return;
+  }
+  const vacation = dbTable("vacaciones").find((row) => row.vacationId === vacationId);
+  if (!vacation || normalize(vacation.estado || "") !== "pagada anticipadamente") return;
+  vacation.estado = "Disfrutada";
+  stampRecord(vacation, "updated");
+  logAudit("vacation_enjoyed", {
+    entity: "vacaciones",
+    entityId: vacationId,
+    newData: {},
+    note: `Vacaciones de ${vacation.colaboradorNombre} marcadas como disfrutadas.`,
+    success: true,
+  });
+  saveState();
+  renderAll();
+}
+
+// Cancela una solicitud/aprobacion de vacaciones. Antes del pago: cambio de
+// estado simple con motivo. Despues del pago: SEGUN LA POLITICA (seccion 8)
+// nunca se borra ni se revierte en silencio el egreso ya hecho -aqui se
+// bloquea explicitamente y se pide generar el ajuste (una CxC al
+// colaborador) como una accion administrativa aparte, nunca automatica.
+function cancelVacation(vacationId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede cancelar vacaciones.");
+    return;
+  }
+  const vacation = dbTable("vacaciones").find((row) => row.vacationId === vacationId);
+  if (!vacation) return;
+  const estado = normalize(vacation.estado || "");
+  if (estado === "pagada anticipadamente" || estado === "disfrutada") {
+    const createAdjustment = confirm(
+      "Estas vacaciones ya fueron pagadas: no se puede cancelar ni revertir el anticipo automáticamente. ¿Deseas generar una CxC al colaborador por el monto ya anticipado, como ajuste administrativo explícito?",
+    );
+    if (!createAdjustment) return;
+    const reason = prompt("Motivo del ajuste por cancelación después del pago:");
+    if (!reason || !reason.trim()) {
+      alert("El ajuste requiere un motivo.");
+      return;
+    }
+    const staffRecord = dbTable("colaboradores").find((row) => row.colaboradorID === vacation.colaboradorID) || findStaffByName(vacation.colaboradorNombre);
+    createCollaboratorInternalCharge({
+      staffRecord,
+      staffName: vacation.colaboradorNombre,
+      amount: Number(vacation.montoAnticipado) || 0,
+      concept: `Ajuste por cancelación de vacaciones ya pagadas (${vacationId}): ${reason.trim()}`,
+      tipoCxC: "Ajuste vacaciones canceladas",
+    });
+    vacation.estado = "Cancelada";
+    vacation.motivoCancelacion = reason.trim();
+    stampRecord(vacation, "updated");
+    logAudit("vacation_cancelled_after_payment", {
+      entity: "vacaciones",
+      entityId: vacationId,
+      newData: { motivo: reason.trim() },
+      note: `Vacaciones de ${vacation.colaboradorNombre} canceladas después de pagadas: ${reason.trim()}. Se generó CxC de ajuste.`,
+      success: true,
+    });
+    saveState();
+    renderAll();
+    return;
+  }
+  if (estado === "cancelada" || estado === "revertida") {
+    alert("Estas vacaciones ya están canceladas.");
+    return;
+  }
+  const reason = prompt("Motivo de la cancelación:");
+  if (!reason || !reason.trim()) {
+    alert("La cancelación requiere un motivo.");
+    return;
+  }
+  vacation.estado = "Cancelada";
+  vacation.motivoCancelacion = reason.trim();
+  stampRecord(vacation, "updated");
+  logAudit("vacation_cancelled", {
+    entity: "vacaciones",
+    entityId: vacationId,
+    newData: { motivo: reason.trim() },
+    note: `Vacaciones de ${vacation.colaboradorNombre} canceladas antes del pago: ${reason.trim()}.`,
+    success: true,
+  });
+  saveState();
+  renderAll();
+}
+
+function renderVacations() {
+  const target = byId("vacation-table");
+  const query = byId("vacation-search")?.value || "";
+  const rows = dbTable("vacaciones")
+    .filter((row) => matches(row, query, ["colaboradorNombre"]))
+    .sort((a, b) => String(b.fechaInicio || "").localeCompare(String(a.fechaInicio || "")));
+  if (!rows.length) return renderEmpty(target, 6, "No hay vacaciones registradas.");
+  target.innerHTML = rows
+    .map((row) => {
+      const estado = row.estado || "Solicitada";
+      const normalized = normalize(estado);
+      const canApprove = normalized === "solicitada";
+      const canPay = normalized === "aprobada";
+      const canMarkEnjoyed = normalized === "pagada anticipadamente";
+      const canCancel = normalized !== "cancelada" && normalized !== "revertida";
+      return `
+        <tr data-vacation-id="${row.vacationId}">
+          <td>${row.colaboradorNombre}</td>
+          <td>${dateOnly(row.fechaInicio) || row.fechaInicio || ""}</td>
+          <td>${row.diasPagados || 0}</td>
+          <td>${money.format(Number(row.montoAnticipado) || 0)}</td>
+          <td>${estado}</td>
+          <td class="row-actions">
+            ${canApprove ? `<button class="secondary-btn compact approve-vacation" type="button">Aprobar</button>` : ""}
+            ${canPay ? `<button class="secondary-btn compact pay-vacation" type="button">Pagar anticipo</button>` : ""}
+            ${canMarkEnjoyed ? `<button class="secondary-btn compact mark-vacation-enjoyed" type="button">Marcar disfrutada</button>` : ""}
+            ${canCancel ? `<button class="secondary-btn compact cancel-vacation" type="button">Cancelar</button>` : ""}
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+}
+
+// Listado de CxC de colaboradores (nunca mezclado con CxC de clientes: el
+// filtro deudorTipo==="Colaborador" es el mismo usado por
+// collaboratorReceivablesSorted). Filtro por estado + busqueda por
+// colaborador/concepto.
+function renderCollaboratorReceivables() {
+  const target = byId("collaborator-receivable-table");
+  if (!target) return;
+  const query = byId("collaborator-receivable-search")?.value || "";
+  const activeFilterButton = document.querySelector(".collaborator-receivable-filter.active");
+  const filter = activeFilterButton?.dataset.filter || "pendientes";
+  const rows = dbTable("cuentasCobrar")
+    .filter((cxc) => cxc.deudorTipo === "Colaborador")
+    .filter((cxc) => matches(cxc, query, ["deudorNombre", "concepto", "tipoCxC"]))
+    .filter((cxc) => {
+      const estado = normalize(cxc.estado || "Pendiente");
+      const pending = Number(cxc.balancePendiente) || 0;
+      if (filter === "todas") return true;
+      if (filter === "anuladas") return estado === "anulada";
+      if (filter === "pagadas") return pending <= 0 && estado !== "anulada";
+      if (filter === "parciales") return pending > 0 && (Number(cxc.montoAplicado) || 0) > 0;
+      return pending > 0 && (Number(cxc.montoAplicado) || 0) <= 0;
+    })
+    .sort((a, b) => String(b.fechaOrigen || "").localeCompare(String(a.fechaOrigen || "")));
+  if (!rows.length) return renderEmpty(target, 9, "No hay cuentas por cobrar de colaboradores con ese filtro.");
+  target.innerHTML = rows
+    .map(
+      (cxc) => `
+        <tr>
+          <td>${cxc.deudorNombre}</td>
+          <td>${cxc.concepto || cxc.tipoCxC}</td>
+          <td>${cxc.tipoCxC || ""}</td>
+          <td>${dateOnly(cxc.fechaOrigen) || ""}</td>
+          <td>${money.format(Number(cxc.montoOriginal) || 0)}</td>
+          <td>${money.format(Number(cxc.montoAplicado) || 0)}</td>
+          <td>${money.format(Number(cxc.balancePendiente) || 0)}</td>
+          <td>${cxc.estado || "Pendiente"}</td>
+          <td>${cxc.egresoID || "Sin salida de caja/banco"}</td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
 function payrollPreviewData() {
   const staffName = byId("payroll-staff").value.trim();
   const period = byId("payroll-period").value || month;
@@ -3703,9 +4005,13 @@ function payrollPreviewData() {
   const tssConfig = activeTssConfig(range.end);
   // TSS del colaborador se retiene UNA sola vez al mes: si el ERP no divide
   // explicitamente entre quincenas, se aplica en la nomina del dia 30 (o
-  // "mes completo"), nunca en la del dia 15.
+  // "mes completo"), nunca en la del dia 15. Comisiones solo entran a la
+  // base contributiva cuando la configuracion vigente lo marca
+  // (tssConfig.comisionSujeta); los bonos entran solo por bono individual
+  // (bonusTssBase), no por un switch global.
   const tssApplies = cut !== "first";
-  const tssContributiveBase = tssConfig ? Math.min(Number(tssConfig.baseContributiva) || 0, (Number(tssConfig.tope) || Infinity)) + bonusTssBase : 0;
+  const commissionTssBase = tssConfig?.comisionSujeta ? commissionResult.commissionAmount : 0;
+  const tssContributiveBase = tssConfig ? Math.min(Number(tssConfig.baseContributiva) || 0, (Number(tssConfig.tope) || Infinity)) + bonusTssBase + commissionTssBase : 0;
   const tssEmployee = tssApplies && tssConfig ? Math.round(Math.min(tssContributiveBase, Number(tssConfig.tope) || tssContributiveBase) * (Number(tssConfig.tasaColaborador) || 0) / 100 * 100) / 100 : 0;
   const tssEmployer = tssApplies && tssConfig ? Math.round(Math.min(tssContributiveBase, Number(tssConfig.tope) || tssContributiveBase) * (Number(tssConfig.tasaEmpleador) || 0) / 100 * 100) / 100 : 0;
 
@@ -3800,6 +4106,8 @@ function updatePayrollPreview(renderCxC = false) {
   byId("payroll-rate-preview").textContent = `${(data.rate * 100).toFixed(2)}%`;
   byId("payroll-deductions-preview").textContent = money.format(data.deductions);
   byId("payroll-net-preview").textContent = money.format(data.net);
+  byId("payroll-tss-day15-note").classList.toggle("hidden", data.cut !== "first");
+  byId("payroll-tss-missing-note").classList.toggle("hidden", data.cut === "first" || Boolean(data.tssConfig));
   return data;
 }
 
@@ -3812,9 +4120,18 @@ function renderPayroll() {
   if (!rows.length) return renderEmpty(target, 10, "No hay nóminas registradas.");
   target.innerHTML = rows
     .map((row) => {
+      // Compatibilidad historica: registros creados antes de este cambio
+      // solo pudieron quedar en Borrador/Pagada/Revertida (nunca hubo
+      // Aprobada todavia); nunca se reinterpretan como Aprobadas sin
+      // evidencia, asi que una Borrador antigua sigue exigiendo el mismo
+      // paso explicito de Aprobar antes de poder pagarse.
       const estado = row.estado || "Borrador";
-      const canPay = normalize(estado) === "borrador";
-      const canRevert = normalize(estado) === "pagada";
+      const normalizedEstado = normalize(estado);
+      const canApprove = normalizedEstado === "borrador";
+      const canReopen = normalizedEstado === "aprobada";
+      const canPay = normalizedEstado === "aprobada";
+      const canRevert = normalizedEstado === "pagada";
+      const tssBlock = canPay ? payrollTssBlockReason(row) : "";
       return `
         <tr data-payroll-id="${row.nominaID}">
           <td>${row.periodoInicio || ""}</td>
@@ -3825,9 +4142,11 @@ function renderPayroll() {
           <td>${money.format(Number(row.propinaNetaMes) || 0)}</td>
           <td>${money.format((Number(row.anticipos) || 0) + (Number(row.descuentoAFP) || 0) + (Number(row.descuentoSeguro) || 0) + (Number(row.descuentoOtros) || 0) + (Number(row.descuentoCxC) || 0))}</td>
           <td class="amount">${money.format(Number(row.totalAPagar) || 0)}</td>
-          <td>${estado}</td>
+          <td>${estado}${tssBlock ? ` <span class="danger">· sin TSS</span>` : ""}</td>
           <td class="row-actions">
-            ${canPay ? `<button class="secondary-btn compact pay-payroll" type="button">Pagar</button>` : ""}
+            ${canApprove ? `<button class="secondary-btn compact approve-payroll" type="button">Aprobar</button>` : ""}
+            ${canReopen ? `<button class="secondary-btn compact reopen-payroll" type="button">Reabrir</button>` : ""}
+            ${canPay ? `<button class="secondary-btn compact pay-payroll" type="button" ${tssBlock ? `disabled title="${escapeHtml(tssBlock)}"` : ""}>Pagar</button>` : ""}
             ${canRevert ? `<button class="secondary-btn compact revert-payroll" type="button">Revertir</button>` : ""}
           </td>
         </tr>
@@ -5751,8 +6070,8 @@ function renderSettings() {
           (row) => `
             <article class="list-item">
               <div>
-                <strong>Vigente desde ${dateOnly(row.fechaVigencia) || "-"}</strong>
-                <span>Colaborador ${(Number(row.tasaColaborador) || 0).toFixed(2)}% · Empleador ${(Number(row.tasaEmpleador) || 0).toFixed(2)}% · Tope ${money.format(Number(row.tope) || 0)} · Base ${money.format(Number(row.baseContributiva) || 0)} · ${row.estado || "Activo"}</span>
+                <strong>Vigente ${dateOnly(row.fechaVigencia) || "-"} ${row.fechaFin ? `a ${dateOnly(row.fechaFin)}` : "en adelante"}</strong>
+                <span>Colaborador ${(Number(row.tasaColaborador) || 0).toFixed(2)}% · Empleador ${(Number(row.tasaEmpleador) || 0).toFixed(2)}% · Tope ${money.format(Number(row.tope) || 0)} · Base ${money.format(Number(row.baseContributiva) || 0)} · Bonos ${row.bonoSujeto ? "sujetos" : "no sujetos"} · Comisiones ${row.comisionSujeta ? "sujetas" : "no sujetas"} · ${row.estado || "Activo"}</span>
               </div>
               <div class="row-actions">
                 <button class="secondary-btn compact edit-record" data-type="tss" data-id="${row.tssID}" type="button">Editar</button>
@@ -5775,6 +6094,8 @@ function renderAll() {
   safeRender("transferencias pendientes", renderPendingTransfers);
   safeRender("citas", renderReservations);
   safeRender("nomina", renderPayroll);
+  safeRender("vacaciones", renderVacations);
+  safeRender("cxc de colaboradores", renderCollaboratorReceivables);
   safeRender("cierres de caja", renderCash);
   safeRender("conciliacion de tarjetas", renderCardReconciliation);
   safeRender("egresos", renderExpenses);
@@ -6459,6 +6780,10 @@ function fillDataForm(type, id) {
     byId("tss-cap").value = Number(row.tope) || 0;
     byId("tss-base").value = Number(row.baseContributiva) || 0;
     byId("tss-effective-date").value = row.fechaVigencia || today;
+    byId("tss-end-date").value = row.fechaFin || "";
+    byId("tss-bonus-subject").checked = Boolean(row.bonoSujeto);
+    byId("tss-commission-subject").checked = Boolean(row.comisionSujeta);
+    byId("tss-note").value = row.observaciones || "";
     byId("tss-status").value = row.estado || "Activo";
     openDataForm("tss-config-form");
   }
@@ -8730,6 +9055,13 @@ function wireForms() {
             concepto: `${advanceLabel}: ${concept}`,
             fechaVencimiento: today,
           }));
+          logAudit("collaborator_receivable_created", {
+            entity: "cuentasCobrar",
+            entityId: cxcId,
+            newData: { colaboradorID: staffRecord.colaboradorID, tipo: advanceLabel, monto: amount, egresoID: expenseId },
+            note: `${advanceLabel} de ${money.format(amount)} para ${staffRecord.nombreCompleto}, vinculado al egreso ${expenseId}.`,
+            success: true,
+          });
         }
         if (supplierRecord) {
           const supplierName = supplierRecord.nombre || supplierRecord.nombreCompleto || supplierRecord.empresa || supplierRecord.suplidorNombre;
@@ -9109,12 +9441,21 @@ function wireForms() {
         totalAPagar: data.net,
         estado: "Borrador",
       }));
-      logAudit("payroll_draft_created", {
+      logAudit("payroll_draft_saved", {
         entity: "nomina",
         entityId: payrollId,
         newData: { colaboradorID: staffRecord?.colaboradorID || "", periodo: data.period, corte: data.cut, neto: data.net },
-        note: `Borrador de nómina ${payrollId} creado para ${data.staffName}, ${data.range.label} ${data.period}.`,
+        note: `Borrador de nómina ${payrollId} guardado para ${data.staffName}, ${data.range.label} ${data.period}.`,
         success: true,
+      });
+      data.bonusLines.forEach((line) => {
+        logAudit("payroll_bonus_added", {
+          entity: "nomina",
+          entityId: payrollId,
+          newData: { concepto: line.concept, monto: line.amount, sujetoATss: line.subjectToTss },
+          note: `Bono "${line.concept}" agregado al borrador ${payrollId} por ${money.format(line.amount)}.`,
+          success: true,
+        });
       });
       event.target.reset();
       byId("payroll-period").value = month;
@@ -9134,16 +9475,18 @@ function wireForms() {
     }
   });
 
-  byId("vacation-start").addEventListener("input", updateVacationAdvancePreview);
-  byId("vacation-days").addEventListener("input", updateVacationAdvancePreview);
-  byId("vacation-daily-value").addEventListener("input", updateVacationAdvancePreview);
+  // ---------------------------------------------------------------------
+  // Vacaciones: Solicitada -> Aprobada -> Pagada anticipadamente -> Disfrutada,
+  // con Cancelada como salida antes del pago. Cada transicion es una accion
+  // separada, con su propio permiso y auditoria (nunca se salta un paso).
+  // ---------------------------------------------------------------------
 
   let vacationSubmitInFlight = false;
   byId("vacation-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (vacationSubmitInFlight) return;
     if (!canManageInvoices()) {
-      alert("Solo administración o propietario puede aprobar y pagar vacaciones anticipadas.");
+      alert("Solo administración o propietario puede solicitar vacaciones.");
       return;
     }
     const staffName = byId("vacation-staff").value.trim();
@@ -9155,77 +9498,39 @@ function wireForms() {
     }
     const startDate = byId("vacation-start").value;
     const days = Number(byId("vacation-days").value) || 0;
-    const dailyValue = Number(byId("vacation-daily-value").value) || 0;
     if (!DalfiClosingMath.isValidIsoDate(startDate)) {
       alert("Indica una fecha de inicio válida.");
       byId("vacation-start").focus();
       return;
     }
     if (!(days > 0)) {
-      alert("Los días pagados deben ser mayores que cero.");
+      alert("Los días deben ser mayores que cero.");
       byId("vacation-days").focus();
-      return;
-    }
-    if (!(dailyValue > 0)) {
-      alert("Indica el valor diario a utilizar para este anticipo (política de valor diario configurada para el negocio).");
-      byId("vacation-daily-value").focus();
-      return;
-    }
-    const accountName = byId("vacation-account").value.trim();
-    const account = findAccountByName(accountName);
-    if (!account) {
-      alert("Selecciona una cuenta o caja válida para pagar el anticipo.");
-      byId("vacation-account").focus();
-      return;
-    }
-    const amount = DalfiClosingMath.roundMoney(days * dailyValue);
-    const available = accountAvailableBalance(accountName);
-    if (amount > available) {
-      alert(`El anticipo supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
       return;
     }
     vacationSubmitInFlight = true;
     try {
       const vacationId = nextDbId("vacaciones", "vacationId", "VAC");
-      const expenseId = nextDbId("egresos", "egresoID", "EGR");
-      dbTable("egresos").push(stampRecord({
-        egresoID: expenseId,
-        fechaHora: `${today}T12:00:00`,
-        tipoEgreso: "vacaciones",
-        cuentaOrigenID: account.cuentaID || "",
-        cuentaOrigen: accountName,
-        cuentaDestinoID: "",
-        cuentaDestino: "",
-        concepto: `Vacaciones anticipadas ${staffName} (${days} días)`,
-        monto: amount,
-        estado: "Registrado",
-        observaciones: byId("vacation-note").value.trim(),
-      }));
       dbTable("vacaciones").push(stampRecord({
         vacationId,
         colaboradorID: staffRecord.colaboradorID || "",
         colaboradorNombre: staffName,
         fechaInicio: startDate,
+        fechaFin: DalfiClosingMath.addDaysToIsoDate(startDate, Math.max(0, days - 1)),
         diasPagados: days,
-        valorDiario: dailyValue,
-        montoAnticipado: amount,
-        fechaPagoAnticipado: today,
-        cuentaID: account.cuentaID || "",
-        cuenta: accountName,
-        estado: "Pagada anticipadamente",
-        egresoID: expenseId,
+        valorDiario: 0,
+        montoAnticipado: 0,
+        estado: "Solicitada",
         observaciones: byId("vacation-note").value.trim(),
       }));
-      refreshPendingClosingsForDate(today);
-      logAudit("vacation_advance_paid", {
+      logAudit("vacation_requested", {
         entity: "vacaciones",
         entityId: vacationId,
-        newData: { colaboradorID: staffRecord.colaboradorID || "", dias: days, monto: amount, cuenta: accountName },
-        note: `Anticipo de vacaciones pagado a ${staffName}: ${days} días por ${money.format(amount)}.`,
+        newData: { colaboradorID: staffRecord.colaboradorID || "", fechaInicio: startDate, dias: days },
+        note: `Vacaciones solicitadas para ${staffName}: ${days} días desde ${startDate}.`,
         success: true,
       });
       event.target.reset();
-      byId("vacation-advance-amount").textContent = money.format(0);
       saveState();
       renderAll();
     } finally {
@@ -9233,10 +9538,174 @@ function wireForms() {
     }
   });
 
+  byId("cancel-vacation-approve").addEventListener("click", (event) => {
+    event.preventDefault();
+    byId("vacation-approve-form").classList.add("hidden");
+  });
+
+  byId("vacation-approve-daily-value").addEventListener("input", () => {
+    const vacation = dbTable("vacaciones").find((row) => row.vacationId === byId("vacation-approve-id").value);
+    const days = Number(vacation?.diasPagados) || 0;
+    const dailyValue = Number(byId("vacation-approve-daily-value").value) || 0;
+    byId("vacation-approve-amount").textContent = money.format(DalfiClosingMath.roundMoney(days * dailyValue));
+  });
+
+  byId("vacation-approve-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede aprobar vacaciones.");
+      return;
+    }
+    const vacationId = byId("vacation-approve-id").value;
+    const vacation = dbTable("vacaciones").find((row) => row.vacationId === vacationId);
+    if (!vacation || normalize(vacation.estado || "") !== "solicitada") {
+      alert("Esta solicitud ya no está pendiente de aprobación.");
+      byId("vacation-approve-form").classList.add("hidden");
+      return;
+    }
+    const dailyValue = Number(byId("vacation-approve-daily-value").value) || 0;
+    if (!(dailyValue > 0)) {
+      alert("Indica el valor diario a utilizar (política de valor diario configurada para el negocio).");
+      byId("vacation-approve-daily-value").focus();
+      return;
+    }
+    const days = Number(vacation.diasPagados) || 0;
+    vacation.valorDiario = dailyValue;
+    vacation.montoAnticipado = DalfiClosingMath.roundMoney(days * dailyValue);
+    vacation.estado = "Aprobada";
+    stampRecord(vacation, "updated");
+    logAudit("vacation_approved", {
+      entity: "vacaciones",
+      entityId: vacationId,
+      newData: { valorDiario: dailyValue, monto: vacation.montoAnticipado },
+      note: `Vacaciones de ${vacation.colaboradorNombre} aprobadas por ${money.format(vacation.montoAnticipado)}.`,
+      success: true,
+    });
+    byId("vacation-approve-form").classList.add("hidden");
+    saveState();
+    renderAll();
+  });
+
+  byId("cancel-vacation-pay").addEventListener("click", (event) => {
+    event.preventDefault();
+    byId("vacation-pay-form").classList.add("hidden");
+  });
+
+  let vacationPaySubmitInFlight = false;
+  byId("vacation-pay-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (vacationPaySubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede pagar el anticipo de vacaciones.");
+      return;
+    }
+    const vacationId = byId("vacation-pay-id").value;
+    const vacation = dbTable("vacaciones").find((row) => row.vacationId === vacationId);
+    if (!vacation || normalize(vacation.estado || "") !== "aprobada") {
+      alert("Solo unas vacaciones Aprobadas pueden pagarse.");
+      byId("vacation-pay-form").classList.add("hidden");
+      return;
+    }
+    const accountName = byId("vacation-pay-account").value.trim();
+    const account = findAccountByName(accountName);
+    if (!account) {
+      alert("Selecciona una cuenta o caja válida para pagar el anticipo.");
+      byId("vacation-pay-account").focus();
+      return;
+    }
+    const payDate = byId("vacation-pay-date").value || today;
+    if (!DalfiClosingMath.isValidIsoDate(payDate)) {
+      alert("Indica una fecha de pago válida.");
+      return;
+    }
+    const amount = Number(vacation.montoAnticipado) || 0;
+    const available = accountAvailableBalance(accountName);
+    if (amount > available) {
+      alert(`El anticipo supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
+      return;
+    }
+    vacationPaySubmitInFlight = true;
+    try {
+      const expenseId = nextDbId("egresos", "egresoID", "EGR");
+      dbTable("egresos").push(stampRecord({
+        egresoID: expenseId,
+        fechaHora: `${payDate}T12:00:00`,
+        tipoEgreso: "vacaciones",
+        cuentaOrigenID: account.cuentaID || "",
+        cuentaOrigen: accountName,
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `Vacaciones anticipadas ${vacation.colaboradorNombre} (${vacation.diasPagados} días)`,
+        monto: amount,
+        estado: "Registrado",
+        observaciones: vacation.observaciones || "",
+      }));
+      vacation.fechaPagoAnticipado = payDate;
+      vacation.cuentaID = account.cuentaID || "";
+      vacation.cuenta = accountName;
+      vacation.egresoID = expenseId;
+      vacation.estado = "Pagada anticipadamente";
+      stampRecord(vacation, "updated");
+      refreshPendingClosingsForDate(payDate);
+      logAudit("vacation_advance_paid", {
+        entity: "vacaciones",
+        entityId: vacationId,
+        newData: { colaboradorID: vacation.colaboradorID, dias: vacation.diasPagados, monto: amount, cuenta: accountName, egresoID: expenseId },
+        note: `Anticipo de vacaciones pagado a ${vacation.colaboradorNombre}: ${vacation.diasPagados} días por ${money.format(amount)}.`,
+        success: true,
+      });
+      byId("vacation-pay-form").classList.add("hidden");
+      saveState();
+      renderAll();
+    } finally {
+      vacationPaySubmitInFlight = false;
+    }
+  });
+
+  byId("vacation-table").addEventListener("click", (event) => {
+    const row = event.target.closest("tr[data-vacation-id]");
+    if (!row) return;
+    const vacationId = row.dataset.vacationId;
+    if (event.target.closest(".approve-vacation")) openVacationApproveForm(vacationId);
+    if (event.target.closest(".pay-vacation")) openVacationPayForm(vacationId);
+    if (event.target.closest(".mark-vacation-enjoyed")) markVacationEnjoyed(vacationId);
+    if (event.target.closest(".cancel-vacation")) cancelVacation(vacationId);
+  });
+
+  byId("vacation-search").addEventListener("input", renderVacations);
+
+  byId("collaborator-charge-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const staffName = byId("collaborator-charge-staff").value.trim();
+    const staffRecord = findStaffByName(staffName);
+    const amount = Number(byId("collaborator-charge-amount").value) || 0;
+    const concept = byId("collaborator-charge-concept").value.trim();
+    const tipoCxC = byId("collaborator-charge-type").value;
+    try {
+      createCollaboratorInternalCharge({ staffRecord, staffName, amount, concept, tipoCxC });
+      event.target.reset();
+      saveState();
+      renderAll();
+    } catch (error) {
+      alert(error?.message || "No se pudo registrar el cargo.");
+    }
+  });
+
+  byId("collaborator-receivable-search").addEventListener("input", renderCollaboratorReceivables);
+  byId("collaborator-receivable-search").closest("section").querySelectorAll(".collaborator-receivable-filter").forEach((button) => {
+    button.addEventListener("click", () => {
+      button.parentElement.querySelectorAll(".collaborator-receivable-filter").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      renderCollaboratorReceivables();
+    });
+  });
+
   byId("payroll-table").addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-payroll-id]");
     if (!row) return;
     const payrollId = row.dataset.payrollId;
+    if (event.target.closest(".approve-payroll")) approvePayroll(payrollId);
+    if (event.target.closest(".reopen-payroll")) reopenPayroll(payrollId);
     if (event.target.closest(".pay-payroll")) openPayPayrollForm(payrollId);
     if (event.target.closest(".revert-payroll")) revertPayrollPayment(payrollId);
   });
@@ -9261,8 +9730,17 @@ function wireForms() {
       alert("Esta nómina ya no existe.");
       return;
     }
-    if (normalize(payroll.estado || "") !== "borrador") {
-      alert("Esta nómina ya fue pagada o revertida. No se puede pagar de nuevo.");
+    if (normalize(payroll.estado || "") !== "aprobada") {
+      alert("Esta nómina debe estar Aprobada antes de pagarse. No se puede pasar de Borrador directo a Pagada.");
+      return;
+    }
+    // Bloqueo funcional (no solo visual): la funcion interna vuelve a
+    // rechazar la operacion aunque alguien haya llegado hasta aqui sin
+    // pasar por el boton Pagar (por ejemplo, un formulario que quedo
+    // abierto de una nomina que dejo de tener TSS vigente).
+    const tssBlockReason = payrollTssBlockReason(payroll);
+    if (tssBlockReason) {
+      alert(tssBlockReason);
       return;
     }
     const accountName = byId("pay-payroll-account").value.trim();
@@ -9286,10 +9764,6 @@ function wireForms() {
     if (net <= 0) {
       alert("El neto a pagar debe ser mayor que cero.");
       return;
-    }
-    if (payroll.payrollType !== "first" && (Number(payroll.tssEmployeeDeduction) || 0) === 0 && !payroll.tssConfigId) {
-      const proceed = confirm("No hay configuración de TSS vigente para esta nómina y no se retuvo TSS del colaborador. ¿Deseas continuar de todas formas?");
-      if (!proceed) return;
     }
     const available = accountAvailableBalance(accountName);
     if (net > available) {
@@ -9342,6 +9816,13 @@ function wireForms() {
         cxc.observaciones = `${cxc.observaciones || ""} Descontado en nómina ${payrollId}`.trim();
         stampRecord(cxc, "updated");
         totalCxcApplied += applied;
+        logAudit("collaborator_receivable_applied", {
+          entity: "cuentasCobrar",
+          entityId: cxc.cxCID,
+          newData: { payrollId, amountApplied: applied, remainingBalance: cxc.balancePendiente },
+          note: `CxC ${cxc.cxCID} descontada ${money.format(applied)} en la nómina ${payrollId}.`,
+          success: true,
+        });
       });
       payroll.estado = "Pagada";
       payroll.fechaPagoNomina = payDate;
@@ -9692,11 +10173,16 @@ function wireForms() {
 
   byId("staff-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede configurar el salario o los umbrales de un colaborador.");
+      return;
+    }
     const fullName = byId("staff-full-name").value.trim();
     if (!fullName) return;
     const parts = splitName(fullName);
     const editId = byId("staff-edit-id").value;
     let staff = dbTable("colaboradores").find((row) => row.colaboradorID === editId) || findStaffByName(fullName);
+    const newSalary = Number(byId("staff-salary").value) || 0;
     if (!staff) {
       staff = {
         colaboradorID: nextDbId("colaboradores", "colaboradorID", "COL"),
@@ -9705,7 +10191,7 @@ function wireForms() {
         apellido: byId("staff-last-name").value.trim() || parts.last,
         funcion: byId("staff-role").value.trim(),
         telefono: byId("staff-phone").value.trim(),
-        salarioMensual: Number(byId("staff-salary").value) || 0,
+        salarioMensual: newSalary,
         direccion: byId("staff-address").value.trim(),
         correo: byId("staff-email").value.trim(),
         estado: "Activo",
@@ -9715,12 +10201,28 @@ function wireForms() {
       };
       dbTable("colaboradores").push(stampRecord(staff));
     } else {
+      // Historico de salario: cada CAMBIO real de salarioMensual queda como
+      // su propia fila (nunca se sobreescribe en silencio), asi una nomina
+      // ya pagada sigue siendo trazable contra el salario vigente cuando se
+      // calculo (el snapshot de esa nomina ya congelo el monto usado; esto
+      // es solo para auditoria/consulta del historico salarial).
+      const previousSalary = Number(staff.salarioMensual) || 0;
+      if (newSalary > 0 && newSalary !== previousSalary) {
+        dbTable("historialSalarial").push(stampRecord({
+          historialID: nextDbId("historialSalarial", "historialID", "HSAL"),
+          colaboradorID: staff.colaboradorID,
+          colaboradorNombre: fullName,
+          salarioAnterior: previousSalary,
+          salarioNuevo: newSalary,
+          fechaVigencia: today,
+        }));
+      }
       staff.nombreCompleto = fullName;
       staff.nombre = byId("staff-first-name").value.trim() || staff.nombre;
       staff.apellido = byId("staff-last-name").value.trim() || staff.apellido;
       staff.funcion = byId("staff-role").value.trim() || staff.funcion;
       staff.telefono = byId("staff-phone").value.trim() || staff.telefono;
-      staff.salarioMensual = Number(byId("staff-salary").value) || staff.salarioMensual;
+      staff.salarioMensual = newSalary || staff.salarioMensual;
       staff.direccion = byId("staff-address").value.trim() || staff.direccion;
       staff.correo = byId("staff-email").value.trim() || staff.correo;
       staff.fechaIngreso = byId("staff-start-date").value || staff.fechaIngreso;
@@ -9813,6 +10315,19 @@ function wireForms() {
     const rawRate = Number(byId("commission-rate").value);
     const editId = byId("commission-edit-id").value;
     const existing = dbTable("umbralesComision").find((row) => row.escalaID === editId);
+    // Igual que TSS: un umbral ya usado por una nomina PAGADA no se edita en
+    // silencio (el snapshot de esa nomina ya quedo congelado con el
+    // porcentaje que aplico, pero editar aqui podria aparentar que la
+    // historia cambio). Se pide crear un umbral nuevo.
+    if (existing) {
+      const usedByPaidPayroll = dbTable("nomina").some(
+        (row) => row.commissionRuleSnapshot?.thresholdId === editId && normalize(row.estado || "") === "pagada",
+      );
+      if (usedByPaidPayroll) {
+        alert("Este umbral ya fue usado por una nómina pagada y no puede editarse. Crea un umbral nuevo en su lugar.");
+        return;
+      }
+    }
     // Validacion real (antes no existia ninguna): minimo finito no-negativo,
     // maximo mayor que minimo, porcentaje 0-100, y rangos que no se solapen
     // con otro umbral activo del mismo grupo ("aplicaA").
@@ -9834,7 +10349,7 @@ function wireForms() {
     };
     if (existing) Object.assign(existing, payload);
     else dbTable("umbralesComision").push(stampRecord({ escalaID: nextDbId("umbralesComision", "escalaID", "COM"), ...payload }));
-    logAudit(existing ? "commission_threshold_edit" : "commission_threshold_create", {
+    logAudit("commission_threshold_changed", {
       entity: "umbralesComision",
       entityId: existing ? editId : "",
       newData: payload,
@@ -9859,6 +10374,7 @@ function wireForms() {
     const cap = Number(byId("tss-cap").value);
     const base = Number(byId("tss-base").value);
     const effectiveDate = byId("tss-effective-date").value;
+    const endDate = byId("tss-end-date").value;
     if (![employeeRate, employerRate, cap, base].every((value) => Number.isFinite(value) && value >= 0) || employeeRate > 100 || employerRate > 100) {
       alert("Las tasas deben estar entre 0 y 100, y el tope/base deben ser montos válidos mayores o iguales a 0.");
       return;
@@ -9868,19 +10384,39 @@ function wireForms() {
       byId("tss-effective-date").focus();
       return;
     }
+    if (endDate && (!DalfiClosingMath.isValidIsoDate(endDate) || endDate < effectiveDate)) {
+      alert("La fecha final debe ser válida y posterior a la fecha de vigencia.");
+      byId("tss-end-date").focus();
+      return;
+    }
     const editId = byId("tss-edit-id").value;
     const existing = dbTable("configuracionTSS").find((row) => row.tssID === editId);
+    // Una configuracion ya usada por al menos una nomina PAGADA no se
+    // modifica en silencio: el monto ya cobrado quedo congelado en esa
+    // nomina (no cambiaria retroactivamente), pero editar aqui podria
+    // aparentar que la historia cambio. Se pide crear una vigencia nueva.
+    if (existing) {
+      const usedByPaidPayroll = dbTable("nomina").some((row) => row.tssConfigId === editId && normalize(row.estado || "") === "pagada");
+      if (usedByPaidPayroll) {
+        alert("Esta configuración ya fue usada por una nómina pagada y no puede editarse. Crea una nueva vigencia en su lugar.");
+        return;
+      }
+    }
     const payload = {
       tasaColaborador: employeeRate,
       tasaEmpleador: employerRate,
       tope: cap,
       baseContributiva: base,
       fechaVigencia: effectiveDate,
+      fechaFin: endDate,
+      bonoSujeto: byId("tss-bonus-subject").checked,
+      comisionSujeta: byId("tss-commission-subject").checked,
       estado: byId("tss-status").value,
+      observaciones: byId("tss-note").value.trim(),
     };
     if (existing) Object.assign(existing, payload);
     else dbTable("configuracionTSS").push(stampRecord({ tssID: nextDbId("configuracionTSS", "tssID", "TSS"), ...payload }));
-    logAudit(existing ? "tss_config_edit" : "tss_config_create", {
+    logAudit("tss_configuration_changed", {
       entity: "configuracionTSS",
       entityId: existing ? editId : "",
       newData: payload,

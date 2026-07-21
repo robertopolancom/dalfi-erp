@@ -75,6 +75,8 @@ function extractStatementBlock(startMarker, throughMarker, source = appJs) {
 const payrollSubmit = extractStatementBlock('let payrollSubmitInFlight = false;', 'byId("payroll-form").addEventListener("submit"');
 const payPayrollSubmit = extractStatementBlock('let payPayrollSubmitInFlight = false;', 'byId("pay-payroll-form").addEventListener("submit"');
 const vacationSubmit = extractStatementBlock('let vacationSubmitInFlight = false;', 'byId("vacation-form").addEventListener("submit"');
+const vacationApproveSubmit = extractStatementBlock('byId("vacation-approve-form").addEventListener("submit"', "(event) => {", appJs);
+const vacationPaySubmit = extractStatementBlock('let vacationPaySubmitInFlight = false;', 'byId("vacation-pay-form").addEventListener("submit"');
 const commissionSubmit = extractStatementBlock('byId("commission-form").addEventListener("submit"', "(event) => {", appJs);
 const tssSubmit = extractStatementBlock('byId("tss-config-form").addEventListener("submit"', "(event) => {", appJs);
 
@@ -318,12 +320,27 @@ test("los bonos quedan en el snapshot de la nomina (campo 'bonos') y se suman al
 // G. Vacaciones
 // ===========================================================================
 
-test("54-55-56. registro de vacaciones (14 dias tipico) y pago anticipado crean exactamente UN egreso + UN registro de vacaciones", () => {
-  const matches = vacationSubmit.match(/dbTable\("egresos"\)\.push\(/g) || [];
+test("54. registro de vacaciones (14 dias tipico): Solicitar crea UN registro en estado Solicitada, sin ningun egreso (no genera salida monetaria)", () => {
+  const matches = vacationSubmit.match(/dbTable\("vacaciones"\)\.push\(/g) || [];
   assert.equal(matches.length, 1);
-  const vacMatches = vacationSubmit.match(/dbTable\("vacaciones"\)\.push\(/g) || [];
-  assert.equal(vacMatches.length, 1);
-  assert.match(vacationSubmit, /estado: "Pagada anticipadamente",/);
+  assert.match(vacationSubmit, /estado: "Solicitada",/);
+  assert.doesNotMatch(vacationSubmit, /dbTable\("egresos"\)\.push/);
+});
+
+test("55. Aprobar vacaciones (desde Solicitada) captura el valor diario y calcula el monto, sin crear egreso todavia", () => {
+  assert.match(vacationApproveSubmit, /normalize\(vacation\.estado \|\| ""\) !== "solicitada"/);
+  assert.match(vacationApproveSubmit, /vacation\.estado = "Aprobada";/);
+  assert.doesNotMatch(vacationApproveSubmit, /dbTable\("egresos"\)\.push/);
+});
+
+test("56. Pagar anticipo (desde Aprobada) crea exactamente UN egreso", () => {
+  const matches = vacationPaySubmit.match(/dbTable\("egresos"\)\.push\(/g) || [];
+  assert.equal(matches.length, 1);
+  assert.match(vacationPaySubmit, /vacation\.estado = "Pagada anticipadamente";/);
+});
+
+test("38. el pago anticipado solo puede ocurrir desde estado Aprobada, nunca directo desde Solicitada", () => {
+  assert.match(vacationPaySubmit, /normalize\(vacation\.estado \|\| ""\) !== "aprobada"/);
 });
 
 test("57-58-59-60. el ajuste se calcula por corte (computeVacationSalaryOffset) y la suma de ambos cortes coincide con el anticipo cuando las vacaciones cruzan las dos quincenas", () => {
@@ -340,20 +357,43 @@ test("61. sin doble pago: collaboratorVacationOffsetForRange resta del salario p
   assert.doesNotMatch(source, /dbTable\("egresos"\)\.push/);
 });
 
-test("62. cancelacion ANTES del pago: no aplica (el pago anticipado en este ERP se registra y paga en un solo paso; una vacacion nunca queda 'solicitada' sin pagar como registro persistido)", () => {
-  assert.match(vacationSubmit, /requiere autorizaci|canManageInvoices\(\)/);
+test("41. cancelacion ANTES del pago (Solicitada o Aprobada): cancelVacation() pide motivo y no requiere ningun ajuste de dinero", () => {
+  const source = extractFunction("cancelVacation");
+  assert.match(source, /const reason = prompt\("Motivo de la cancelación:"\);/);
+  assert.match(source, /vacation\.estado = "Cancelada";/);
 });
 
-test("63. el registro de vacaciones conserva egresoID para permitir bloquear una cancelacion silenciosa despues de pagado", () => {
-  assert.match(vacationSubmit, /egresoID: expenseId,/);
+test("42. cancelacion DESPUES del pago: nunca borra ni revierte en silencio, exige confirmacion + motivo y genera un ajuste (CxC) explicito via createCollaboratorInternalCharge", () => {
+  const source = extractFunction("cancelVacation");
+  assert.match(source, /estado === "pagada anticipadamente" \|\| estado === "disfrutada"/);
+  assert.match(source, /const createAdjustment = confirm\(/);
+  assert.match(source, /createCollaboratorInternalCharge\(\{/);
+  assert.doesNotMatch(source, /dbTable\("egresos"\)\.splice|delete dbTable/);
 });
 
-test("64. sin valor diario configurado (<=0), el calculo/registro se bloquea explicitamente, nunca se asume un divisor legal", () => {
-  assert.match(vacationSubmit, /if \(!\(dailyValue > 0\)\) \{/);
+test("63. el registro de vacaciones conserva egresoID (asignado al pagar) para permitir bloquear una cancelacion silenciosa despues de pagado", () => {
+  assert.match(vacationPaySubmit, /vacation\.egresoID = expenseId;/);
 });
 
-test("65. el valor diario usado queda guardado en el registro historico (vacaciones.valorDiario), cambios futuros de politica no lo alteran", () => {
-  assert.match(vacationSubmit, /valorDiario: dailyValue,/);
+test("64. sin valor diario configurado (<=0), Aprobar se bloquea explicitamente, nunca se asume un divisor legal", () => {
+  assert.match(vacationApproveSubmit, /if \(!\(dailyValue > 0\)\) \{/);
+});
+
+test("65. el valor diario usado queda guardado en el registro historico (vacaciones.valorDiario) al aprobar; cambios futuros de politica no lo alteran", () => {
+  assert.match(vacationApproveSubmit, /vacation\.valorDiario = dailyValue;/);
+});
+
+test("marcar disfrutada solo aplica a vacaciones ya Pagada anticipadamente, y no mueve dinero", () => {
+  const source = extractFunction("markVacationEnjoyed");
+  assert.match(source, /normalize\(vacation\.estado \|\| ""\) !== "pagada anticipadamente"/);
+  assert.doesNotMatch(source, /dbTable\("egresos"\)/);
+});
+
+test("renderVacations() ofrece el boton correcto por estado (Aprobar/Pagar anticipo/Marcar disfrutada/Cancelar), sin saltar pasos", () => {
+  const source = extractFunction("renderVacations");
+  assert.match(source, /const canApprove = normalized === "solicitada";/);
+  assert.match(source, /const canPay = normalized === "aprobada";/);
+  assert.match(source, /const canMarkEnjoyed = normalized === "pagada anticipadamente";/);
 });
 
 test("computeVacationSalaryOffset es pura, deterministica, y no aplica dias fuera del rango del corte", () => {
@@ -403,8 +443,11 @@ test("73-74. bonos sujetos a TSS (subjectToTss) se suman a la base contributiva;
   assert.match(source, /const bonusTssBase = bonusLines\.filter\(\(line\) => line\.subjectToTss\)/);
 });
 
-test("75. sin configuracion vigente, Pagar informa explicitamente antes de continuar (nunca paga TSS en silencio)", () => {
-  assert.match(payPayrollSubmit, /No hay configuración de TSS vigente/);
+test("75. sin configuracion vigente, Pagar RECHAZA la operacion (bloqueo funcional, no solo una advertencia que se puede ignorar)", () => {
+  const source = extractFunction("payrollTssBlockReason");
+  assert.match(source, /No puede pagarse esta nómina porque falta la configuración TSS vigente del período\./);
+  assert.match(payPayrollSubmit, /const tssBlockReason = payrollTssBlockReason\(payroll\);/);
+  assert.match(payPayrollSubmit, /if \(tssBlockReason\) \{\s*alert\(tssBlockReason\);\s*return;\s*\}/);
 });
 
 test("calculatePayrollSettlement: TSS del colaborador reduce netPayable, TSS del empleador no", () => {
@@ -489,9 +532,9 @@ test("95-96-97. el descuento reduce la CxC, no crea ingreso nuevo ni egreso nuev
   assert.match(cxcBlock, /cxc\.balancePendiente = Math\.max\(0, \(Number\(cxc\.balancePendiente\) \|\| 0\) - applied\);/);
 });
 
-test("98-99. sourceKey estable: cada aplicacion queda anotada en observaciones con el payrollId, y solo se aplica una vez (Pagar exige estado==='borrador')", () => {
+test("98-99. sourceKey estable: cada aplicacion queda anotada en observaciones con el payrollId, y solo se aplica una vez (Pagar exige estado==='aprobada', nunca 'borrador' directo)", () => {
   assert.match(payPayrollSubmit, /Descontado en nómina \$\{payrollId\}/);
-  assert.match(payPayrollSubmit, /if \(normalize\(payroll\.estado \|\| ""\) !== "borrador"\) \{/);
+  assert.match(payPayrollSubmit, /if \(normalize\(payroll\.estado \|\| ""\) !== "aprobada"\) \{/);
 });
 
 // ===========================================================================
@@ -615,9 +658,9 @@ test("117-118-119-120. Pagada genera exactamente una salida, marca propinas incl
   assert.match(payPayrollSubmit, /payroll\.estado = "Pagada";/);
 });
 
-test("121. Pagada bloquea edicion/repago: renderPayroll solo muestra el boton Pagar para filas en Borrador", () => {
+test("121. Pagada bloquea edicion/repago: renderPayroll solo muestra el boton Pagar para filas Aprobadas, nunca para Borrador ni Pagada", () => {
   const source = extractFunction("renderPayroll");
-  assert.match(source, /const canPay = normalize\(estado\) === "borrador";/);
+  assert.match(source, /const canPay = normalizedEstado === "aprobada";/);
 });
 
 // ===========================================================================
@@ -642,8 +685,8 @@ test("127-128. un solo egreso, con fecha real de pago (payDate), para que Cierre
   assert.match(payPayrollSubmit, /refreshPendingClosingsForDate\(payDate\);/);
 });
 
-test("129. el anticipo de vacaciones aparece en Cierres en su fecha real (refreshPendingClosingsForDate en el submit de vacaciones)", () => {
-  assert.match(vacationSubmit, /refreshPendingClosingsForDate\(today\);/);
+test("129. el anticipo de vacaciones aparece en Cierres en su fecha real (refreshPendingClosingsForDate en el submit de pago de vacaciones)", () => {
+  assert.match(vacationPaySubmit, /refreshPendingClosingsForDate\(payDate\);/);
 });
 
 test("130. el descuento posterior de CxC en nomina no crea un movimiento financiero nuevo (ya cubierto en seccion J, aqui se confirma que Pagar no llama a ningun addExpense/addIncome por cada CxC)", () => {
@@ -769,7 +812,7 @@ test("157. crear CxC a colaboradores exige permiso: createCollaboratorInternalCh
 });
 
 test("158-159-160. usuario inactivo/sin perfil bloqueado, user_metadata jamas se usa como autorizacion (canManageInvoices ya es la fuente unica en todo el archivo)", () => {
-  [payrollSubmit, payPayrollSubmit, vacationSubmit, commissionSubmit, tssSubmit].forEach((block) => {
+  [payrollSubmit, payPayrollSubmit, vacationSubmit, vacationApproveSubmit, vacationPaySubmit, commissionSubmit, tssSubmit].forEach((block) => {
     assert.doesNotMatch(block, /user_metadata/);
   });
 });
