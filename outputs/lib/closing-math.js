@@ -628,6 +628,325 @@
     });
   }
 
+  // ===========================================================================
+  // Nomina quincenal, comisiones, propinas, vacaciones, TSS y CxC de
+  // colaboradores (julio 2026). Funciones puras: no leen el DOM, no
+  // persisten, no crean movimientos. app.js las usa para calcular/previsualizar
+  // y para validar antes de escribir; la escritura real (dbTable/stampRecord)
+  // siempre ocurre en app.js, nunca aqui.
+  // ===========================================================================
+
+  function roundMoney(value) {
+    const num = sanitizeAmount(value);
+    return Math.round(num * 100) / 100;
+  }
+
+  // Reparte el salario mensual en las dos cuotas quincenales EXACTAS (nunca
+  // una tercera cuota): la primera es la mitad redondeada a centavos, la
+  // segunda es el resto (mensual - primera), de forma que primera+segunda
+  // sume el mensual centavo a centavo sin importar el redondeo.
+  function computeBiweeklySalaryInstallment({ monthlySalary = 0, cut = "month" } = {}) {
+    const monthly = Math.max(0, roundMoney(monthlySalary));
+    if (cut === "month") return { first: monthly, second: 0, monthlyTotal: monthly, installment: monthly };
+    const first = Math.round((monthly / 2) * 100) / 100;
+    const second = Math.round((monthly - first) * 100) / 100;
+    const installment = cut === "second" ? second : first;
+    return { first, second, monthlyTotal: monthly, installment };
+  }
+
+  // Ultimo dia calendario de un mes (para "dia 30" en meses de 28/29/30/31 dias,
+  // incluyendo febrero). month es 1-12.
+  function lastCalendarDayOfMonth(year, month) {
+    return new Date(Date.UTC(year, month, 0)).getUTCDate();
+  }
+
+  // Fecha ordinaria de pago de una quincena: dia 15 (primera) o el ULTIMO dia
+  // calendario del mes (segunda; dia 30 salvo febrero/meses cortos, nunca un
+  // dia inexistente). period = "YYYY-MM".
+  function payrollOrdinaryPaymentDate({ period, cut } = {}) {
+    const match = /^(\d{4})-(\d{2})$/.exec(String(period || ""));
+    if (!match) return "";
+    const year = Number(match[1]);
+    const monthNum = Number(match[2]);
+    if (cut === "first") return `${period}-15`;
+    if (cut === "second") return `${period}-${String(lastCalendarDayOfMonth(year, monthNum)).padStart(2, "0")}`;
+    return "";
+  }
+
+  // Periodo especial de propinas/comisiones: desde el dia 21 del mes ANTERIOR
+  // hasta el dia 20 del mes de "period" (el mes de la nomina del dia 30),
+  // ambos inclusive, sin duplicar ni saltar el dia 20/21. Fechas-calendario
+  // puras (mismo criterio que el resto del modulo: "hoy" ya es la fecha
+  // operativa en America/Santo_Domingo cuando app.js la genera, asi que esta
+  // funcion no vuelve a convertir zona horaria, solo hace aritmetica de
+  // calendario sobre las fechas-YYYY-MM-DD que ya recibe).
+  function computeTipCommissionPeriod({ period } = {}) {
+    const match = /^(\d{4})-(\d{2})$/.exec(String(period || ""));
+    if (!match) return { start: "", end: "", valid: false };
+    const year = Number(match[1]);
+    const monthNum = Number(match[2]);
+    const prevMonthDate = new Date(Date.UTC(year, monthNum - 1, 1));
+    prevMonthDate.setUTCMonth(prevMonthDate.getUTCMonth() - 1);
+    const prevYear = prevMonthDate.getUTCFullYear();
+    const prevMonth = String(prevMonthDate.getUTCMonth() + 1).padStart(2, "0");
+    return { start: `${prevYear}-${prevMonth}-21`, end: `${period}-20`, valid: true };
+  }
+
+  // Produccion elegible -> comision. mode "total_por_umbral" (default,
+  // preserva la semantica ya implementada en app.js: el umbral con el
+  // "desde" mas alto que la produccion total alcanza se aplica a TODA la
+  // produccion, sin acumular por tramos). "progresivo_por_tramos" queda
+  // disponible para cuando la administradora lo configure explicitamente,
+  // nunca se aplica por defecto.
+  function selectCommissionThreshold({ eligibleSales = 0, thresholds = [], mode = "total_por_umbral" } = {}) {
+    const sales = Math.max(0, roundMoney(eligibleSales));
+    const active = (Array.isArray(thresholds) ? thresholds : []).filter(
+      (rule) => rule && String(rule.estado || "Activo").trim().toLowerCase() !== "inactivo",
+    );
+    if (mode === "progresivo_por_tramos") {
+      const sorted = active.slice().sort((a, b) => sanitizeAmount(a.desde) - sanitizeAmount(b.desde));
+      let remaining = sales;
+      let commissionAmount = 0;
+      const tramosAplicados = [];
+      sorted.forEach((rule) => {
+        const from = Math.max(0, sanitizeAmount(rule.desde));
+        const to = sanitizeAmount(rule.hasta);
+        const tramoTop = to > 0 ? to : Infinity;
+        const tramoSize = Math.max(0, Math.min(sales, tramoTop) - from);
+        if (tramoSize <= 0 || sales <= from || remaining <= 0) return;
+        const taken = Math.min(remaining, tramoSize);
+        const rate = sanitizeAmount(rule.porcentajeComision);
+        commissionAmount += taken * rate;
+        remaining -= taken;
+        tramosAplicados.push({ escalaID: rule.escalaID || rule.id || "", rate, base: taken });
+      });
+      return {
+        mode: "progresivo_por_tramos",
+        thresholdId: tramosAplicados.map((t) => t.escalaID).join(","),
+        rate: sales > 0 ? commissionAmount / sales : 0,
+        commissionAmount: roundMoney(commissionAmount),
+        eligibleSales: sales,
+        tramosAplicados,
+      };
+    }
+    const applicable = active
+      .filter((rule) => sales >= sanitizeAmount(rule.desde) && (sanitizeAmount(rule.hasta) <= 0 || sales <= sanitizeAmount(rule.hasta)))
+      .sort((a, b) => sanitizeAmount(b.desde) - sanitizeAmount(a.desde));
+    const winner = applicable[0] || null;
+    const rate = winner ? sanitizeAmount(winner.porcentajeComision) : 0;
+    return {
+      mode: "total_por_umbral",
+      thresholdId: winner?.escalaID || winner?.id || "",
+      rate,
+      commissionAmount: roundMoney(sales * rate),
+      eligibleSales: sales,
+    };
+  }
+
+  // Valida una regla de umbral ANTES de guardarla (la UI actual no validaba
+  // nada: minimo/maximo/porcentaje podian quedar en 0 silenciosamente y dos
+  // rangos podian solaparse sin aviso). No muta rule ni existingRules.
+  function validateCommissionThresholdRule(rule, existingRules = []) {
+    const errors = [];
+    const min = sanitizeAmount(rule?.desde);
+    const rawMax = rule?.hasta;
+    const hasMax = rawMax !== undefined && rawMax !== null && rawMax !== "" && sanitizeAmount(rawMax) > 0;
+    const max = hasMax ? sanitizeAmount(rawMax) : null;
+    const rawRate = Number(rule?.porcentajeComision);
+    if (!Number.isFinite(min) || min < 0) errors.push("El monto minimo debe ser un numero finito mayor o igual a 0.");
+    if (hasMax && (!Number.isFinite(max) || max <= min)) errors.push("El monto maximo debe ser mayor que el minimo.");
+    if (rule?.porcentajeComision === undefined || rule?.porcentajeComision === null || rule?.porcentajeComision === "" || !Number.isFinite(rawRate)) {
+      errors.push("El porcentaje de comision debe ser un numero finito.");
+    } else {
+      const percent = rawRate > 1 ? rawRate : rawRate * 100;
+      if (percent < 0 || percent > 100) errors.push("El porcentaje de comision debe estar entre 0 y 100.");
+    }
+    const overlaps = (Array.isArray(existingRules) ? existingRules : []).some((other) => {
+      if (!other || (rule?.escalaID && other.escalaID === rule.escalaID)) return false;
+      if (String(other.estado || "Activo").trim().toLowerCase() === "inactivo") return false;
+      if ((other.aplicaA || "") !== (rule?.aplicaA || "")) return false;
+      const otherMin = sanitizeAmount(other.desde);
+      const otherMax = sanitizeAmount(other.hasta) > 0 ? sanitizeAmount(other.hasta) : Infinity;
+      const ruleMax = max === null ? Infinity : max;
+      return min < otherMax && ruleMax > otherMin;
+    });
+    if (overlaps) errors.push("Este rango se solapa con otro umbral activo ya configurado para el mismo colaborador/grupo.");
+    return { valid: errors.length === 0, errors };
+  }
+
+  // Cuantos dias de unas vacaciones prepagadas (vacationStart, vacationDays
+  // dias corridos) caen dentro de un corte de nomina especifico [cutStart,
+  // cutEnd], y a cuanto equivale eso en dinero ya adelantado (dailyValue por
+  // dia). Se usa para RESTAR de la cuota salarial ordinaria de ese corte,
+  // nunca para restarlo dos veces si se llama una vez por cada corte.
+  function computeVacationSalaryOffset({ vacationStart, vacationDays = 0, cutStart, cutEnd, dailyValue = 0 } = {}) {
+    const days = Math.max(0, Math.floor(sanitizeAmount(vacationDays)));
+    const rate = Math.max(0, roundMoney(dailyValue));
+    if (!isValidIsoDate(vacationStart) || !isValidIsoDate(cutStart) || !isValidIsoDate(cutEnd) || days <= 0) {
+      return { daysInCut: 0, offsetAmount: 0 };
+    }
+    const vacationEnd = addDaysToIsoDate(vacationStart, days - 1);
+    const overlapStart = vacationStart > cutStart ? vacationStart : cutStart;
+    const overlapEnd = vacationEnd < cutEnd ? vacationEnd : cutEnd;
+    if (overlapStart > overlapEnd) return { daysInCut: 0, offsetAmount: 0 };
+    let daysInCut = 0;
+    let cursor = overlapStart;
+    while (cursor <= overlapEnd && daysInCut <= 400) {
+      daysInCut++;
+      cursor = addDaysToIsoDate(cursor, 1);
+    }
+    return { daysInCut, offsetAmount: roundMoney(daysInCut * rate) };
+  }
+
+  // Compara dos CxC de colaborador para el orden FIFO de descuento en nomina:
+  // fecha de origen -> vencimiento -> id estable. Mismo principio que
+  // compareReceivablesFIFO (clientes), aplicado a CxC de colaboradores.
+  function compareCollaboratorReceivablesFIFO(a, b) {
+    const dateCompare = String(a?.fechaOrigen || "").localeCompare(String(b?.fechaOrigen || ""));
+    if (dateCompare !== 0) return dateCompare;
+    const dueCompare = String(a?.fechaVencimiento || "").localeCompare(String(b?.fechaVencimiento || ""));
+    if (dueCompare !== 0) return dueCompare;
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+  }
+
+  // Aplica un monto total elegido por la administradora contra las CxC
+  // pendientes del colaborador, de la mas antigua a la mas reciente, sin
+  // superar ni el saldo pendiente de cada una ni el monto solicitado.
+  function applyCollaboratorReceivablesFIFO({ receivables = [], amountToApply = 0 } = {}) {
+    const sanitizePositive = (value) => Math.max(0, sanitizeAmount(value));
+    const normalized = (Array.isArray(receivables) ? receivables : [])
+      .map((row) => ({
+        id: row?.id || row?.cxCID || "",
+        balance: sanitizePositive(row?.balance ?? row?.balancePendiente),
+        fechaOrigen: row?.fechaOrigen || "",
+        fechaVencimiento: row?.fechaVencimiento || "",
+      }))
+      .filter((row) => row.balance > 0)
+      .sort(compareCollaboratorReceivablesFIFO);
+    const totalPending = normalized.reduce((sum, row) => sum + row.balance, 0);
+    const totalRequested = sanitizePositive(amountToApply);
+    let remaining = Math.min(totalRequested, totalPending);
+    const allocations = normalized
+      .map((row) => {
+        const applied = Math.min(remaining, row.balance);
+        remaining = Math.max(0, remaining - applied);
+        return { id: row.id, previousBalance: row.balance, amountApplied: roundMoney(applied), remainingBalance: roundMoney(Math.max(0, row.balance - applied)) };
+      })
+      .filter((row) => row.amountApplied > 0);
+    const totalApplied = roundMoney(allocations.reduce((sum, row) => sum + row.amountApplied, 0));
+    return { allocations, totalApplied, unappliedAmount: roundMoney(Math.max(0, totalRequested - totalApplied)) };
+  }
+
+  // Liquidacion de nomina de UN colaborador para UNA quincena: funcion pura
+  // que combina salario/comisiones/propinas/bonos/otros ingresos menos
+  // TSS/CxC descontada/otros descuentos. No lee el DOM, no persiste, no crea
+  // movimientos: app.js la usa para calcular el borrador Y para recalcular
+  // exactamente lo mismo en el momento de pagar (una sola formula, nunca dos).
+  function calculatePayrollSettlement({
+    monthlySalary = 0,
+    payrollType = "quincena",
+    salaryInstallment = null,
+    salaryProration = 0,
+    vacationAdvancePaid = 0,
+    vacationSalaryOffset = 0,
+    commissions = 0,
+    collectedTipsPayable = 0,
+    bonuses = 0,
+    otherIncome = 0,
+    employeeTssDeduction = 0,
+    employeeReceivableDeduction = 0,
+    otherDeductions = 0,
+    employerTssContribution = 0,
+    allowNegativeNet = false,
+  } = {}) {
+    const errors = [];
+    const numericInputs = {
+      monthlySalary,
+      salaryProration,
+      vacationAdvancePaid,
+      vacationSalaryOffset,
+      commissions,
+      collectedTipsPayable,
+      bonuses,
+      otherIncome,
+      employeeTssDeduction,
+      employeeReceivableDeduction,
+      otherDeductions,
+      employerTssContribution,
+    };
+    Object.entries(numericInputs).forEach(([key, value]) => {
+      if (value === null || value === undefined) return;
+      const num = Number(value);
+      if (!Number.isFinite(num)) errors.push(`${key} debe ser un numero finito.`);
+      else if (num < 0) errors.push(`${key} no puede ser negativo.`);
+    });
+    if (salaryInstallment !== null && salaryInstallment !== undefined) {
+      const num = Number(salaryInstallment);
+      if (!Number.isFinite(num)) errors.push("salaryInstallment debe ser un numero finito.");
+      else if (num < 0) errors.push("salaryInstallment no puede ser negativo.");
+    }
+
+    const monthlySalaryAmount = roundMoney(monthlySalary);
+    const installmentBase = Math.max(0, salaryInstallment === null || salaryInstallment === undefined ? monthlySalaryAmount : roundMoney(salaryInstallment));
+    const salaryProrationAmount = roundMoney(salaryProration);
+    const vacationOffsetAmount = Math.min(installmentBase, roundMoney(vacationSalaryOffset));
+    // El ajuste por vacaciones prepagadas NUNCA es una sancion: solo evita
+    // pagar dos veces los mismos dias, restando de la cuota ordinaria
+    // exactamente lo que ya se adelanto para esos dias de ese corte.
+    const salaryPayable = Math.max(0, roundMoney(installmentBase - vacationOffsetAmount - salaryProrationAmount));
+
+    const commissionAmount = Math.max(0, roundMoney(commissions));
+    const tipsPayableAmount = Math.max(0, roundMoney(collectedTipsPayable));
+    const bonusAmount = Math.max(0, roundMoney(bonuses));
+    const otherIncomeAmount = Math.max(0, roundMoney(otherIncome));
+    const grossAmount = roundMoney(salaryPayable + commissionAmount + tipsPayableAmount + bonusAmount + otherIncomeAmount);
+
+    const tssEmployeeDeduction = Math.max(0, roundMoney(employeeTssDeduction));
+    const employeeReceivableDeductionAmount = Math.max(0, roundMoney(employeeReceivableDeduction));
+    const otherDeductionsAmount = Math.max(0, roundMoney(otherDeductions));
+    const totalDeductions = roundMoney(tssEmployeeDeduction + employeeReceivableDeductionAmount + otherDeductionsAmount);
+
+    const rawNet = roundMoney(grossAmount - totalDeductions);
+    if (rawNet < 0 && !allowNegativeNet) {
+      errors.push("El neto a pagar no puede ser negativo. Reduce los descuentos o registra el excedente como CxC del colaborador.");
+    }
+    const netPayable = allowNegativeNet ? rawNet : Math.max(0, rawNet);
+
+    const breakdown = [
+      { key: "salaryPayable", label: "Salario pagable", amount: salaryPayable },
+      { key: "commissionAmount", label: "Comision", amount: commissionAmount },
+      { key: "tipsPayableAmount", label: "Propinas cobradas pendientes", amount: tipsPayableAmount },
+      { key: "bonusAmount", label: "Bonos", amount: bonusAmount },
+      { key: "otherIncomeAmount", label: "Otros ingresos", amount: otherIncomeAmount },
+      { key: "tssEmployeeDeduction", label: "TSS del colaborador", amount: -tssEmployeeDeduction },
+      { key: "employeeReceivableDeduction", label: "CxC descontada al colaborador", amount: -employeeReceivableDeductionAmount },
+      { key: "otherDeductionsAmount", label: "Otros descuentos", amount: -otherDeductionsAmount },
+    ];
+
+    return {
+      monthlySalary: monthlySalaryAmount,
+      payrollType,
+      salaryInstallment: installmentBase,
+      salaryProration: salaryProrationAmount,
+      vacationAdvancePaid: Math.max(0, roundMoney(vacationAdvancePaid)),
+      vacationSalaryOffset: vacationOffsetAmount,
+      salaryPayable,
+      commissionAmount,
+      tipsPayableAmount,
+      bonusAmount,
+      otherIncomeAmount,
+      grossAmount,
+      tssEmployeeDeduction,
+      employeeReceivableDeduction: employeeReceivableDeductionAmount,
+      otherDeductionsAmount,
+      totalDeductions,
+      netPayable,
+      employerTssContribution: Math.max(0, roundMoney(employerTssContribution)),
+      validationErrors: errors,
+      breakdown,
+    };
+  }
+
   return {
     localDateStringInZone,
     nowPartsInZone,
@@ -663,5 +982,15 @@
     computeAccountDailyBalance,
     sortMovementsDeterministically,
     buildRunningBalance,
+    roundMoney,
+    computeBiweeklySalaryInstallment,
+    payrollOrdinaryPaymentDate,
+    computeTipCommissionPeriod,
+    selectCommissionThreshold,
+    validateCommissionThresholdRule,
+    computeVacationSalaryOffset,
+    compareCollaboratorReceivablesFIFO,
+    applyCollaboratorReceivablesFIFO,
+    calculatePayrollSettlement,
   };
 });

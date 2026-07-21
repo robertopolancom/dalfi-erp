@@ -848,6 +848,32 @@ th {
   padding: 16px 18px 18px;
 }
 
+/* Linea de bono de nomina: concepto + monto + toggle TSS + quitar, no encaja
+   en el grid de 3 columnas de .list-item (pensado para icono+texto+accion). */
+.payroll-bonus-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+}
+
+.payroll-bonus-line .payroll-bonus-concept {
+  flex: 2 1 160px;
+}
+
+.payroll-bonus-line .payroll-bonus-amount {
+  flex: 1 1 100px;
+}
+
+.payroll-bonus-tss-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .appointment,
 .list-item {
   display: grid;

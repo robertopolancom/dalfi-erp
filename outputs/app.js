@@ -843,9 +843,15 @@ function accountAvailableBalance(accountName) {
     const matchesAccount = idsMatch(row.cuentaDestinoID) || namesMatch(row.cuentaDestino);
     return matchesAccount && normalize(row.estado || "Confirmado") === "confirmado" ? sum + (Number(row.montoNeto) || Number(row.montoBruto) || 0) : sum;
   }, 0);
+  // Un egreso Revertido (ver revertPayrollPayment) ya no debe restar del
+  // disponible: es la unica forma segura de deshacer una salida de dinero
+  // sin borrar el registro historico ni inventar un ingreso nuevo. Todo
+  // egreso existente antes de esta politica sigue en estado "Registrado" (el
+  // unico valor que se usaba hasta ahora), asi que este filtro no cambia el
+  // saldo de ninguna cuenta historica.
   const expenses = dbTable("egresos").reduce((sum, row) => {
     const matchesAccount = idsMatch(row.cuentaOrigenID) || namesMatch(row.cuentaOrigen);
-    return matchesAccount ? sum + (Number(row.monto) || 0) : sum;
+    return matchesAccount && normalize(row.estado || "Registrado") !== "revertido" ? sum + (Number(row.monto) || 0) : sum;
   }, 0);
   const transferIn = dbTable("transferencias").reduce((sum, row) => {
     const matchesAccount = idsMatch(row.cuentaDestinoID) || namesMatch(row.cuentaDestino);
@@ -989,14 +995,14 @@ function accountActivityForDate(date, account) {
   const expenses = dbTable("egresos")
     .filter((row) => dateOnly(row.fechaHora) === date)
     .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
-    // Un egreso "Anulado" no debe sumar (regla existente para
-    // ingresos/transferencias, aqui documentada explicitamente aunque hoy
-    // no exista ningun flujo que anule un egreso). Un egreso tipo
-    // "transferencia" NUNCA se suma aqui: ese mismo movimiento ya crea su
-    // propia fila en la coleccion "transferencias" (ver el submit de
-    // #expense-form), que es la que se suma abajo en transferOut. Sumarlo
-    // tambien aqui duplicaria la misma salida de efectivo dos veces.
-    .filter((row) => normalize(row.estado || "Registrado") !== "anulado")
+    // Un egreso "Anulado" o "Revertido" no debe sumar (revertPayrollPayment
+    // es el primer flujo que marca un egreso "Revertido", al deshacer el
+    // pago de una nomina). Un egreso tipo "transferencia" NUNCA se suma
+    // aqui: ese mismo movimiento ya crea su propia fila en la coleccion
+    // "transferencias" (ver el submit de #expense-form), que es la que se
+    // suma abajo en transferOut. Sumarlo tambien aqui duplicaria la misma
+    // salida de efectivo dos veces.
+    .filter((row) => !["anulado", "revertido"].includes(normalize(row.estado || "Registrado")))
     .filter((row) => normalize(row.tipoEgreso) !== "transferencia")
     .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
   const transferIn = dbTable("transferencias")
@@ -3409,9 +3415,245 @@ function payrollPeriodRange(period, cut) {
   return { start: `${period}-01`, end: `${period}-${String(lastDay).padStart(2, "0")}`, label: "Mes completo" };
 }
 
+// Propinas y comisiones se pagan COMPLETAS en la nomina del dia 30 (o "mes
+// completo", que en este ERP es la unica nomina de ese mes y por lo tanto se
+// comporta igual que la segunda quincena para este proposito), NUNCA en la
+// del dia 15: DalfiClosingMath.computeTipCommissionPeriod() calcula el rango
+// 21 del mes anterior -> 20 del mes actual, sin duplicar el dia 20.
+function payrollCommissionTipRange(period, cut) {
+  if (cut === "first") return null;
+  const range = DalfiClosingMath.computeTipCommissionPeriod({ period });
+  return range.valid ? range : null;
+}
+
 function dateInRange(value, start, end) {
   const current = dateOnly(value);
   return current >= start && current <= end;
+}
+
+// Unica configuracion de TSS efectiva para una fecha: la mas reciente cuyo
+// fechaVigencia sea <= fecha, entre las activas. Sin configuracion vigente,
+// devuelve null (nunca se inventa una tasa).
+function activeTssConfig(date) {
+  const target = date || today;
+  return (
+    dbTable("configuracionTSS")
+      .filter((row) => normalize(row.estado || "Activo") === "activo")
+      .filter((row) => !row.fechaVigencia || row.fechaVigencia <= target)
+      .sort((a, b) => String(b.fechaVigencia || "").localeCompare(String(a.fechaVigencia || "")))[0] || null
+  );
+}
+
+// CxC pendientes de un colaborador, en orden FIFO real (la mas antigua
+// primero): mismo criterio que applyCollaboratorReceivablesFIFO.
+function collaboratorReceivablesSorted(staff, staffName) {
+  return dbTable("cuentasCobrar")
+    .filter((cxc) => {
+      const sameStaff = cxc.deudorTipo === "Colaborador" && (cxc.deudorID === staff?.colaboradorID || normalize(cxc.deudorNombre) === normalize(staffName));
+      return sameStaff && Number(cxc.balancePendiente) > 0;
+    })
+    .sort((a, b) => DalfiClosingMath.compareCollaboratorReceivablesFIFO({ id: a.cxCID, fechaOrigen: a.fechaOrigen, fechaVencimiento: a.fechaVencimiento }, { id: b.cxCID, fechaOrigen: b.fechaOrigen, fechaVencimiento: b.fechaVencimiento }));
+}
+
+// Cuanto de la cuota salarial ordinaria de este corte ya esta prepagado por
+// vacaciones (para no pagar los mismos dias dos veces). Solo cuenta
+// vacaciones en estado "Pagada anticipadamente" (nunca solicitadas o
+// canceladas) del colaborador.
+function collaboratorVacationOffsetForRange(staff, staffName, salaryRange) {
+  if (!salaryRange) return 0;
+  const vacations = dbTable("vacaciones").filter((row) => {
+    const sameStaff = row.colaboradorID ? row.colaboradorID === staff?.colaboradorID : normalize(row.colaboradorNombre) === normalize(staffName);
+    return sameStaff && normalize(row.estado || "") === "pagada anticipadamente";
+  });
+  return vacations.reduce((sum, vac) => {
+    const offset = DalfiClosingMath.computeVacationSalaryOffset({
+      vacationStart: vac.fechaInicio,
+      vacationDays: Number(vac.diasPagados) || 0,
+      cutStart: salaryRange.start,
+      cutEnd: salaryRange.end,
+      dailyValue: Number(vac.valorDiario) || 0,
+    });
+    return sum + offset.offsetAmount;
+  }, 0);
+}
+
+// No se puede crear una segunda nomina Borrador/Pagada para el mismo
+// colaborador+periodo+corte (evita duplicar comision/propinas/salario).
+// Una nomina Revertida SI permite generar una nueva.
+function existingActivePayrollFor(colaboradorID, staffName, periodoInicio, periodoFin) {
+  return dbTable("nomina").find((row) => {
+    const sameStaff = colaboradorID ? row.colaboradorID === colaboradorID : normalize(row.colaboradorNombre) === normalize(staffName);
+    return sameStaff && row.periodoInicio === periodoInicio && row.periodoFin === periodoFin && normalize(row.estado || "") !== "revertida";
+  });
+}
+
+// Cargo interno a un colaborador (servicio consumido, u otro concepto
+// autorizado) que NUNCA tuvo una salida real de dinero: a diferencia de un
+// avance (egreso + CxC vinculados), esto crea UNICAMENTE la CxC. No
+// disponible todavia desde ningun formulario (pendiente de una interfaz
+// dedicada); queda como funcion de datos permiso-validada y probada para
+// conectarse mas adelante sin duplicar esta logica.
+function createCollaboratorInternalCharge({ staffRecord, staffName, amount, concept, tipoCxC = "Cargo interno" } = {}) {
+  if (!canManageInvoices()) throw new Error("Solo administración o propietario puede crear cargos internos a colaboradores.");
+  const safeAmount = Number(amount);
+  if (!Number.isFinite(safeAmount) || safeAmount <= 0) throw new Error("El monto del cargo debe ser mayor que cero.");
+  if (!staffRecord && !staffName) throw new Error("Selecciona un colaborador.");
+  if (!concept || !String(concept).trim()) throw new Error("Describe el concepto del cargo.");
+  const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
+  const record = stampRecord({
+    cxCID: cxcId,
+    fechaOrigen: new Date().toISOString(),
+    tipoCxC,
+    deudorTipo: "Colaborador",
+    deudorID: staffRecord?.colaboradorID || "",
+    deudorNombre: staffRecord?.nombreCompleto || staffName,
+    facturaID: "",
+    pagoID: "",
+    egresoID: "",
+    montoOriginal: safeAmount,
+    montoAplicado: 0,
+    balancePendiente: safeAmount,
+    estado: "Pendiente",
+    concepto: `${tipoCxC}: ${concept}`,
+    fechaVencimiento: today,
+  });
+  dbTable("cuentasCobrar").push(record);
+  logAudit("collaborator_internal_charge_created", {
+    entity: "cuentasCobrar",
+    entityId: cxcId,
+    newData: { colaboradorID: staffRecord?.colaboradorID || "", monto: safeAmount, concepto: concept },
+    note: `Cargo interno ${cxcId} creado por ${money.format(safeAmount)}, sin movimiento de caja/banco.`,
+    success: true,
+  });
+  return record;
+}
+
+// ---------------------------------------------------------------------------
+// Bonos de la nomina en curso: lista repetible dentro de #payroll-form,
+// igual patron que income-payment-line-list/tip-allocation. No se
+// pre-crean filas sueltas de "bonosNomina" antes de la nomina: se capturan
+// aqui, en el momento de Guardar, evitando que un bono quede "flotando" sin
+// nomina o se reutilice sin querer en una nomina futura.
+// ---------------------------------------------------------------------------
+
+function addPayrollBonusLine() {
+  const row = document.createElement("article");
+  row.className = "payroll-bonus-line list-item";
+  row.innerHTML = `
+    <input class="payroll-bonus-concept" placeholder="Concepto del bono" />
+    <input class="payroll-bonus-amount" type="number" min="0" step="0.01" value="0" />
+    <label class="payroll-bonus-tss-label"><input class="payroll-bonus-tss" type="checkbox" /> Sujeto a TSS</label>
+    <button class="secondary-btn compact remove-payroll-bonus" type="button">Quitar</button>
+  `;
+  byId("payroll-bonus-list").appendChild(row);
+}
+
+function getPayrollBonusLines() {
+  return [...document.querySelectorAll(".payroll-bonus-line")]
+    .map((row) => ({
+      concept: row.querySelector(".payroll-bonus-concept").value.trim(),
+      amount: Number(row.querySelector(".payroll-bonus-amount").value) || 0,
+      subjectToTss: row.querySelector(".payroll-bonus-tss").checked,
+    }))
+    .filter((line) => line.amount > 0);
+}
+
+function updateVacationAdvancePreview() {
+  const days = Number(byId("vacation-days")?.value) || 0;
+  const dailyValue = Number(byId("vacation-daily-value")?.value) || 0;
+  byId("vacation-advance-amount").textContent = money.format(DalfiClosingMath.roundMoney(days * dailyValue));
+}
+
+// Abre el panel "Pagar nomina" para un payrollId especifico (debe estar en
+// estado Borrador): precarga un resumen de solo lectura, deja el resto de
+// la decision (cuenta, medio, fecha real) a quien va a confirmar el pago.
+function openPayPayrollForm(payrollId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede pagar nómina.");
+    return;
+  }
+  const payroll = dbTable("nomina").find((row) => row.nominaID === payrollId);
+  if (!payroll || normalize(payroll.estado || "") !== "borrador") return;
+  byId("pay-payroll-id").value = payrollId;
+  byId("pay-payroll-summary").textContent =
+    `${payroll.colaboradorNombre} · ${payroll.quincena} ${payroll.periodoInicio} a ${payroll.periodoFin} · Neto a pagar ${money.format(Number(payroll.totalAPagar) || 0)}`;
+  byId("pay-payroll-date").value = today;
+  const form = byId("pay-payroll-form");
+  form.classList.remove("hidden");
+  revealFormAtTop(form, { focusSelector: "#pay-payroll-account" });
+}
+
+// Reversa UNA nomina PAGADA: exige permiso, exige motivo, revierte el
+// egreso (marcandolo Revertido, que accountAvailableBalance ya excluye),
+// devuelve las propinas incluidas a Pendiente (si nadie mas las toco
+// despues), restaura el saldo de las CxC de colaborador que se
+// descontaron, y deja la nomina en estado Revertida (nunca se vuelve a
+// pagar ni se vuelve a revertir).
+function revertPayrollPayment(payrollId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede revertir una nómina pagada.");
+    return;
+  }
+  const payroll = dbTable("nomina").find((row) => row.nominaID === payrollId);
+  if (!payroll) return;
+  if (normalize(payroll.estado || "") !== "pagada") {
+    alert("Solo se puede revertir una nómina que ya fue pagada.");
+    return;
+  }
+  const reason = prompt("Indica el motivo de la reversión de esta nómina:");
+  if (!reason || !reason.trim()) {
+    alert("La reversión requiere un motivo.");
+    return;
+  }
+  // Si alguna propina incluida ya fue usada por OTRA nomina distinta a esta
+  // desde que se pago (no deberia poder pasar, pero se verifica), no se
+  // revierte en silencio.
+  const tipIds = new Set(Array.isArray(payroll.propinaIdsIncluidas) ? payroll.propinaIdsIncluidas : []);
+  const blockedTip = dbTable("propinas").find((tip) => tipIds.has(tip.propinaID) && tip.nominaID && tip.nominaID !== payrollId);
+  if (blockedTip) {
+    alert(`No se puede revertir: la propina ${blockedTip.propinaID} ya quedó asociada a otra nómina (${blockedTip.nominaID}). Ajusta manualmente antes de continuar.`);
+    return;
+  }
+  const expense = dbTable("egresos").find((row) => row.egresoID === payroll.egresoID);
+  if (expense) {
+    expense.estado = "Revertido";
+    expense.observaciones = `${expense.observaciones || ""} Revertido por reversión de nómina ${payrollId}: ${reason.trim()}`.trim();
+    stampRecord(expense, "updated");
+  }
+  dbTable("propinas").forEach((tip) => {
+    if (!tipIds.has(tip.propinaID)) return;
+    if (tip.nominaID !== payrollId) return;
+    tip.estadoPagoNomina = "Pendiente";
+    tip.nominaID = "";
+    stampRecord(tip, "updated");
+  });
+  const cxcDetalle = Array.isArray(payroll.cxcDiscountDetalle) ? payroll.cxcDiscountDetalle : [];
+  cxcDetalle.forEach((line) => {
+    const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === line.cxcId);
+    if (!cxc) return;
+    const applied = Math.min(Number(line.amount) || 0, Number(cxc.montoAplicado) || 0);
+    if (applied <= 0) return;
+    cxc.montoAplicado = Math.max(0, (Number(cxc.montoAplicado) || 0) - applied);
+    cxc.balancePendiente = (Number(cxc.balancePendiente) || 0) + applied;
+    cxc.estado = "Pendiente";
+    cxc.observaciones = `${cxc.observaciones || ""} Restaurado por reversión de nómina ${payrollId}.`.trim();
+    stampRecord(cxc, "updated");
+  });
+  payroll.estado = "Revertida";
+  payroll.motivoReversion = reason.trim();
+  payroll.revertidoPor = erpProfile?.email || currentUserRecord()?.correo || "";
+  payroll.fechaReversion = new Date().toISOString();
+  stampRecord(payroll, "updated");
+  refreshPendingClosingsForDate(dateOnly(payroll.fechaPagoNomina) || today);
+  logAudit("payroll_reverted", {
+    entity: "nomina",
+    entityId: payrollId,
+    newData: { motivo: reason.trim(), egresoID: payroll.egresoID },
+    note: `Nómina ${payrollId} revertida: ${reason.trim()}.`,
+    success: true,
+  });
+  saveState();
+  renderAll();
 }
 
 function payrollPreviewData() {
@@ -3419,44 +3661,107 @@ function payrollPreviewData() {
   const period = byId("payroll-period").value || month;
   const cut = byId("payroll-cut").value;
   const range = payrollPeriodRange(period, cut);
+  const commissionTipRange = payrollCommissionTipRange(period, cut);
   const staff = findStaffByName(staffName);
   const monthlySalary = Number(staff?.salarioMensual) || 0;
-  const base = cut === "month" ? monthlySalary : monthlySalary / 2;
-  const details = dbTable("facturaDetalle").filter((detail) => {
-    const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
-    const sameStaff = staff?.colaboradorID ? detail.colaboradorID === staff.colaboradorID : normalize(detail.colaboradorNombre) === normalize(staffName);
-    return sameStaff && invoice && dateInRange(invoice.fechaHora, range.start, range.end);
-  });
+  const installment = DalfiClosingMath.computeBiweeklySalaryInstallment({ monthlySalary, cut });
+  const vacationOffset = collaboratorVacationOffsetForRange(staff, staffName, range);
+
+  const details = commissionTipRange
+    ? dbTable("facturaDetalle").filter((detail) => {
+        const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
+        const sameStaff = staff?.colaboradorID ? detail.colaboradorID === staff.colaboradorID : normalize(detail.colaboradorNombre) === normalize(staffName);
+        return sameStaff && invoice && dateInRange(invoice.fechaHora, commissionTipRange.start, commissionTipRange.end);
+      })
+    : [];
   const sales = details.reduce((sum, detail) => sum + (Number(detail.subtotal) || 0), 0);
   const assignedThresholdIds = Array.isArray(staff?.umbralesComisionActivos)
     ? staff.umbralesComisionActivos
     : staff?.umbralComisionActivo
       ? [staff.umbralComisionActivo]
       : [];
-  const thresholds = dbTable("umbralesComision")
-    .filter((row) => normalize(row.estado || "Activo") === "activo")
-    .filter((row) => assignedThresholdIds.includes(row.escalaID))
-    .sort((a, b) => (Number(b.desde) || 0) - (Number(a.desde) || 0));
-  const threshold = thresholds.find((row) => sales >= (Number(row.desde) || 0) && ((Number(row.hasta) || 0) <= 0 || sales <= Number(row.hasta))) || null;
-  const rate = Number(threshold?.porcentajeComision) || 0;
-  const commission = sales * rate;
-  const tips = dbTable("propinas")
-    .filter((tip) => {
-      const sameStaff = staff?.colaboradorID ? tip.colaboradorID === staff.colaboradorID : normalize(tip.colaboradorNombre) === normalize(staffName);
-      return sameStaff && normalize(tip.estadoPagoNomina || "Pendiente") !== "pagada" && dateInRange(tip.fechaHora, range.start, range.end);
-    })
-    .reduce((sum, tip) => sum + (Number(tip.montoNetoPagar) || 0), 0);
-  const staffReceivables = dbTable("cuentasCobrar").filter((cxc) => {
-    const sameStaff = cxc.deudorTipo === "Colaborador" && (cxc.deudorID === staff?.colaboradorID || normalize(cxc.deudorNombre) === normalize(staffName));
-    return sameStaff && Number(cxc.balancePendiente) > 0;
+  const thresholds = dbTable("umbralesComision").filter((row) => assignedThresholdIds.includes(row.escalaID));
+  const commissionResult = DalfiClosingMath.selectCommissionThreshold({ eligibleSales: sales, thresholds, mode: "total_por_umbral" });
+
+  const tipsRows = commissionTipRange
+    ? dbTable("propinas").filter((tip) => {
+        const sameStaff = staff?.colaboradorID ? tip.colaboradorID === staff.colaboradorID : normalize(tip.colaboradorNombre) === normalize(staffName);
+        return sameStaff && normalize(tip.estadoPagoNomina || "Pendiente") === "pendiente" && dateInRange(tip.fechaHora, commissionTipRange.start, commissionTipRange.end);
+      })
+    : [];
+  const tips = tipsRows.reduce((sum, tip) => sum + (Number(tip.montoNetoPagar) || 0), 0);
+
+  const staffReceivables = collaboratorReceivablesSorted(staff, staffName);
+  const cxcTotalInput = Number(byId("payroll-cxc-total")?.value) || 0;
+  const explicitCxcDiscounts = [...document.querySelectorAll(".payroll-cxc-discount")].reduce((sum, input) => sum + (Number(input.value) || 0), 0);
+  const cxcDiscounts = explicitCxcDiscounts > 0 ? explicitCxcDiscounts : cxcTotalInput;
+
+  const bonusLines = getPayrollBonusLines();
+  const bonusAmount = bonusLines.reduce((sum, line) => sum + line.amount, 0);
+  const bonusTssBase = bonusLines.filter((line) => line.subjectToTss).reduce((sum, line) => sum + line.amount, 0);
+
+  const tssConfig = activeTssConfig(range.end);
+  // TSS del colaborador se retiene UNA sola vez al mes: si el ERP no divide
+  // explicitamente entre quincenas, se aplica en la nomina del dia 30 (o
+  // "mes completo"), nunca en la del dia 15.
+  const tssApplies = cut !== "first";
+  const tssContributiveBase = tssConfig ? Math.min(Number(tssConfig.baseContributiva) || 0, (Number(tssConfig.tope) || Infinity)) + bonusTssBase : 0;
+  const tssEmployee = tssApplies && tssConfig ? Math.round(Math.min(tssContributiveBase, Number(tssConfig.tope) || tssContributiveBase) * (Number(tssConfig.tasaColaborador) || 0) / 100 * 100) / 100 : 0;
+  const tssEmployer = tssApplies && tssConfig ? Math.round(Math.min(tssContributiveBase, Number(tssConfig.tope) || tssContributiveBase) * (Number(tssConfig.tasaEmpleador) || 0) / 100 * 100) / 100 : 0;
+
+  const afp = Number(byId("payroll-afp")?.value) || 0;
+  const insurance = Number(byId("payroll-insurance")?.value) || 0;
+  const other = Number(byId("payroll-other-deductions")?.value) || 0;
+
+  const settlement = DalfiClosingMath.calculatePayrollSettlement({
+    monthlySalary,
+    payrollType: cut,
+    salaryInstallment: installment.installment,
+    salaryProration: afp + insurance,
+    vacationSalaryOffset: vacationOffset,
+    commissions: commissionResult.commissionAmount,
+    collectedTipsPayable: tips,
+    bonuses: bonusAmount,
+    employeeTssDeduction: tssEmployee,
+    employeeReceivableDeduction: cxcDiscounts,
+    otherDeductions: other,
+    employerTssContribution: tssEmployer,
+    allowNegativeNet: true,
   });
-  const cxcDiscounts = [...document.querySelectorAll(".payroll-cxc-discount")].reduce((sum, input) => sum + (Number(input.value) || 0), 0);
-  const afp = Number(byId("payroll-afp").value) || 0;
-  const insurance = Number(byId("payroll-insurance").value) || 0;
-  const other = Number(byId("payroll-other-deductions").value) || 0;
-  const deductions = afp + insurance + other + cxcDiscounts;
-  const net = Math.max(0, base + commission + tips - deductions);
-  return { staff, staffName, period, cut, range, base, sales, threshold, rate, commission, tips, staffReceivables, afp, insurance, other, cxcDiscounts, deductions, net };
+
+  const deductions = afp + insurance + other + cxcDiscounts + tssEmployee;
+  const net = Math.max(0, settlement.netPayable);
+
+  return {
+    staff,
+    staffName,
+    period,
+    cut,
+    range,
+    commissionTipRange,
+    installment,
+    vacationOffset,
+    base: settlement.salaryPayable,
+    sales,
+    threshold: commissionResult,
+    rate: commissionResult.rate,
+    commission: commissionResult.commissionAmount,
+    tips,
+    tipsRows,
+    staffReceivables,
+    bonusLines,
+    bonusAmount,
+    afp,
+    insurance,
+    other,
+    cxcDiscounts,
+    tssConfig,
+    tssEmployee,
+    tssEmployer,
+    deductions,
+    net,
+    settlement,
+  };
 }
 
 function renderPayrollCxCList(rows) {
@@ -3465,15 +3770,18 @@ function renderPayrollCxCList(rows) {
     target.innerHTML = '<p class="empty">Este colaborador no tiene CxC pendiente.</p>';
     return;
   }
+  const cxcTotal = Number(byId("payroll-cxc-total")?.value) || 0;
+  const autoAllocation = cxcTotal > 0 ? DalfiClosingMath.applyCollaboratorReceivablesFIFO({ receivables: rows.map((cxc) => ({ id: cxc.cxCID, balance: cxc.balancePendiente, fechaOrigen: cxc.fechaOrigen, fechaVencimiento: cxc.fechaVencimiento })), amountToApply: cxcTotal }) : null;
+  const autoById = new Map((autoAllocation?.allocations || []).map((row) => [row.id, row.amountApplied]));
   target.innerHTML = rows
     .map(
       (cxc) => `
         <article class="list-item payroll-cxc-row">
           <div>
             <strong>${cxc.cxCID} · ${cxc.concepto || cxc.tipoCxC}</strong>
-            <span>Pendiente ${money.format(Number(cxc.balancePendiente) || 0)}</span>
+            <span>Origen ${dateOnly(cxc.fechaOrigen) || "-"} · Pendiente ${money.format(Number(cxc.balancePendiente) || 0)}</span>
           </div>
-          <input class="payroll-cxc-discount" data-cxc-id="${cxc.cxCID}" type="number" min="0" max="${Number(cxc.balancePendiente) || 0}" step="0.01" value="0" />
+          <input class="payroll-cxc-discount" data-cxc-id="${cxc.cxCID}" type="number" min="0" max="${Number(cxc.balancePendiente) || 0}" step="0.01" value="${autoById.get(cxc.cxCID) || 0}" />
         </article>
       `,
     )
@@ -3486,6 +3794,8 @@ function updatePayrollPreview(renderCxC = false) {
   byId("payroll-base").value = data.base.toFixed(2);
   byId("payroll-commission").value = data.commission.toFixed(2);
   byId("payroll-tips").value = data.tips.toFixed(2);
+  byId("payroll-vacation-offset").textContent = money.format(data.vacationOffset);
+  byId("payroll-tss-preview").textContent = money.format(data.tssEmployee);
   byId("payroll-sales-preview").textContent = money.format(data.sales);
   byId("payroll-rate-preview").textContent = `${(data.rate * 100).toFixed(2)}%`;
   byId("payroll-deductions-preview").textContent = money.format(data.deductions);
@@ -3496,25 +3806,33 @@ function updatePayrollPreview(renderCxC = false) {
 function renderPayroll() {
   const target = byId("payroll-table");
   const query = byId("payroll-search").value;
-  const rows = state.payroll
-    .filter((row) => matches(row, query, ["period", "staff", "cut"]))
-    .sort((a, b) => `${b.period || ""} ${b.id || ""}`.localeCompare(`${a.period || ""} ${a.id || ""}`));
-  if (!rows.length) return renderEmpty(target, 8, "No hay nóminas registradas.");
+  const rows = dbTable("nomina")
+    .filter((row) => matches(row, query, ["periodoInicio", "colaboradorNombre", "quincena"]))
+    .sort((a, b) => `${b.periodoInicio || ""} ${b.nominaID || ""}`.localeCompare(`${a.periodoInicio || ""} ${a.nominaID || ""}`));
+  if (!rows.length) return renderEmpty(target, 10, "No hay nóminas registradas.");
   target.innerHTML = rows
-    .map(
-      (row) => `
-        <tr>
-          <td>${row.period}</td>
-          <td>${row.cut || "Mes completo"}</td>
-          <td>${row.staff}</td>
-          <td>${money.format(row.base)}</td>
-          <td>${money.format(row.commission)}</td>
-          <td>${money.format(row.tips || 0)}</td>
-          <td>${money.format(row.deductions)}</td>
-          <td class="amount">${money.format(row.net)}</td>
+    .map((row) => {
+      const estado = row.estado || "Borrador";
+      const canPay = normalize(estado) === "borrador";
+      const canRevert = normalize(estado) === "pagada";
+      return `
+        <tr data-payroll-id="${row.nominaID}">
+          <td>${row.periodoInicio || ""}</td>
+          <td>${row.quincena || "Mes completo"}</td>
+          <td>${row.colaboradorNombre}</td>
+          <td>${money.format(Number(row.salarioQuincenal) || 0)}</td>
+          <td>${money.format(Number(row.comisionGenerada) || 0)}</td>
+          <td>${money.format(Number(row.propinaNetaMes) || 0)}</td>
+          <td>${money.format((Number(row.anticipos) || 0) + (Number(row.descuentoAFP) || 0) + (Number(row.descuentoSeguro) || 0) + (Number(row.descuentoOtros) || 0) + (Number(row.descuentoCxC) || 0))}</td>
+          <td class="amount">${money.format(Number(row.totalAPagar) || 0)}</td>
+          <td>${estado}</td>
+          <td class="row-actions">
+            ${canPay ? `<button class="secondary-btn compact pay-payroll" type="button">Pagar</button>` : ""}
+            ${canRevert ? `<button class="secondary-btn compact revert-payroll" type="button">Revertir</button>` : ""}
+          </td>
         </tr>
-      `,
-    )
+      `;
+    })
     .join("");
 }
 
@@ -5425,6 +5743,26 @@ function renderSettings() {
         )
         .join("")
     : '<p class="empty">No hay umbrales con ese criterio.</p>';
+
+  const tssRows = dbTable("configuracionTSS").slice().sort((a, b) => String(b.fechaVigencia || "").localeCompare(String(a.fechaVigencia || "")));
+  byId("tss-config-list").innerHTML = tssRows.length
+    ? tssRows
+        .map(
+          (row) => `
+            <article class="list-item">
+              <div>
+                <strong>Vigente desde ${dateOnly(row.fechaVigencia) || "-"}</strong>
+                <span>Colaborador ${(Number(row.tasaColaborador) || 0).toFixed(2)}% · Empleador ${(Number(row.tasaEmpleador) || 0).toFixed(2)}% · Tope ${money.format(Number(row.tope) || 0)} · Base ${money.format(Number(row.baseContributiva) || 0)} · ${row.estado || "Activo"}</span>
+              </div>
+              <div class="row-actions">
+                <button class="secondary-btn compact edit-record" data-type="tss" data-id="${row.tssID}" type="button">Editar</button>
+                <button class="secondary-btn compact toggle-record-status" data-table="configuracionTSS" data-id-field="tssID" data-id="${row.tssID}" type="button">${row.estado === "Inactivo" ? "Activar" : "Inactivar"}</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : '<p class="empty">No hay configuraciones de TSS registradas.</p>';
 }
 
 function renderAll() {
@@ -6111,6 +6449,18 @@ function fillDataForm(type, id) {
     byId("commission-rate").value = (Number(row.porcentajeComision) || 0) * 100;
     byId("commission-status").value = row.estado || "Activo";
     openDataForm("commission-form");
+  }
+  if (type === "tss") {
+    const row = dbTable("configuracionTSS").find((item) => item.tssID === id);
+    if (!row) return;
+    byId("tss-edit-id").value = row.tssID || "";
+    byId("tss-employee-rate").value = Number(row.tasaColaborador) || 0;
+    byId("tss-employer-rate").value = Number(row.tasaEmpleador) || 0;
+    byId("tss-cap").value = Number(row.tope) || 0;
+    byId("tss-base").value = Number(row.baseContributiva) || 0;
+    byId("tss-effective-date").value = row.fechaVigencia || today;
+    byId("tss-status").value = row.estado || "Activo";
+    openDataForm("tss-config-form");
   }
 }
 
@@ -7223,6 +7573,7 @@ function updateExpenseOptionalFields() {
   byId("expense-destination-label").classList.toggle("hidden", type !== "transferencia");
   byId("expense-destination-type-label").classList.toggle("hidden", type !== "transferencia");
   byId("expense-receivable-label").classList.toggle("hidden", type !== "avance");
+  byId("expense-advance-type-label").classList.toggle("hidden", type !== "avance" || !findStaffByName(byId("expense-receivable-person").value.trim()));
   updateExpenseDestinationLookup();
   updateExpenseBalancePreview();
 }
@@ -7412,6 +7763,21 @@ function wireForms() {
   });
   byId("payroll-cut").addEventListener("change", () => updatePayrollPreview(true));
   byId("payroll-cxc-list").addEventListener("input", () => updatePayrollPreview(false));
+  // El monto total re-dispara el render de la lista (renderPayrollCxCList
+  // vuelve a calcular el reparto FIFO y precarga cada input individual), no
+  // solo el resumen: por eso pasa renderCxC:true, a diferencia de los demas
+  // inputs de este formulario.
+  byId("payroll-cxc-total").addEventListener("input", () => updatePayrollPreview(true));
+  byId("add-payroll-bonus").addEventListener("click", () => {
+    addPayrollBonusLine();
+    updatePayrollPreview(false);
+  });
+  byId("payroll-bonus-list").addEventListener("input", () => updatePayrollPreview(false));
+  byId("payroll-bonus-list").addEventListener("click", (event) => {
+    if (!event.target.classList.contains("remove-payroll-bonus")) return;
+    event.target.closest(".payroll-bonus-line")?.remove();
+    updatePayrollPreview(false);
+  });
 
   byId("payment-line-list").addEventListener("input", (event) => {
     const line = event.target.closest(".payment-line");
@@ -8166,6 +8532,7 @@ function wireForms() {
   });
 
   byId("expense-type").addEventListener("change", updateExpenseOptionalFields);
+  byId("expense-receivable-person").addEventListener("input", updateExpenseOptionalFields);
   byId("expense-destination-type").addEventListener("change", updateExpenseDestinationLookup);
   ["expense-source", "expense-destination", "expense-amount"].forEach((id) => {
     byId(id).addEventListener("input", updateExpenseBalancePreview);
@@ -8339,21 +8706,28 @@ function wireForms() {
         const staffRecord = advanceStaff;
         const supplierRecord = advanceSupplier;
         if (staffRecord) {
+          // Efectivo/salario/propina son subtipos del mismo avance a
+          // colaborador (todos generan un egreso real + una CxC por el
+          // mismo monto): el concepto guardado distingue cual es, para que
+          // el reporte de nomina pueda mostrarlos por separado.
+          const advanceType = byId("expense-advance-type").value || "efectivo";
+          const advanceLabel = { efectivo: "Avance de efectivo", salario: "Avance de salario", propina: "Avance de propina" }[advanceType] || "Avance de efectivo";
           const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
           dbTable("cuentasCobrar").push(stampRecord({
             cxCID: cxcId,
             fechaOrigen: new Date().toISOString(),
-            tipoCxC: "Avance colaborador",
+            tipoCxC: advanceLabel,
             deudorTipo: "Colaborador",
             deudorID: staffRecord.colaboradorID,
             deudorNombre: staffRecord.nombreCompleto,
             facturaID: "",
             pagoID: "",
+            egresoID: expenseId,
             montoOriginal: amount,
             montoAplicado: 0,
             balancePendiente: amount,
             estado: "Pendiente",
-            concepto: `Avance autorizado: ${concept}`,
+            concepto: `${advanceLabel}: ${concept}`,
             fechaVencimiento: today,
           }));
         }
@@ -8651,112 +9025,348 @@ function wireForms() {
     }
   });
 
+  // Guardar SOLO calcula y congela un borrador (payrollId, snapshot de
+  // umbral/TSS/vacaciones, que propinas/CxC quedarian incluidas): no marca
+  // propinas ni comision pagadas, no descuenta CxC, no crea egreso ni CxP.
+  // Ese lado real solo ocurre al Pagar (ver #pay-payroll-form), que ejecuta
+  // exactamente lo que este snapshot describe, nunca recalcula "en vivo" con
+  // datos que pudieron cambiar entre Guardar y Pagar.
+  let payrollSubmitInFlight = false;
   byId("payroll-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (payrollSubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede guardar nómina.");
+      return;
+    }
     const data = updatePayrollPreview(false);
     if (!data.staffName) return;
-    if (data.staffName && !state.staff.includes(data.staffName)) state.staff.push(data.staffName);
-    let staffRecord = data.staff || findStaffByName(data.staffName);
-    if (!staffRecord) {
-      const parts = splitName(data.staffName);
-      staffRecord = {
-        colaboradorID: nextDbId("colaboradores", "colaboradorID", "COL"),
-        nombreCompleto: data.staffName,
-        nombre: parts.first,
-        apellido: parts.last,
-        funcion: "",
-        telefono: "",
-        salarioMensual: data.cut === "month" ? data.base : data.base * 2,
-        direccion: "",
-        correo: "",
-        estado: "Activo",
-        fechaIngreso: today,
-        umbralesComisionActivos: [],
-      };
-      dbTable("colaboradores").push(stampRecord(staffRecord));
+    payrollSubmitInFlight = true;
+    byId("payroll-submit").disabled = true;
+    try {
+      let staffRecord = data.staff || findStaffByName(data.staffName);
+      if (!staffRecord) {
+        const parts = splitName(data.staffName);
+        staffRecord = {
+          colaboradorID: nextDbId("colaboradores", "colaboradorID", "COL"),
+          nombreCompleto: data.staffName,
+          nombre: parts.first,
+          apellido: parts.last,
+          funcion: "",
+          telefono: "",
+          salarioMensual: data.installment.monthlyTotal || (data.cut === "month" ? data.base : data.base * 2),
+          direccion: "",
+          correo: "",
+          estado: "Activo",
+          fechaIngreso: today,
+          umbralesComisionActivos: [],
+        };
+        dbTable("colaboradores").push(stampRecord(staffRecord));
+      }
+      if (existingActivePayrollFor(staffRecord?.colaboradorID, data.staffName, data.range.start, data.range.end)) {
+        alert("Ya existe una nómina (borrador o pagada) para este colaborador en este período y corte. No se puede duplicar.");
+        return;
+      }
+      const payrollId = nextDbId("nomina", "nominaID", "NOM");
+      const otherConcept = byId("payroll-other-concept").value.trim();
+      if (otherConcept && !dbTable("conceptosDescuentoNomina").some((row) => normalize(row.concepto) === normalize(otherConcept))) {
+        dbTable("conceptosDescuentoNomina").push(stampRecord({ conceptoID: nextDbId("conceptosDescuentoNomina", "conceptoID", "DESC"), concepto: otherConcept, estado: "Activo" }));
+      }
+      const cxcDiscountDetalle = [...document.querySelectorAll(".payroll-cxc-discount")]
+        .map((input) => ({ cxcId: input.dataset.cxcId, amount: Number(input.value) || 0 }))
+        .filter((row) => row.amount > 0);
+      dbTable("nomina").push(stampRecord({
+        nominaID: payrollId,
+        periodoInicio: data.range.start,
+        periodoFin: data.range.end,
+        quincena: data.range.label,
+        payrollType: data.cut,
+        colaboradorID: staffRecord?.colaboradorID || "",
+        colaboradorNombre: data.staffName,
+        salarioBaseMensual: Number(staffRecord?.salarioMensual) || data.installment.monthlyTotal || 0,
+        salarioQuincenal: data.base,
+        salarioInstallmentSnapshot: data.installment,
+        vacationSalaryOffset: data.vacationOffset,
+        commissionPeriodStart: data.commissionTipRange?.start || "",
+        commissionPeriodEnd: data.commissionTipRange?.end || "",
+        commissionRuleSnapshot: data.threshold,
+        totalFacturadoMes: data.sales,
+        porcentajeComision: data.rate,
+        comisionGenerada: data.commission,
+        propinaNetaMes: data.tips,
+        propinaIdsIncluidas: data.tipsRows.map((tip) => tip.propinaID),
+        bonos: data.bonusLines,
+        anticipos: 0,
+        descuentoAFP: data.afp,
+        descuentoSeguro: data.insurance,
+        descuentoOtros: data.other,
+        descuentoCxC: data.cxcDiscounts,
+        cxcDiscountDetalle,
+        tssEmployeeDeduction: data.tssEmployee,
+        employerTssContribution: data.tssEmployer,
+        tssConfigId: data.tssConfig?.tssID || "",
+        conceptoOtrosDescuentos: otherConcept,
+        totalAPagar: data.net,
+        estado: "Borrador",
+      }));
+      logAudit("payroll_draft_created", {
+        entity: "nomina",
+        entityId: payrollId,
+        newData: { colaboradorID: staffRecord?.colaboradorID || "", periodo: data.period, corte: data.cut, neto: data.net },
+        note: `Borrador de nómina ${payrollId} creado para ${data.staffName}, ${data.range.label} ${data.period}.`,
+        success: true,
+      });
+      event.target.reset();
+      byId("payroll-period").value = month;
+      byId("payroll-cut").value = "month";
+      byId("payroll-afp").value = 0;
+      byId("payroll-insurance").value = 0;
+      byId("payroll-other-deductions").value = 0;
+      byId("payroll-cxc-total").value = 0;
+      byId("payroll-bonus-list").innerHTML = "";
+      renderPayrollCxCList([]);
+      saveState();
+      renderAll();
+      updatePayrollPreview(true);
+    } finally {
+      payrollSubmitInFlight = false;
+      byId("payroll-submit").disabled = false;
     }
-    const payrollId = nextDbId("nomina", "nominaID", "NOM");
-    [...document.querySelectorAll(".payroll-cxc-discount")].forEach((input) => {
-      const amount = Number(input.value) || 0;
-      if (amount <= 0) return;
-      const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === input.dataset.cxcId);
-      if (!cxc) return;
-      const applied = Math.min(amount, Number(cxc.balancePendiente) || 0);
-      cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + applied;
-      cxc.balancePendiente = Math.max(0, (Number(cxc.balancePendiente) || 0) - applied);
-      cxc.estado = cxc.balancePendiente <= 0 ? "Saldada por payroll" : "Parcial payroll";
-      cxc.observaciones = `${cxc.observaciones || ""} Descontado en ${payrollId}`.trim();
-    });
-    dbTable("propinas").forEach((tip) => {
-      const sameStaff = staffRecord?.colaboradorID ? tip.colaboradorID === staffRecord.colaboradorID : normalize(tip.colaboradorNombre) === normalize(data.staffName);
-      if (sameStaff && normalize(tip.estadoPagoNomina || "Pendiente") !== "pagada" && dateInRange(tip.fechaHora, data.range.start, data.range.end)) {
+  });
+
+  byId("vacation-start").addEventListener("input", updateVacationAdvancePreview);
+  byId("vacation-days").addEventListener("input", updateVacationAdvancePreview);
+  byId("vacation-daily-value").addEventListener("input", updateVacationAdvancePreview);
+
+  let vacationSubmitInFlight = false;
+  byId("vacation-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (vacationSubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede aprobar y pagar vacaciones anticipadas.");
+      return;
+    }
+    const staffName = byId("vacation-staff").value.trim();
+    const staffRecord = findStaffByName(staffName);
+    if (!staffRecord) {
+      alert("Selecciona un colaborador existente.");
+      byId("vacation-staff").focus();
+      return;
+    }
+    const startDate = byId("vacation-start").value;
+    const days = Number(byId("vacation-days").value) || 0;
+    const dailyValue = Number(byId("vacation-daily-value").value) || 0;
+    if (!DalfiClosingMath.isValidIsoDate(startDate)) {
+      alert("Indica una fecha de inicio válida.");
+      byId("vacation-start").focus();
+      return;
+    }
+    if (!(days > 0)) {
+      alert("Los días pagados deben ser mayores que cero.");
+      byId("vacation-days").focus();
+      return;
+    }
+    if (!(dailyValue > 0)) {
+      alert("Indica el valor diario a utilizar para este anticipo (política de valor diario configurada para el negocio).");
+      byId("vacation-daily-value").focus();
+      return;
+    }
+    const accountName = byId("vacation-account").value.trim();
+    const account = findAccountByName(accountName);
+    if (!account) {
+      alert("Selecciona una cuenta o caja válida para pagar el anticipo.");
+      byId("vacation-account").focus();
+      return;
+    }
+    const amount = DalfiClosingMath.roundMoney(days * dailyValue);
+    const available = accountAvailableBalance(accountName);
+    if (amount > available) {
+      alert(`El anticipo supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
+      return;
+    }
+    vacationSubmitInFlight = true;
+    try {
+      const vacationId = nextDbId("vacaciones", "vacationId", "VAC");
+      const expenseId = nextDbId("egresos", "egresoID", "EGR");
+      dbTable("egresos").push(stampRecord({
+        egresoID: expenseId,
+        fechaHora: `${today}T12:00:00`,
+        tipoEgreso: "vacaciones",
+        cuentaOrigenID: account.cuentaID || "",
+        cuentaOrigen: accountName,
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `Vacaciones anticipadas ${staffName} (${days} días)`,
+        monto: amount,
+        estado: "Registrado",
+        observaciones: byId("vacation-note").value.trim(),
+      }));
+      dbTable("vacaciones").push(stampRecord({
+        vacationId,
+        colaboradorID: staffRecord.colaboradorID || "",
+        colaboradorNombre: staffName,
+        fechaInicio: startDate,
+        diasPagados: days,
+        valorDiario: dailyValue,
+        montoAnticipado: amount,
+        fechaPagoAnticipado: today,
+        cuentaID: account.cuentaID || "",
+        cuenta: accountName,
+        estado: "Pagada anticipadamente",
+        egresoID: expenseId,
+        observaciones: byId("vacation-note").value.trim(),
+      }));
+      refreshPendingClosingsForDate(today);
+      logAudit("vacation_advance_paid", {
+        entity: "vacaciones",
+        entityId: vacationId,
+        newData: { colaboradorID: staffRecord.colaboradorID || "", dias: days, monto: amount, cuenta: accountName },
+        note: `Anticipo de vacaciones pagado a ${staffName}: ${days} días por ${money.format(amount)}.`,
+        success: true,
+      });
+      event.target.reset();
+      byId("vacation-advance-amount").textContent = money.format(0);
+      saveState();
+      renderAll();
+    } finally {
+      vacationSubmitInFlight = false;
+    }
+  });
+
+  byId("payroll-table").addEventListener("click", (event) => {
+    const row = event.target.closest("tr[data-payroll-id]");
+    if (!row) return;
+    const payrollId = row.dataset.payrollId;
+    if (event.target.closest(".pay-payroll")) openPayPayrollForm(payrollId);
+    if (event.target.closest(".revert-payroll")) revertPayrollPayment(payrollId);
+  });
+
+  byId("cancel-pay-payroll").addEventListener("click", (event) => {
+    event.preventDefault();
+    byId("pay-payroll-form").classList.add("hidden");
+    byId("pay-payroll-id").value = "";
+  });
+
+  let payPayrollSubmitInFlight = false;
+  byId("pay-payroll-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (payPayrollSubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede pagar nómina.");
+      return;
+    }
+    const payrollId = byId("pay-payroll-id").value;
+    const payroll = dbTable("nomina").find((row) => row.nominaID === payrollId);
+    if (!payroll) {
+      alert("Esta nómina ya no existe.");
+      return;
+    }
+    if (normalize(payroll.estado || "") !== "borrador") {
+      alert("Esta nómina ya fue pagada o revertida. No se puede pagar de nuevo.");
+      return;
+    }
+    const accountName = byId("pay-payroll-account").value.trim();
+    const account = findAccountByName(accountName);
+    if (!account) {
+      alert("Selecciona una cuenta o caja válida.");
+      byId("pay-payroll-account").focus();
+      return;
+    }
+    if (normalize(account.estado || "Activo") !== "activo") {
+      alert("Esta cuenta está inactiva. Selecciona una cuenta activa.");
+      return;
+    }
+    const method = byId("pay-payroll-method").value;
+    const payDate = byId("pay-payroll-date").value || today;
+    if (!DalfiClosingMath.isValidIsoDate(payDate)) {
+      alert("Indica una fecha de pago válida.");
+      return;
+    }
+    const net = Number(payroll.totalAPagar) || 0;
+    if (net <= 0) {
+      alert("El neto a pagar debe ser mayor que cero.");
+      return;
+    }
+    if (payroll.payrollType !== "first" && (Number(payroll.tssEmployeeDeduction) || 0) === 0 && !payroll.tssConfigId) {
+      const proceed = confirm("No hay configuración de TSS vigente para esta nómina y no se retuvo TSS del colaborador. ¿Deseas continuar de todas formas?");
+      if (!proceed) return;
+    }
+    const available = accountAvailableBalance(accountName);
+    if (net > available) {
+      alert(`El neto supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
+      return;
+    }
+    payPayrollSubmitInFlight = true;
+    try {
+      const expenseId = nextDbId("egresos", "egresoID", "EGR");
+      dbTable("egresos").push(stampRecord({
+        egresoID: expenseId,
+        fechaHora: `${payDate}T12:00:00`,
+        tipoEgreso: "nomina",
+        cuentaOrigenID: account.cuentaID || "",
+        cuentaOrigen: accountName,
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `Pago de nómina ${payroll.quincena} ${payroll.periodoInicio?.slice(0, 7) || ""} - ${payroll.colaboradorNombre}`,
+        monto: net,
+        estado: "Registrado",
+        observaciones: `Nómina ${payrollId}`,
+      }));
+      // Propinas incluidas en el snapshot del borrador: se marcan pagadas
+      // EXACTAMENTE las que quedaron congeladas al Guardar (propinaIdsIncluidas),
+      // nunca "todas las pendientes ahora mismo" (eso podria incluir propinas
+      // cobradas DESPUES de crear el borrador, que le corresponden a la
+      // proxima nomina, no a esta).
+      const tipIds = new Set(Array.isArray(payroll.propinaIdsIncluidas) ? payroll.propinaIdsIncluidas : []);
+      dbTable("propinas").forEach((tip) => {
+        if (!tipIds.has(tip.propinaID)) return;
+        if (normalize(tip.estadoPagoNomina || "Pendiente") === "pagada") return;
         tip.estadoPagoNomina = "Pagada";
         tip.nominaID = payrollId;
-      }
-    });
-    const otherConcept = byId("payroll-other-concept").value.trim();
-    if (otherConcept && !dbTable("conceptosDescuentoNomina").some((row) => normalize(row.concepto) === normalize(otherConcept))) {
-      dbTable("conceptosDescuentoNomina").push(stampRecord({ conceptoID: nextDbId("conceptosDescuentoNomina", "conceptoID", "DESC"), concepto: otherConcept, estado: "Activo" }));
+        stampRecord(tip, "updated");
+      });
+      // CxC del colaborador: se aplican EXACTAMENTE los montos que quedaron
+      // en el snapshot (cxcDiscountDetalle), revalidando que el saldo
+      // todavia alcance (si cambio entre Guardar y Pagar, se aplica lo que
+      // quede disponible, nunca mas de lo que la CxC realmente tiene).
+      const cxcDetalle = Array.isArray(payroll.cxcDiscountDetalle) ? payroll.cxcDiscountDetalle : [];
+      let totalCxcApplied = 0;
+      cxcDetalle.forEach((line) => {
+        const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === line.cxcId);
+        if (!cxc) return;
+        const applied = Math.min(Number(line.amount) || 0, Number(cxc.balancePendiente) || 0);
+        if (applied <= 0) return;
+        cxc.montoAplicado = (Number(cxc.montoAplicado) || 0) + applied;
+        cxc.balancePendiente = Math.max(0, (Number(cxc.balancePendiente) || 0) - applied);
+        cxc.estado = cxc.balancePendiente <= 0 ? "Saldada" : "Parcial";
+        cxc.observaciones = `${cxc.observaciones || ""} Descontado en nómina ${payrollId}`.trim();
+        stampRecord(cxc, "updated");
+        totalCxcApplied += applied;
+      });
+      payroll.estado = "Pagada";
+      payroll.fechaPagoNomina = payDate;
+      payroll.montoPagadoNomina = net;
+      payroll.cuentaPagoID = account.cuentaID || "";
+      payroll.cuentaPago = accountName;
+      payroll.medioPago = method;
+      payroll.egresoID = expenseId;
+      payroll.descuentoCxC = totalCxcApplied;
+      stampRecord(payroll, "updated");
+      refreshPendingClosingsForDate(payDate);
+      logAudit("payroll_paid", {
+        entity: "nomina",
+        entityId: payrollId,
+        newData: { colaboradorID: payroll.colaboradorID, neto: net, cuenta: accountName, medioPago: method, fecha: payDate, egresoID: expenseId, propinasIncluidas: [...tipIds], cxcAplicada: totalCxcApplied },
+        note: `Nómina ${payrollId} pagada a ${payroll.colaboradorNombre} por ${money.format(net)}.`,
+        success: true,
+      });
+      byId("pay-payroll-form").classList.add("hidden");
+      byId("pay-payroll-id").value = "";
+      saveState();
+      renderAll();
+    } finally {
+      payPayrollSubmitInFlight = false;
     }
-    state.payroll.push({
-      id: payrollId,
-      period: data.period,
-      cut: data.range.label,
-      staff: data.staffName,
-      base: data.base,
-      commission: data.commission,
-      tips: data.tips,
-      deductions: data.deductions,
-      sales: data.sales,
-      net: data.net,
-    });
-    dbTable("nomina").push(stampRecord({
-      nominaID: payrollId,
-      periodoInicio: data.range.start,
-      periodoFin: data.range.end,
-      quincena: data.range.label,
-      colaboradorID: staffRecord?.colaboradorID || "",
-      colaboradorNombre: data.staffName,
-      salarioBaseMensual: Number(staffRecord?.salarioMensual) || (data.cut === "month" ? data.base : data.base * 2),
-      salarioQuincenal: (Number(staffRecord?.salarioMensual) || 0) / 2,
-      totalFacturadoMes: data.sales,
-      porcentajeComision: data.rate,
-      comisionGenerada: data.commission,
-      propinaNetaMes: data.tips,
-      anticipos: data.deductions,
-      descuentoAFP: data.afp,
-      descuentoSeguro: data.insurance,
-      descuentoOtros: data.other,
-      descuentoCxC: data.cxcDiscounts,
-      conceptoOtrosDescuentos: otherConcept,
-      totalAPagar: data.net,
-      estado: "Pendiente",
-    }));
-    dbTable("cuentasPagar").push(stampRecord({
-      cxPID: nextDbId("cuentasPagar", "cxPID", "CXP"),
-      fechaOrigen: new Date().toISOString(),
-      tipoCxP: "Nómina",
-      acreedorTipo: "Colaborador",
-      acreedorID: staffRecord?.colaboradorID || "",
-      acreedorNombre: data.staffName,
-      nominaID: payrollId,
-      montoOriginal: data.net,
-      montoPagado: 0,
-      balancePendiente: data.net,
-      estado: "Pendiente",
-      concepto: `Payroll ${data.range.label} ${data.period}`,
-      fechaVencimiento: data.range.end,
-    }));
-    event.target.reset();
-    byId("payroll-period").value = month;
-    byId("payroll-cut").value = "month";
-    byId("payroll-afp").value = 0;
-    byId("payroll-insurance").value = 0;
-    byId("payroll-other-deductions").value = 0;
-    renderPayrollCxCList([]);
-    saveState();
-    renderAll();
-    updatePayrollPreview(true);
   });
 
   // Igual que expenseSubmitInFlight en el formulario de egresos: evita
@@ -9188,18 +9798,33 @@ function wireForms() {
 
   byId("commission-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede configurar umbrales de comisión.");
+      return;
+    }
     const appliesTo = byId("commission-applies-to").value.trim();
     if (!appliesTo) {
       alert("Debes indicar el nombre del umbral de comisión.");
       byId("commission-applies-to").focus();
       return;
     }
-    const from = Number(byId("commission-from").value) || 0;
+    const from = Number(byId("commission-from").value);
     const to = Number(byId("commission-to").value) || 0;
-    const rawRate = Number(byId("commission-rate").value) || 0;
-    const rate = rawRate > 1 ? rawRate / 100 : rawRate;
+    const rawRate = Number(byId("commission-rate").value);
     const editId = byId("commission-edit-id").value;
     const existing = dbTable("umbralesComision").find((row) => row.escalaID === editId);
+    // Validacion real (antes no existia ninguna): minimo finito no-negativo,
+    // maximo mayor que minimo, porcentaje 0-100, y rangos que no se solapen
+    // con otro umbral activo del mismo grupo ("aplicaA").
+    const candidate = { escalaID: editId || "", aplicaA: appliesTo, desde: from, hasta: to, porcentajeComision: rawRate, estado: byId("commission-status").value };
+    const otherRules = dbTable("umbralesComision").filter((row) => row.escalaID !== editId);
+    const validation = DalfiClosingMath.validateCommissionThresholdRule(candidate, otherRules);
+    if (!validation.valid) {
+      alert(validation.errors.join("\n"));
+      byId("commission-from").focus();
+      return;
+    }
+    const rate = rawRate > 1 ? rawRate / 100 : rawRate;
     const payload = {
       aplicaA: appliesTo,
       desde: from,
@@ -9209,8 +9834,59 @@ function wireForms() {
     };
     if (existing) Object.assign(existing, payload);
     else dbTable("umbralesComision").push(stampRecord({ escalaID: nextDbId("umbralesComision", "escalaID", "COM"), ...payload }));
+    logAudit(existing ? "commission_threshold_edit" : "commission_threshold_create", {
+      entity: "umbralesComision",
+      entityId: existing ? editId : "",
+      newData: payload,
+      success: true,
+    });
     event.target.reset();
     renderStaffThresholdChoices([]);
+    closeDataForms();
+    state = stateFromDatabase(database);
+    saveState();
+    renderAll();
+  });
+
+  byId("tss-config-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede configurar TSS.");
+      return;
+    }
+    const employeeRate = Number(byId("tss-employee-rate").value);
+    const employerRate = Number(byId("tss-employer-rate").value);
+    const cap = Number(byId("tss-cap").value);
+    const base = Number(byId("tss-base").value);
+    const effectiveDate = byId("tss-effective-date").value;
+    if (![employeeRate, employerRate, cap, base].every((value) => Number.isFinite(value) && value >= 0) || employeeRate > 100 || employerRate > 100) {
+      alert("Las tasas deben estar entre 0 y 100, y el tope/base deben ser montos válidos mayores o iguales a 0.");
+      return;
+    }
+    if (!DalfiClosingMath.isValidIsoDate(effectiveDate)) {
+      alert("Indica una fecha de vigencia válida.");
+      byId("tss-effective-date").focus();
+      return;
+    }
+    const editId = byId("tss-edit-id").value;
+    const existing = dbTable("configuracionTSS").find((row) => row.tssID === editId);
+    const payload = {
+      tasaColaborador: employeeRate,
+      tasaEmpleador: employerRate,
+      tope: cap,
+      baseContributiva: base,
+      fechaVigencia: effectiveDate,
+      estado: byId("tss-status").value,
+    };
+    if (existing) Object.assign(existing, payload);
+    else dbTable("configuracionTSS").push(stampRecord({ tssID: nextDbId("configuracionTSS", "tssID", "TSS"), ...payload }));
+    logAudit(existing ? "tss_config_edit" : "tss_config_create", {
+      entity: "configuracionTSS",
+      entityId: existing ? editId : "",
+      newData: payload,
+      success: true,
+    });
+    event.target.reset();
     closeDataForms();
     state = stateFromDatabase(database);
     saveState();

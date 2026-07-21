@@ -867,18 +867,35 @@
               </div>
               <div class="form-row">
                 <label>
-                  Propinas pendientes
+                  Propinas cobradas pendientes (período 21-20)
                   <input id="payroll-tips" type="number" min="0" step="0.01" readonly />
                 </label>
+                <label>
+                  Ajuste vacaciones prepagadas
+                  <output id="payroll-vacation-offset">RD$0.00</output>
+                </label>
+              </div>
+              <div class="payroll-box">
+                <div class="section-title-row">
+                  <h4>Bonos de esta nómina</h4>
+                  <button class="secondary-btn compact" id="add-payroll-bonus" type="button">Agregar bono</button>
+                </div>
+                <div id="payroll-bonus-list"></div>
+              </div>
+              <div class="form-row">
                 <label>
                   AFP
                   <input id="payroll-afp" type="number" min="0" step="0.01" value="0" />
                 </label>
-              </div>
-              <div class="form-row">
                 <label>
                   Seguro
                   <input id="payroll-insurance" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  TSS del colaborador (calculado)
+                  <output id="payroll-tss-preview">RD$0.00</output>
                 </label>
                 <label>
                   Otros descuentos
@@ -891,11 +908,15 @@
               </label>
               <div class="payroll-box">
                 <h4>CxC del colaborador a descontar</h4>
+                <label>
+                  Monto total a descontar (se aplica de la CxC más antigua a la más reciente)
+                  <input id="payroll-cxc-total" type="number" min="0" step="0.01" value="0" />
+                </label>
                 <div id="payroll-cxc-list" class="simple-list"></div>
               </div>
               <section class="invoice-summary">
                 <div class="summary-row">
-                  <span>Total facturado por colaborador</span>
+                  <span>Total facturado por colaborador (período 21-20)</span>
                   <strong id="payroll-sales-preview">RD$0.00</strong>
                 </div>
                 <div class="summary-row">
@@ -911,7 +932,75 @@
                   <strong id="payroll-net-preview">RD$0.00</strong>
                 </div>
               </section>
-              <button class="primary-btn" type="submit">Generar payroll y cuenta por pagar</button>
+              <button class="primary-btn" id="payroll-submit" type="submit">Guardar nómina (borrador)</button>
+              <p class="panel-note">Guardar solo calcula y congela un borrador: no marca propinas ni comisión como pagadas, no descuenta CxC y no genera egreso. Eso ocurre únicamente al pagar la nómina desde el listado.</p>
+            </form>
+
+            <form class="panel form-panel" id="vacation-form">
+              <div class="panel-head">
+                <h3>Vacaciones pagadas anticipadamente</h3>
+              </div>
+              <label>
+                Colaborador/a
+                <input id="vacation-staff" list="staff-list" placeholder="Nombre" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Fecha de inicio
+                  <input id="vacation-start" type="date" required />
+                </label>
+                <label>
+                  Días pagados
+                  <input id="vacation-days" type="number" min="1" step="1" value="14" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Valor diario
+                  <input id="vacation-daily-value" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Monto a anticipar
+                  <output id="vacation-advance-amount">RD$0.00</output>
+                </label>
+              </div>
+              <label>
+                Cuenta que paga el anticipo
+                <input id="vacation-account" list="accounts-list" placeholder="Caja o banco" required />
+              </label>
+              <label>
+                Observación
+                <input id="vacation-note" placeholder="Opcional" />
+              </label>
+              <button class="primary-btn" type="submit">Registrar y pagar anticipo</button>
+              <p class="panel-note">Crea exactamente un egreso. Las quincenas que caigan dentro de estos días descontarán automáticamente la porción prepagada, para no pagar los mismos días dos veces.</p>
+            </form>
+
+            <form class="panel form-panel hidden" id="pay-payroll-form">
+              <div class="panel-head">
+                <h3>Pagar nómina</h3>
+              </div>
+              <input id="pay-payroll-id" type="hidden" />
+              <p id="pay-payroll-summary" class="panel-note"></p>
+              <label>
+                Cuenta que paga
+                <input id="pay-payroll-account" list="accounts-list" placeholder="Caja o banco" required />
+              </label>
+              <label>
+                Medio de pago
+                <select id="pay-payroll-method">
+                  <option value="efectivo">Efectivo</option>
+                  <option value="transferencia">Transferencia</option>
+                </select>
+              </label>
+              <label>
+                Fecha real de pago
+                <input id="pay-payroll-date" type="date" required />
+              </label>
+              <div class="row-actions">
+                <button class="primary-btn" type="submit">Confirmar pago</button>
+                <button class="secondary-btn" id="cancel-pay-payroll" type="button">Cancelar</button>
+              </div>
             </form>
 
             <section class="panel">
@@ -931,6 +1020,8 @@
                       <th>Propinas</th>
                       <th>Deducción</th>
                       <th>Neto</th>
+                      <th>Estado</th>
+                      <th>Acción</th>
                     </tr>
                   </thead>
                   <tbody id="payroll-table"></tbody>
@@ -1210,6 +1301,14 @@
                 Suplidor o colaborador
                 <input id="expense-receivable-person" list="advance-people-list" placeholder="Suplidor o colaborador" />
               </label>
+              <label class="hidden" id="expense-advance-type-label">
+                Tipo de avance al colaborador
+                <select id="expense-advance-type">
+                  <option value="efectivo">Avance de efectivo</option>
+                  <option value="salario">Avance de salario</option>
+                  <option value="propina">Avance de propina</option>
+                </select>
+              </label>
               <div class="form-row">
                 <label>
                   Monto
@@ -1435,6 +1534,7 @@
                 <button class="secondary-btn data-form-toggle" data-form-target="account-form" type="button">Cuentas/Cajas</button>
                 <button class="secondary-btn data-form-toggle" data-form-target="processor-form" type="button">Compañías tarjeta</button>
                 <button class="secondary-btn data-form-toggle" data-form-target="commission-form" type="button">Umbrales comisión</button>
+                <button class="secondary-btn data-form-toggle" data-form-target="tss-config-form" type="button">TSS</button>
               </div>
             </section>
 
@@ -1688,6 +1788,48 @@
               <button class="primary-btn" type="submit">Guardar umbral</button>
             </form>
 
+            <form class="panel form-panel data-entry-form" id="tss-config-form">
+              <div class="panel-head">
+                <h3>Configurar TSS</h3>
+                <p class="panel-note">Tasa, tope y base contributiva del aporte del colaborador. Ninguna nómina puede pagarse sin una configuración vigente.</p>
+              </div>
+              <input id="tss-edit-id" type="hidden" />
+              <div class="form-row">
+                <label>
+                  Tasa colaborador %
+                  <input id="tss-employee-rate" type="number" min="0" max="100" step="0.01" required />
+                </label>
+                <label>
+                  Tasa empleador %
+                  <input id="tss-employer-rate" type="number" min="0" max="100" step="0.01" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Tope de base contributiva
+                  <input id="tss-cap" type="number" min="0" step="0.01" required />
+                </label>
+                <label>
+                  Base contributiva mensual
+                  <input id="tss-base" type="number" min="0" step="0.01" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Vigente desde
+                  <input id="tss-effective-date" type="date" required />
+                </label>
+                <label>
+                  Estado
+                  <select id="tss-status">
+                    <option value="Activo">Activo</option>
+                    <option value="Inactivo">Inactivo</option>
+                  </select>
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Guardar configuración TSS</button>
+            </form>
+
             <form class="panel form-panel data-entry-form" id="processor-form">
               <div class="panel-head">
                 <h3>Agregar compañía de tarjeta</h3>
@@ -1764,6 +1906,13 @@
                 <input class="inline-search" id="commission-search" placeholder="Buscar umbral" />
               </div>
               <div class="simple-list" id="commission-list"></div>
+            </section>
+            <section class="panel data-list-panel" data-list-panel="tss-config-form">
+              <div class="panel-head">
+                <h3>Configuraciones TSS</h3>
+                <button class="secondary-btn compact open-data-form" data-form-target="tss-config-form" type="button">Agregar</button>
+              </div>
+              <div class="simple-list" id="tss-config-list"></div>
             </section>
           </div>
         </section>
@@ -1903,7 +2052,7 @@
 
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="lib/closing-math.js?v=20260721-cobro-general-fifo"></script>
-    <script src="app.js?v=20260721-deuda-anterior-facturacion"></script>
+    <script src="lib/closing-math.js?v=20260721-nomina-quincenal"></script>
+    <script src="app.js?v=20260721-nomina-quincenal"></script>
   </body>
 </html>
