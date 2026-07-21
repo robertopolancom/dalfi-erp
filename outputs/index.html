@@ -960,10 +960,12 @@
                   <input id="cash-initial" type="number" min="0" step="0.01" value="0" readonly aria-readonly="true" tabindex="-1" />
                 </label>
                 <label>
-                  Gastos del día
-                  <input id="cash-expenses" type="number" min="0" step="0.01" value="0" />
+                  Egresos del día — calculado, no editable
+                  <output id="cash-expenses" aria-live="polite">RD$0.00</output>
                 </label>
               </div>
+              <button class="secondary-btn" id="cash-add-expense" type="button">Agregar egreso</button>
+              <p class="panel-note hidden" id="cash-add-expense-closed-note">Este cierre ya está confirmado: no se pueden agregar egresos desde aquí. Reabre el cierre primero.</p>
               <button class="secondary-btn" id="generate-cash-balance" type="button">Generar cuadre de efectivo</button>
               <section class="invoice-summary hidden" id="cash-balance-panel">
                 <div class="summary-row">
@@ -1119,6 +1121,10 @@
               <input id="expense-edit-id" type="hidden" />
               <div class="panel-head">
                 <h3>Registrar egreso</h3>
+              </div>
+              <div class="panel-note hidden" id="cash-add-expense-banner">
+                Agregando un egreso para el cierre de caja en curso.
+                <button class="secondary-btn compact" id="cash-add-expense-cancel" type="button">Cancelar y volver al cierre</button>
               </div>
               <div class="form-row">
                 <label>
@@ -1856,6 +1862,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260721-erp-user-profiles"></script>
-    <script src="app.js?v=20260721-erp-user-profiles"></script>
+    <script src="app.js?v=20260721-egresos-dia"></script>
   </body>
 </html>

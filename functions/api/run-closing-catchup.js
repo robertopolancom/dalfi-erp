@@ -122,9 +122,15 @@ function accountActivityForDate(data, date, account) {
     .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmado") === "confirmado")
     .filter((row) => recordMatchesAccount(row, account, ["cuentaDestino"], ["cuentaDestinoID"]))
     .reduce((sum, row) => sum + (Number(row.montoNeto) || Number(row.montoBruto) || 0), 0);
+  // Debe mantenerse en sincronia con accountActivityForDate() en
+  // outputs/app.js: un egreso tipo "transferencia" ya tiene su propia fila
+  // en "transferencias" (contada abajo en transferOut) y no debe sumarse
+  // tambien aqui, o la misma salida de efectivo se cuenta dos veces.
   const expenses = (data.egresos || [])
     .filter((row) => dateOnly(row.fechaHora) === date)
     .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    .filter((row) => normalize(row.estado || "Registrado") !== "anulado")
+    .filter((row) => normalize(row.tipoEgreso) !== "transferencia")
     .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
   const transferIn = (data.transferencias || [])
     .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")

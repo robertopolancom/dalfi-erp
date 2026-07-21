@@ -157,6 +157,14 @@ function buildExpenseFormSandbox({ existingExpenses = [] } = {}) {
     },
     updateExpenseOptionalFields: () => {},
     updateExpenseBalancePreview: () => {},
+    // El submit real de #expense-form (en outputs/app.js) llama a
+    // returnToClosingAfterExpense() SOLO cuando cashPendingExpenseReturn
+    // esta activo (el usuario llego desde el boton "Agregar egreso" del
+    // cierre). En la app real ambos siempre existen (declarados a nivel de
+    // modulo); aqui se estuban igual que en la app: null = no aplica, no
+    // se llama a nada.
+    cashPendingExpenseReturn: null,
+    returnToClosingAfterExpense: () => {},
   };
   vm.createContext(sandbox);
   vm.runInContext(dependenciesSource, sandbox);

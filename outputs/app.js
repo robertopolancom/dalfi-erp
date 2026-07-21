@@ -983,6 +983,15 @@ function accountActivityForDate(date, account) {
   const expenses = dbTable("egresos")
     .filter((row) => dateOnly(row.fechaHora) === date)
     .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    // Un egreso "Anulado" no debe sumar (regla existente para
+    // ingresos/transferencias, aqui documentada explicitamente aunque hoy
+    // no exista ningun flujo que anule un egreso). Un egreso tipo
+    // "transferencia" NUNCA se suma aqui: ese mismo movimiento ya crea su
+    // propia fila en la coleccion "transferencias" (ver el submit de
+    // #expense-form), que es la que se suma abajo en transferOut. Sumarlo
+    // tambien aqui duplicaria la misma salida de efectivo dos veces.
+    .filter((row) => normalize(row.estado || "Registrado") !== "anulado")
+    .filter((row) => normalize(row.tipoEgreso) !== "transferencia")
     .reduce((sum, row) => sum + (Number(row.monto) || 0), 0);
   const transferIn = dbTable("transferencias")
     .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")
@@ -1010,6 +1019,11 @@ function accountActivityDetailForDate(date, account) {
   const expenseRows = dbTable("egresos")
     .filter((row) => dateOnly(row.fechaHora) === date)
     .filter((row) => recordMatchesAccount(row, account, ["cuentaOrigen"], ["cuentaOrigenID"]))
+    // Mismo criterio que accountActivityForDate(): un egreso tipo
+    // "transferencia" ya aparece abajo como transferOutRows (su propia fila
+    // en "transferencias"); listarlo tambien aqui duplicaria la fila.
+    .filter((row) => normalize(row.estado || "Registrado") !== "anulado")
+    .filter((row) => normalize(row.tipoEgreso) !== "transferencia")
     .map((row) => ({ label: `${row.tipoEgreso || "Egreso"} · ${row.concepto || ""}`.trim(), amount: Number(row.monto) || 0 }));
   const transferOutRows = dbTable("transferencias")
     .filter((row) => dateOnly(row.fechaHora) === date && normalize(row.estado || "Confirmada") === "confirmada")
@@ -1993,11 +2007,14 @@ function updateCashBalancePreview() {
   if (byId("cash-initial")) byId("cash-initial").value = montoInicial;
   const entradasEfectivo = activity.income + activity.transferIn;
   const salidasEfectivo = activity.expenses + activity.transferOut;
+  // "Egresos del dia" tambien es siempre calculado (accountActivityForDate),
+  // nunca leido de un input: se refleja aqui mismo en el elemento de solo
+  // lectura, igual que "Monto inicial".
+  if (byId("cash-expenses")) byId("cash-expenses").textContent = money.format(salidasEfectivo);
   const expected = DalfiClosingMath.computeExpectedCash({ montoInicial, entradasEfectivo, salidasEfectivo });
   const counted = Number(countedRaw) || 0;
-  const expenses = Number(byId("cash-expenses").value) || 0;
   const { difference, shortage, surplus } = DalfiClosingMath.computeDifference(counted, expected);
-  cashBalanceDraft = { date, account: account.nombreCuenta || "", montoInicial, expected, counted, expenses, difference, shortage, surplus, generatedAt: new Date().toISOString() };
+  cashBalanceDraft = { date, account: account.nombreCuenta || "", montoInicial, expected, counted, expenses: salidasEfectivo, difference, shortage, surplus, generatedAt: new Date().toISOString() };
 
   byId("cash-initial-preview").textContent = money.format(montoInicial);
   byId("cash-income-preview").textContent = money.format(entradasEfectivo);
@@ -2207,10 +2224,12 @@ function ensureCashModuleMarkup() {
             <input id="cash-initial" type="number" min="0" step="0.01" value="0" readonly aria-readonly="true" tabindex="-1" />
           </label>
           <label>
-            Gastos del día
-            <input id="cash-expenses" type="number" min="0" step="0.01" value="0" />
+            Egresos del día — calculado, no editable
+            <output id="cash-expenses" aria-live="polite">RD$0.00</output>
           </label>
         </div>
+        <button class="secondary-btn" id="cash-add-expense" type="button">Agregar egreso</button>
+        <p class="panel-note hidden" id="cash-add-expense-closed-note">Este cierre ya está confirmado: no se pueden agregar egresos desde aquí. Reabre el cierre primero.</p>
         <button class="secondary-btn" id="generate-cash-balance" type="button">Generar cuadre de efectivo</button>
         <section class="invoice-summary hidden" id="cash-balance-panel">
           <div class="summary-row">
@@ -3755,11 +3774,12 @@ function showNewCashClosing() {
   byId("cash-date").value = today;
   byId("cash-account").value = defaultAccount?.nombreCuenta || "";
   byId("cash-initial").value = defaultInitialCashFor(defaultAccount, today);
-  byId("cash-expenses").value = 0;
+  byId("cash-expenses").textContent = money.format(0);
   byId("cash-card-counted").value = 0;
   byId("cash-transfer-counted").value = 0;
   resetCashBalancePreview();
   updateClosingCollaboratorDetails(today);
+  updateAddExpenseButtonState(null);
   revealFormAtTop(byId("cash-form"), { focusSelector: "#cash-counted" });
 }
 
@@ -3775,8 +3795,11 @@ function hideCashClosingForm() {
   byId("cash-date").value = today;
   byId("cash-account").value = "";
   byId("cash-initial").value = 0;
+  if (byId("cash-expenses")) byId("cash-expenses").textContent = money.format(0);
   resetCashBalancePreview();
   byId("cash-collaborator-detail")?.classList.add("hidden");
+  cashPendingExpenseReturn = null;
+  updateAddExpenseButtonState(null);
 }
 
 function cashFormFieldIds() {
@@ -3785,7 +3808,8 @@ function cashFormFieldIds() {
     "cash-account",
     "cash-counted",
     "cash-initial",
-    "cash-expenses",
+    // "cash-expenses" ya no esta aqui: es un <output> (Egresos del dia), no
+    // un control de formulario con .disabled — siempre es de solo lectura.
     "generate-cash-balance",
     "cash-shortage-note",
     "cash-rectified-counted",
@@ -3819,6 +3843,100 @@ function setClosingViewActions(closing) {
   byId("cash-open-closing").dataset.closingId = closing?.cierreID || "";
 }
 
+// "Agregar egreso" reutiliza el permiso operativo mas cercano ya existente
+// (canManageInvoices: el mismo que ya exige crear/editar cierres de caja).
+// No existia un permiso especifico de "registrar egresos" en erp_user_profiles
+// para esta fase; documentado aqui la decision de reutilizar este en vez de
+// inventar uno nuevo. El boton nunca aparece para un cierre ya CONFIRMADO
+// (ahi se muestra la nota explicativa en su lugar), sin importar el permiso.
+function updateAddExpenseButtonState(closing) {
+  const button = byId("cash-add-expense");
+  const note = byId("cash-add-expense-closed-note");
+  if (!button) return;
+  const hasPermission = canManageInvoices();
+  const confirmed = Boolean(closing) && !isClosingPendingConfirmation(closing);
+  const canAdd = hasPermission && !confirmed;
+  button.classList.toggle("hidden", !canAdd);
+  button.disabled = !canAdd;
+  note?.classList.toggle("hidden", !(hasPermission && confirmed));
+}
+
+// Estado temporal (solo en memoria, nunca persistido) del formulario de
+// cierre mientras el usuario esta en el formulario normal de egresos porque
+// pulso "Agregar egreso". Permite volver exactamente a donde estaba: fecha,
+// caja, monto real contado y notas ya escritas, sin haber guardado el
+// cierre solo por haber abierto el formulario de egreso (ver seccion 8 de
+// la mejora: abrir el formulario de egreso NUNCA debe guardar el cierre).
+let cashPendingExpenseReturn = null;
+
+function openAddExpenseFromClosing() {
+  if (!canManageInvoices()) return;
+  const closingId = byId("cash-edit-id").value;
+  const closing = closingId ? dbTable("cierres").find((row) => row.cierreID === closingId) : null;
+  if (closing && !isClosingPendingConfirmation(closing)) return; // cierre confirmado: no permitido
+
+  cashPendingExpenseReturn = {
+    date: byId("cash-date").value,
+    account: byId("cash-account").value,
+    counted: byId("cash-counted").value,
+    note: byId("cash-note")?.value || "",
+    shortageNote: byId("cash-shortage-note")?.value || "",
+    rectifiedCounted: byId("cash-rectified-counted")?.value || "",
+    editId: byId("cash-edit-id").value,
+    confirmAfterSave: byId("cash-confirm-after-save").value,
+    submitText: byId("cash-submit").textContent,
+  };
+
+  // Formulario NORMAL de egresos: mismo elemento (#expense-form), mismas
+  // validaciones y funcion de guardado que usa el modulo Egresos. Solo se
+  // precargan fecha y cuenta de origen; el resto queda en blanco para un
+  // egreso nuevo (nunca arrastra datos de una edicion anterior).
+  byId("expense-form").reset();
+  byId("expense-edit-id").value = "";
+  byId("expense-submit").textContent = "Guardar egreso";
+  byId("expense-date").value = cashPendingExpenseReturn.date || today;
+  byId("expense-source").value = cashPendingExpenseReturn.account || "";
+  updateExpenseOptionalFields();
+  updateExpenseBalancePreview();
+
+  switchToView("expenses");
+  byId("cash-add-expense-banner")?.classList.remove("hidden");
+  revealFormAtTop(byId("expense-form"), { focusSelector: "#expense-amount" });
+}
+
+// Se llama tanto al cancelar (sin guardar nada) como despues de guardar el
+// egreso con exito (enganchado en los dos caminos de exito del submit de
+// #expense-form). En ambos casos vuelve al MISMO cierre con exactamente los
+// mismos valores que tenia, y si habia un monto contado escrito, recalcula
+// el cuadre (Monto inicial/Egresos del dia/Monto esperado ya son siempre
+// calculados, nunca leidos del DOM).
+function returnToClosingAfterExpense() {
+  byId("cash-add-expense-banner")?.classList.add("hidden");
+  if (!cashPendingExpenseReturn) {
+    switchToView("cash");
+    return;
+  }
+  const snapshot = cashPendingExpenseReturn;
+  cashPendingExpenseReturn = null;
+  switchToView("cash");
+  byId("cash-form").classList.remove("hidden");
+  byId("cash-date").value = snapshot.date;
+  byId("cash-account").value = snapshot.account;
+  byId("cash-counted").value = snapshot.counted;
+  if (byId("cash-note")) byId("cash-note").value = snapshot.note;
+  if (byId("cash-shortage-note")) byId("cash-shortage-note").value = snapshot.shortageNote;
+  if (byId("cash-rectified-counted")) byId("cash-rectified-counted").value = snapshot.rectifiedCounted;
+  byId("cash-edit-id").value = snapshot.editId;
+  byId("cash-confirm-after-save").value = snapshot.confirmAfterSave;
+  byId("cash-submit").textContent = snapshot.submitText;
+  const account = findAccountByName(snapshot.account) || registerAccount();
+  byId("cash-initial").value = defaultInitialCashFor(account, snapshot.date);
+  updateCashBalancePreview();
+  const closing = snapshot.editId ? dbTable("cierres").find((row) => row.cierreID === snapshot.editId) : registerClosingForDate(snapshot.date);
+  updateAddExpenseButtonState(closing);
+  revealFormAtTop(byId("cash-form"), { focusSelector: null });
+}
+
 function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave = false, submitText = "Actualizar cierre" } = {}) {
   const date = dateOnly(closing.fechaHoraCierre);
   const account = findAccountByName(closing.cuentaCaja) || accountForPayment("efectivo");
@@ -3833,17 +3951,21 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   byId("cash-date").value = date;
   byId("cash-account").value = closing.cuentaCaja || account.nombreCuenta || "";
   // Si el cierre esta abierto para edicion (nuevo, pendiente, o reabierto),
-  // el monto inicial SIEMPRE se recalcula desde la fuente confiable, nunca
-  // desde closing.balanceInicial ya guardado (que pudo haberse guardado con
-  // el bug anterior, o simplemente haber quedado desactualizado si aparecio
-  // un cierre anterior nuevo). Solo al ver un cierre YA CONFIRMADO en modo
-  // de solo lectura se muestra el valor historico congelado tal cual quedo,
-  // sin recalcularlo ni reescribirlo (nunca se alteran cierres confirmados).
+  // Monto inicial y Egresos del dia SIEMPRE se recalculan desde la fuente
+  // confiable, nunca desde closing.balanceInicial/closing.egresos ya
+  // guardados (que pudieron quedar desactualizados si aparecio un cierre
+  // anterior nuevo, o si se agrego/edito/anulo un egreso). Solo al ver un
+  // cierre YA CONFIRMADO en modo de solo lectura se muestran los valores
+  // historicos congelados tal cual quedaron, sin recalcularlos ni
+  // reescribirlos (nunca se alteran cierres confirmados, ni siquiera solo
+  // con abrirlos para verlos: por eso aqui abajo NO se llama a
+  // updateCashBalancePreview() cuando readOnly, que si recalcularia todo).
   const montoInicialForForm = readOnly ? Number(closing.balanceInicial) || 0 : defaultInitialCashFor(account, date);
+  const egresosForForm = readOnly ? Number(closing.egresos) || 0 : activity.expenses + activity.transferOut;
   byId("cash-initial").value = montoInicialForForm;
-  const expectedForPrefill = DalfiClosingMath.computeExpectedCash({ montoInicial: montoInicialForForm, entradasEfectivo: activity.income + activity.transferIn, salidasEfectivo: activity.expenses + activity.transferOut });
+  byId("cash-expenses").textContent = money.format(egresosForForm);
+  const expectedForPrefill = DalfiClosingMath.computeExpectedCash({ montoInicial: montoInicialForForm, entradasEfectivo: activity.income + activity.transferIn, salidasEfectivo: egresosForForm });
   byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || (confirmAfterSave ? expectedForPrefill : 0);
-  byId("cash-expenses").value = Number(closing.egresos) || (confirmAfterSave ? activity.expenses + activity.transferOut : 0);
   byId("cash-card-counted").value = Number(closing.tarjetaContada) || (confirmAfterSave ? summary.card : 0);
   byId("cash-card-processor").value = closing.procesadorTarjeta || "";
   byId("cash-card-batch").value = closing.loteTarjeta || "";
@@ -3851,10 +3973,28 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   byId("cash-note").value = closing.observaciones || "";
   byId("cash-shortage-note").value = closing.motivoFaltante || "";
   byId("cash-rectified-counted").value = Number(closing.balanceContadoRectificado) || "";
-  updateCashBalancePreview();
-  updateClosingCollaboratorDetails(date);
   setCashFormReadOnly(readOnly);
+  if (readOnly) {
+    byId("cash-balance-panel")?.classList.remove("hidden");
+    byId("cash-initial-preview").textContent = money.format(montoInicialForForm);
+    byId("cash-income-preview").textContent = money.format(Number(closing.ingresosConfirmados) || 0);
+    byId("cash-expenses-preview").textContent = money.format(egresosForForm);
+    byId("cash-expected-preview").textContent = money.format(Number(closing.balanceTeorico) || 0);
+    byId("cash-difference-preview").textContent = money.format(Number(closing.diferencia) || 0);
+    byId("cash-shortage-preview").textContent = money.format(Number(closing.cuadreFaltante) || 0);
+    byId("cash-surplus-preview").textContent = money.format(Number(closing.sobranteCaja) || 0);
+    byId("cash-user-preview").textContent = closing.confirmadoPor || "";
+    byId("cash-confirmed-at-preview").textContent = closing.fechaConfirmacion ? new Date(closing.fechaConfirmacion).toLocaleString("es-DO") : "Sin confirmar";
+    byId("cash-shortage-label")?.classList.toggle("hidden", (Number(closing.cuadreFaltante) || 0) <= 0);
+    const detail = accountActivityDetailForDate(date, account);
+    renderCashActivityDetailList(byId("cash-income-detail"), detail.incomeRows);
+    renderCashActivityDetailList(byId("cash-expense-detail"), detail.expenseRows);
+  } else {
+    updateCashBalancePreview();
+  }
+  updateClosingCollaboratorDetails(date);
   setClosingViewActions(readOnly ? closing : null);
+  updateAddExpenseButtonState(closing);
   revealFormAtTop(byId("cash-form"), { focusSelector: readOnly ? null : "#cash-counted" });
 }
 
@@ -5199,22 +5339,32 @@ function attachSearchableLookups() {
   });
 }
 
+// Extraida de wireNavigation() para poder cambiar de vista programaticamente
+// (por ejemplo, el boton "Agregar egreso" del cierre) sin duplicar la logica
+// de activar/desactivar nav-item y view. Cambiar de vista NUNCA destruye el
+// DOM de la vista anterior (solo le quita la clase "active"), asi que un
+// formulario abierto en otra vista (p. ej. #cash-form) conserva sus valores
+// aunque el usuario navegue a otra vista y vuelva.
+function switchToView(viewId) {
+  const view = byId(viewId);
+  const button = document.querySelector(`.nav-item[data-view="${viewId}"]`);
+  if (!view) {
+    console.error(`No existe la vista ${viewId}`);
+    return false;
+  }
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
+  document.querySelectorAll(".view").forEach((item) => item.classList.remove("active"));
+  button?.classList.add("active");
+  view.classList.add("active");
+  if (button) byId("view-title").textContent = button.textContent;
+  if (viewId === "cash") safeRender("cierres de caja", renderCash);
+  if (viewId === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
+  return true;
+}
+
 function wireNavigation() {
   document.querySelectorAll(".nav-item").forEach((button) => {
-    button.addEventListener("click", () => {
-      const view = byId(button.dataset.view);
-      if (!view) {
-        console.error(`No existe la vista ${button.dataset.view}`);
-        return;
-      }
-      document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
-      document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
-      button.classList.add("active");
-      view.classList.add("active");
-      byId("view-title").textContent = button.textContent;
-      if (button.dataset.view === "cash") safeRender("cierres de caja", renderCash);
-      if (button.dataset.view === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
-    });
+    button.addEventListener("click", () => switchToView(button.dataset.view));
   });
 }
 
@@ -7186,6 +7336,11 @@ function wireForms() {
 
   byId("new-cash-closing")?.addEventListener("click", showNewCashClosing);
   byId("cancel-cash-closing")?.addEventListener("click", hideCashClosingForm);
+  byId("cash-add-expense")?.addEventListener("click", openAddExpenseFromClosing);
+  byId("cash-add-expense-cancel")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    returnToClosingAfterExpense();
+  });
   byId("confirm-previous-closings")?.addEventListener("click", confirmPreviousPendingClosings);
   byId("toggle-cash-income-detail")?.addEventListener("click", () => byId("cash-income-detail")?.classList.toggle("hidden"));
   byId("toggle-cash-expense-detail")?.addEventListener("click", () => byId("cash-expense-detail")?.classList.toggle("hidden"));
@@ -7258,16 +7413,22 @@ function wireForms() {
 
   byId("generate-cash-balance")?.addEventListener("click", updateCashBalancePreview);
 
-  ["cash-counted", "cash-expenses", "cash-date", "cash-account"].forEach((id) => {
+  // "cash-expenses" ya no esta en esta lista: es un <output> de solo
+  // lectura, nunca dispara eventos "input" por interaccion del usuario.
+  ["cash-counted", "cash-date", "cash-account"].forEach((id) => {
     byId(id)?.addEventListener("input", () => {
       resetCashBalancePreview();
       if (id === "cash-date") {
         updateClosingCollaboratorDetails(byId("cash-date").value);
-        // El fondo de caja depende de la fecha (busca el cierre anterior a
-        // esa fecha): si la fecha cambia, el "Monto inicial" mostrado debe
-        // recalcularse para esa nueva fecha, nunca quedarse con el valor de
-        // la fecha anterior.
-        byId("cash-initial").value = defaultInitialCashFor(registerAccount(), byId("cash-date").value || today);
+        // Monto inicial y Egresos del dia dependen de la fecha (buscan el
+        // cierre anterior / los egresos de esa fecha): si la fecha cambia,
+        // ambos deben recalcularse para la nueva fecha, nunca quedarse con
+        // el valor de la fecha anterior.
+        const account = registerAccount();
+        const newDate = byId("cash-date").value || today;
+        byId("cash-initial").value = defaultInitialCashFor(account, newDate);
+        const activity = accountActivityForDate(newDate, account);
+        byId("cash-expenses").textContent = money.format(activity.expenses + activity.transferOut);
       }
     });
   });
@@ -7495,6 +7656,7 @@ function wireForms() {
         state = stateFromDatabase(database);
         saveState();
         renderAll();
+        if (cashPendingExpenseReturn) returnToClosingAfterExpense();
         return;
       }
       const expenseId = nextDbId("egresos", "egresoID", "EGR");
@@ -7596,6 +7758,7 @@ function wireForms() {
       updateExpenseBalancePreview();
       saveState();
       renderAll();
+      if (cashPendingExpenseReturn) returnToClosingAfterExpense();
     } catch (error) {
       console.error("No se pudo guardar el egreso.", error);
       logAudit(existingExpense ? "expense_edit" : "expense_create", {
@@ -7991,7 +8154,10 @@ function wireForms() {
     const cardCounted = Number(byId("cash-card-counted").value) || 0;
     const cardProcessorName = byId("cash-card-processor").value.trim();
     const transferCounted = Number(byId("cash-transfer-counted").value) || 0;
-    const expenses = Number(byId("cash-expenses").value) || 0;
+    // "Egresos del dia" ya NO es un input: es siempre salidasEfectivo,
+    // calculado arriba desde accountActivityForDate(). Nunca se lee de
+    // byId("cash-expenses") como fuente (ese elemento es un <output>, solo
+    // muestra este mismo valor).
     const sameDateRegisterClosing = registerClosingForDate(date);
     if (!editId && sameDateRegisterClosing && !isClosingPendingConfirmation(sameDateRegisterClosing)) {
       alert("Ya existe un cierre de caja registradora confirmado en esa fecha. Administración debe reabrirlo antes de editarlo.");
@@ -8015,27 +8181,25 @@ function wireForms() {
       byId("cash-card-processor").focus();
       return;
     }
-    // Si el monto inicial recalculado ahora mismo ya no coincide con el que
-    // se uso para generar el cuadre en pantalla, es porque apareció un
-    // cierre anterior confirmado nuevo (u otro cambio en la fuente
-    // confiable) despues de abrir este formulario: no se confirma con un
-    // monto esperado desactualizado, se pide regenerar el cuadre primero.
-    if (cashBalanceDraft && cashBalanceDraft.montoInicial !== montoInicial) {
+    // Monto inicial, ingresos del dia y egresos del dia son SIEMPRE
+    // calculados (nunca leidos del DOM). Si el "expected" recien calculado
+    // ya no coincide con el que se uso para generar el cuadre en pantalla,
+    // es porque algo en la fuente confiable cambio despues de abrir este
+    // formulario (se confirmo un cierre anterior, o se agrego/edito/anulo
+    // un ingreso o un egreso, por ejemplo con el boton "Agregar egreso"):
+    // no se confirma con un monto esperado desactualizado, se pide
+    // regenerar el cuadre primero.
+    if (cashBalanceDraft && cashBalanceDraft.expected !== expected) {
       alert(
-        "El fondo de caja inicial cambió desde que abriste este formulario (probablemente se confirmó un cierre anterior). Genera el cuadre de efectivo de nuevo antes de guardar o confirmar.",
+        "Los datos del cierre cambiaron desde que generaste el cuadre en pantalla (por ejemplo, se agregó/editó/anuló un ingreso o egreso, o se confirmó un cierre anterior). Genera el cuadre de efectivo de nuevo antes de guardar o confirmar.",
       );
       resetCashBalancePreview();
       byId("cash-initial").value = montoInicial;
+      byId("cash-expenses").textContent = money.format(salidasEfectivo);
       byId("generate-cash-balance").focus();
       return;
     }
-    if (
-      !cashBalanceDraft ||
-      cashBalanceDraft.date !== date ||
-      cashBalanceDraft.account !== account.nombreCuenta ||
-      cashBalanceDraft.counted !== initialCounted ||
-      cashBalanceDraft.expenses !== expenses
-    ) {
+    if (!cashBalanceDraft || cashBalanceDraft.date !== date || cashBalanceDraft.account !== account.nombreCuenta || cashBalanceDraft.counted !== initialCounted) {
       alert("Primero debes generar el cuadre de efectivo para documentar el intento.");
       byId("generate-cash-balance").focus();
       return;
@@ -8190,11 +8354,12 @@ function wireForms() {
     byId("cash-submit").textContent = "Guardar cierre";
     byId("cash-date").value = today;
     byId("cash-initial").value = 0;
-    byId("cash-expenses").value = 0;
+    byId("cash-expenses").textContent = money.format(0);
     byId("cash-card-counted").value = 0;
     byId("cash-transfer-counted").value = 0;
     resetCashBalancePreview();
     byId("cash-form").classList.add("hidden");
+    updateAddExpenseButtonState(null);
     saveState();
     renderAll();
     if (shortage > 0) {

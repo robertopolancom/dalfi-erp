@@ -59,9 +59,12 @@ test("el submit del cierre de caja NUNCA lee byId(\"cash-initial\").value como f
   assert.match(submitBlock[0], /const montoInicial = defaultInitialCashFor\(account, date\);/);
 });
 
-test("el submit detecta si el monto inicial confiable cambio desde que se genero el cuadre en pantalla, y bloquea el guardado/confirmacion (no usa un monto esperado desactualizado)", () => {
+test("el submit detecta si el cuadre esperado (fuente confiable: monto inicial + ingresos - egresos) cambio desde que se genero en pantalla, y bloquea el guardado/confirmacion", () => {
   const submitBlock = /byId\("cash-form"\)\?\.addEventListener\("submit"[\s\S]*?\n  \}\);/.exec(appJs);
-  assert.match(submitBlock[0], /cashBalanceDraft\.montoInicial !== montoInicial/);
+  // La comparacion es sobre "expected" (no solo montoInicial): asi tambien
+  // detecta que cambiaron los egresos del dia (p. ej. por el boton "Agregar
+  // egreso"), no solo un cierre anterior nuevo.
+  assert.match(submitBlock[0], /cashBalanceDraft\.expected !== expected/);
   assert.match(submitBlock[0], /return;/);
 });
 
@@ -75,10 +78,11 @@ test("loadClosingIntoCashForm: para un cierre editable (no readOnly) recalcula e
   );
 });
 
-test("cambiar la fecha del cierre recalcula 'Monto inicial' para la nueva fecha (no se queda con el valor de la fecha anterior)", () => {
-  const listenerBlock = /\["cash-counted", "cash-expenses", "cash-date", "cash-account"\]\.forEach[\s\S]*?\n  \}\);/.exec(appJs);
-  assert.ok(listenerBlock);
-  assert.match(listenerBlock[0], /byId\("cash-initial"\)\.value = defaultInitialCashFor\(registerAccount\(\), byId\("cash-date"\)\.value \|\| today\);/);
+test("cambiar la fecha del cierre recalcula 'Monto inicial' y 'Egresos del día' para la nueva fecha (no se quedan con el valor de la fecha anterior)", () => {
+  const listenerBlock = /\["cash-counted", "cash-date", "cash-account"\]\.forEach[\s\S]*?\n  \}\);/.exec(appJs);
+  assert.ok(listenerBlock, "no se encontro el listener de cash-date/cash-counted/cash-account");
+  assert.match(listenerBlock[0], /byId\("cash-initial"\)\.value = defaultInitialCashFor\(account, newDate\);/);
+  assert.match(listenerBlock[0], /byId\("cash-expenses"\)\.textContent = money\.format\(activity\.expenses \+ activity\.transferOut\);/);
 });
 
 test("functions/api/run-closing-catchup.js: el cron tambien usa el balance de apertura de la cuenta como respaldo (misma regla que el frontend)", () => {
