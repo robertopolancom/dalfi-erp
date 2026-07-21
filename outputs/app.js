@@ -2584,6 +2584,81 @@ function statusBadge(invoice) {
   return '<span class="badge pending">Pendiente</span>';
 }
 
+// Filas de cuentasCobrar del CLIENTE (nunca del procesador de tarjeta)
+// todavia con saldo, relacionadas con esta factura: puede haber hasta dos
+// (la de base y la de "Propina pendiente factura X", ver la politica "la
+// propina se cobra de ultimo"). Ambas se cobran con el MISMO formulario
+// existente, nunca con uno nuevo.
+function invoiceClientReceivables(facturaID) {
+  if (!facturaID) return [];
+  return dbTable("cuentasCobrar").filter((cxc) => cxc.facturaID === facturaID && cxc.deudorTipo === "Cliente" && Number(cxc.balancePendiente) > 0);
+}
+
+// La CxC de BASE se prefiere sobre la de propina pendiente al preseleccionar
+// (nunca al reves): asi el flujo existente (clientReceivablesFor, que
+// siempre prioriza la CxC explicitamente seleccionada) sigue respetando
+// "base antes de propina" en vez de saltarsela.
+function preferredInvoiceReceivable(facturaID) {
+  const rows = invoiceClientReceivables(facturaID);
+  return rows.find((cxc) => !cxc.esPropinaPendiente) || rows[0] || null;
+}
+
+// Visibilidad del boton "Registrar recibo de ingreso": factura real, no
+// anulada (defensivo; hoy no existe ese estado, pero se verifica por si se
+// agrega mas adelante), con al menos una CxC de CLIENTE pendiente
+// relacionada, y permiso efectivo. Nunca se activa solo por una CxC del
+// procesador de tarjeta, una transferencia pendiente sin confirmar, una
+// obligacion de nomina, o una factura ya completamente pagada -todas esas
+// quedan excluidas por construccion, ya que invoiceClientReceivables() solo
+// mira deudorTipo:"Cliente" con balancePendiente > 0-.
+function canShowInvoiceReceiptButton(facturaID) {
+  if (!canManageInvoices()) return false;
+  const dbInvoice = dbTable("facturas").find((row) => row.facturaID === facturaID);
+  if (!dbInvoice) return false;
+  if (normalize(dbInvoice.estadoFactura || "") === "anulada") return false;
+  return invoiceClientReceivables(facturaID).length > 0;
+}
+
+// Estado temporal (solo en memoria, nunca persistido) mientras el usuario
+// esta en el formulario de "Registrar cobro" porque llego desde el boton
+// "Registrar recibo de ingreso" de una factura en Facturacion. Simetrico a
+// cashPendingExpenseReturn/openAddExpenseFromClosing en el modulo Cierres.
+let invoicePendingReceiptReturn = null;
+
+function openReceiptFromInvoice(invoiceId) {
+  if (!canShowInvoiceReceiptButton(invoiceId)) return;
+  const targetCxc = preferredInvoiceReceivable(invoiceId);
+  if (!targetCxc) return;
+  invoicePendingReceiptReturn = {
+    originView: "billing",
+    invoiceId,
+    search: byId("invoice-search")?.value || "",
+    scrollY: window.scrollY || 0,
+  };
+  switchToView("receivables");
+  renderReceivables();
+  byId("payment-invoice").value = targetCxc.cxCID;
+  fillPaymentGoalFromSelection();
+  byId("payment-receipt-cancel")?.classList.remove("hidden");
+  revealFormAtTop(byId("payment-form"), { focusSelector: "#payment-amount" });
+}
+
+// Se llama tanto al cancelar (sin guardar nada) como despues de guardar el
+// recibo con exito, igual que returnToClosingAfterExpense() en Cierres.
+function returnToInvoiceAfterReceipt() {
+  byId("payment-receipt-cancel")?.classList.add("hidden");
+  if (!invoicePendingReceiptReturn) {
+    switchToView("receivables");
+    return;
+  }
+  const snapshot = invoicePendingReceiptReturn;
+  invoicePendingReceiptReturn = null;
+  switchToView(snapshot.originView || "billing");
+  if (byId("invoice-search")) byId("invoice-search").value = snapshot.search || "";
+  renderInvoices();
+  window.scrollTo(0, snapshot.scrollY || 0);
+}
+
 function renderInvoices() {
   const query = byId("invoice-search").value;
   const rows = state.invoices
@@ -2594,6 +2669,7 @@ function renderInvoices() {
   target.innerHTML = rows
     .map((invoice) => {
       const editable = canEditInvoice(invoice.id);
+      const showReceiptButton = canShowInvoiceReceiptButton(invoice.id);
       return `
         <tr data-invoice-id="${escapeHtml(invoice.id)}">
           <td>${invoice.id}</td>
@@ -2606,6 +2682,7 @@ function renderInvoices() {
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice" type="button">Ver</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice" type="button">Editar</button>' : ""}
+              ${showReceiptButton ? '<button class="secondary-btn compact receipt-invoice" type="button">Registrar recibo de ingreso</button>' : ""}
             </div>
           </td>
         </tr>
@@ -2841,6 +2918,11 @@ function invoiceReportHtml(invoiceId) {
 function openInvoiceReport(invoiceId) {
   const popup = window.open("", "_blank");
   if (!popup) return;
+  // El detalle/consulta de factura es esta misma ventana emergente: el
+  // boton "Registrar recibo de ingreso" solo se agrega si aplica (misma
+  // condicion que en el listado de Facturacion), usando el mismo patron ya
+  // establecido de window.opener.<funcion>() que "Guardar imagen".
+  const showReceiptButton = canShowInvoiceReceiptButton(invoiceId);
   popup.document.write(`
     <!doctype html>
     <html lang="es">
@@ -2864,6 +2946,7 @@ function openInvoiceReport(invoiceId) {
         <div class="report-actions">
           <button onclick="window.print()">Imprimir / guardar PDF</button>
           <button onclick="window.opener.downloadInvoiceImage('${escapeHtml(invoiceId)}')">Guardar imagen</button>
+          ${showReceiptButton ? `<button onclick="window.opener.openReceiptFromInvoice('${escapeHtml(invoiceId)}'); window.close();">Registrar recibo de ingreso</button>` : ""}
         </div>
         ${invoiceReportHtml(invoiceId)}
       </body>
@@ -6796,8 +6879,19 @@ function updatePaymentSummary() {
   const difference = linesTotal - paymentGoal;
 
   if (byId("payment-client-name")) byId("payment-client-name").textContent = cxc?.deudorNombre || "-";
+  // Concepto: para la CxC de propina pendiente se muestra su propio
+  // concepto ("Propina pendiente factura X", ya mas especifico); para
+  // cualquier otra CxC de cliente, "Cobro de factura <referencia real>" —
+  // nunca se inventa un numero de factura que no exista.
+  if (byId("payment-concept-preview")) {
+    byId("payment-concept-preview").textContent = !cxc ? "-" : cxc.esPropinaPendiente ? cxc.concepto || cxc.tipoCxC || "Propina pendiente" : `Cobro de factura ${cxc.facturaID || cxc.cxCID}`;
+  }
   if (byId("payment-invoice-debt")) byId("payment-invoice-debt").textContent = money.format(invoiceDebt);
   if (byId("payment-client-debt")) byId("payment-client-debt").textContent = money.format(clientDebt);
+  // El pago siempre sigue la prioridad ya vigente (CxC anteriores -> base ->
+  // propina): esta nota solo informa cuando hay mas deuda del cliente
+  // ademas de la CxC seleccionada, nunca cambia el reparto real.
+  if (byId("payment-older-debt-note")) byId("payment-older-debt-note").classList.toggle("hidden", !cxc || clientDebt <= invoiceDebt + 0.005);
   if (byId("payment-lines-total")) byId("payment-lines-total").textContent = money.format(linesTotal);
   if (byId("payment-lines-difference")) {
     byId("payment-lines-difference").textContent = money.format(difference);
@@ -7594,6 +7688,7 @@ function wireForms() {
     const invoiceId = row.dataset.invoiceId;
     if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
+    if (event.target.closest(".receipt-invoice")) openReceiptFromInvoice(invoiceId);
   });
 
   byId("invoice-admin-table").addEventListener("click", (event) => {
@@ -7632,8 +7727,14 @@ function wireForms() {
     removeButton.closest(".income-payment-line")?.remove();
     updatePaymentSummary();
   });
+  let paymentSubmitInFlight = false;
   byId("payment-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (paymentSubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar cobros de cuentas por cobrar.");
+      return;
+    }
     const selectedCxc = selectedReceivable();
     if (!selectedCxc) {
       alert("Selecciona una cuenta por cobrar pendiente.");
@@ -7671,12 +7772,26 @@ function wireForms() {
       byId("add-income-payment-line").focus();
       return;
     }
+    // A partir de aqui empiezan las mutaciones reales (aplicar el cobro a
+    // CxC, crear el recibo/ingreso, reconocer propina): se marca
+    // paymentSubmitInFlight para que un doble clic/doble submit mientras
+    // esto corre no vuelva a entrar, mismo patron try/finally que
+    // invoiceSubmitInFlight/cashSubmitInFlight.
+    paymentSubmitInFlight = true;
+    byId("payment-submit").disabled = true;
+    try {
     const clientRows = clientReceivablesFor(selectedCxc);
     const clientDebt = clientRows.reduce((sum, row) => sum + (Number(row.balancePendiente) || 0), 0);
     const overpayPolicy = byId("payment-overpay-policy").value;
     const extraPaid = Math.max(0, linesTotal - paymentGoal);
     const applyExtraToCxc = overpayPolicy === "cxc" ? extraPaid : 0;
     const amountToDebt = Math.min(clientDebt, paymentGoal + applyExtraToCxc);
+    // applyReceivablePaymentLines() (y, dentro de ella,
+    // applyClientReceivablesFirst/addConfirmedPayment/syncInvoicePaymentFromReceivable)
+    // es el UNICO flujo de reparto: CxC anteriores -> base -> propina
+    // pendiente, en ese orden. Este formulario -sea que se haya abierto
+    // desde Cuentas por Cobrar o desde el boton "Registrar recibo de
+    // ingreso" de Facturacion- nunca implementa un segundo reparto.
     const mutableLines = applyReceivablePaymentLines(clientRows, amountToDebt, paymentLines, cashDate);
     const clientRecord = dbTable("clientes").find((client) => client.clienteID === selectedCxc.deudorID) || findClientByName(selectedCxc.deudorNombre);
     const remainingExtra = mutableLines.reduce((sum, line) => sum + (Number(line.remaining) || 0), 0);
@@ -7692,6 +7807,15 @@ function wireForms() {
         }
       });
     }
+    // Reversar un cobro (voidReceivableReceipt) ya deja auditoria explicita;
+    // crearlo no la dejaba. Se audita aqui, una sola vez por submit exitoso.
+    logAudit("cxc_receipt_created", {
+      entity: "cuentasCobrar",
+      entityId: selectedCxc.cxCID,
+      newData: { facturaID: selectedCxc.facturaID || "", cliente: selectedCxc.deudorNombre || "", montoAplicado: amountToDebt, fromInvoice: invoicePendingReceiptReturn?.invoiceId === selectedCxc.facturaID },
+      note: `Recibo de cobro aplicado a ${selectedCxc.cxCID} por ${money.format(amountToDebt)}.`,
+      success: true,
+    });
     event.target.reset();
     byId("income-payment-line-list").innerHTML = "";
     byId("payment-cash-date").value = today;
@@ -7700,6 +7824,15 @@ function wireForms() {
     updatePaymentSummary();
     saveState();
     renderAll();
+    if (invoicePendingReceiptReturn) returnToInvoiceAfterReceipt();
+    } finally {
+      paymentSubmitInFlight = false;
+      byId("payment-submit").disabled = false;
+    }
+  });
+  byId("payment-receipt-cancel")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    returnToInvoiceAfterReceipt();
   });
 
   ensureCashModuleMarkup();

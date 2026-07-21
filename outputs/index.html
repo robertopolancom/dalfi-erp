@@ -401,6 +401,10 @@
                   <strong id="payment-client-name">-</strong>
                 </div>
                 <div class="summary-row">
+                  <span>Concepto</span>
+                  <strong id="payment-concept-preview">-</strong>
+                </div>
+                <div class="summary-row">
                   <span>Deuda factura seleccionada</span>
                   <strong id="payment-invoice-debt">RD$0.00</strong>
                 </div>
@@ -408,6 +412,7 @@
                   <span>Deuda total cliente</span>
                   <strong id="payment-client-debt">RD$0.00</strong>
                 </div>
+                <p class="panel-note hidden" id="payment-older-debt-note" aria-live="polite">Este cliente tiene cuentas por cobrar anteriores: el pago se aplicará primero a esas, luego a esta factura y de último a la propina, según la prioridad ya vigente.</p>
               </section>
               <label>
                 Monto a pagar
@@ -457,7 +462,10 @@
                   <option value="balance">Balance a favor del cliente</option>
                 </select>
               </label>
-              <button class="primary-btn" type="submit">Aplicar cobro</button>
+              <div class="row-actions" id="payment-form-actions">
+                <button class="primary-btn" id="payment-submit" type="submit">Aplicar cobro</button>
+                <button class="secondary-btn compact hidden" id="payment-receipt-cancel" type="button">Cancelar y volver a Facturación</button>
+              </div>
             </form>
 
             <section class="panel">
@@ -1868,6 +1876,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260721-propina-de-ultimo"></script>
-    <script src="app.js?v=20260721-auditoria-integrada"></script>
+    <script src="app.js?v=20260721-recibo-desde-facturacion"></script>
   </body>
 </html>
