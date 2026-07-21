@@ -78,33 +78,33 @@ test("regresion: ya no existe la segunda asignacion que sobreescribia totalCxC/e
   assert.ok(!/nonConfirmedCxC/.test(appJs), "la variable nonConfirmedCxC (y su asignacion incorrecta) no debe reaparecer");
 });
 
-test("invoiceRecord.totalCxC/estadoFactura se calculan UNA SOLA VEZ, a partir de total - paid (confirmedAppliedToInvoice)", () => {
+test("invoiceRecord.totalCxC/estadoFactura se calculan UNA SOLA VEZ, a partir de total - paid (allocation.amountAppliedToCurrentBase), y estadoFactura tambien considera propina pendiente", () => {
   const assignments = submitHandler.match(/invoiceRecord\.totalCxC\s*=/g) || [];
-  assert.strictEqual(assignments.length, 1, "totalCxC debe asignarse exactamente una vez en el submit");
+  assert.strictEqual(assignments.length, 1, "totalCxC debe asignarse exactamente una vez en el submit (fuera del bloque inicial en 0 del literal)");
   assert.match(submitHandler, /invoiceRecord\.totalCxC = Math\.max\(0, total - paid\);/);
-  assert.match(submitHandler, /invoiceRecord\.estadoFactura = invoiceRecord\.totalCxC > 0 \? "Parcial" : "Pagada";/);
+  assert.match(submitHandler, /invoiceRecord\.estadoFactura = invoiceRecord\.totalCxC > 0 \|\| invoiceRecord\.propinaPendiente > 0 \? "Parcial" : "Pagada";/);
 });
 
-test("totalPagadoConfirmado + totalCxC siempre suma exactamente 'total' (consistencia aritmetica de la factura recien creada)", () => {
+test("totalPagadoConfirmado + totalCxC siempre suma exactamente 'total' (consistencia aritmetica de la factura recien creada, ahora con propina separada)", () => {
   // Formula real extraida del codigo, no una copia a mano.
-  const paidMatch = /paid = Math\.min\(total, confirmedAppliedToInvoice\);/.exec(submitHandler);
+  const paidMatch = /paid = Math\.min\(total, allocation\.amountAppliedToCurrentBase\);/.exec(submitHandler);
   const cxcMatch = /invoiceRecord\.totalCxC = Math\.max\(0, total - paid\);/.exec(submitHandler);
   assert.ok(paidMatch && cxcMatch, "no se encontraron las formulas de paid/totalCxC");
 
-  function computeConsistency({ total, confirmedAppliedToInvoice }) {
-    const sandbox = { total, confirmedAppliedToInvoice, Math };
+  function computeConsistency({ total, amountAppliedToCurrentBase }) {
+    const sandbox = { total, allocation: { amountAppliedToCurrentBase }, Math };
     vm.createContext(sandbox);
-    vm.runInContext("paid = Math.min(total, confirmedAppliedToInvoice);", sandbox);
+    vm.runInContext("paid = Math.min(total, allocation.amountAppliedToCurrentBase);", sandbox);
     vm.runInContext("totalCxC = Math.max(0, total - paid);", sandbox);
     return sandbox.paid + sandbox.totalCxC;
   }
 
-  // Caso del bug real: pago confirmado parcialmente redirigido a una CxC mas antigua (100 total, solo 70 aplicado a ESTA factura).
-  assert.strictEqual(computeConsistency({ total: 100, confirmedAppliedToInvoice: 70 }), 100);
-  // Factura totalmente a credito (nada confirmado).
-  assert.strictEqual(computeConsistency({ total: 100, confirmedAppliedToInvoice: 0 }), 100);
-  // Factura pagada de mas (sobrepago no debe generar totalCxC negativo ni inconsistente).
-  assert.strictEqual(computeConsistency({ total: 100, confirmedAppliedToInvoice: 150 }), 100);
+  // Caso del bug real (turno anterior): pago confirmado parcialmente redirigido a una CxC mas antigua (100 total, solo 70 aplicado a la BASE de esta factura).
+  assert.strictEqual(computeConsistency({ total: 100, amountAppliedToCurrentBase: 70 }), 100);
+  // Factura totalmente a credito (nada confirmado a la base).
+  assert.strictEqual(computeConsistency({ total: 100, amountAppliedToCurrentBase: 0 }), 100);
+  // Base completamente cubierta y de sobra (el exceso ya no cuenta aqui: allocateConfirmedPayment lo tope a "total" antes de pasar a propina).
+  assert.strictEqual(computeConsistency({ total: 100, amountAppliedToCurrentBase: 100 }), 100);
 });
 
 test("regresion: syncInvoicePaymentFromReceivable() y voidReceivableReceipt() siguen tratando totalCxC como saldo vivo (decrementa/incrementa desde total - paid), consistente con como se inicializa ahora", () => {

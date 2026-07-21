@@ -329,6 +329,150 @@
     };
   }
 
+  // Orden en el que se consumen las lineas de pago CONFIRMADAS al cubrir
+  // CxC anteriores / base de la factura / propina. Efectivo y transferencia
+  // ya confirmada primero; tarjeta al final (para que la tarjeta financie la
+  // propina solo cuando los demas medios de contado no alcanzaron).
+  const DEFAULT_CONFIRMED_PAYMENT_METHOD_PRIORITY = ["efectivo", "transferencia_confirmada", "balance", "tarjeta"];
+
+  // La UNICA politica de negocio valida (desde julio 2026): la propina se
+  // cobra y se registra DE ULTIMO. El dinero confirmado que llega de un
+  // cliente (nunca credito, nunca transferencia pendiente sin confirmar,
+  // nunca tarjeta rechazada/pendiente) se aplica en este orden estricto:
+  //   1. Cuentas por cobrar ANTERIORES del cliente (deuda de facturas viejas).
+  //   2. Base de la factura actual (servicios + adicionales - descuentos).
+  //   3. Propina pendiente de la factura actual.
+  // Mientras quede pendiente 1 o 2, NUNCA se reconoce propina cobrada, sin
+  // importar cuanto se haya pagado en total. Funcion pura: no lee el DOM, no
+  // persiste nada, no crea ningun registro — solo calcula el reparto para
+  // que el llamador decida que hacer con el resultado.
+  function allocateConfirmedPayment({
+    paymentLines = [],
+    olderReceivablesOutstanding = 0,
+    olderReceivablesList = null,
+    currentInvoiceBaseOutstanding = 0,
+    invoiceTipTotal = 0,
+    invoiceTipAlreadyCollected = 0,
+    methodPriority = DEFAULT_CONFIRMED_PAYMENT_METHOD_PRIORITY,
+  } = {}) {
+    const sanitizePositive = (value) => Math.max(0, sanitizeAmount(value));
+    const confirmedMethods = new Set(methodPriority);
+
+    // Solo lineas de pago CONFIRMADAS cuentan como dinero disponible: nunca
+    // credito, nunca transferencia pendiente, nunca un metodo desconocido o
+    // no confirmado (p. ej. tarjeta rechazada/pendiente de aprobar).
+    const pool = (Array.isArray(paymentLines) ? paymentLines : [])
+      .filter((line) => line && confirmedMethods.has(line.method))
+      .map((line, index) => ({
+        method: line.method,
+        amount: sanitizePositive(line.amount),
+        index,
+        remaining: 0,
+        olderReceivables: 0,
+        currentBase: 0,
+        tip: 0,
+      }));
+    pool.forEach((line) => {
+      line.remaining = line.amount;
+    });
+    const priorityRank = new Map(methodPriority.map((method, rank) => [method, rank]));
+    pool.sort((a, b) => {
+      const rankDiff = (priorityRank.get(a.method) ?? methodPriority.length) - (priorityRank.get(b.method) ?? methodPriority.length);
+      return rankDiff !== 0 ? rankDiff : a.index - b.index;
+    });
+
+    const totalConfirmed = pool.reduce((sum, line) => sum + line.amount, 0);
+    const allocationByPaymentMethod = {};
+    methodPriority.forEach((method) => {
+      allocationByPaymentMethod[method] = 0;
+    });
+    const allocationDetails = [];
+
+    const lineBucketKeys = { olderReceivables: "olderReceivables", currentInvoiceBase: "currentBase", invoiceTip: "tip" };
+    function consume(bucket, needed) {
+      let stillNeeded = sanitizePositive(needed);
+      let applied = 0;
+      const lineKey = lineBucketKeys[bucket];
+      for (const line of pool) {
+        if (stillNeeded <= 0) break;
+        if (line.remaining <= 0) continue;
+        const take = Math.min(line.remaining, stillNeeded);
+        if (take <= 0) continue;
+        line.remaining -= take;
+        line[lineKey] += take;
+        stillNeeded -= take;
+        applied += take;
+        allocationByPaymentMethod[line.method] = (allocationByPaymentMethod[line.method] || 0) + take;
+        allocationDetails.push({ bucket, method: line.method, amount: take });
+      }
+      return applied;
+    }
+
+    const amountAppliedToOlderReceivables = consume("olderReceivables", sanitizePositive(olderReceivablesOutstanding));
+    const amountAppliedToCurrentBase = consume("currentInvoiceBase", sanitizePositive(currentInvoiceBaseOutstanding));
+    const tipTotal = sanitizePositive(invoiceTipTotal);
+    const tipAlreadyCollected = Math.min(tipTotal, sanitizePositive(invoiceTipAlreadyCollected));
+    const tipPendingBefore = Math.max(0, tipTotal - tipAlreadyCollected);
+    const tipCollectedNow = consume("invoiceTip", tipPendingBefore);
+    const tipRemaining = Math.max(0, tipPendingBefore - tipCollectedNow);
+
+    const unappliedAmount = pool.reduce((sum, line) => sum + line.remaining, 0);
+
+    // Reparto FIFO informativo por cada CxC anterior individual, cuando el
+    // llamador pasa la lista real (mismo orden que applyClientReceivablesFirst:
+    // la mas antigua primero). No muta la lista recibida.
+    let allocationByReceivable = [];
+    if (Array.isArray(olderReceivablesList) && olderReceivablesList.length) {
+      let remainingForReceivables = amountAppliedToOlderReceivables;
+      allocationByReceivable = olderReceivablesList
+        .slice()
+        .sort((a, b) => String(a.fechaOrigen || "").localeCompare(String(b.fechaOrigen || "")))
+        .map((cxc) => {
+          const pending = sanitizePositive(cxc.balancePendiente);
+          const applied = Math.min(pending, remainingForReceivables);
+          remainingForReceivables = Math.max(0, remainingForReceivables - applied);
+          return { cxCID: cxc.cxCID || cxc.id || "", amount: applied };
+        })
+        .filter((row) => row.amount > 0);
+    } else if (amountAppliedToOlderReceivables > 0) {
+      allocationByReceivable = [{ cxCID: "", amount: amountAppliedToOlderReceivables }];
+    }
+
+    // Desglose POR LINEA de pago original (mismo orden/indice que el array
+    // paymentLines recibido, no el orden de prioridad interno): permite al
+    // llamador reconstruir, para cada linea (que conserva su propio
+    // procesador/cuenta/referencia), cuanto de ELLA se destino a CxC
+    // anteriores, a la base de esta factura, y a la propina — sin lo cual no
+    // se podria ejecutar la mutacion real (addConfirmedPayment por linea)
+    // respetando el desglose de esta funcion pura.
+    const lineAllocations = pool
+      .slice()
+      .sort((a, b) => a.index - b.index)
+      .map((line) => ({
+        index: line.index,
+        method: line.method,
+        amount: line.amount,
+        olderReceivables: line.olderReceivables,
+        currentBase: line.currentBase,
+        tip: line.tip,
+        unapplied: line.remaining,
+      }));
+
+    return {
+      amountAppliedToOlderReceivables,
+      amountAppliedToCurrentBase,
+      tipCollectedNow,
+      tipRemaining,
+      allocationByPaymentMethod,
+      allocationByReceivable,
+      allocationByInvoice: { base: amountAppliedToCurrentBase, tip: tipCollectedNow },
+      unappliedAmount,
+      allocationDetails,
+      lineAllocations,
+      totalConfirmed,
+    };
+  }
+
   // Balance final calculado de una cuenta en un dia:
   // balanceInicial + ingresos + transferenciasEntrantes - egresos -
   // transferenciasSalientes + ajustesNetos. Las transferencias internas ya
@@ -411,6 +555,8 @@
     isPrivilegedRole,
     canReviewAccounts,
     computeInvoiceBreakdown,
+    allocateConfirmedPayment,
+    DEFAULT_CONFIRMED_PAYMENT_METHOD_PRIORITY,
     computeAccountDailyBalance,
     sortMovementsDeterministically,
     buildRunningBalance,
