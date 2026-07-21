@@ -117,12 +117,12 @@ test("functions/api/run-closing-catchup.js: previousTreasurySaldoFor tambien cae
 
 // --- 18, 19, 20: no rompe caja registradora / Egresos del dia / Agregar egreso ---
 
-test("regresion: 'Monto inicial' (caja registradora) sigue readonly y calculado — no se toco por esta tarea", () => {
-  assert.match(indexHtml, /<input id="cash-initial" type="number" min="0" step="0\.01" value="0" readonly aria-readonly="true" tabindex="-1" \/>/);
+test("regresion: 'Monto inicial' (caja registradora) sigue calculado y no editable — no se toco por esta tarea", () => {
+  assert.match(indexHtml, /<output id="cash-initial" class="calculated-value readonly-hint" aria-live="polite">RD\$0\.00<\/output>/);
 });
 
 test("regresion: 'Egresos del día' sigue siendo un <output> calculado — no se toco por esta tarea", () => {
-  assert.match(indexHtml, /<output id="cash-expenses" aria-live="polite">RD\$0\.00<\/output>/);
+  assert.match(indexHtml, /<output id="cash-expenses" class="calculated-value readonly-hint" aria-live="polite">RD\$0\.00<\/output>/);
 });
 
 test("regresion: el boton 'Agregar egreso' sigue presente y funcional en el cierre de caja registradora", () => {

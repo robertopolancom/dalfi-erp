@@ -61,12 +61,12 @@ test("index.html: aparece 'Egresos del día' como etiqueta del campo calculado",
 
 test("index.html: NO existe ningun <input type=\"number\"> para Egresos del dia (cash-expenses)", () => {
   assert.ok(!/<input id="cash-expenses"/.test(indexHtml), "no debe existir un <input> con ese id");
-  assert.match(indexHtml, /<output id="cash-expenses" aria-live="polite">RD\$0\.00<\/output>/);
+  assert.match(indexHtml, /<output id="cash-expenses" class="calculated-value readonly-hint" aria-live="polite">RD\$0\.00<\/output>/);
 });
 
 test("outputs/app.js (markup inyectado de respaldo): tambien usa <output>, no <input>, para cash-expenses", () => {
   assert.ok(!/<input id="cash-expenses"/.test(appJs));
-  assert.match(appJs, /<output id="cash-expenses" aria-live="polite">RD\$0\.00<\/output>/);
+  assert.match(appJs, /<output id="cash-expenses" class="calculated-value readonly-hint" aria-live="polite">RD\$0\.00<\/output>/);
 });
 
 test("no queda ningun input editable oculto por CSS: cash-expenses no aparece nunca como <input>, ni siquiera con clase hidden", () => {
@@ -77,6 +77,10 @@ test("no queda ningun input editable oculto por CSS: cash-expenses no aparece nu
 
 test("el valor inicial estatico de #cash-expenses es 'RD$0.00' (antes de cualquier calculo)", () => {
   assert.match(indexHtml, /<output id="cash-expenses"[^>]*>RD\$0\.00<\/output>/);
+});
+
+test("el valor inicial estatico de #cash-initial tambien es 'RD$0.00' (mismo tratamiento que cash-expenses)", () => {
+  assert.match(indexHtml, /<output id="cash-initial"[^>]*>RD\$0\.00<\/output>/);
 });
 
 // --- 17-19: el submit/preview nunca leen el DOM, y manipular el DOM no cambia lo guardado ---
@@ -179,7 +183,7 @@ test("el submit de #expense-form (ambos caminos de exito, crear y editar) llama 
 
 test("returnToClosingAfterExpense(): recalcula Monto inicial y regenera el cuadre (updateCashBalancePreview) al volver, reflejando el egreso recien agregado", () => {
   const fnSource = extractFunctionSource("returnToClosingAfterExpense");
-  assert.match(fnSource, /byId\("cash-initial"\)\.value = defaultInitialCashFor\(account, snapshot\.date\);/);
+  assert.match(fnSource, /byId\("cash-initial"\)\.textContent = money\.format\(defaultInitialCashFor\(account, snapshot\.date\)\);/);
   assert.match(fnSource, /updateCashBalancePreview\(\);/);
 });
 
@@ -220,10 +224,16 @@ test("showNewCashClosing()/hideCashClosingForm(): tambien actualizan el estado d
   assert.match(hideSource, /updateAddExpenseButtonState\(null\);/);
 });
 
-// --- 39: Monto inicial sigue calculado y no editable (regresion de la tarea anterior) ---
+// --- 39: Monto inicial sigue calculado y no editable ---
+// Nota: en la tarea "Mejorar flujo visual de cierres y egresos" #cash-initial
+// paso de <input readonly> a <output> (igual que #cash-expenses), para que
+// ademas de no ser editable NI SIQUIERA PAREZCA un campo editable. Ver
+// tests/closing-initial-cash-ui.test.js para la cobertura completa de ese
+// cambio.
 
-test("regresion: #cash-initial sigue siendo readonly (no se toco por accidente en esta tarea)", () => {
-  assert.match(indexHtml, /<input id="cash-initial" type="number" min="0" step="0\.01" value="0" readonly aria-readonly="true" tabindex="-1" \/>/);
+test("regresion: #cash-initial sigue sin ser editable (ahora como <output>, no como <input readonly>)", () => {
+  assert.ok(!/<input[^>]*id="cash-initial"/.test(indexHtml), "no debe existir un <input> con ese id");
+  assert.match(indexHtml, /<output id="cash-initial" class="calculated-value readonly-hint" aria-live="polite">RD\$0\.00<\/output>/);
 });
 
 // --- Monto real contado sigue siendo el unico campo manual ---

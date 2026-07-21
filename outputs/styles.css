@@ -403,6 +403,19 @@ tr.needs-review {
   background: rgba(185, 128, 22, 0.08);
 }
 
+/* Modulo Cierres: encabezado, formulario y listado apilados como tarjetas
+   independientes (igual gap que .work-grid) ahora que el formulario se
+   movio antes del historial en el DOM. */
+.cash-module-head,
+.cash-form-grid,
+.cash-list-panel {
+  margin-bottom: 16px;
+}
+
+.cash-list-panel {
+  margin-bottom: 0;
+}
+
 .form-panel {
   padding-bottom: 18px;
 }
@@ -484,6 +497,9 @@ form label {
 }
 
 .readonly-hint {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-soft);
@@ -491,6 +507,15 @@ form label {
   padding: 9px 11px;
   font-size: 13px;
   font-weight: 700;
+}
+
+/* Valores calculados de un cierre (Monto inicial, Egresos del dia): mismo
+   componente visual que .readonly-hint (ya usado para el resumen de cliente
+   en Facturacion), aplicado sobre <output> para que nunca parezcan un campo
+   editable. margin-top separa el valor de su <label> igual que lo hacia el
+   input/output por defecto. */
+.calculated-value {
+  margin-top: 6px;
 }
 
 .form-row {

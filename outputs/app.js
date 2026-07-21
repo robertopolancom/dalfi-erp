@@ -2023,10 +2023,10 @@ function updateCashBalancePreview() {
   const date = byId("cash-date").value || today;
   const account = findAccountByName(byId("cash-account").value) || accountForPayment("efectivo");
   const activity = accountActivityForDate(date, account);
-  // Fuente confiable, nunca el valor mostrado en el input (que es readonly
-  // y solo refleja este mismo calculo): ver defaultInitialCashFor().
+  // Fuente confiable, nunca el valor mostrado en el <output> (que es de solo
+  // lectura y solo refleja este mismo calculo): ver defaultInitialCashFor().
   const montoInicial = defaultInitialCashFor(account, date);
-  if (byId("cash-initial")) byId("cash-initial").value = montoInicial;
+  if (byId("cash-initial")) byId("cash-initial").textContent = money.format(montoInicial);
   const entradasEfectivo = activity.income + activity.transferIn;
   const salidasEfectivo = activity.expenses + activity.transferOut;
   // "Egresos del dia" tambien es siempre calculado (accountActivityForDate),
@@ -2191,36 +2191,16 @@ function ensureCashModuleMarkup() {
     return cashView;
   }
   cashView.innerHTML = `
-    <section class="panel panel-wide cash-list-panel">
+    <section class="panel cash-module-head">
       <div class="panel-head">
         <div>
-          <h3>Cierres diarios</h3>
+          <h3>Cierres</h3>
           <p class="panel-note">Exactamente dos cierres por día: caja registradora y consolidado de valores y tesorería (bancos, caja fuerte, caja chica y otras cuentas viven dentro del detalle del consolidado).</p>
         </div>
         <div class="panel-actions">
           <button class="secondary-btn compact" id="confirm-previous-closings" type="button">Crear cierres automáticos</button>
           <button class="primary-btn compact" id="new-cash-closing" type="button">Hacer cierre del día</button>
         </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Tipo</th>
-              <th>Esperado</th>
-              <th>Contado</th>
-              <th>Tarjeta</th>
-              <th>Gastos</th>
-              <th>Faltante</th>
-              <th>Sobrante</th>
-              <th>Diferencia</th>
-              <th>Estado</th>
-              <th>Acción</th>
-            </tr>
-          </thead>
-          <tbody id="cash-table"></tbody>
-        </table>
       </div>
     </section>
 
@@ -2243,11 +2223,11 @@ function ensureCashModuleMarkup() {
         <div class="form-row">
           <label>
             Monto inicial (fondo de caja) — calculado, no editable
-            <input id="cash-initial" type="number" min="0" step="0.01" value="0" readonly aria-readonly="true" tabindex="-1" />
+            <output id="cash-initial" class="calculated-value readonly-hint" aria-live="polite">RD$0.00</output>
           </label>
           <label>
             Egresos del día — calculado, no editable
-            <output id="cash-expenses" aria-live="polite">RD$0.00</output>
+            <output id="cash-expenses" class="calculated-value readonly-hint" aria-live="polite">RD$0.00</output>
           </label>
         </div>
         <button class="secondary-btn" id="cash-add-expense" type="button">Agregar egreso</button>
@@ -2335,6 +2315,32 @@ function ensureCashModuleMarkup() {
         <button class="secondary-btn" id="cancel-cash-closing" type="button">Cancelar</button>
       </form>
     </div>
+
+    <section class="panel panel-wide cash-list-panel">
+      <div class="panel-head">
+        <h3>Historial de cierres</h3>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Tipo</th>
+              <th>Esperado</th>
+              <th>Contado</th>
+              <th>Tarjeta</th>
+              <th>Gastos</th>
+              <th>Faltante</th>
+              <th>Sobrante</th>
+              <th>Diferencia</th>
+              <th>Estado</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody id="cash-table"></tbody>
+        </table>
+      </div>
+    </section>
   `;
   ensureCashViewActionsMarkup();
   bindCashViewActionButtons();
@@ -3808,7 +3814,7 @@ function showNewCashClosing() {
   byId("cash-submit").classList.remove("hidden");
   byId("cash-date").value = today;
   byId("cash-account").value = defaultAccount?.nombreCuenta || "";
-  byId("cash-initial").value = defaultInitialCashFor(defaultAccount, today);
+  byId("cash-initial").textContent = money.format(defaultInitialCashFor(defaultAccount, today));
   byId("cash-expenses").textContent = money.format(0);
   byId("cash-card-counted").value = 0;
   byId("cash-transfer-counted").value = 0;
@@ -3829,7 +3835,7 @@ function hideCashClosingForm() {
   byId("cash-submit").classList.remove("hidden");
   byId("cash-date").value = today;
   byId("cash-account").value = "";
-  byId("cash-initial").value = 0;
+  byId("cash-initial").textContent = money.format(0);
   if (byId("cash-expenses")) byId("cash-expenses").textContent = money.format(0);
   resetCashBalancePreview();
   byId("cash-collaborator-detail")?.classList.add("hidden");
@@ -3842,9 +3848,9 @@ function cashFormFieldIds() {
     "cash-date",
     "cash-account",
     "cash-counted",
-    "cash-initial",
-    // "cash-expenses" ya no esta aqui: es un <output> (Egresos del dia), no
-    // un control de formulario con .disabled — siempre es de solo lectura.
+    // "cash-initial" y "cash-expenses" ya no estan aqui: ambos son <output>
+    // (Monto inicial / Egresos del dia), no controles de formulario con
+    // .disabled — siempre son de solo lectura, calculados.
     "generate-cash-balance",
     "cash-shortage-note",
     "cash-rectified-counted",
@@ -3936,6 +3942,10 @@ function openAddExpenseFromClosing() {
 
   switchToView("expenses");
   byId("cash-add-expense-banner")?.classList.remove("hidden");
+  // El boton vive junto a "Guardar egreso" al final del formulario (ver
+  // #expense-form-actions), no dentro del banner de arriba: se muestra/oculta
+  // por separado del texto informativo.
+  byId("cash-add-expense-cancel")?.classList.remove("hidden");
   revealFormAtTop(byId("expense-form"), { focusSelector: "#expense-amount" });
 }
 
@@ -3947,6 +3957,7 @@ function openAddExpenseFromClosing() {
 // calculados, nunca leidos del DOM).
 function returnToClosingAfterExpense() {
   byId("cash-add-expense-banner")?.classList.add("hidden");
+  byId("cash-add-expense-cancel")?.classList.add("hidden");
   if (!cashPendingExpenseReturn) {
     switchToView("cash");
     return;
@@ -3965,7 +3976,7 @@ function returnToClosingAfterExpense() {
   byId("cash-confirm-after-save").value = snapshot.confirmAfterSave;
   byId("cash-submit").textContent = snapshot.submitText;
   const account = findAccountByName(snapshot.account) || registerAccount();
-  byId("cash-initial").value = defaultInitialCashFor(account, snapshot.date);
+  byId("cash-initial").textContent = money.format(defaultInitialCashFor(account, snapshot.date));
   updateCashBalancePreview();
   const closing = snapshot.editId ? dbTable("cierres").find((row) => row.cierreID === snapshot.editId) : registerClosingForDate(snapshot.date);
   updateAddExpenseButtonState(closing);
@@ -3997,7 +4008,7 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
   // updateCashBalancePreview() cuando readOnly, que si recalcularia todo).
   const montoInicialForForm = readOnly ? Number(closing.balanceInicial) || 0 : defaultInitialCashFor(account, date);
   const egresosForForm = readOnly ? Number(closing.egresos) || 0 : activity.expenses + activity.transferOut;
-  byId("cash-initial").value = montoInicialForForm;
+  byId("cash-initial").textContent = money.format(montoInicialForForm);
   byId("cash-expenses").textContent = money.format(egresosForForm);
   const expectedForPrefill = DalfiClosingMath.computeExpectedCash({ montoInicial: montoInicialForForm, entradasEfectivo: activity.income + activity.transferIn, salidasEfectivo: egresosForForm });
   byId("cash-counted").value = Number(closing.conteoInicial) || Number(closing.balanceContado) || (confirmAfterSave ? expectedForPrefill : 0);
@@ -7379,19 +7390,12 @@ function wireForms() {
   byId("confirm-previous-closings")?.addEventListener("click", confirmPreviousPendingClosings);
   byId("toggle-cash-income-detail")?.addEventListener("click", () => byId("cash-income-detail")?.classList.toggle("hidden"));
   byId("toggle-cash-expense-detail")?.addEventListener("click", () => byId("cash-expense-detail")?.classList.toggle("hidden"));
-  // "Monto inicial" es readonly y siempre calculado (ver
-  // defaultInitialCashFor()): estos listeners son defensa en profundidad
-  // ademas del atributo readonly del HTML, para que ni tecleando, ni con las
-  // flechas del input numerico, ni pegando, se pueda alterar su valor. La
-  // fuente de verdad real de todas formas nunca es este input: el submit y
+  // "Monto inicial" es un <output>, no un control de formulario: no puede
+  // recibir foco, teclado, pegado ni rueda del mouse, asi que ya no hace
+  // falta bloquear esos eventos a mano (antes era un input readonly y estos
+  // listeners eran defensa en profundidad ademas del atributo readonly). La
+  // fuente de verdad real sigue siendo defaultInitialCashFor(): el submit y
   // el cuadre de efectivo recalculan el monto inicial de nuevo cada vez.
-  const cashInitialInput = byId("cash-initial");
-  if (cashInitialInput) {
-    ["keydown", "paste"].forEach((eventName) => {
-      cashInitialInput.addEventListener(eventName, (event) => event.preventDefault());
-    });
-    cashInitialInput.addEventListener("wheel", (event) => event.preventDefault(), { passive: false });
-  }
 
   byId("income-table").addEventListener("click", (event) => {
     const viewButton = event.target.closest(".view-income");
@@ -7461,7 +7465,7 @@ function wireForms() {
         // el valor de la fecha anterior.
         const account = registerAccount();
         const newDate = byId("cash-date").value || today;
-        byId("cash-initial").value = defaultInitialCashFor(account, newDate);
+        byId("cash-initial").textContent = money.format(defaultInitialCashFor(account, newDate));
         const activity = accountActivityForDate(newDate, account);
         byId("cash-expenses").textContent = money.format(activity.expenses + activity.transferOut);
       }
@@ -8182,10 +8186,11 @@ function wireForms() {
     }
     const summary = dailyIncomeSummary(date);
     const activity = accountActivityForDate(date, account);
-    // NUNCA se lee de byId("cash-initial").value (readonly y, aunque no lo
-    // fuera, no es una fuente confiable): se recalcula aqui mismo, en el
-    // momento de guardar/confirmar, para no depender de lo que haya quedado
-    // pintado en el formulario ni de un valor manipulado desde el navegador.
+    // NUNCA se lee de byId("cash-initial").textContent (es un <output> de
+    // solo lectura, y aunque no lo fuera, no es una fuente confiable): se
+    // recalcula aqui mismo, en el momento de guardar/confirmar, para no
+    // depender de lo que haya quedado pintado en el formulario ni de un
+    // valor manipulado desde el navegador.
     const montoInicial = defaultInitialCashFor(account, date);
     const entradasEfectivo = activity.income + activity.transferIn;
     const salidasEfectivo = activity.expenses + activity.transferOut;
@@ -8234,7 +8239,7 @@ function wireForms() {
         "Los datos del cierre cambiaron desde que generaste el cuadre en pantalla (por ejemplo, se agregó/editó/anuló un ingreso o egreso, o se confirmó un cierre anterior). Genera el cuadre de efectivo de nuevo antes de guardar o confirmar.",
       );
       resetCashBalancePreview();
-      byId("cash-initial").value = montoInicial;
+      byId("cash-initial").textContent = money.format(montoInicial);
       byId("cash-expenses").textContent = money.format(salidasEfectivo);
       byId("generate-cash-balance").focus();
       return;
@@ -8409,7 +8414,7 @@ function wireForms() {
     byId("cash-confirm-after-save").value = "";
     byId("cash-submit").textContent = "Guardar cierre";
     byId("cash-date").value = today;
-    byId("cash-initial").value = 0;
+    byId("cash-initial").textContent = money.format(0);
     byId("cash-expenses").textContent = money.format(0);
     byId("cash-card-counted").value = 0;
     byId("cash-transfer-counted").value = 0;
