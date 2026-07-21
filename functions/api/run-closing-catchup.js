@@ -237,6 +237,10 @@ function treasuryClosingForDate(data, date) {
   return (data.cierres || []).find((c) => !c.needsReview && c.closingType === "treasury" && closingBusinessDate(c) === date);
 }
 
+// Debe mantenerse en sincronia con previousTreasurySaldoFor() en
+// outputs/app.js: si no hay cierre de tesoreria confirmado anterior para
+// esta cuenta, usa el balance de apertura configurado de la cuenta en vez
+// de asumir 0 a ciegas.
 function previousTreasurySaldoFor(data, account, beforeDate) {
   const key = accountKey(account);
   const previous = (data.cierres || [])
@@ -245,7 +249,12 @@ function previousTreasurySaldoFor(data, account, beforeDate) {
     .filter((c) => !isClosingPendingConfirmation(c))
     .sort((a, b) => String(b.businessDate || "").localeCompare(String(a.businessDate || "")))[0];
   const row = previous?.cuentas?.find((item) => accountKey({ cuentaID: item.cuentaID, nombreCuenta: item.nombreCuenta }) === key);
-  return Number(row?.saldoReal) || 0;
+  if (row) {
+    const num = Number(row.saldoReal);
+    return Number.isFinite(num) ? num : 0;
+  }
+  const opening = Number(account?.balanceInicial);
+  return Number.isFinite(opening) ? opening : 0;
 }
 
 function buildTreasuryAccountDetail(data, date, account) {

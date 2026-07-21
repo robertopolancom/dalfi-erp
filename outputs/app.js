@@ -1649,6 +1649,15 @@ function normalizeLegacyClosings() {
 // El saldo inicial de una cuenta de tesoreria en un dia es el saldo real que
 // quedo confirmado el dia anterior para esa misma cuenta dentro del cierre
 // consolidado. Si nunca se ha confirmado uno, arranca en 0.
+// Unica fuente confiable del saldo inicial de UNA cuenta dentro de un
+// cierre de tesoreria (banco, caja fuerte, caja chica, etc.). Busca el
+// cierre de tesoreria mas reciente, CONFIRMADO (nunca pendiente/provisional
+// ni needsReview), anterior a la fecha, que incluya un detalle para esta
+// MISMA cuenta (por cuentaID o nombre — nunca mezcla el saldo de una cuenta
+// con el de otra), y delega en DalfiClosingMath.resolveTreasuryOpeningBalance
+// la decision final: saldo confirmado anterior, o balance de apertura
+// configurado de la cuenta si no hay cierre anterior, o 0 si tampoco hay
+// balance de apertura.
 function previousTreasurySaldoFor(account, beforeDate) {
   const key = accountKey(account);
   const previous = dbTable("cierres")
@@ -1657,7 +1666,7 @@ function previousTreasurySaldoFor(account, beforeDate) {
     .filter((closing) => !isClosingPendingConfirmation(closing))
     .sort((a, b) => String(b.businessDate || "").localeCompare(String(a.businessDate || "")))[0];
   const row = previous?.cuentas?.find((item) => accountKey({ cuentaID: item.cuentaID, nombreCuenta: item.nombreCuenta }) === key);
-  return Number(row?.saldoReal) || 0;
+  return DalfiClosingMath.resolveTreasuryOpeningBalance({ previousConfirmedClosing: row, accountOpeningBalance: account?.balanceInicial });
 }
 
 function buildTreasuryAccountDetail(date, account) {
@@ -3689,6 +3698,19 @@ function confirmTreasuryRange(closingId) {
   range.forEach((date) => {
     const closing = treasuryClosingForDate(date);
     if (!closing || !isClosingPendingConfirmation(closing)) return; // idempotente: nunca reconfirma uno ya cerrado
+    // Recalcula el saldo inicial (y todo lo derivado) de cada cuenta desde
+    // la fuente confiable justo antes de confirmar, nunca desde lo que haya
+    // quedado guardado: dentro de este mismo rango, confirmar una fecha
+    // anterior cambia cual es "el cierre anterior confirmado" de la
+    // siguiente fecha, asi que cada una se recalcula en el momento y en
+    // orden (range ya viene ordenado de mas antigua a mas reciente).
+    const refreshedCuentas = (closing.cuentas || []).map((row) => {
+      const account = findAccountByName(row.nombreCuenta) || { cuentaID: row.cuentaID, nombreCuenta: row.nombreCuenta };
+      const fresh = buildTreasuryAccountDetail(date, account);
+      return { ...fresh, ajustes: Number(row.ajustes) || 0, observaciones: row.observaciones || "", saldoReal: row.saldoReal ?? fresh.saldoReal };
+    });
+    closing.cuentas = refreshedCuentas;
+    closing.totales = buildTreasuryTotals(refreshedCuentas);
     closing.estado = "Cerrado";
     closing.requiereConfirmacion = false;
     closing.confirmadoPor = currentUserEmail();

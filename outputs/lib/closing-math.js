@@ -50,6 +50,16 @@
     return (Number(montoInicial) || 0) + (Number(entradasEfectivo) || 0) - (Number(salidasEfectivo) || 0);
   }
 
+  // Normaliza un monto a un numero valido: acepta 0 como valor legitimo,
+  // nunca deja pasar NaN ni +-Infinity (se convierten a 0 en vez de
+  // propagarse a un saldo inicial sin sentido). Compartido por
+  // resolveRegisterOpeningCash() y resolveTreasuryOpeningBalance() para no
+  // duplicar esta regla.
+  function sanitizeAmount(value) {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  }
+
   // Fuente confiable del "monto inicial" (fondo de caja) de un cierre de caja
   // registradora. NUNCA debe venir de un input editable por el usuario:
   //   A. Si existe un cierre anterior CONFIRMADO de la misma caja, el monto
@@ -62,8 +72,27 @@
   //      es la misma regla seria hoy (no se inventa un saldo), simplemente
   //      documentada aqui explicitamente.
   function resolveRegisterOpeningCash({ previousClosing, accountOpeningBalance = 0 } = {}) {
-    if (previousClosing) return Number(previousClosing.balanceContado) || 0;
-    return Number(accountOpeningBalance) || 0;
+    if (previousClosing) return sanitizeAmount(previousClosing.balanceContado);
+    return sanitizeAmount(accountOpeningBalance);
+  }
+
+  // Mismo patron que resolveRegisterOpeningCash(), para el saldo inicial de
+  // una cuenta dentro de un cierre de TESORERIA (banco, caja fuerte, caja
+  // chica, etc. — nunca la caja registradora, esa usa
+  // resolveRegisterOpeningCash()):
+  //   A. Si existe un cierre de tesoreria anterior CONFIRMADO que incluya
+  //      esta cuenta, el saldo inicial es su saldo final confirmado
+  //      (saldoReal). El llamador es responsable de que
+  //      previousConfirmedClosing ya este filtrado por la MISMA cuenta y
+  //      excluya cierres pendientes/needsReview (nunca se decide aqui cual
+  //      es "el anterior": esta funcion solo resuelve el valor una vez que
+  //      el llamador ya lo encontro).
+  //   B. Si no existe cierre anterior confirmado para esa cuenta, se usa el
+  //      balance de apertura configurado de la cuenta (cuentas.balanceInicial).
+  //   C. Si tampoco hay un balance de apertura valido, el resultado es 0.
+  function resolveTreasuryOpeningBalance({ previousConfirmedClosing, accountOpeningBalance = 0 } = {}) {
+    if (previousConfirmedClosing) return sanitizeAmount(previousConfirmedClosing.saldoReal);
+    return sanitizeAmount(accountOpeningBalance);
   }
 
   function computeDifference(counted, expected) {
@@ -360,6 +389,7 @@
     isAutomaticClosingEligible,
     computeExpectedCash,
     resolveRegisterOpeningCash,
+    resolveTreasuryOpeningBalance,
     computeDifference,
     canConfirmClosing,
     closingIdentityKey,
