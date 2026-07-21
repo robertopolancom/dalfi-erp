@@ -4198,6 +4198,8 @@ function voidReceivableReceipt(incomeId) {
     return;
   }
   if (!confirm(`Anular el recibo ${incomeId} devolverá el balance a la cuenta por cobrar. ¿Continuar?`)) return;
+  const totalReversed = applications.reduce((sum, application) => sum + (Number(application.montoAplicado) || 0), 0);
+  const affectedInvoiceIds = [...new Set(applications.map((application) => application.facturaID).filter(Boolean))];
   applications.forEach((application) => {
     const amount = Number(application.montoAplicado) || 0;
     const cxc = dbTable("cuentasCobrar").find((row) => row.cxCID === application.cxCID);
@@ -4240,6 +4242,19 @@ function voidReceivableReceipt(incomeId) {
   income.retencion = 0;
   income.observaciones = `${income.observaciones || ""} Recibo anulado por ${currentUserEmail()} ${new Date().toISOString()}`.trim();
   stampRecord(income, "updated");
+  // Reversar un cobro es una accion financiera sensible (devuelve balance a
+  // CxC, reduce lo confirmado de la factura): antes solo quedaba el rastro
+  // implicito de stampRecord(...,"updated") en cada fila tocada, sin una
+  // entrada explicita en auditoria como SI la tienen otras acciones de
+  // reversion equivalentes (p. ej. closing_reopen en Cierres).
+  logAudit("void_receivable_receipt", {
+    entity: "ingresos",
+    entityId: incomeId,
+    oldData: { montoBruto: income.montoBrutoOriginal, montoNeto: income.montoNetoOriginal, aplicaciones: applications.length },
+    newData: { totalReversado: totalReversed, facturasAfectadas: affectedInvoiceIds },
+    note: `Recibo ${incomeId} anulado: se devolvió ${money.format(totalReversed)} a cuentas por cobrar.`,
+    success: true,
+  });
   state = stateFromDatabase(database);
   saveState();
   renderAll();
@@ -5870,6 +5885,16 @@ function openDataForm(formId) {
   document.querySelectorAll(".data-list-panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.listPanel === formId));
   document.querySelectorAll(".data-entry-form").forEach((form) => form.classList.remove("active"));
   const form = byId(formId);
+  // Punto unico de entrada a cualquier formulario de Base de datos (crear,
+  // editar, o abrir desde Facturacion): siempre arranca sin el rastro de un
+  // intento anterior de "Crear cliente desde Facturacion" que se haya
+  // abandonado sin guardar. openSettingsFormFromInvoice() vuelve a marcar
+  // dataset.returnToInvoice="true" DESPUES de llamar a esta funcion, cuando
+  // en efecto corresponde. Sin este borrado centralizado, editar/crear
+  // cualquier registro de Base de datos despues de un intento abandonado
+  // desde una factura heredaba ese rastro y el guardado siguiente devolvia
+  // a la persona a Facturacion sin que tuviera nada que ver con eso.
+  delete form.dataset.returnToInvoice;
   form.classList.add("active");
   revealFormAtTop(form);
 }
@@ -6399,8 +6424,11 @@ function openSettingsFormFromInvoice(formId) {
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
   byId("settings").classList.add("active");
   byId("view-title").textContent = "Base de datos";
-  byId(formId).dataset.returnToInvoice = "true";
+  // openDataForm() SIEMPRE borra dataset.returnToInvoice al abrir un
+  // formulario (ver su comentario): por eso aqui se marca DESPUES de
+  // llamarla, nunca antes.
   openDataForm(formId); // ya hace scroll + foco de forma centralizada
+  byId(formId).dataset.returnToInvoice = "true";
 }
 
 function populateInvoiceFromReservation(reservationId) {
@@ -7028,8 +7056,10 @@ function wireForms() {
     }
   });
 
+  let invoiceSubmitInFlight = false;
   byId("invoice-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (invoiceSubmitInFlight) return;
     const client = byId("invoice-client-search").value.trim();
     const lines = getInvoiceLines().filter((line) => line.service && line.staff && line.qty > 0);
     const editId = byId("invoice-edit-id").value;
@@ -7066,6 +7096,14 @@ function wireForms() {
     const totals = invoiceTotalsFromLines(lines, generalExtra, generalDiscountPercent);
     const { servicesTotal, extrasTotal, discountTotal: discount, grandTotal: total } = totals;
     const totalWithTip = total + tip;
+    // A partir de aqui empiezan las mutaciones reales (crear/editar la
+    // factura, aplicar pagos, generar CxC y propinas): se marca
+    // invoiceSubmitInFlight para que un doble clic/doble submit mientras
+    // esto corre no vuelva a entrar, con el mismo patron try/finally que
+    // cashSubmitInFlight/expenseSubmitInFlight en el modulo Cierres.
+    invoiceSubmitInFlight = true;
+    byId("invoice-submit-button").disabled = true;
+    try {
     if (editId) {
       saveEditedInvoice(editId, client, lines, { total, generalExtra, generalExtraNote, generalDiscountPercent, generalDiscountAmount: totals.generalDiscountAmount }, note);
       return;
@@ -7174,7 +7212,6 @@ function wireForms() {
     }
 
     let confirmedAppliedToInvoice = 0;
-    let nonConfirmedCxC = 0;
     payments.forEach((paymentLine) => {
       if (paymentLine.method === "balance") {
         const available = clientBalance(clientRecord?.clienteID);
@@ -7193,20 +7230,28 @@ function wireForms() {
         }
       } else if (paymentLine.method === "transferencia_pendiente") {
         addReceivable(invoiceId, clientRecord, client, paymentLine.amount, "Transferencia pendiente por confirmar", paymentLine.account, invoiceDate);
-        nonConfirmedCxC += paymentLine.amount;
       } else if (paymentLine.method === "credito") {
         addReceivable(invoiceId, clientRecord, client, paymentLine.amount, `Crédito cliente vence ${paymentLine.dueDate || datePlusDaysFrom(invoiceDate, 7)}`, "", invoiceDate);
-        nonConfirmedCxC += paymentLine.amount;
       }
     });
 
+    // totalCxC/estadoFactura SIEMPRE se derivan de total - pagado confirmado
+    // aplicado a ESTA factura (confirmedAppliedToInvoice), nunca de la suma
+    // de los montos de las lineas de pago no confirmadas (credito/
+    // transferencia_pendiente): esa suma diverge de "total - paid" en cuanto
+    // applyClientReceivablesFirst() redirige parte de un pago confirmado
+    // hacia una CxC MAS ANTIGUA del mismo cliente (queda menos aplicado a
+    // esta factura de lo que realmente se cobro en efectivo/tarjeta/
+    // transferencia). Esta es tambien la misma formula que ya usan
+    // outstanding(), syncInvoicePaymentFromReceivable() y
+    // voidReceivableReceipt() para leer/actualizar totalCxC como saldo
+    // vivo — antes, una segunda asignacion aqui mismo la sobreescribia con
+    // la suma de no confirmados, dejando facturas marcadas "Pagada" con
+    // totalPagadoConfirmado + totalCxC != total.
     paid = Math.min(total, confirmedAppliedToInvoice);
     invoiceRecord.totalPagadoConfirmado = paid;
     invoiceRecord.totalCxC = Math.max(0, total - paid);
     invoiceRecord.estadoFactura = invoiceRecord.totalCxC > 0 ? "Parcial" : "Pagada";
-
-    invoiceRecord.totalCxC = nonConfirmedCxC;
-    invoiceRecord.estadoFactura = nonConfirmedCxC > 0 ? "Parcial" : "Pagada";
 
     const actualOverpay = Math.max(0, confirmedAppliedToInvoice - total - tip);
     if (actualOverpay > 0) {
@@ -7260,6 +7305,10 @@ function wireForms() {
     clearInvoiceFormAfterSubmit();
     saveState();
     renderAll();
+    } finally {
+      invoiceSubmitInFlight = false;
+      byId("invoice-submit-button").disabled = false;
+    }
   });
 
   byId("invoice-table").addEventListener("click", (event) => {
