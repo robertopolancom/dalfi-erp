@@ -55,7 +55,12 @@ export async function onRequestPost({ request, env }) {
     note: payload.note ? String(payload.note).slice(0, 500) : null,
   });
 
-  if (!result.ok) return json({ error: result.error || "No se pudo registrar la auditoria." }, 500);
+  if (!result.ok) {
+    // El detalle real (p.ej. texto de error de Postgres/PostgREST) solo va a
+    // los logs del servidor: no se expone al navegador.
+    console.error("audit-log: fallo insertAuditLog", result.error);
+    return json({ error: "No se pudo registrar la auditoria." }, 500);
+  }
   return json({ ok: true });
 }
 

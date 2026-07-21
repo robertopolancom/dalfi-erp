@@ -140,6 +140,67 @@ let isLoadingRemote = false;
 // jsonb completo, en vez de descargarlo entero cada 30s aunque nadie haya
 // cambiado nada. Ver refreshRemoteDatabase().
 let lastKnownRemoteUpdatedAt = null;
+// Perfil y permisos efectivos segun el servidor (GET /api/me), fuente unica
+// de autorizacion real desde la auditoria tecnica 2026-07-20/21. NUNCA usar
+// supabaseSession.user.user_metadata.role para decidir si una accion esta
+// permitida: eso es editable por el propio usuario y solo sirve como dato
+// visual de respaldo (ver currentUserRole()). erpProfileLoaded distingue
+// "todavia no se pidio /api/me" de "se pidio y fallo": mientras no este en
+// true, las funciones can*() de mas abajo aplican minimo privilegio (false).
+let erpProfile = null;
+let erpProfileLoaded = false;
+// Evita solicitudes superpuestas a /api/me: si ya hay una en curso (por
+// ejemplo el poll de 30s dispara mientras el login todavia esta esperando
+// la primera respuesta), las llamadas siguientes reutilizan esa misma
+// promesa en vez de abrir un fetch nuevo en paralelo.
+let erpProfileRefreshPromise = null;
+// Throttle de logs: si /api/me falla varias veces seguidas (por ejemplo la
+// red esta caida), solo se avisa una vez por racha de fallos, no cada 30s.
+let erpProfileFailureLogged = false;
+
+function refreshErpProfile() {
+  if (erpProfileRefreshPromise) return erpProfileRefreshPromise;
+  erpProfileRefreshPromise = performErpProfileRefresh().finally(() => {
+    erpProfileRefreshPromise = null;
+  });
+  return erpProfileRefreshPromise;
+}
+
+async function performErpProfileRefresh() {
+  if (!isSupabaseReady()) {
+    erpProfile = null;
+    erpProfileLoaded = false;
+    return null;
+  }
+  try {
+    const response = await fetch(functionEndpoint("me"), {
+      headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
+    });
+    // Cualquier respuesta que no sea 2xx (401 sesion invalida, 403 sin
+    // perfil o inactivo, 5xx del servidor) aplica minimo privilegio por
+    // igual: nunca se asume administrador ante un error.
+    if (!response.ok) {
+      erpProfile = null;
+      erpProfileLoaded = true;
+      return null;
+    }
+    erpProfile = await response.json();
+    erpProfileLoaded = true;
+    erpProfileFailureLogged = false;
+    return erpProfile;
+  } catch (error) {
+    // Ante un error de RED (no una respuesta HTTP), tambien minimo
+    // privilegio: nunca se asume administrador solo porque no se pudo
+    // confirmar lo contrario.
+    erpProfile = null;
+    erpProfileLoaded = true;
+    if (!erpProfileFailureLogged) {
+      console.warn("No se pudo cargar el perfil seguro (/api/me). Se aplica minimo privilegio.", error);
+      erpProfileFailureLogged = true;
+    }
+    return null;
+  }
+}
 
 async function loadDatabase() {
   initSupabaseClient();
@@ -148,6 +209,7 @@ async function loadDatabase() {
       const sessionResult = await supabaseClient.auth.getSession();
       supabaseSession = sessionResult.data.session;
       if (supabaseSession) {
+        await refreshErpProfile();
         const remoteDatabase = await loadRemoteDatabase();
         if (remoteDatabase) {
           database = remoteDatabase;
@@ -301,7 +363,18 @@ async function refreshRemoteDatabase({ force = false } = {}) {
 // minimizada u olvidada de fondo toda la noche.
 function startRemoteRefreshLoop() {
   if (remoteRefreshTimer || document.hidden) return;
-  remoteRefreshTimer = window.setInterval(() => refreshRemoteDatabase(), 30000);
+  // Ademas del documento, refresca el perfil seguro (/api/me) en cada poll:
+  // si un administrador cambia el rol o inactiva a este usuario mientras
+  // tiene una sesion abierta, sus permisos efectivos se actualizan en un
+  // maximo de 30s, no solo en el proximo login.
+  remoteRefreshTimer = window.setInterval(() => {
+    refreshRemoteDatabase();
+    // updatePrivilegeVisibility() (no updateAuthUi()) a proposito: este poll
+    // de fondo no debe cerrar un panel de login/cambio de contraseña que el
+    // usuario tenga abierto en ese momento, solo actualizar que secciones
+    // ".admin-only"/".accounts-review-only" se ven.
+    refreshErpProfile().then(() => updatePrivilegeVisibility());
+  }, 30000);
 }
 
 function stopRemoteRefreshLoop() {
@@ -397,14 +470,25 @@ function updateSyncStatus(message, mode = "") {
   status.classList.toggle("error", mode === "error");
 }
 
+// Solo alterna la visibilidad de lo que depende de permisos (".admin-only",
+// ".accounts-review-only"). A diferencia de updateAuthUi(), NUNCA toca los
+// paneles de login/cambio de contraseña: existe para poder refrescar
+// privilegios desde el poll de fondo de refreshErpProfile() (cada 30s) sin
+// arriesgarse a cerrarle a alguien un formulario de cambio de contraseña
+// que tenga abierto voluntariamente en ese momento (updateAuthUi() completo
+// sí lo cerraría — ver el bloque "else if (connected)" mas abajo).
+function updatePrivilegeVisibility() {
+  const canManage = canManageInvoices();
+  document.querySelectorAll(".admin-only").forEach((item) => item.classList.toggle("hidden", !canManage));
+  document.querySelectorAll(".accounts-review-only").forEach((item) => item.classList.toggle("hidden", !canReviewAccountsUser()));
+}
+
 function updateAuthUi() {
   const connected = isSupabaseReady();
   const passwordChangeRequired = connected && isPasswordResetRequired();
-  const canManage = canManageInvoices();
   document.body.classList.toggle("auth-required", !connected);
   document.body.classList.toggle("password-change-required", passwordChangeRequired);
-  document.querySelectorAll(".admin-only").forEach((item) => item.classList.toggle("hidden", !canManage));
-  document.querySelectorAll(".accounts-review-only").forEach((item) => item.classList.toggle("hidden", !canReviewAccountsUser()));
+  updatePrivilegeVisibility();
   byId("open-login").classList.toggle("hidden", connected);
   byId("open-password-change").classList.toggle("hidden", !connected);
   byId("logout-button").classList.toggle("hidden", !connected);
@@ -943,19 +1027,19 @@ function currentUserEmail() {
   return supabaseSession?.user?.email || "local";
 }
 
-// Los roles con privilegios administrativos (gestion de usuarios, facturas
-// confirmadas y los dos tipos de cierre) viven en DalfiClosingMath para poder
-// probarlos con node:test; aqui solo se reexporta el mismo set para no
-// romper el resto del archivo que ya usaba privilegedRoleKeys.has(...).
-const privilegedRoleKeys = { has: (role) => DalfiClosingMath.isPrivilegedRole(role) };
-
 function currentUserRecord() {
   const email = normalize(currentUserEmail());
   if (!email || email === "local") return null;
   return dbTable("usuarios").find((row) => normalize(row.email || row.correo || row.correoElectronico) === email);
 }
 
+// Rol para MOSTRAR en pantalla (encabezados, respaldo local de auditoria,
+// etc.). Nunca usar el valor de aqui para autorizar una accion: eso vive en
+// erpProfile.permissions, resuelto por el servidor via /api/me
+// (refreshErpProfile()). user_metadata.role solo se usa como ultimo
+// fallback visual, antes de que /api/me responda por primera vez.
 function currentUserRole() {
+  if (erpProfile?.role) return erpProfile.role;
   const userRecord = currentUserRecord();
   return userRecord?.rol || userRecord?.role || userRecord?.perfil || supabaseSession?.user?.user_metadata?.role || "";
 }
@@ -964,25 +1048,37 @@ function currentRoleKey() {
   return normalize(currentUserRole());
 }
 
+// A partir de aqui, las funciones can*() son las que SI se usan para
+// autorizar acciones en la interfaz. Todas dependen de erpProfile (el
+// perfil que devolvio /api/me), nunca de user_metadata. Mientras el perfil
+// seguro no se haya podido cargar (erpProfileLoaded === false) o si /api/me
+// fallo (erpProfile === null), aplican minimo privilegio: false. La unica
+// excepcion es cuando no hay Supabase configurado en absoluto (modo local
+// sin autenticacion), que mantiene el comportamiento previo de la app.
 function canManageInvoices() {
   if (!supabaseClient || !supabaseSession) return true;
-  return privilegedRoleKeys.has(currentRoleKey());
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageInvoices);
 }
 
 function canConfirmClosings() {
-  return canManageInvoices();
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(
+    erpProfile.isActive && (erpProfile.permissions?.canConfirmRegisterClosings || erpProfile.permissions?.canConfirmTreasuryClosings),
+  );
 }
 
-// Acceso de solo lectura al modulo de Cuentas: privilegiados y
-// contador/contadora lo tienen siempre; cualquier otro rol solo si tiene el
-// permiso explicito canReviewAccounts marcado en Usuarios. Nunca habilita
-// escritura: confirmar tesoreria, reabrir cierres, borrar movimientos, etc.
-// siguen exigiendo canManageInvoices()/canConfirmClosings() por separado, en
-// cada funcion de negocio, no solo aqui.
+// Acceso de solo lectura al modulo de Cuentas: el permiso efectivo
+// (canReviewAccounts) ya viene resuelto por el servidor combinando rol +
+// flag explicito de Usuarios, asi que aqui no hace falta re-derivarlo.
+// Nunca habilita escritura: confirmar tesoreria, reabrir cierres, borrar
+// movimientos, etc. siguen exigiendo canManageInvoices()/canConfirmClosings()
+// por separado, en cada funcion de negocio, no solo aqui.
 function canReviewAccountsUser() {
   if (!supabaseClient || !supabaseSession) return true;
-  const explicitFlag = Boolean(supabaseSession?.user?.user_metadata?.canReviewAccounts) || Boolean(currentUserRecord()?.canReviewAccounts);
-  return DalfiClosingMath.canReviewAccounts(currentRoleKey(), explicitFlag);
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canReviewAccounts);
 }
 
 function closingBusinessDate(closing) {
@@ -5140,6 +5236,17 @@ function wireAuth() {
     await saveRemoteDatabase();
     await supabaseClient.auth.signOut();
     supabaseSession = null;
+    // Detiene el poll de fondo de 30s: sin esto seguiria llamando a
+    // refreshRemoteDatabase()/refreshErpProfile() cada 30s con la sesion ya
+    // cerrada (ambas funciones no harian nada util por dentro, pero es
+    // trabajo de red innecesario y no es "detenerse al cerrar sesion").
+    stopRemoteRefreshLoop();
+    // Limpia el perfil seguro de la sesion que se va: evita que, si otro
+    // usuario inicia sesion despues en la misma pestana antes de que
+    // refreshErpProfile() termine, alcance a ver (aunque sea un instante)
+    // permisos de la sesion anterior.
+    erpProfile = null;
+    erpProfileLoaded = false;
     updateAuthUi();
   });
   byId("forgot-password").addEventListener("click", () => {
@@ -5157,27 +5264,22 @@ function wireAuth() {
     byId("password-change-panel").classList.add("hidden");
     if (!isSupabaseReady()) byId("auth-panel").classList.remove("hidden");
   });
-  byId("forgot-password-form").addEventListener("submit", async (event) => {
+  // "Olvide mi contrasena" ya NO llama a /api/password-reset-status: ese
+  // endpoint ahora exige sesion de administrador (ver
+  // functions/api/password-reset-status.js) porque, sin autenticacion,
+  // devolver "ese correo existe" / "ese correo tiene un reset pendiente"
+  // es un oraculo de enumeracion de usuarios. En su lugar, este formulario
+  // siempre muestra el mismo mensaje generico y abre el formulario de
+  // cambio de contrasena sin importar si el correo existe o no: la
+  // verificacion real ocurre en signInWithPassword() mas abajo, que solo
+  // tiene exito si la contrasena temporal es correcta.
+  byId("forgot-password-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const email = byId("forgot-email").value.trim();
     const message = byId("forgot-password-message");
-    message.textContent = "Validando reset...";
-    try {
-      const response = await fetch(functionEndpoint("password-reset-status"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "No se pudo validar el reset.");
-      message.textContent = result.message;
-      if (result.canReset) {
-        resetPasswordPanel("forgot");
-        byId("password-change-email").value = email;
-      }
-    } catch (error) {
-      message.textContent = error.message;
-    }
+    message.textContent = "Si tu correo esta registrado y un administrador ya generó una contraseña temporal, continúa a continuación.";
+    resetPasswordPanel("forgot");
+    byId("password-change-email").value = email;
   });
   byId("password-change-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -5224,6 +5326,7 @@ function wireAuth() {
       return;
     }
     supabaseSession = { ...signInResult.data.session, user: data.user || signInResult.data.user };
+    await refreshErpProfile();
     event.currentTarget.reset();
     byId("password-change-panel").classList.add("hidden");
     message.textContent = "Contraseña actualizada.";
@@ -5254,6 +5357,7 @@ function wireAuth() {
       return;
     }
     supabaseSession = data.session;
+    await refreshErpProfile();
     const remoteDatabase = await loadRemoteDatabase();
     if (remoteDatabase) {
       database = remoteDatabase;
@@ -5326,8 +5430,13 @@ function wireUserAdmin() {
               <select class="user-role-input compact-input">
                 <option value="operador" ${user.role === "operador" ? "selected" : ""}>Operador</option>
                 <option value="administradora" ${user.role === "administradora" ? "selected" : ""}>Administradora</option>
+                <option value="administrador" ${user.role === "administrador" ? "selected" : ""}>Administrador</option>
                 <option value="propietaria" ${user.role === "propietaria" ? "selected" : ""}>Propietaria</option>
                 <option value="propietario" ${user.role === "propietario" ? "selected" : ""}>Propietario</option>
+                <option value="contador" ${user.role === "contador" ? "selected" : ""}>Contador</option>
+                <option value="contadora" ${user.role === "contadora" ? "selected" : ""}>Contadora</option>
+                <option value="asistente_contable" ${user.role === "asistente_contable" ? "selected" : ""}>Asistente contable</option>
+                <option value="asistenta_contable" ${user.role === "asistenta_contable" ? "selected" : ""}>Asistenta contable</option>
               </select>
             </td>
             <td><span class="status-pill ${inactive ? "danger" : "success"}">${escapeHtml(user.estado || "Activo")}</span></td>
@@ -5337,6 +5446,10 @@ function wireUserAdmin() {
               <label title="Ver Cuentas sin ser rol privilegiado ni contador/a">
                 <input type="checkbox" class="user-review-accounts-input" ${user.canReviewAccounts ? "checked" : ""} />
                 Revisar cuentas
+              </label>
+              <label title="Ver la bitácora de auditoría sin ser rol privilegiado ni contador/a (por ejemplo, asistente contable)">
+                <input type="checkbox" class="user-review-audit-input" ${user.canReviewAudit ? "checked" : ""} />
+                Revisar auditoría
               </label>
             </td>
             <td>
@@ -5361,6 +5474,7 @@ function wireUserAdmin() {
       role: row.querySelector(".user-role-input").value,
       password: row.querySelector(".user-password-input").value,
       canReviewAccounts: row.querySelector(".user-review-accounts-input").checked,
+      canReviewAudit: row.querySelector(".user-review-audit-input").checked,
     };
     if (estado) payload.estado = estado;
 
