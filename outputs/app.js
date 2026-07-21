@@ -1083,6 +1083,19 @@ function canConfirmClosings() {
   );
 }
 
+// Reabrir un cierre YA confirmado (permite editar facturas/transacciones de
+// ese dia) es mas sensible que solo "administrar" cierres/facturas: existe
+// una columna de permiso dedicada (can_reopen_closings) desde la migracion
+// de erp_user_profiles, pensada exactamente para poder dar canManageInvoices
+// a alguien sin darle la capacidad de reabrir cierres historicos ya
+// confirmados. Antes esta funcion no existia y openClosingForEdit() usaba
+// canManageInvoices() en su lugar, dejando esa columna sin ningun efecto.
+function canReopenClosings() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canReopenClosings);
+}
+
 // Acceso de solo lectura al modulo de Cuentas: el permiso efectivo
 // (canReviewAccounts) ya viene resuelto por el servidor combinando rol +
 // flag explicito de Usuarios, asi que aqui no hace falta re-derivarlo.
@@ -3406,7 +3419,7 @@ function registerClosingRowHtml(closing) {
     `<button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Ver</button>`,
     pending && canConfirmClosings() ? `<button class="secondary-btn compact edit-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Editar</button>` : "",
     pending && canConfirmClosings() ? `<button class="secondary-btn compact confirm-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Confirmar</button>` : "",
-    !pending && canManageInvoices() ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Reabrir</button>` : "",
+    !pending && canReopenClosings() ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Reabrir</button>` : "",
   ].filter(Boolean).join("");
   return `
     <tr>
@@ -3439,7 +3452,7 @@ function treasuryClosingRowHtml(closing) {
   const actions = [
     `<button class="secondary-btn compact view-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Ver detalle (${accountCount})</button>`,
     pending && canConfirmClosings() ? `<button class="secondary-btn compact confirm-treasury" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Confirmar rango</button>` : "",
-    !pending && canManageInvoices() ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Reabrir</button>` : "",
+    !pending && canReopenClosings() ? `<button class="secondary-btn compact open-closing" data-closing-id="${escapeHtml(closing.cierreID || "")}" type="button">Reabrir</button>` : "",
   ].filter(Boolean).join("");
   return `
     <tr>
@@ -3553,8 +3566,8 @@ function renderCash() {
 }
 
 function openClosingForEdit(closingId) {
-  if (!canManageInvoices()) {
-    alert("Solo administración o propietario puede abrir cierres.");
+  if (!canReopenClosings()) {
+    alert("Solo administración o propietario con permiso para reabrir cierres puede hacerlo.");
     return;
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
@@ -3855,11 +3868,11 @@ function setClosingViewActions(closing) {
   if (!actions) return;
   const pending = isClosingPendingConfirmation(closing);
   const canConfirm = canConfirmClosings();
-  const canManage = canManageInvoices();
+  const canReopen = canReopenClosings();
   actions.classList.toggle("hidden", !closing);
   byId("cash-modify-closing").classList.toggle("hidden", !(closing && pending && canConfirm));
   byId("cash-confirm-closing").classList.toggle("hidden", !(closing && pending && canConfirm));
-  byId("cash-open-closing").classList.toggle("hidden", !(closing && !pending && canManage));
+  byId("cash-open-closing").classList.toggle("hidden", !(closing && !pending && canReopen));
   byId("cash-modify-closing").dataset.closingId = closing?.cierreID || "";
   byId("cash-confirm-closing").dataset.closingId = closing?.cierreID || "";
   byId("cash-open-closing").dataset.closingId = closing?.cierreID || "";
@@ -8146,8 +8159,13 @@ function wireForms() {
     updatePayrollPreview(true);
   });
 
+  // Igual que expenseSubmitInFlight en el formulario de egresos: evita
+  // procesar dos veces el mismo guardado/confirmacion por doble clic o
+  // doble submit mientras el anterior todavia esta en curso.
+  let cashSubmitInFlight = false;
   byId("cash-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (cashSubmitInFlight) return;
     if (!canManageInvoices()) {
       alert("Solo administradores y propietarios pueden guardar cierres de caja.");
       return;
@@ -8245,6 +8263,14 @@ function wireForms() {
     const { difference, shortage, surplus } = DalfiClosingMath.computeDifference(counted, expected);
     const isRegisterClosing = true; // este formulario ahora solo maneja el cierre de caja registradora
 
+    // A partir de aqui empiezan las mutaciones reales (crear/actualizar el
+    // cierre, el intento de faltante, el ingreso de sobrante): se marca
+    // cashSubmitInFlight para que un doble clic/doble submit mientras esto
+    // corre no vuelva a entrar, y se garantiza el reset del flag pase lo
+    // que pase con un try/finally (igual que expenseSubmitInFlight).
+    cashSubmitInFlight = true;
+    byId("cash-submit").disabled = true;
+    try {
     // Si sigue faltando efectivo despues de documentar el motivo y rectificar
     // el conteo, el cierre NO se confirma, pero tampoco se descarta: se
     // guarda como pendiente con los valores tal cual quedaron, y se deja un
@@ -8272,6 +8298,18 @@ function wireForms() {
       });
     }
 
+    // Solo se confirma cuando la persona pidio explicitamente confirmar
+    // (boton "Confirmar cierre" / "Confirmar y cerrar"), no hay faltante
+    // pendiente, y quien guarda todavia tiene permiso para confirmar (se
+    // revalida aqui, no solo al pintar el boton, porque el valor real que
+    // decide si el cierre nace "Cerrado" es este, no la visibilidad del
+    // boton). Antes, un cierre NUEVO (sin editId todavia) con cuadre exacto
+    // se guardaba como "Cerrado" de inmediato con solo hacer clic en
+    // "Guardar cierre" -sin pasar por confirmSingleRegisterClosing, sin
+    // confirmadoPor/fechaConfirmacion, sin auditoria de confirmacion y sin
+    // verificar canConfirmClosings()-, porque la condicion original
+    // ("editId && !confirmAfterSave") solo protegia cierres YA existentes.
+    const willConfirmNow = confirmAfterSave && shortage <= 0 && canConfirmClosings();
     const closingPayload = {
       closingType: "register",
       businessDate: date,
@@ -8291,8 +8329,8 @@ function wireForms() {
       cuadreFaltante: shortage,
       cuadreFaltanteInicial: initialShortage,
       sobranteCaja: surplus,
-      estado: shortage > 0 || (editId && !confirmAfterSave) ? "Pendiente de confirmacion" : "Cerrado",
-      requiereConfirmacion: Boolean(shortage > 0 || (editId && !confirmAfterSave)),
+      estado: willConfirmNow ? "Cerrado" : "Pendiente de confirmacion",
+      requiereConfirmacion: !willConfirmNow,
       loteTarjeta: byId("cash-card-batch").value.trim(),
       tarjetaContada: cardCounted,
       tarjetaEsperada: isRegisterClosing ? summary.card : 0,
@@ -8305,10 +8343,6 @@ function wireForms() {
       detalleColaboradores: closingCollaboratorSummary(date),
       observaciones: byId("cash-note").value.trim(),
     };
-    // Solo se confirma cuando la persona pidio explicitamente confirmar
-    // (boton "Confirmar cierre" / "Confirmar y cerrar") y no hay faltante
-    // pendiente. Guardar por primera vez ya NO confirma automaticamente.
-    const willConfirmNow = confirmAfterSave && shortage <= 0;
     if (willConfirmNow) {
       closingPayload.confirmadoPor = currentUserEmail();
       closingPayload.fechaConfirmacion = new Date().toISOString();
@@ -8390,6 +8424,10 @@ function wireForms() {
       alert("Cierre confirmado correctamente.");
     } else {
       alert("Cierre guardado sin confirmar. Usa \"Confirmar cierre\" cuando el cuadre esté correcto.");
+    }
+    } finally {
+      cashSubmitInFlight = false;
+      byId("cash-submit").disabled = false;
     }
   });
 
