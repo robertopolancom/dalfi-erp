@@ -1454,12 +1454,17 @@
     return { marginAmount, marginPercent };
   }
 
-  // Resumen fiscal de una factura mixta (servicios + productos), linea por
-  // linea via splitInvoiceLineTax (nunca una tasa global hardcodeada). La
-  // propina y la deuda anterior son informativas: se suman DESPUES de la
-  // base+impuesto y nunca alteran la base imponible ni el total legal de
-  // la factura.
-  function summarizeMixedInvoiceLines({ lines = [], tip = 0, priorDebt = 0 } = {}) {
+  // Resumen fiscal GENERICO de las lineas de un documento (factura de
+  // servicios O venta de productos, nunca ambos combinados en el mismo
+  // documento: esa decision de "sin factura mixta" es de app.js/la interfaz,
+  // esta funcion solo suma linea por linea via splitInvoiceLineTax, nunca
+  // una tasa global hardcodeada). La propina y la deuda anterior son
+  // informativas: se suman DESPUES de la base+impuesto y nunca alteran la
+  // base imponible ni el total legal del documento. Antes se llamaba
+  // summarizeMixedInvoiceLines; se renombro cuando se descarto la factura
+  // mixta, pero el calculo linea por linea (line.lineType "servicio"/
+  // "producto") sigue siendo util para ambos documentos por separado.
+  function summarizeTaxableDocumentLines({ lines = [], tip = 0, priorDebt = 0 } = {}) {
     const summary = {
       servicesExempt: 0,
       servicesTaxed: 0,
@@ -1494,6 +1499,146 @@
     summary.invoiceTotal = roundMoney(summary.invoiceTotal + summary.tip);
     summary.grandTotalDueToday = roundMoney(summary.invoiceTotal + summary.priorDebt);
     return summary;
+  }
+
+  // Prevalidacion COMPLETA de una venta de productos (Ventas de productos,
+  // modulo separado de Facturacion de servicios) ANTES de persistir nada:
+  // nunca lee el DOM, nunca escribe inventario/CxC/ingreso/auditoria. Solo
+  // dice que se necesita, que hay disponible, que falta y si la operacion
+  // queda permitida. Selecciona lote FEFO cuando el articulo tiene lotes
+  // registrados (items[].lots); un articulo sin lotes se trata como un
+  // unico lote sin vencimiento (compatibilidad con el inventario actual,
+  // que todavia no tiene lotes reales) para no inventar bloqueos donde
+  // nunca existieron.
+  function preflightRetailProductSale({
+    lines = [],
+    items = [],
+    shelfInventory = {},
+    lots = {},
+    existingSourceKeys = [],
+    sourceKey = "",
+    referenceDate = "",
+  } = {}) {
+    const itemById = new Map((Array.isArray(items) ? items : []).map((item) => [item.itemId, item]));
+    const blockingErrors = [];
+    const warnings = [];
+    const shortages = [];
+    const invalidTaxConfigurations = [];
+    const normalizedLines = [];
+    const stockPlan = [];
+    const selectedLots = [];
+
+    const duplicate = Boolean(sourceKey) && (Array.isArray(existingSourceKeys) ? existingSourceKeys : []).includes(sourceKey);
+    if (duplicate) blockingErrors.push("Esta venta ya fue registrada antes (sourceKey duplicado).");
+
+    let subtotalExempt = 0;
+    let subtotalTaxable = 0;
+    let taxableBase = 0;
+    let taxAmount = 0;
+    let discounts = 0;
+    let total = 0;
+    let historicalCost = 0;
+
+    (Array.isArray(lines) ? lines : []).forEach((line, index) => {
+      const item = itemById.get(line.itemId);
+      const quantity = Math.max(0, sanitizeAmount(line.quantity));
+      const unitPrice = Math.max(0, sanitizeAmount(line.unitPrice));
+      const discount = Math.max(0, sanitizeAmount(line.discount));
+      if (!item) {
+        blockingErrors.push(`Artículo no encontrado (línea ${index + 1}).`);
+        return;
+      }
+      if (item.puedeVenderse === false) {
+        blockingErrors.push(`"${item.nombre || item.itemId}" no está disponible para venta.`);
+        return;
+      }
+      if (quantity <= 0) {
+        blockingErrors.push(`Cantidad inválida para "${item.nombre || item.itemId}".`);
+        return;
+      }
+      const taxable = Boolean(item.taxable);
+      const taxRate = Math.max(0, sanitizeAmount(item.taxRate));
+      if (taxable && taxRate <= 0) {
+        invalidTaxConfigurations.push({ itemId: item.itemId, reason: "sin_tasa" });
+      }
+
+      const grossAmount = Math.max(0, roundMoney(quantity * unitPrice - discount));
+      const split = splitInvoiceLineTax({ amount: grossAmount, taxable, taxRate, priceIncludesTax: Boolean(item.priceIncludesTax) });
+
+      // Existencia y lote FEFO en la estanteria de venta.
+      const available = Math.max(0, sanitizeAmount(shelfInventory[item.itemId]));
+      const itemLots = Array.isArray(lots[item.itemId]) && lots[item.itemId].length
+        ? lots[item.itemId]
+        : [{ lotId: "", quantity: available, fechaVencimiento: "", fechaEntrada: "" }];
+      const fefo = allocateFEFO({ lots: itemLots, quantityNeeded: quantity, referenceDate });
+      if (fefo.unallocated > 0) {
+        shortages.push({ itemId: item.itemId, needed: quantity, available: roundMoney(quantity - fefo.unallocated), shortfall: fefo.unallocated });
+        blockingErrors.push(`Existencia insuficiente de "${item.nombre || item.itemId}" en estantería: faltan ${fefo.unallocated}.`);
+      }
+      fefo.allocations.forEach((allocation) => {
+        selectedLots.push({ itemId: item.itemId, lotId: allocation.lotId, quantity: allocation.quantityTaken });
+      });
+
+      const unitCost = Math.max(0, sanitizeAmount(item.historicalUnitCost ?? item.costoPromedio ?? item.costo));
+      const totalHistoricalCost = roundMoney(unitCost * quantity);
+      const margin = calculateProductMargin({ netUnitPrice: split.baseAmount > 0 ? split.baseAmount / Math.max(quantity, 1) : 0, historicalUnitCost: unitCost, quantity });
+
+      normalizedLines.push({
+        itemId: item.itemId,
+        sku: item.sku || "",
+        descripcion: item.nombre || item.itemId,
+        cantidad: quantity,
+        unidad: item.unidad || item.unidadBase || "",
+        precioUnitario: unitPrice,
+        descuento: discount,
+        subtotal: grossAmount,
+        taxCategory: item.taxCategory || (taxable ? "Gravado" : "Exento"),
+        taxRateId: item.taxRateId || "",
+        taxRate,
+        priceIncludesTax: Boolean(item.priceIncludesTax),
+        taxableBase: split.baseAmount,
+        taxAmount: split.taxAmount,
+        total: split.totalAmount,
+        shelfLocationId: item.shelfLocationId || "",
+        lotAllocations: fefo.allocations,
+        historicalUnitCost: unitCost,
+        totalHistoricalCost,
+        grossMargin: margin.marginAmount,
+        grossMarginPercentage: margin.marginPercent,
+      });
+      stockPlan.push({ itemId: item.itemId, quantity, lotAllocations: fefo.allocations });
+
+      discounts = roundMoney(discounts + discount);
+      taxableBase = roundMoney(taxableBase + split.baseAmount);
+      taxAmount = roundMoney(taxAmount + split.taxAmount);
+      total = roundMoney(total + split.totalAmount);
+      historicalCost = roundMoney(historicalCost + totalHistoricalCost);
+      if (taxable) subtotalTaxable = roundMoney(subtotalTaxable + split.totalAmount);
+      else subtotalExempt = roundMoney(subtotalExempt + split.totalAmount);
+    });
+
+    const grossMargin = roundMoney(taxableBase - historicalCost);
+    const allowed = blockingErrors.length === 0 && normalizedLines.length > 0;
+
+    return {
+      normalizedLines,
+      stockPlan,
+      selectedLots,
+      subtotalExempt,
+      subtotalTaxable,
+      taxableBase,
+      taxAmount,
+      discounts,
+      total,
+      historicalCost,
+      grossMargin,
+      shortages,
+      invalidTaxConfigurations,
+      duplicate,
+      blockingErrors,
+      warnings,
+      allowed,
+    };
   }
 
   return {
@@ -1556,6 +1701,7 @@
     calculateServiceDirectCost,
     calculateDirectMargin,
     calculateProductMargin,
-    summarizeMixedInvoiceLines,
+    summarizeTaxableDocumentLines,
+    preflightRetailProductSale,
   };
 });

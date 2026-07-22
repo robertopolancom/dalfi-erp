@@ -1088,6 +1088,14 @@
                   <option value="required">Obligatorio: bloquea la factura si falta material</option>
                 </select>
               </label>
+              <label class="panel-note">
+                Modo de mesa/colaboradora por línea de servicio en Facturación
+                <select id="station-mode">
+                  <option value="disabled">Desactivado: la mesa no es obligatoria</option>
+                  <option value="audit_only">Auditoría: guarda la factura aunque falte la mesa (conciliar después)</option>
+                  <option value="required">Obligatorio: bloquea la factura si falta la mesa o Área general</option>
+                </select>
+              </label>
             </form>
             <section class="panel">
               <div class="panel-head">
@@ -1182,33 +1190,32 @@
 
             <form class="panel form-panel" id="retail-sale-form">
               <div class="panel-head">
-                <h3>Venta directa de producto (estantería)</h3>
+                <h3>Ventas de productos (estantería)</h3>
               </div>
+              <p class="panel-note">Módulo independiente de Facturación de servicios: solo productos de estantería, nunca servicios, colaboradoras de servicio ni propinas.</p>
               <label>
-                Artículo
-                <input id="retail-sale-item" list="inventory-item-list" required />
+                Cliente (opcional en efectivo; obligatorio a crédito o transferencia pendiente)
+                <input id="retail-sale-client-search" list="clients-list" placeholder="Buscar o dejar en blanco para consumidor final" />
               </label>
-              <div class="form-row">
-                <label>
-                  Cantidad
-                  <input id="retail-sale-quantity" type="number" min="0.0001" step="0.0001" required />
-                </label>
-                <label>
-                  Precio unitario
-                  <input id="retail-sale-price" type="number" min="0" step="0.01" required />
-                </label>
-              </div>
-              <output id="retail-sale-total-preview">Total: RD$0.00</output>
-              <label>
-                Cuenta que recibe el pago
-                <input id="retail-sale-account" list="accounts-list" required />
-              </label>
+              <div class="invoice-line-list" id="retail-sale-line-list"></div>
+              <button class="secondary-btn compact" id="add-retail-sale-line" type="button">Agregar producto</button>
+              <section class="invoice-summary">
+                <div class="summary-row"><span>Subtotal exento</span><strong id="retail-sale-exempt-total">RD$0.00</strong></div>
+                <div class="summary-row"><span>Subtotal gravado</span><strong id="retail-sale-taxed-total">RD$0.00</strong></div>
+                <div class="summary-row"><span>Descuentos</span><strong id="retail-sale-discount-total">RD$0.00</strong></div>
+                <div class="summary-row"><span>Impuesto</span><strong id="retail-sale-tax-total">RD$0.00</strong></div>
+                <div class="summary-row total"><span>Total</span><strong id="retail-sale-grand-total">RD$0.00</strong></div>
+              </section>
+              <h4>Formas de pago</h4>
+              <div class="invoice-line-list" id="retail-sale-payment-line-list"></div>
+              <button class="secondary-btn compact" id="add-retail-sale-payment-line" type="button">Agregar forma de pago</button>
+              <output id="retail-sale-payment-summary">Pagado: RD$0.00 · Pendiente: RD$0.00</output>
               <button class="primary-btn" id="retail-sale-submit" type="submit">Confirmar venta</button>
-              <p class="panel-note">Descuenta EXCLUSIVAMENTE de Estantería de venta: nunca del almacén del salón, de provisiones, de una mesa ni de una custodia. Si falta la estantería o la cantidad, la venta se bloquea (transfiere primero desde el almacén del salón). Crea un solo ingreso; el impuesto se calcula según la configuración fiscal del artículo.</p>
+              <p class="panel-note">Sale EXCLUSIVAMENTE de Estantería de venta: nunca del almacén del salón, de provisiones, de una mesa ni de una custodia. Si falta la estantería o la cantidad, la venta se bloquea. El saldo no cubierto con pago confirmado crea una cuenta por cobrar del cliente (misma cuenta corriente que Facturación de servicios, identificada como origen "Producto").</p>
             </form>
             <section class="panel">
               <div class="panel-head">
-                <h3>Ventas directas</h3>
+                <h3>Ventas de productos</h3>
               </div>
               <div class="simple-list" id="retail-sale-list"></div>
             </section>
@@ -2676,6 +2683,7 @@
     <datalist id="advance-people-list"></datalist>
     <datalist id="services-list"></datalist>
     <datalist id="staff-list"></datalist>
+    <datalist id="stations-list"></datalist>
     <datalist id="accounts-list"></datalist>
     <datalist id="cash-accounts-list"></datalist>
     <datalist id="bank-accounts-list"></datalist>

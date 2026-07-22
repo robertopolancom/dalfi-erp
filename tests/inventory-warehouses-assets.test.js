@@ -13,6 +13,7 @@ const path = require("node:path");
 const DalfiClosingMath = require("../outputs/lib/closing-math.js");
 const appJs = fs.readFileSync(path.join(__dirname, "..", "outputs", "app.js"), "utf8");
 const indexHtml = fs.readFileSync(path.join(__dirname, "..", "outputs", "index.html"), "utf8");
+const closingMathJs = fs.readFileSync(path.join(__dirname, "..", "outputs", "lib", "closing-math.js"), "utf8");
 
 function extractFunction(name, source = appJs) {
   const pattern = new RegExp(`^\\s*(async )?function ${name}\\(`, "m");
@@ -460,33 +461,30 @@ test("123. el conteo físico se aplica una sola vez por confirmación (no hay un
   assert.doesNotMatch(countSubmit, /for \(|\.forEach\(/);
 });
 
-test("125-127. venta directa reduce EXCLUSIVAMENTE la estantería: defaultShelfWarehouse() ya no cae de respaldo al almacén del salón (defecto real corregido)", () => {
+test("125-127. venta de productos reduce EXCLUSIVAMENTE la estantería: defaultShelfWarehouse() ya no cae de respaldo al almacén del salón (defecto real corregido)", () => {
   const source = extractFunction("defaultShelfWarehouse");
   assert.match(source, /row\.tipo === "estanteria" && row\.activa !== false/);
   assert.doesNotMatch(source, /defaultSalonWarehouse\(\)/);
-  assert.match(retailSaleSubmit, /const shelfCheck = requireShelfWarehouseForSale\(item\.itemID, quantity\);/);
+  assert.match(retailSaleSubmit, /if \(!defaultShelfWarehouse\(\)\) \{/);
 });
 
-test("128. estantería bajo mínimo / sin configurar: requireShelfWarehouseForSale bloquea la venta y explica la falta (nunca vende sin estantería)", () => {
-  const source = extractFunction("requireShelfWarehouseForSale");
-  assert.match(source, /if \(!shelf\)/);
-  assert.match(source, /No hay ninguna Estantería de venta configurada/);
-  assert.match(source, /quantity > available/);
-  assert.match(retailSaleSubmit, /if \(!shelfCheck\.ok\) \{/);
+test("128. estantería bajo mínimo / sin configurar: el preflight puro (preflightRetailProductSale) bloquea la venta y explica la falta (nunca vende sin estantería ni existencia suficiente)", () => {
+  const source = extractFunction("preflightRetailProductSale", closingMathJs);
+  assert.match(source, /Existencia insuficiente/);
+  assert.match(retailSaleSubmit, /if \(!preflight\.allowed\) \{/);
 });
 
-test("venta directa exige permiso, guardia de doble-submit, y bloquea si no hay estantería o existencia suficiente (nunca descuenta otra ubicación)", () => {
+test("venta de productos exige permiso, guardia de doble-submit, y bloquea si no hay estantería o existencia suficiente (nunca descuenta otra ubicación)", () => {
   assert.match(retailSaleSubmit, /canManageInvoices\(\)/);
   assert.match(appJs, /let retailSaleSubmitInFlight = false;/);
-  assert.match(retailSaleSubmit, /if \(!shelfCheck\.ok\) \{/);
+  assert.match(retailSaleSubmit, /if \(!preflight\.allowed\) \{/);
   assert.doesNotMatch(retailSaleSubmit, /defaultSalonWarehouse\(\)/);
 });
 
-test("169-171. venta genera un ingreso, una salida de inventario, nunca dos ingresos", () => {
-  const incomeMatches = retailSaleSubmit.match(/dbTable\("ingresos"\)\.push\(/g) || [];
-  assert.equal(incomeMatches.length, 1);
-  const movementMatches = retailSaleSubmit.match(/createInventoryMovement\(\{/g) || [];
-  assert.equal(movementMatches.length, 1);
+test("169-171. venta de productos reutiliza el MISMO motor de pagos/CxC que Facturación (addConfirmedPayment/addReceivable), nunca duplica la creación de ingresos a mano por línea", () => {
+  assert.match(retailSaleSubmit, /addConfirmedPayment\(retailSaleId,/);
+  assert.match(retailSaleSubmit, /createInventoryMovement\(\{/);
+  assert.doesNotMatch(retailSaleSubmit, /dbTable\("ingresos"\)\.push\(/);
 });
 
 // ===========================================================================
@@ -636,9 +634,9 @@ test("todos los eventos de auditoria requeridos existen con el nombre EXACTO esp
 });
 
 // ===========================================================================
-// Q. Auditoria de mesas, factura mixta y costos de inventario (fase julio
-// 2026, ver 4019441 -> siguiente commit): consumo estructurado, costo/margen
-// directo congelado y reportes operativos nuevos.
+// Q. Auditoria de mesas, motor fiscal generico (sin factura mixta) y costos
+// de inventario (fase julio 2026, ver 4019441 -> siguiente commit): consumo
+// estructurado, costo/margen directo congelado y reportes operativos nuevos.
 // ===========================================================================
 
 test("nuevos eventos de auditoria del consumo estructurado existen (pendiente/fallido), ademas del ya existente service_inventory_consumed", () => {
@@ -682,6 +680,154 @@ test("renderServiceDirectMarginReport respeta el costo/margen ya congelado en el
   assert.match(source, /detail\.costoDirectoEstimado !== undefined && detail\.margenDirectoEstimado !== undefined/);
 });
 
-test("dependencia pendiente documentada: reverseInvoiceInventoryEffects (motor puro en closing-math.js) todavia NO tiene un boton de anulacion en app.js — evita una anulación financiera parcial/insegura, tal como pide el enunciado", () => {
-  assert.doesNotMatch(appJs, /reverseInvoiceInventoryEffects/);
+test("reverseInvoiceInventoryEffects (motor puro en closing-math.js) SI esta conectado: reverseRetailSale() lo usa para anular ventas de productos de forma segura (inventario + CxC + pagos + auditoria, nunca facturas de servicios)", () => {
+  assert.match(appJs, /function reverseRetailSale/);
+  assert.match(appJs, /DalfiClosingMath\.reverseInvoiceInventoryEffects/);
+});
+
+// ===========================================================================
+// R. Ventas de productos: modulo multilinea separado, CxC comun con
+// sourceType, cobro con el mismo motor de Facturacion, reversion segura.
+// No existe factura mixta: ningun formulario nuevo mezcla servicios y
+// productos en el mismo documento.
+// ===========================================================================
+
+test("Ventas de productos admite varias lineas de producto (no un solo articulo por venta)", () => {
+  assert.match(appJs, /function addRetailSaleLine\(/);
+  assert.match(appJs, /function getRetailSaleLines\(/);
+  assert.match(indexHtml, /id="retail-sale-line-list"/);
+  assert.match(indexHtml, /id="add-retail-sale-line"/);
+});
+
+test("cada linea de Ventas de productos tiene descuento propio (nunca solo cantidad/precio)", () => {
+  const source = extractFunction("addRetailSaleLine");
+  assert.match(source, /retail-line-discount/);
+});
+
+test("Ventas de productos reutiliza el preflight puro preflightRetailProductSale (nunca reimplementa la validacion de existencia a mano)", () => {
+  assert.match(appJs, /function runRetailSalePreflight\(/);
+  assert.match(appJs, /DalfiClosingMath\.preflightRetailProductSale\(/);
+});
+
+test("Ventas de productos NUNCA genera un campo/input de propina ni de colaboradora de servicio (las lineas y pagos del modulo no lo incluyen)", () => {
+  const lineSource = extractFunction("addRetailSaleLine");
+  const paymentSource = extractFunction("addRetailSalePaymentLine");
+  [lineSource, paymentSource].forEach((source) => {
+    assert.doesNotMatch(source, /class="[^"]*tip[^"]*"|class="[^"]*propina[^"]*"/i);
+    assert.doesNotMatch(source, /class="[^"]*staff[^"]*"|class="[^"]*colaborador[^"]*"/i);
+  });
+});
+
+test("Facturacion de servicios NUNCA muestra un selector de articulos de estanteria (documentos separados, sin factura mixta)", () => {
+  assert.doesNotMatch(appJs, /"Factura mixta"/i);
+  assert.doesNotMatch(appJs, /\bmixed\b/i);
+});
+
+test("Ventas de productos ofrece las MISMAS formas de pago que Facturacion (efectivo/tarjeta/transferencia confirmada/transferencia pendiente/credito/balance)", () => {
+  const source = extractFunction("addRetailSalePaymentLine");
+  ["efectivo", "tarjeta", "transferencia_confirmada", "transferencia_pendiente", "credito", "balance"].forEach((method) => {
+    assert.match(source, new RegExp(`value="${method}"`), `falta metodo ${method}`);
+  });
+});
+
+test("addReceivable() acepta sourceType y por default asume service_invoice (compatibilidad historica: una CxC vieja sin sourceType se interpreta como Servicio)", () => {
+  const source = extractFunction("addReceivable");
+  assert.match(source, /sourceType = "service_invoice"/);
+  assert.match(source, /sourceType: isProcessorReceivable \? "" : sourceType/);
+});
+
+test("Ventas de productos crea la CxC del cliente con sourceType retail_sale (misma tabla cuentasCobrar que Facturacion, cuenta corriente comun)", () => {
+  assert.match(retailSaleSubmit, /addReceivable\(retailSaleId, clientRecord, clientName, amountForThisLine, concept, payment\.account, today, \{\}, "retail_sale"\)/);
+});
+
+test("receivableOriginLabel distingue Servicio vs Producto para las vistas de CxC comun (cobro general y deuda anterior en facturacion)", () => {
+  assert.equal(functionExists("receivableOriginLabel"), true);
+  const source = extractFunction("receivableOriginLabel");
+  assert.match(source, /retail_sale/);
+});
+
+test("Ventas de productos cobra la deuda anterior del cliente (servicios Y productos) ANTES que el saldo de esta venta, con el MISMO algoritmo que Facturacion (allocateClientPaymentFIFO), nunca dos motores financieros distintos", () => {
+  assert.match(retailSaleSubmit, /DalfiClosingMath\.allocateClientPaymentFIFO\(\{/);
+  assert.match(retailSaleSubmit, /clientAllReceivables\(clientRecord\)/);
+  assert.match(retailSaleSubmit, /currentInvoiceTip: 0,/);
+});
+
+test("cliente es obligatorio SOLO para credito, transferencia pendiente o balance a favor (una venta 100% en efectivo/tarjeta/transferencia confirmada puede quedar anonima)", () => {
+  assert.match(retailSaleSubmit, /requiresClient/);
+  assert.match(retailSaleSubmit, /payment\.method === "credito" \|\| payment\.method === "transferencia_pendiente" \|\| payment\.method === "balance"/);
+});
+
+test("reverseRetailSale exige permiso, motivo, bloquea si ya hay cobros aplicados a su CxC, y bloquea una segunda reversion (reversalMovements vacio)", () => {
+  const source = extractFunction("reverseRetailSale");
+  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /const reason = prompt\(/);
+  assert.match(source, /alreadyCollected/);
+  assert.match(source, /if \(!reversal\.reversalMovements\.length\) \{/);
+  assert.match(source, /row\.estado = "Revertida";/);
+});
+
+test("reverseRetailSale nunca borra la venta original (conserva la fila, marca estado/reversedAt/reversalReason) y nunca crea un egreso duplicado por el mismo pago (marca pagosFactura como Revertido)", () => {
+  const source = extractFunction("reverseRetailSale");
+  assert.doesNotMatch(source, /dbTable\("ventasDirectas"\)\.splice|\.filter\(\(row\) => row\.retailSaleId !== retailSaleId\)/);
+  assert.match(source, /payment\.estadoPago = "Revertido";/);
+});
+
+test("reverseRetailSale nunca afecta facturas de servicios, propinas ni nomina", () => {
+  const source = extractFunction("reverseRetailSale");
+  assert.doesNotMatch(source, /dbTable\("facturas"\)|dbTable\("propinas"\)|dbTable\("nomina"\)/);
+});
+
+// ===========================================================================
+// S. Mesa/ubicacion de consumo por linea de SERVICIO (Facturacion), modo
+// configurable required/audit_only/disabled. Nunca una unica mesa general
+// para toda la factura; "Área general" es una ubicacion explicita, nunca
+// una mesa ficticia. Compatibilidad historica: default "disabled".
+// ===========================================================================
+
+test("cada linea de servicio permite elegir mesa/ubicacion de consumo (campo propio, no una unica mesa por factura)", () => {
+  const source = extractFunction("addInvoiceLine");
+  assert.match(source, /line-station/);
+  assert.match(source, /list="stations-list"/);
+});
+
+test("getInvoiceLines() captura la mesa de cada linea", () => {
+  const source = extractFunction("getInvoiceLines");
+  assert.match(source, /station: line\.querySelector\("\.line-station"\)/);
+});
+
+test("findStationByName: 'Área general' es una ubicacion explicita (stationId vacio, nunca una mesa inventada); un texto desconocido no se asigna a ninguna mesa existente en silencio", () => {
+  const source = extractFunction("findStationByName");
+  assert.match(source, /stationId: ""/);
+  assert.match(source, /return dbTable\("mesas"\)\.find/);
+});
+
+test("modoMesaServicio: default 'disabled' (compatibilidad historica), config singleton nunca requiere migracion", () => {
+  const source = extractFunction("inventoryConfig");
+  assert.match(source, /modoMesaServicio = "disabled"/);
+});
+
+test("modo 'required' bloquea la factura NUEVA si falta mesa en alguna linea; nunca bloquea edicion de facturas historicas sin mesa", () => {
+  assert.match(appJs, /stationMode === "required"/);
+  assert.match(appJs, /if \(!editId && stationMode === "required"\)/);
+});
+
+test("facturaDetalle congela stationId/stationName (tanto al crear como al editar), nunca reasigna silenciosamente una mesa distinta despues", () => {
+  const createMatches = appJs.match(/stationId: stationRecord\?\.stationId \|\| ""/g) || [];
+  assert.ok(createMatches.length >= 2, "se espera en el flujo de creacion Y de edicion de factura");
+});
+
+test("service_station_assigned se audita SOLO cuando la linea tiene mesa (nunca en facturas historicas sin mesa, nunca un evento vacio)", () => {
+  assert.match(appJs, /logAudit\("service_station_assigned"/);
+  assert.match(appJs, /if \(detail\.stationName\) \{\s*\n\s*logAudit\("service_station_assigned"/);
+});
+
+test("cambiar el modo de mesa exige permiso y audita el cambio (service_station_mode_changed), igual patron que el modo de consumo de inventario", () => {
+  assert.match(appJs, /logAudit\("service_station_mode_changed"/);
+  assert.match(appJs, /Solo administración o propietario puede cambiar el modo de mesa por línea de servicio/);
+});
+
+test("el reporte de Cuentas por cobrar (vista comun) muestra el origen (Servicio/Producto) de cada CxC de cliente, reutilizando receivableOriginLabel", () => {
+  const source = extractFunction("renderReceivablesReport");
+  assert.match(source, /receivableOriginLabel\(row\)/);
+  assert.match(source, /"Origen"/);
 });

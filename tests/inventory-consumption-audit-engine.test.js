@@ -291,11 +291,14 @@ test("81. historico congelado: cambiar el costo actual de un articulo no altera 
 });
 
 // ===========================================================================
-// D. Factura mixta (resumen fiscal por linea)
+// D. Resumen fiscal generico por linea (summarizeTaxableDocumentLines).
+// No existe factura mixta: servicios y productos SIEMPRE van en documentos
+// separados (Facturacion de servicios / Ventas de productos). Esta funcion
+// es el motor fiscal COMPARTIDO que usa cada documento por su lado.
 // ===========================================================================
 
 test("36-38. solo servicio, solo producto, servicio y producto: cada categoria se acumula por separado", () => {
-  const summary = DalfiClosingMath.summarizeMixedInvoiceLines({
+  const summary = DalfiClosingMath.summarizeTaxableDocumentLines({
     lines: [
       { lineType: "servicio", subtotal: 1000, taxable: false },
       { lineType: "producto", subtotal: 500, taxable: true, taxRate: 18 },
@@ -306,14 +309,14 @@ test("36-38. solo servicio, solo producto, servicio y producto: cada categoria s
 });
 
 test("39-40. producto gravado calcula impuesto; producto exento no", () => {
-  const taxed = DalfiClosingMath.summarizeMixedInvoiceLines({ lines: [{ lineType: "producto", subtotal: 100, taxable: true, taxRate: 18 }] });
-  const exempt = DalfiClosingMath.summarizeMixedInvoiceLines({ lines: [{ lineType: "producto", subtotal: 100, taxable: false }] });
+  const taxed = DalfiClosingMath.summarizeTaxableDocumentLines({ lines: [{ lineType: "producto", subtotal: 100, taxable: true, taxRate: 18 }] });
+  const exempt = DalfiClosingMath.summarizeTaxableDocumentLines({ lines: [{ lineType: "producto", subtotal: 100, taxable: false }] });
   assert.equal(taxed.taxAmount, 18);
   assert.equal(exempt.taxAmount, 0);
 });
 
 test("41. varias tasas configuradas: cada linea aplica SU propia tasa, nunca una global", () => {
-  const summary = DalfiClosingMath.summarizeMixedInvoiceLines({
+  const summary = DalfiClosingMath.summarizeTaxableDocumentLines({
     lines: [
       { lineType: "producto", subtotal: 100, taxable: true, taxRate: 18 },
       { lineType: "producto", subtotal: 100, taxable: true, taxRate: 16 },
@@ -330,7 +333,7 @@ test("42-43. precio con impuesto incluido vs sin incluir dan bases distintas par
 });
 
 test("44. el impuesto solo aparece en la linea gravada", () => {
-  const summary = DalfiClosingMath.summarizeMixedInvoiceLines({
+  const summary = DalfiClosingMath.summarizeTaxableDocumentLines({
     lines: [
       { lineType: "servicio", subtotal: 500, taxable: false },
       { lineType: "producto", subtotal: 200, taxable: true, taxRate: 18 },
@@ -340,21 +343,136 @@ test("44. el impuesto solo aparece en la linea gravada", () => {
 });
 
 test("45-46. propina fuera de la base imponible y nunca calculada sobre productos", () => {
-  const withTip = DalfiClosingMath.summarizeMixedInvoiceLines({ lines: [{ lineType: "producto", subtotal: 100, taxable: true, taxRate: 18 }], tip: 50 });
+  const withTip = DalfiClosingMath.summarizeTaxableDocumentLines({ lines: [{ lineType: "producto", subtotal: 100, taxable: true, taxRate: 18 }], tip: 50 });
   assert.equal(withTip.taxableBase, 100);
   assert.equal(withTip.tip, 50);
   assert.equal(withTip.invoiceTotal, 118 + 50);
 });
 
 test("47. la deuda anterior es informativa: no altera el total legal de la factura, solo el total general a pagar hoy", () => {
-  const summary = DalfiClosingMath.summarizeMixedInvoiceLines({ lines: [{ lineType: "servicio", subtotal: 1000, taxable: false }], priorDebt: 300 });
+  const summary = DalfiClosingMath.summarizeTaxableDocumentLines({ lines: [{ lineType: "servicio", subtotal: 1000, taxable: false }], priorDebt: 300 });
   assert.equal(summary.invoiceTotal, 1000);
   assert.equal(summary.grandTotalDueToday, 1300);
 });
 
 test("compatibilidad historica: una factura sin lineas de producto sigue sumando bien y nunca produce NaN", () => {
-  const summary = DalfiClosingMath.summarizeMixedInvoiceLines({ lines: [{ lineType: "servicio", subtotal: 500, taxable: false }] });
+  const summary = DalfiClosingMath.summarizeTaxableDocumentLines({ lines: [{ lineType: "servicio", subtotal: 500, taxable: false }] });
   assert.equal(Number.isNaN(summary.invoiceTotal), false);
   assert.equal(summary.productsTaxed, 0);
   assert.equal(summary.productsExempt, 0);
 });
+
+// ===========================================================================
+// E. preflightRetailProductSale: prevalidacion pura de Ventas de productos
+// (modulo separado, nunca factura mixta). Nunca lee el DOM, nunca persiste.
+// ===========================================================================
+
+const ITEM_A = { itemId: "ITM-A", nombre: "Esmalte gel", taxable: true, taxRate: 18, priceIncludesTax: false, historicalUnitCost: 40, puedeVenderse: true };
+const ITEM_B = { itemId: "ITM-B", nombre: "Lima desechable", taxable: false, taxRate: 0, priceIncludesTax: false, historicalUnitCost: 5, puedeVenderse: true };
+
+test("preflight: varias lineas de producto se normalizan y suman por separado (exento vs gravado)", () => {
+  const result = DalfiClosingMath.preflightRetailProductSale({
+    lines: [
+      { itemId: "ITM-A", quantity: 2, unitPrice: 300, discount: 0 },
+      { itemId: "ITM-B", quantity: 3, unitPrice: 50, discount: 0 },
+    ],
+    items: [ITEM_A, ITEM_B],
+    shelfInventory: { "ITM-A": 10, "ITM-B": 10 },
+  });
+  assert.equal(result.allowed, true);
+  assert.equal(result.normalizedLines.length, 2);
+  assert.equal(result.subtotalTaxable, 708); // 600 + 18%
+  assert.equal(result.subtotalExempt, 150);
+  assert.equal(result.taxAmount, 108);
+});
+
+test("preflight: bloquea por existencia insuficiente en estanteria (nunca vende sin stock)", () => {
+  const result = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 5, unitPrice: 300, discount: 0 }],
+    items: [ITEM_A],
+    shelfInventory: { "ITM-A": 2 },
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.shortages.length, 1);
+  assert.equal(result.shortages[0].shortfall, 3);
+});
+
+test("preflight: articulo no encontrado o no vendible bloquea con error claro", () => {
+  const missing = DalfiClosingMath.preflightRetailProductSale({ lines: [{ itemId: "ITM-X", quantity: 1, unitPrice: 10 }], items: [ITEM_A], shelfInventory: {} });
+  assert.equal(missing.allowed, false);
+  const notSellable = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 1, unitPrice: 10 }],
+    items: [{ ...ITEM_A, puedeVenderse: false }],
+    shelfInventory: { "ITM-A": 10 },
+  });
+  assert.equal(notSellable.allowed, false);
+});
+
+test("preflight: descuento reduce el subtotal ANTES de calcular el impuesto (nunca despues)", () => {
+  const result = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 1, unitPrice: 100, discount: 20 }],
+    items: [ITEM_A],
+    shelfInventory: { "ITM-A": 10 },
+  });
+  assert.equal(result.normalizedLines[0].subtotal, 80);
+  assert.equal(result.taxAmount, roundTo(80 * 0.18));
+});
+
+test("preflight: costo historico y margen bruto se calculan por linea usando historicalUnitCost, nunca el costo actual del articulo si cambia despues", () => {
+  const result = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 2, unitPrice: 300, discount: 0 }],
+    items: [ITEM_A],
+    shelfInventory: { "ITM-A": 10 },
+  });
+  assert.equal(result.normalizedLines[0].totalHistoricalCost, 80);
+  assert.equal(result.historicalCost, 80);
+  assert.ok(result.grossMargin > 0);
+});
+
+test("preflight: FEFO selecciona lotes por vencimiento cuando el articulo tiene lotes registrados; sin lotes trata la existencia como un solo lote (compatibilidad historica)", () => {
+  const withLots = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 5, unitPrice: 100 }],
+    items: [ITEM_A],
+    shelfInventory: { "ITM-A": 10 },
+    lots: { "ITM-A": [{ lotId: "L1", quantity: 3, fechaVencimiento: "2026-08-01" }, { lotId: "L2", quantity: 5, fechaVencimiento: "2026-09-01" }] },
+  });
+  assert.equal(withLots.allowed, true);
+  assert.equal(withLots.selectedLots[0].lotId, "L1");
+  assert.equal(withLots.selectedLots[0].quantity, 3);
+  const withoutLots = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 5, unitPrice: 100 }],
+    items: [ITEM_A],
+    shelfInventory: { "ITM-A": 10 },
+  });
+  assert.equal(withoutLots.allowed, true);
+});
+
+test("preflight: sourceKey duplicado bloquea (evita doble submit/reintento creando la misma venta dos veces)", () => {
+  const result = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-A", quantity: 1, unitPrice: 100 }],
+    items: [ITEM_A],
+    shelfInventory: { "ITM-A": 10 },
+    sourceKey: "venta:VTA-1",
+    existingSourceKeys: ["venta:VTA-1"],
+  });
+  assert.equal(result.allowed, false);
+  assert.equal(result.duplicate, true);
+});
+
+test("preflight: articulo gravado sin tasa configurada se reporta como configuracion fiscal invalida (nunca inventa una tasa)", () => {
+  const result = DalfiClosingMath.preflightRetailProductSale({
+    lines: [{ itemId: "ITM-C", quantity: 1, unitPrice: 100 }],
+    items: [{ itemId: "ITM-C", nombre: "Sin tasa", taxable: true, taxRate: 0, historicalUnitCost: 10 }],
+    shelfInventory: { "ITM-C": 10 },
+  });
+  assert.equal(result.invalidTaxConfigurations.length, 1);
+  assert.equal(result.invalidTaxConfigurations[0].itemId, "ITM-C");
+});
+
+test("preflight: nunca lee el DOM ni persiste (funcion pura, sin document/dbTable/localStorage)", () => {
+  assert.doesNotMatch(String(DalfiClosingMath.preflightRetailProductSale), /document\.|dbTable\(|localStorage/);
+});
+
+function roundTo(value) {
+  return Math.round(value * 100) / 100;
+}

@@ -126,6 +126,8 @@ let state = structuredClone(fallbackSeed);
 let invoiceLineCounter = 0;
 let paymentLineCounter = 0;
 let incomePaymentLineCounter = 0;
+let retailSaleLineCounter = 0;
+let retailSalePaymentLineCounter = 0;
 // Identificador local unico (no persistido) para cada porcion de "balance a
 // favor" aplicada a una CxC anterior: balance a favor no genera un pagoID
 // real (no crea addConfirmedPayment), asi que este contador es lo que le da
@@ -828,6 +830,18 @@ function findStaffByName(name) {
   return dbTable("colaboradores").find((staff) => normalize(staff.nombreCompleto) === normalize(name));
 }
 
+// "Área general" es una ubicación de consumo EXPLICITA (nunca una mesa
+// ficticia inventada): un servicio realizado fuera de cualquier mesa se
+// registra ahi mismo, nunca se reasigna en silencio a la primera mesa de
+// la lista. Devuelve stationId vacio para "Área general" (no tiene fila en
+// dbTable("mesas")) y undefined si el texto no corresponde a nada conocido.
+function findStationByName(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return null;
+  if (normalize(trimmed) === normalize("Área general")) return { stationId: "", nombre: "Área general" };
+  return dbTable("mesas").find((row) => normalize(row.nombre) === normalize(trimmed)) || null;
+}
+
 function findAccountByName(name) {
   return dbTable("cuentas").find((account) => normalize(account.nombreCuenta) === normalize(name));
 }
@@ -1288,7 +1302,14 @@ function addConfirmedPayment(invoiceId, clientRecord, clientName, amount, method
   return paymentId;
 }
 
-function addReceivable(invoiceId, clientRecord, clientName, amount, concept, accountName = "", originDate = today, extra = {}) {
+// sourceType identifica el ORIGEN de la deuda dentro de la cuenta corriente
+// comun del cliente (Facturacion de servicios vs Ventas de productos), sin
+// mezclar los documentos: ambos siguen siendo distintos, solo comparten la
+// misma tabla de CxC y el mismo cobro general FIFO. Una CxC sin sourceType
+// explicito (historica, anterior a esta fase) se interpreta como
+// "service_invoice" por default -nunca se reescribe al cargar, esto solo
+// afecta filas NUEVAS.
+function addReceivable(invoiceId, clientRecord, clientName, amount, concept, accountName = "", originDate = today, extra = {}, sourceType = "service_invoice") {
   const cxcId = nextDbId("cuentasCobrar", "cxCID", "CXC");
   const dueDate = concept.includes("Transferencia pendiente") || concept.includes("Declinada") ? originDate : datePlusDaysFrom(originDate, 7);
   const isProcessorReceivable = normalize(concept).includes("procesador");
@@ -1301,6 +1322,8 @@ function addReceivable(invoiceId, clientRecord, clientName, amount, concept, acc
     deudorID: clientRecord?.clienteID || "",
     deudorNombre: clientName,
     facturaID: invoiceId,
+    sourceType: isProcessorReceivable ? "" : sourceType,
+    sourceId: invoiceId,
     pagoID: "",
     montoOriginal: amount,
     montoAplicado: 0,
@@ -1313,6 +1336,13 @@ function addReceivable(invoiceId, clientRecord, clientName, amount, concept, acc
     ...extra,
   }));
   return cxcId;
+}
+
+// Etiqueta de origen para mostrar en las vistas de CxC comun (cobro general,
+// deuda anterior en facturacion): una CxC sin sourceType (historica) se
+// interpreta como Servicio, nunca se reescribe el registro para lograrlo.
+function receivableOriginLabel(cxc) {
+  return cxc?.sourceType === "retail_sale" ? "Producto" : "Servicio";
 }
 
 function datePlusDays(days) {
@@ -2460,6 +2490,7 @@ function renderDatalists() {
   ]);
   byId("services-list").innerHTML = uniqueOptions(state.services.map((service) => service.name));
   byId("staff-list").innerHTML = uniqueOptions(staffNames);
+  byId("stations-list").innerHTML = uniqueOptions(["Área general", ...dbTable("mesas").map((row) => row.nombre)]);
   byId("accounts-list").innerHTML = uniqueOptions(activeAccounts().map((account) => account.nombreCuenta));
   byId("cash-accounts-list").innerHTML = uniqueOptions(cashAccounts().map((account) => account.nombreCuenta));
   byId("bank-accounts-list").innerHTML = uniqueOptions(bankAccounts().map((account) => account.nombreCuenta));
@@ -5129,6 +5160,12 @@ function defaultSalonWarehouse() {
 // campo se migra en memoria SOLO al leerla (nunca se reescribe erp_records
 // masivamente / no es backfill): el booleano viejo decide el valor inicial
 // una sola vez, luego el campo nuevo manda.
+// modoMesaServicio: igual patron que modoConsumoInventario, para exigir (o
+// no) mesa/colaboradora por linea de servicio. "required" bloquea al
+// guardar si falta mesa; "audit_only" guarda igual pero deja constancia de
+// que falta (para conciliar despues); "disabled" (default, compatibilidad
+// historica) nunca exige nada. Una base existente sin este campo lo recibe
+// SOLO al leerla (nunca backfill masivo).
 function inventoryConfig() {
   const table = dbTable("configuracionInventario");
   if (table.length) {
@@ -5136,9 +5173,10 @@ function inventoryConfig() {
     if (!config.modoConsumoInventario) {
       config.modoConsumoInventario = config.consumirInventarioEnFacturacion ? "required" : "disabled";
     }
+    if (!config.modoMesaServicio) config.modoMesaServicio = "disabled";
     return config;
   }
-  const config = stampRecord({ configId: "INVCFG-1", usarAlmacenProvisiones: false, modoConsumoInventario: "disabled" });
+  const config = stampRecord({ configId: "INVCFG-1", usarAlmacenProvisiones: false, modoConsumoInventario: "disabled", modoMesaServicio: "disabled" });
   table.push(config);
   return config;
 }
@@ -5694,6 +5732,7 @@ function renderRecipes() {
     : '<p class="empty">No hay fichas técnicas registradas.</p>';
   const config = inventoryConfig();
   if (byId("inventory-consumption-mode")) byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
+  if (byId("station-mode")) byId("station-mode").value = config.modoMesaServicio || "disabled";
   renderPendingConsumptions();
 }
 
@@ -5783,25 +5822,343 @@ function renderPhysicalCounts() {
     : '<p class="empty">No hay conteos físicos confirmados.</p>';
 }
 
-function updateRetailSaleTotalPreview() {
-  const item = findInventoryItemByName(byId("retail-sale-item")?.value.trim() || "");
-  const quantity = Number(byId("retail-sale-quantity")?.value) || 0;
-  const price = Number(byId("retail-sale-price")?.value) || 0;
-  const amount = quantity * price;
-  const split = DalfiClosingMath.splitInvoiceLineTax({
-    amount,
-    taxable: Boolean(item?.taxable),
-    taxRate: Number(item?.taxRate) || 0,
-    priceIncludesTax: Boolean(item?.priceIncludesTax),
+// ===========================================================================
+// Ventas de productos: modulo INDEPENDIENTE de Facturacion de servicios.
+// Varias lineas de producto por venta, formas de pago reutilizando el mismo
+// motor que Facturacion (efectivo/tarjeta/transferencia confirmada/
+// transferencia pendiente/credito/balance a favor), y saldo no cubierto
+// crea una CxC de cliente con sourceType "retail_sale" (misma cuenta
+// corriente que las CxC de servicios, ver addReceivable/receivableOriginLabel).
+// Nunca admite servicios, colaboradoras de servicio ni propinas.
+// ===========================================================================
+
+function addRetailSaleLine() {
+  const lineId = `retail-line-${++retailSaleLineCounter}`;
+  const line = document.createElement("article");
+  line.className = "invoice-line retail-sale-line";
+  line.dataset.lineId = lineId;
+  line.innerHTML = `
+    <div class="line-head">
+      <strong>Producto</strong>
+      <button class="secondary-btn compact remove-retail-sale-line" type="button">Quitar</button>
+    </div>
+    <div class="line-grid">
+      <label>
+        Artículo
+        <input class="retail-line-item" list="inventory-item-list" placeholder="Buscar artículo" required />
+      </label>
+      <label>
+        Cantidad
+        <input class="retail-line-quantity" type="number" min="0.0001" step="0.0001" value="1" required />
+      </label>
+      <label>
+        Precio unitario
+        <input class="retail-line-price" type="number" min="0" step="0.01" required />
+      </label>
+      <label>
+        Descuento
+        <input class="retail-line-discount" type="number" min="0" step="0.01" value="0" />
+      </label>
+      <label>
+        Existencia en estantería
+        <output class="retail-line-stock">0</output>
+      </label>
+      <label>
+        Subtotal
+        <input class="retail-line-subtotal" type="text" readonly />
+      </label>
+    </div>
+  `;
+  byId("retail-sale-line-list").appendChild(line);
+  attachSearchableLookups();
+  updateRetailSaleTotals();
+}
+
+function getRetailSaleLines() {
+  return [...document.querySelectorAll(".retail-sale-line")].map((line) => {
+    const item = findInventoryItemByName(line.querySelector(".retail-line-item").value.trim());
+    return {
+      element: line,
+      item,
+      itemId: item?.itemID || "",
+      quantity: Number(line.querySelector(".retail-line-quantity").value) || 0,
+      unitPrice: Number(line.querySelector(".retail-line-price").value) || 0,
+      discount: Number(line.querySelector(".retail-line-discount").value) || 0,
+    };
   });
-  byId("retail-sale-total-preview").textContent = `Total: ${money.format(split.totalAmount)}${item?.taxable ? ` (incluye impuesto ${money.format(split.taxAmount)})` : ""}`;
+}
+
+// Inventario disponible en la Estanteria de venta para cada articulo de las
+// lineas actuales (fuente unica para el preflight puro y para la vista
+// previa de existencia por linea).
+function retailShelfInventorySnapshot(lines) {
+  const shelf = defaultShelfWarehouse();
+  const snapshot = {};
+  lines.forEach((line) => {
+    if (!line.itemId || snapshot[line.itemId] !== undefined) return;
+    snapshot[line.itemId] = shelf ? itemStockAt(line.itemId, shelf.locationId) : 0;
+  });
+  return snapshot;
+}
+
+function retailSalePreflightItemsInput() {
+  return dbTable("inventario").map((row) => ({
+    itemId: row.itemID,
+    nombre: row.nombre,
+    sku: row.sku || "",
+    unidad: row.unidad || row.unidadBase || "",
+    taxable: Boolean(row.taxable),
+    taxRate: Number(row.taxRate) || 0,
+    priceIncludesTax: Boolean(row.priceIncludesTax),
+    taxCategory: row.taxCategory || (row.taxable ? "Gravado" : "Exento"),
+    puedeVenderse: row.puedeVenderse,
+    historicalUnitCost: Number(row.costoPromedio) || Number(row.costo) || 0,
+  }));
+}
+
+function runRetailSalePreflight(lines) {
+  const validLines = lines.filter((line) => line.itemId && line.quantity > 0);
+  return DalfiClosingMath.preflightRetailProductSale({
+    lines: validLines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, discount: line.discount })),
+    items: retailSalePreflightItemsInput(),
+    shelfInventory: retailShelfInventorySnapshot(validLines),
+    referenceDate: today,
+  });
+}
+
+function updateRetailSaleTotals() {
+  const lines = getRetailSaleLines();
+  const shelf = defaultShelfWarehouse();
+  lines.forEach((line) => {
+    const available = line.item && shelf ? itemStockAt(line.itemId, shelf.locationId) : 0;
+    line.element.querySelector(".retail-line-stock").textContent = String(available);
+    const grossAmount = Math.max(0, line.quantity * line.unitPrice - line.discount);
+    line.element.querySelector(".retail-line-subtotal").value = money.format(grossAmount);
+  });
+  const preflight = runRetailSalePreflight(lines);
+  byId("retail-sale-exempt-total").textContent = money.format(preflight.subtotalExempt);
+  byId("retail-sale-taxed-total").textContent = money.format(preflight.subtotalTaxable);
+  byId("retail-sale-discount-total").textContent = money.format(preflight.discounts);
+  byId("retail-sale-tax-total").textContent = money.format(preflight.taxAmount);
+  byId("retail-sale-grand-total").textContent = money.format(preflight.total);
+  const payments = getRetailSalePaymentLines();
+  const paidTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
+  const pending = Math.max(0, preflight.total - paidTotal);
+  byId("retail-sale-payment-summary").textContent = `Pagado: ${money.format(paidTotal)} · Pendiente: ${money.format(pending)}`;
+  return preflight;
+}
+
+function addRetailSalePaymentLine() {
+  const lineId = `retail-payment-${++retailSalePaymentLineCounter}`;
+  const line = document.createElement("article");
+  line.className = "invoice-line retail-payment-line";
+  line.dataset.lineId = lineId;
+  line.innerHTML = `
+    <div class="line-head">
+      <strong>Forma de pago</strong>
+      <button class="secondary-btn compact remove-retail-payment-line" type="button">Quitar</button>
+    </div>
+    <div class="line-grid">
+      <label>
+        Método
+        <select class="retail-payment-method">
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjeta">Tarjeta</option>
+          <option value="transferencia_confirmada">Transferencia confirmada</option>
+          <option value="transferencia_pendiente">Transferencia pendiente</option>
+          <option value="credito">Crédito</option>
+          <option value="balance">Balance a favor</option>
+        </select>
+      </label>
+      <label>
+        Monto
+        <input class="retail-payment-amount" type="number" min="0" step="0.01" value="0" />
+      </label>
+      <label class="retail-payment-account-field hidden">
+        Cuenta destino
+        <input class="retail-payment-account" list="bank-accounts-list" placeholder="Buscar cuenta bancaria" />
+      </label>
+      <label class="retail-payment-processor-field hidden">
+        Procesador tarjeta
+        <input class="retail-payment-processor" list="processors-list" placeholder="Azul, CardNet, Visanet" />
+      </label>
+      <label class="retail-payment-due-field hidden">
+        Fecha pago crédito
+        <input class="retail-payment-due-date" type="date" value="${datePlusDays(7)}" />
+      </label>
+    </div>
+  `;
+  byId("retail-sale-payment-line-list").appendChild(line);
+  updateRetailSalePaymentLineState(line);
+  attachSearchableLookups();
+  updateRetailSaleTotals();
+}
+
+function updateRetailSalePaymentLineState(line) {
+  const method = line.querySelector(".retail-payment-method").value;
+  const account = line.querySelector(".retail-payment-account");
+  line.querySelector(".retail-payment-account-field")?.classList.toggle("hidden", !(method === "transferencia_confirmada" || method === "transferencia_pendiente"));
+  line.querySelector(".retail-payment-processor-field")?.classList.toggle("hidden", method !== "tarjeta");
+  line.querySelector(".retail-payment-due-field")?.classList.toggle("hidden", method !== "credito");
+  if (method === "efectivo") {
+    account.value = cashRegisterAccount()?.nombreCuenta || "Caja Registradora";
+    account.removeAttribute("list");
+  } else if (method === "transferencia_confirmada" || method === "transferencia_pendiente") {
+    account.setAttribute("list", "bank-accounts-list");
+    if (!findBankAccountByName(account.value)) account.value = "";
+  } else {
+    account.value = "";
+  }
+}
+
+function getRetailSalePaymentLines() {
+  return [...document.querySelectorAll(".retail-payment-line")].map((line) => ({
+    element: line,
+    method: line.querySelector(".retail-payment-method").value,
+    amount: Number(line.querySelector(".retail-payment-amount").value) || 0,
+    account: line.querySelector(".retail-payment-account")?.value.trim() || "",
+    processor: line.querySelector(".retail-payment-processor")?.value.trim() || "",
+    dueDate: line.querySelector(".retail-payment-due-date")?.value || datePlusDays(7),
+  }));
+}
+
+function clearRetailSaleFormAfterSubmit() {
+  byId("retail-sale-form").reset();
+  byId("retail-sale-line-list").innerHTML = "";
+  byId("retail-sale-payment-line-list").innerHTML = "";
+  addRetailSaleLine();
+  addRetailSalePaymentLine();
+  updateRetailSaleTotals();
 }
 
 function renderRetailSales() {
   const rows = dbTable("ventasDirectas").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
   byId("retail-sale-list").innerHTML = rows.length
-    ? rows.map((row) => `<div class="list-item"><span>${row.itemNombre}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidad} · ${money.format(Number(row.total) || 0)}</span></div>`).join("")
-    : '<p class="empty">No hay ventas directas registradas.</p>';
+    ? rows
+        .map((row) => {
+          const reversed = row.estado === "Revertida";
+          const canReverse = !reversed && row.retailSaleId && canManageInvoices();
+          return `<div class="list-item${reversed ? " danger" : ""}"><span>${row.itemNombre}${reversed ? " (Revertida)" : ""}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidad} · ${money.format(Number(row.total) || 0)}${canReverse ? ` <button type="button" class="secondary-btn compact reverse-retail-sale" data-retail-sale-id="${row.retailSaleId}">Anular</button>` : ""}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay ventas de productos registradas.</p>';
+}
+
+// Reversion integral de UNA venta de productos (identificada por
+// retailSaleId, comun a todas sus lineas): inventario, CxC, pagos
+// confirmados y auditoria. Nunca borra la venta original (marca
+// estado:"Revertida" y conserva reversedAt/reversalReason). Bloquea si ya
+// hubo un cobro posterior aplicado a su CxC (ese cobro debe revertirse
+// primero desde Facturacion/Cobro general) y bloquea una segunda reversion
+// del mismo movimiento (reverseInvoiceInventoryEffects ya es idempotente
+// por sourceKey `reversion:<original>`). Nunca afecta facturas de
+// servicios, propinas ni nomina.
+function reverseRetailSale(retailSaleId) {
+  if (!retailSaleId) return;
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede anular ventas de productos.");
+    return;
+  }
+  const lines = dbTable("ventasDirectas").filter((row) => row.retailSaleId === retailSaleId);
+  if (!lines.length) return;
+  if (lines.every((row) => row.estado === "Revertida")) {
+    alert("Esta venta ya fue anulada.");
+    return;
+  }
+  const relatedReceivables = dbTable("cuentasCobrar").filter((row) => row.facturaID === retailSaleId && row.sourceType === "retail_sale");
+  const alreadyCollected = relatedReceivables.some((row) => Number(row.montoAplicado) > 0);
+  if (alreadyCollected) {
+    alert("No se puede anular: esta venta tiene cobros posteriores aplicados a su cuenta por cobrar. Primero revierte esos cobros.");
+    return;
+  }
+  const reason = prompt("Motivo de la anulación de esta venta de productos:");
+  if (!reason) {
+    alert("La anulación requiere un motivo.");
+    return;
+  }
+  const reversal = DalfiClosingMath.reverseInvoiceInventoryEffects({
+    invoiceId: retailSaleId,
+    inventoryMovements: dbTable("inventarioMovimientos"),
+    reason,
+    actor: currentUserEmail(),
+  });
+  if (!reversal.allowed) {
+    alert(reversal.blockingErrors.join(" "));
+    return;
+  }
+  if (!reversal.reversalMovements.length) {
+    alert("Esta venta ya fue anulada (movimientos de inventario ya revertidos).");
+    return;
+  }
+  reversal.reversalMovements.forEach((planned) => {
+    createInventoryMovement({
+      itemId: planned.itemId,
+      tipo: "reversion",
+      cantidadBase: planned.cantidadBase,
+      costoUnitario: planned.costoUnitario,
+      locationId: planned.locationId,
+      lotId: planned.lotId,
+      origen: planned.origen,
+      sourceId: planned.sourceId,
+      sourceKey: planned.sourceKey,
+      motivo: planned.motivo,
+      usuario: planned.usuario,
+    });
+  });
+  relatedReceivables.forEach((cxc) => {
+    cxc.estado = "Anulada";
+    cxc.balancePendiente = 0;
+    cxc.observaciones = `${cxc.observaciones || ""} Anulada junto a la venta ${retailSaleId} revertida.`.trim();
+    stampRecord(cxc, "updated");
+  });
+  const relatedPayments = dbTable("pagosFactura").filter((row) => row.facturaID === retailSaleId && row.estadoPago !== "Revertido");
+  let totalReversedCash = 0;
+  relatedPayments.forEach((payment) => {
+    const amount = Number(payment.montoNetoConfirmado) || 0;
+    if (amount > 0) {
+      dbTable("egresos").push(stampRecord({
+        egresoID: nextDbId("egresos", "egresoID", "EGR"),
+        fechaHora: `${today}T12:00:00`,
+        tipoEgreso: "reversion_venta_producto",
+        cuentaOrigenID: payment.cuentaDestinoID || "",
+        cuentaOrigen: payment.cuentaDestino || "",
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `Reversión de venta de producto ${retailSaleId}`,
+        monto: amount,
+        estado: "Registrado",
+        observaciones: reason,
+      }));
+      totalReversedCash += amount;
+    }
+    payment.estadoPago = "Revertido";
+    stampRecord(payment, "updated");
+  });
+  lines.forEach((row) => {
+    row.estado = "Revertida";
+    row.reversedAt = new Date().toISOString();
+    row.reversalReason = reason;
+    stampRecord(row, "updated");
+  });
+  logAudit("retail_sale_reversed", {
+    entity: "ventasDirectas",
+    entityId: retailSaleId,
+    oldData: { lineas: lines.length },
+    newData: { motivo: reason, efectivoRevertido: totalReversedCash },
+    note: `Venta de productos ${retailSaleId} revertida: ${reason}`,
+    success: true,
+  });
+  reversal.reversalMovements.forEach((planned) => {
+    logAudit("retail_product_sale_reversed", {
+      entity: "inventarioMovimientos",
+      entityId: planned.sourceKey,
+      newData: { itemId: planned.itemId, cantidad: planned.cantidadBase },
+      note: `Inventario restaurado para ${planned.itemId} por reversión de ${retailSaleId}.`,
+      success: true,
+    });
+  });
+  saveState();
+  renderAll();
 }
 
 function renderAssetEvents() {
@@ -6318,16 +6675,22 @@ function renderReceivablesReport(start, end) {
     { label: "Vencidas pendientes", value: String(overdue) },
   ]);
   renderReportTable(
-    ["Origen", "Factura", "Cliente/deudor", "Tipo", "Vence", "Estado vencimiento", "Original", "Cobrado", "Pendiente"],
+    ["Fecha origen", "Origen", "Factura", "Cliente/deudor", "Tipo", "Vence", "Estado vencimiento", "Original", "Cobrado", "Pendiente"],
     rowsData.map((row) => {
       const due = dateOnly(row.fechaVencimiento);
       const lastPaid = cxcLastPaymentDate(row);
       const isPendingOverdue = due < today && Number(row.balancePendiente) > 0;
       const wasCollectedOverdue = lastPaid && due < lastPaid && Number(row.balancePendiente) <= 0;
       const dueStatus = isPendingOverdue ? "Vencida" : wasCollectedOverdue ? `Cobrada vencida ${lastPaid}` : "Al día";
+      // Origen: Servicio o Producto para CxC de cliente (cuenta corriente
+      // comun); las CxC de procesador tarjeta/colaborador/suplidor no
+      // aplican esta distincion (receivableOriginLabel solo se muestra
+      // cuando deudorTipo es Cliente).
+      const origin = row.deudorTipo === "Cliente" ? receivableOriginLabel(row) : "-";
       return `
         <tr>
           <td>${dateOnly(row.fechaOrigen)}</td>
+          <td>${origin}</td>
           <td>${row.facturaID || "-"}</td>
           <td>${row.deudorNombre}</td>
           <td>${row.tipoCxC || row.concepto}</td>
@@ -6627,7 +6990,7 @@ function renderLowStockReport() {
 // Ventas de productos e impuesto cobrado, con margen bruto usando el costo
 // historico congelado en cada venta (nunca el costo promedio actual).
 function renderRetailSalesReport(start, end) {
-  const rows = dbTable("ventasDirectas").filter((row) => inRangeDate(row.fecha, start, end));
+  const rows = dbTable("ventasDirectas").filter((row) => inRangeDate(row.fecha, start, end) && row.estado !== "Revertida");
   const totalSales = rows.reduce((sum, row) => sum + (Number(row.total) || 0), 0);
   const totalTax = rows.reduce((sum, row) => sum + (Number(row.taxAmount) || 0), 0);
   const totalMargin = rows.reduce((sum, row) => {
@@ -7005,6 +7368,7 @@ function lookupValuesFor(listId) {
   }
   if (listId === "services-list") return state.services.map((service) => service.name).filter(Boolean);
   if (listId === "staff-list") return activeStaffNames();
+  if (listId === "stations-list") return ["Área general", ...dbTable("mesas").map((row) => row.nombre)].filter(Boolean);
   if (listId === "accounts-list") return activeAccounts().map((account) => account.nombreCuenta).filter(Boolean);
   if (listId === "cash-accounts-list") return cashAccounts().map((account) => account.nombreCuenta).filter(Boolean);
   if (listId === "bank-accounts-list") return bankAccounts().map((account) => account.nombreCuenta).filter(Boolean);
@@ -7698,6 +8062,10 @@ function addInvoiceLine(defaultStaff = "") {
         <input class="line-staff" list="staff-list" value="${escapeHtml(staffValue)}" placeholder="Buscar colaboradora" required />
       </label>
       <label>
+        Mesa / ubicación de consumo
+        <input class="line-station" list="stations-list" placeholder="Buscar mesa o Área general" />
+      </label>
+      <label>
         Precio
         <input class="line-price" type="number" min="0" step="0.01" readonly required />
       </label>
@@ -7745,6 +8113,7 @@ function getInvoiceLines() {
       element: line,
       service: line.querySelector(".line-service").value.trim(),
       staff: line.querySelector(".line-staff").value.trim(),
+      station: line.querySelector(".line-station")?.value.trim() || "",
       qty,
       price,
       extra,
@@ -7935,6 +8304,8 @@ function clearInvoiceFormAfterSubmit() {
 function fillInvoiceLine(lineElement, detail) {
   lineElement.querySelector(".line-service").value = detail.servicio || "";
   lineElement.querySelector(".line-staff").value = detail.colaboradorNombre || "";
+  const stationField = lineElement.querySelector(".line-station");
+  if (stationField) stationField.value = detail.stationName || "";
   lineElement.querySelector(".line-price").value = Number(detail.precioBase) || Number(detail.subtotal) || 0;
   lineElement.querySelector(".line-extra").value = Number(detail.extraMonto) || 0;
   lineElement.querySelector(".line-extra-note").value = detail.extraConcepto_50 || "";
@@ -8035,6 +8406,7 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
     const serviceRecord = findServiceByName(line.service);
     const staffRecord = ensureStaffRecord(line.staff);
     const allocation = allocations[index] || {};
+    const stationRecord = findStationByName(line.station);
     dbTable("facturaDetalle").push(stampRecord({
       detalleID: nextDbId("facturaDetalle", "detalleID", "DET"),
       facturaID: invoiceId,
@@ -8042,6 +8414,8 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
       servicio: line.service,
       colaboradorID: staffRecord.colaboradorID || "",
       colaboradorNombre: staffRecord.nombreCompleto || line.staff,
+      stationId: stationRecord?.stationId || "",
+      stationName: stationRecord?.nombre || line.station || "",
       cantidad: line.qty,
       precioBase: line.price,
       extraMonto: line.extra,
@@ -8434,7 +8808,7 @@ function renderInvoicePriorDebtSummary(clientRecord, currentInvoiceTotal) {
   byId("invoice-grand-total-with-prior-debt").textContent = money.format(priorDebtTotal + currentInvoiceTotal);
   rowsTarget.innerHTML = receivables
     .map((cxc) => {
-      const label = cxc.esPropinaPendiente ? `Propina — factura ${cxc.facturaID || cxc.cxCID}` : `Factura ${cxc.facturaID || cxc.cxCID}`;
+      const label = cxc.esPropinaPendiente ? `Propina — factura ${cxc.facturaID || cxc.cxCID}` : `${receivableOriginLabel(cxc)} ${cxc.facturaID || cxc.cxCID}`;
       return `<div class="list-item"><span>${escapeHtml(label)} · ${dateOnly(cxc.fechaOrigen) || "-"}</span><span>${money.format(Number(cxc.balancePendiente) || 0)}</span></div>`;
     })
     .join("");
@@ -8523,7 +8897,7 @@ function renderPaymentAllocationPreview(clientRecord, receivables, paymentLines)
   rowsTarget.innerHTML = allocation.resultingBalances
     .map((row) => {
       const cxc = receivables.find((item) => item.cxCID === row.id);
-      const label = row.kind === "tip" ? `Propina — factura ${row.invoiceId || row.id}` : `Factura ${row.invoiceId || row.id}`;
+      const label = row.kind === "tip" ? `Propina — factura ${row.invoiceId || row.id}` : `${receivableOriginLabel(cxc)} ${row.invoiceId || row.id}`;
       const estado = row.remainingBalance <= 0 ? "Saldada" : row.amountApplied > 0 ? "Parcial" : "Sin cambio";
       return `
         <div class="list-item">
@@ -9092,6 +9466,18 @@ function wireForms() {
       alert(`No se puede guardar la factura: ${consumptionPreflight.blockingErrors.join(" ")}`);
       return;
     }
+    // Mesa/ubicacion de consumo por linea de servicio (nunca una unica mesa
+    // general para toda la factura): en modo "required" bloquea ANTES de
+    // persistir si falta alguna; "audit_only"/"disabled" nunca bloquean
+    // (compatibilidad historica con facturas y lineas sin mesa).
+    const stationMode = inventoryConfig().modoMesaServicio || "disabled";
+    if (!editId && stationMode === "required") {
+      const missingStation = lines.find((line) => !findStationByName(line.station));
+      if (missingStation) {
+        alert("Selecciona la mesa (o Área general) de cada línea de servicio antes de guardar.");
+        return;
+      }
+    }
     // A partir de aqui empiezan las mutaciones reales (crear/editar la
     // factura, aplicar pagos, generar CxC y propinas): se marca
     // invoiceSubmitInFlight para que un doble clic/doble submit mientras
@@ -9139,6 +9525,7 @@ function wireForms() {
       // articulo en este instante, nunca se recalculan despues aunque el
       // costo promedio del articulo cambie mas adelante.
       const directCostMargin = computeServiceDirectCostAndMargin(line.service, netSubtotal, line.qty);
+      const stationRecord = findStationByName(line.station);
       const detail = {
         detalleID: detailId,
         facturaID: invoiceId,
@@ -9146,6 +9533,8 @@ function wireForms() {
         servicio: line.service,
         colaboradorID: staffRecord.colaboradorID || "",
         colaboradorNombre: staffRecord.nombreCompleto || line.staff,
+        stationId: stationRecord?.stationId || "",
+        stationName: stationRecord?.nombre || line.station || "",
         cantidad: line.qty,
         precioBase: line.price,
         extraMonto: line.extra,
@@ -9162,6 +9551,15 @@ function wireForms() {
       };
       detailRecords.push(detail);
       dbTable("facturaDetalle").push(stampRecord(detail));
+      if (detail.stationName) {
+        logAudit("service_station_assigned", {
+          entity: "facturaDetalle",
+          entityId: detailId,
+          newData: { servicio: detail.servicio, colaboradorNombre: detail.colaboradorNombre, stationName: detail.stationName },
+          note: `Servicio "${detail.servicio}" en ${detail.stationName} (${detail.colaboradorNombre || "sin colaboradora"}).`,
+          success: true,
+        });
+      }
     });
 
     state.invoices.push(stampRecord({
@@ -10746,6 +11144,28 @@ function wireForms() {
     renderAll();
   });
 
+  byId("station-mode")?.addEventListener("change", () => {
+    const config = inventoryConfig();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede cambiar el modo de mesa por línea de servicio.");
+      byId("station-mode").value = config.modoMesaServicio || "disabled";
+      return;
+    }
+    const previousMode = config.modoMesaServicio;
+    config.modoMesaServicio = byId("station-mode").value;
+    stampRecord(config, "updated");
+    logAudit("service_station_mode_changed", {
+      entity: "configuracionInventario",
+      entityId: config.configId,
+      oldData: { modoMesaServicio: previousMode },
+      newData: { modoMesaServicio: config.modoMesaServicio },
+      note: `Modo de mesa por línea de servicio cambiado a "${config.modoMesaServicio}".`,
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
   byId("pending-consumption-list")?.addEventListener("click", (event) => {
     const button = event.target.closest(".confirm-pending-consumption");
     if (!button) return;
@@ -10886,124 +11306,257 @@ function wireForms() {
     renderAll();
   });
 
-  ["retail-sale-item", "retail-sale-quantity", "retail-sale-price"].forEach((id) => {
-    byId(id).addEventListener("input", updateRetailSaleTotalPreview);
+  byId("retail-sale-form").addEventListener("click", (event) => {
+    if (event.target.id === "add-retail-sale-line") {
+      event.preventDefault();
+      addRetailSaleLine();
+    }
+    if (event.target.id === "add-retail-sale-payment-line") {
+      event.preventDefault();
+      addRetailSalePaymentLine();
+    }
   });
+  byId("retail-sale-line-list").addEventListener("input", () => updateRetailSaleTotals());
+  byId("retail-sale-line-list").addEventListener("click", (event) => {
+    if (!event.target.classList.contains("remove-retail-sale-line")) return;
+    const lines = document.querySelectorAll(".retail-sale-line");
+    if (lines.length <= 1) return;
+    event.target.closest(".retail-sale-line").remove();
+    updateRetailSaleTotals();
+  });
+  byId("retail-sale-payment-line-list").addEventListener("input", (event) => {
+    const line = event.target.closest(".retail-payment-line");
+    if (line && event.target.classList.contains("retail-payment-method")) updateRetailSalePaymentLineState(line);
+    updateRetailSaleTotals();
+  });
+  byId("retail-sale-payment-line-list").addEventListener("change", (event) => {
+    const line = event.target.closest(".retail-payment-line");
+    if (!line || !event.target.classList.contains("retail-payment-method")) return;
+    updateRetailSalePaymentLineState(line);
+    updateRetailSaleTotals();
+  });
+  byId("retail-sale-payment-line-list").addEventListener("click", (event) => {
+    if (!event.target.classList.contains("remove-retail-payment-line")) return;
+    const lines = document.querySelectorAll(".retail-payment-line");
+    if (lines.length <= 1) return;
+    event.target.closest(".retail-payment-line").remove();
+    updateRetailSaleTotals();
+  });
+  byId("retail-sale-client-search").addEventListener("input", () => updateRetailSaleTotals());
 
   let retailSaleSubmitInFlight = false;
   byId("retail-sale-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (retailSaleSubmitInFlight) return;
     if (!canManageInvoices()) {
-      alert("Solo administración o propietario puede registrar ventas directas de productos.");
+      alert("Solo administración o propietario puede registrar ventas de productos.");
       return;
     }
-    const item = findInventoryItemByName(byId("retail-sale-item").value.trim());
-    if (!item) {
-      alert("Selecciona un artículo existente.");
-      byId("retail-sale-item").focus();
+    const lines = getRetailSaleLines().filter((line) => line.itemId && line.quantity > 0);
+    if (!lines.length) {
+      alert("Agrega al menos un producto con cantidad mayor que cero.");
       return;
     }
-    if (item.puedeVenderse === false) {
-      alert("Este artículo no está marcado como disponible para venta.");
+    const payments = getRetailSalePaymentLines().filter((payment) => payment.amount > 0);
+    if (!payments.length) {
+      alert("Agrega al menos una forma de pago con monto mayor que cero.");
       return;
     }
-    const quantity = Number(byId("retail-sale-quantity").value) || 0;
-    if (!(quantity > 0)) {
-      alert("Indica una cantidad mayor que cero.");
-      byId("retail-sale-quantity").focus();
+    const missingProcessor = payments.find((payment) => payment.method === "tarjeta" && !findProcessorByName(payment.processor));
+    if (missingProcessor) {
+      alert("Selecciona una compañía de tarjeta válida creada en Base de datos.");
       return;
     }
-    const price = Number(byId("retail-sale-price").value) || 0;
-    if (!(price >= 0)) {
-      alert("Indica un precio unitario válido.");
+    const missingTransferAccount = payments.find((payment) => payment.method.includes("transferencia") && !findBankAccountByName(payment.account));
+    if (missingTransferAccount) {
+      alert("Selecciona una cuenta bancaria válida para la transferencia.");
       return;
     }
-    const accountName = byId("retail-sale-account").value.trim();
-    const account = findAccountByName(accountName);
-    if (!account) {
-      alert("Selecciona una cuenta válida para recibir el pago.");
-      byId("retail-sale-account").focus();
+    const clientName = byId("retail-sale-client-search").value.trim();
+    const requiresClient = payments.some((payment) => payment.method === "credito" || payment.method === "transferencia_pendiente" || payment.method === "balance");
+    if (requiresClient && !clientName) {
+      alert("Crédito, transferencia pendiente y balance a favor requieren seleccionar o crear un cliente.");
+      byId("retail-sale-client-search").focus();
       return;
     }
-    const shelfCheck = requireShelfWarehouseForSale(item.itemID, quantity);
-    if (!shelfCheck.ok) {
-      alert(shelfCheck.error);
+    if (!defaultShelfWarehouse()) {
+      alert("No hay ninguna Estantería de venta configurada. Crea una en Base de datos → Almacenes antes de vender productos.");
       return;
     }
-    const shelf = shelfCheck.shelf;
-    const split = DalfiClosingMath.splitInvoiceLineTax({
-      amount: quantity * price,
-      taxable: Boolean(item.taxable),
-      taxRate: Number(item.taxRate) || 0,
-      priceIncludesTax: Boolean(item.priceIncludesTax),
-    });
+    const preflight = runRetailSalePreflight(lines);
+    if (!preflight.allowed) {
+      alert(`No se puede registrar la venta: ${preflight.blockingErrors.join(" ")}`);
+      return;
+    }
+    const paidTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
+    if (paidTotal + 0.01 < preflight.total) {
+      alert(`Falta registrar ${money.format(preflight.total - paidTotal)} en formas de pago.`);
+      return;
+    }
     retailSaleSubmitInFlight = true;
     byId("retail-sale-submit").disabled = true;
     try {
-      const saleId = nextDbId("ventasDirectas", "saleId", "VTA");
-      const movementResult = createInventoryMovement({
-        itemId: item.itemID,
-        tipo: "venta",
-        cantidadBase: quantity,
-        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
-        locationId: shelf.locationId,
-        origen: "Venta directa",
-        sourceId: saleId,
-        sourceKey: `venta:${saleId}`,
-        motivo: "Venta directa de producto",
+      const shelf = defaultShelfWarehouse();
+      if (clientName) ensureClient(clientName);
+      const clientRecord = clientName ? findClientByName(clientName) : null;
+      const retailSaleId = nextDbId("ventasDirectas", "retailSaleId", "VTA");
+      const movements = [];
+      let stockFailed = "";
+      preflight.normalizedLines.forEach((normalized) => {
+        if (stockFailed) return;
+        const movementResult = createInventoryMovement({
+          itemId: normalized.itemId,
+          tipo: "venta",
+          cantidadBase: normalized.cantidad,
+          costoUnitario: normalized.historicalUnitCost,
+          locationId: shelf.locationId,
+          origen: "Venta de producto",
+          sourceId: retailSaleId,
+          sourceKey: `venta:${retailSaleId}:${normalized.itemId}`,
+          motivo: "Venta de producto (estantería)",
+        });
+        if (!movementResult.movement) {
+          stockFailed = movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de estantería.";
+          return;
+        }
+        movements.push(movementResult.movement);
       });
-      if (!movementResult.movement) {
-        alert(movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de estantería.");
+      if (stockFailed) {
+        alert(stockFailed);
         return;
       }
-      dbTable("ventasDirectas").push(stampRecord({
-        saleId,
-        itemId: item.itemID,
-        itemNombre: item.nombre,
-        cantidad: quantity,
-        precioUnitario: price,
-        baseAmount: split.baseAmount,
-        taxAmount: split.taxAmount,
-        total: split.totalAmount,
-        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
-        locationId: shelf.locationId,
-        fecha: today,
-      }));
-      const incomeId = nextDbId("ingresos", "ingresoID", "ING");
-      dbTable("ingresos").push(stampRecord({
-        ingresoID: incomeId,
-        fechaHora: dateTimeForOperationalDate(today),
-        fechaEntradaCaja: today,
-        tipoIngreso: "Venta de producto",
-        facturaID: "",
-        clienteID: "",
-        clienteNombre: "",
-        metodoPago: "efectivo",
-        cuentaDestinoID: account.cuentaID || "",
-        cuentaDestino: accountName,
-        montoBruto: split.totalAmount,
-        retencion: 0,
-        montoNeto: split.totalAmount,
-        estado: "Confirmado",
-        observaciones: `Venta directa ${saleId}: ${item.nombre}`,
-      }));
-      refreshPendingClosingsForDate(today);
+      preflight.normalizedLines.forEach((normalized) => {
+        const saleId = nextDbId("ventasDirectas", "saleId", "VTL");
+        dbTable("ventasDirectas").push(stampRecord({
+          saleId,
+          retailSaleId,
+          itemId: normalized.itemId,
+          itemNombre: normalized.descripcion,
+          sku: normalized.sku,
+          cantidad: normalized.cantidad,
+          unidad: normalized.unidad,
+          precioUnitario: normalized.precioUnitario,
+          descuento: normalized.descuento,
+          baseAmount: normalized.taxableBase,
+          taxAmount: normalized.taxAmount,
+          taxCategory: normalized.taxCategory,
+          taxRate: normalized.taxRate,
+          priceIncludesTax: normalized.priceIncludesTax,
+          total: normalized.total,
+          costoUnitario: normalized.historicalUnitCost,
+          costoTotalHistorico: normalized.totalHistoricalCost,
+          margenBruto: normalized.grossMargin,
+          margenBrutoPorcentaje: normalized.grossMarginPercentage,
+          locationId: shelf.locationId,
+          clienteID: clientRecord?.clienteID || "",
+          clienteNombre: clientName || "",
+          fecha: today,
+          estado: "Confirmada",
+          sourceKey: `venta:${retailSaleId}:${normalized.itemId}`,
+        }));
+      });
       logAudit("retail_product_sold", {
         entity: "ventasDirectas",
-        entityId: saleId,
-        newData: { itemId: item.itemID, cantidad: quantity, total: split.totalAmount, taxAmount: split.taxAmount },
-        note: `Venta directa de ${quantity} ${item.nombre} por ${money.format(split.totalAmount)}.`,
+        entityId: retailSaleId,
+        newData: { lineas: preflight.normalizedLines.length, total: preflight.total, taxAmount: preflight.taxAmount },
+        note: `Venta de producto ${retailSaleId}: ${preflight.normalizedLines.length} línea(s) por ${money.format(preflight.total)}.`,
         success: true,
       });
-      event.target.reset();
-      updateRetailSaleTotalPreview();
+      logAudit("retail_tax_calculated", {
+        entity: "ventasDirectas",
+        entityId: retailSaleId,
+        newData: { subtotalExento: preflight.subtotalExempt, subtotalGravado: preflight.subtotalTaxable, impuesto: preflight.taxAmount },
+        note: `Impuesto calculado para ${retailSaleId}: ${money.format(preflight.taxAmount)}.`,
+        success: true,
+      });
+
+      // Deuda anterior del cliente (servicios Y productos, misma cuenta
+      // corriente) se cobra PRIMERO, igual que en Facturacion: nunca dos
+      // algoritmos financieros distintos para el mismo reparto
+      // (DalfiClosingMath.allocateClientPaymentFIFO). Nunca hay propina.
+      const priorReceivables = clientRecord ? clientAllReceivables(clientRecord) : [];
+      const availableBalance = clientBalance(clientRecord?.clienteID);
+      const confirmedPayments = payments.filter((payment) => isConfirmedPaymentMethod(payment.method));
+      const allocation = DalfiClosingMath.allocateClientPaymentFIFO({
+        confirmedPaymentLines: confirmedPayments.map((payment) => ({
+          method: payment.method,
+          amount: payment.method === "balance" ? Math.min(payment.amount, availableBalance) : payment.amount,
+        })),
+        priorClientReceivables: mapReceivablesForAllocation(priorReceivables),
+        currentInvoiceBase: preflight.total,
+        currentInvoiceTip: 0,
+        currentInvoiceTipCollected: 0,
+      });
+
+      confirmedPayments.forEach((payment, index) => {
+        const lineAllocation = allocation.lineAllocations[index];
+        if (!lineAllocation) return;
+        const olderPortion = lineAllocation.olderReceivables;
+        const salePortion = lineAllocation.currentBase;
+        if (payment.method === "balance") {
+          if (olderPortion > 0) applyClientReceivablesFirst(clientRecord, clientName, olderPortion, "balance", "Balance a favor aplicado a CxC previa", "", "", today, { recordAsIncome: false });
+          adjustClientBalance(clientRecord?.clienteID, -(olderPortion + salePortion));
+          if (salePortion > 0) {
+            logAudit("retail_sale_payment_recorded", {
+              entity: "ventasDirectas",
+              entityId: retailSaleId,
+              newData: { metodo: "balance", monto: salePortion },
+              note: `Pago con balance a favor aplicado a ${retailSaleId}.`,
+              success: true,
+            });
+          }
+          return;
+        }
+        if (olderPortion > 0) applyClientReceivablesFirst(clientRecord, clientName, olderPortion, payment.method, "Pago aplicado primero a CxC previa", payment.processor, payment.account, today);
+        if (salePortion > 0) {
+          addConfirmedPayment(retailSaleId, clientRecord, clientName, salePortion, payment.method, "Cobro venta de producto", payment.processor, payment.account, today);
+          logAudit("retail_sale_payment_recorded", {
+            entity: "ventasDirectas",
+            entityId: retailSaleId,
+            newData: { metodo: payment.method, monto: salePortion },
+            note: `Pago de ${money.format(salePortion)} (${payment.method}) aplicado a ${retailSaleId}.`,
+            success: true,
+          });
+        }
+        if (payment.method === "tarjeta") {
+          const processor = findProcessorByName(payment.processor) || processorForPayment("tarjeta");
+          addReceivable(retailSaleId, { clienteID: processor.procesadorID || "" }, processor.nombre || "Procesador tarjeta", payment.amount, "CxC procesador tarjeta", "", today);
+        }
+      });
+
+      const paidToSale = Math.min(preflight.total, allocation.amountAppliedToCurrentBase);
+      let baseShortfallRemaining = Math.max(0, DalfiClosingMath.roundMoney(preflight.total - paidToSale));
+      payments
+        .filter((payment) => payment.method === "transferencia_pendiente" || payment.method === "credito")
+        .forEach((payment) => {
+          const amountForThisLine = Math.min(payment.amount, baseShortfallRemaining);
+          baseShortfallRemaining = Math.max(0, baseShortfallRemaining - amountForThisLine);
+          if (amountForThisLine <= 0) return;
+          const concept = payment.method === "transferencia_pendiente" ? "Transferencia pendiente por confirmar" : `Crédito cliente vence ${payment.dueDate || datePlusDays(7)}`;
+          const cxcId = addReceivable(retailSaleId, clientRecord, clientName, amountForThisLine, concept, payment.account, today, {}, "retail_sale");
+          logAudit("retail_sale_receivable_created", {
+            entity: "cuentasCobrar",
+            entityId: cxcId,
+            newData: { retailSaleId, monto: amountForThisLine, concepto: concept },
+            note: `CxC de producto creada para ${retailSaleId} por ${money.format(amountForThisLine)}.`,
+            success: true,
+          });
+        });
+
+      refreshPendingClosingsForDate(today);
+      clearRetailSaleFormAfterSubmit();
       saveState();
       renderAll();
     } finally {
       retailSaleSubmitInFlight = false;
       byId("retail-sale-submit").disabled = false;
     }
+  });
+
+  byId("retail-sale-list").addEventListener("click", (event) => {
+    const button = event.target.closest(".reverse-retail-sale");
+    if (!button) return;
+    reverseRetailSale(button.dataset.retailSaleId);
   });
 
   byId("asset-custody-form").addEventListener("submit", (event) => {
@@ -12458,6 +13011,8 @@ async function init() {
   attachSearchableLookups();
   if (!document.querySelector(".invoice-line")) addInvoiceLine();
   if (!document.querySelector(".payment-line")) addPaymentLine();
+  if (!document.querySelector(".retail-sale-line")) addRetailSaleLine();
+  if (!document.querySelector(".retail-payment-line")) addRetailSalePaymentLine();
   updateIncomePaymentFields();
   updateExpenseOptionalFields();
   updatePayrollPreview(true);
