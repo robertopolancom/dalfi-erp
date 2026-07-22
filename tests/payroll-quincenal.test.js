@@ -113,9 +113,25 @@ test("7. no existe una tercera cuota: cut='month' devuelve la cuota completa, cu
   assert.equal(r.second, 0);
 });
 
-test("7b. existingActivePayrollFor bloquea una segunda nomina Borrador/Pagada para el mismo colaborador+periodo+corte", () => {
+test("7b. existingActivePayrollFor bloquea una segunda nomina Borrador/Pagada para el mismo colaborador+periodo+corte (una Revertida no cuenta)", () => {
   const source = extractFunction("existingActivePayrollFor");
-  assert.match(source, /normalize\(row\.estado \|\| ""\) !== "revertida"/);
+  assert.match(source, /normalize\(row\.estado \|\| ""\) === "revertida"/);
+});
+
+test("regresion: existingActivePayrollFor bloquea por SOLAPAMIENTO de rango, no solo coincidencia exacta -una nomina 'Mes completo' (01-fin) se solapa con 'Primera' (01-15) y 'Segunda' (16-fin), evitando pagar salario/TSS dos veces el mismo mes-", () => {
+  const source = new Function(
+    "dbTable",
+    "normalize",
+    `${extractFunction("existingActivePayrollFor")}\nreturn existingActivePayrollFor;`,
+  )(
+    (key) => (key === "nomina" ? nominaRows : []),
+    (v) => String(v || "").toLowerCase(),
+  );
+  var nominaRows = [{ colaboradorID: "COL-1", periodoInicio: "2026-04-01", periodoFin: "2026-04-30", estado: "Borrador" }];
+  assert.ok(source("COL-1", "Ana", "2026-04-01", "2026-04-15"), "primera quincena debe chocar con un 'mes completo' ya existente");
+  assert.ok(source("COL-1", "Ana", "2026-04-16", "2026-04-30"), "segunda quincena debe chocar con un 'mes completo' ya existente");
+  nominaRows = [{ colaboradorID: "COL-1", periodoInicio: "2026-04-01", periodoFin: "2026-04-15", estado: "Borrador" }];
+  assert.equal(source("COL-1", "Ana", "2026-04-16", "2026-04-30"), undefined, "primera y segunda quincena NO se solapan entre si, deben poder coexistir");
 });
 
 test("el submit de #payroll-form bloquea la duplicacion llamando a existingActivePayrollFor ANTES de crear la nomina", () => {
@@ -353,8 +369,29 @@ test("57-58-59-60. el ajuste se calcula por corte (computeVacationSalaryOffset) 
 
 test("61. sin doble pago: collaboratorVacationOffsetForRange resta del salario pagable exactamente ese monto, nunca se vuelve a crear el egreso del anticipo", () => {
   const source = extractFunction("collaboratorVacationOffsetForRange");
-  assert.match(source, /normalize\(row\.estado \|\| ""\) === "pagada anticipadamente"/);
+  assert.match(source, /estado === "pagada anticipadamente" \|\| estado === "disfrutada"/);
   assert.doesNotMatch(source, /dbTable\("egresos"\)\.push/);
+});
+
+test("regresion: marcar unas vacaciones como 'Disfrutada' NO desactiva el ajuste salarial (si no, una nomina creada despues de marcarlas pagaria esos dias dos veces)", () => {
+  const fn = new Function(
+    "dbTable",
+    "normalize",
+    "DalfiClosingMath",
+    `${extractFunction("collaboratorVacationOffsetForRange")}\nreturn collaboratorVacationOffsetForRange;`,
+  )(
+    (key) => (key === "vacaciones" ? vacacionesRows : []),
+    (v) => String(v || "").toLowerCase(),
+    DalfiClosingMath,
+  );
+  const staff = { colaboradorID: "COL-1" };
+  const range = { start: "2026-04-16", end: "2026-04-30" };
+  var vacacionesRows = [{ colaboradorID: "COL-1", fechaInicio: "2026-04-20", diasPagados: 5, valorDiario: 500, estado: "Pagada anticipadamente" }];
+  const offsetWhilePaid = fn(staff, "Ana", range);
+  vacacionesRows = [{ colaboradorID: "COL-1", fechaInicio: "2026-04-20", diasPagados: 5, valorDiario: 500, estado: "Disfrutada" }];
+  const offsetAfterEnjoyed = fn(staff, "Ana", range);
+  assert.ok(offsetWhilePaid > 0, "el ajuste debe aplicar mientras esta 'Pagada anticipadamente'");
+  assert.equal(offsetAfterEnjoyed, offsetWhilePaid, "marcar 'Disfrutada' no debe cambiar el ajuste salarial ya devengado");
 });
 
 test("41. cancelacion ANTES del pago (Solicitada o Aprobada): cancelVacation() pide motivo y no requiere ningun ajuste de dinero", () => {

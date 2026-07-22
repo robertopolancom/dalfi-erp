@@ -395,10 +395,23 @@ test("47-48. sourceKey de la cuenta por pagar es facturaID:colaboradorID (establ
   assert.ok(!/\.length/.test(fnSource.split("\n").filter((l) => l.includes("sourceKey")).join("\n")), "sourceKey no debe derivarse de .length de ninguna coleccion");
 });
 
-test("collectInvoiceTip() es idempotente por construccion: busca por sourceKey y ACTUALIZA la misma fila en vez de crear una nueva cada vez", () => {
+test("collectInvoiceTip() es idempotente por construccion: busca por sourceKey y ACTUALIZA la misma fila mientras siga Pendiente de nomina (nunca le suma dinero a una fila ya Pagada, que quedaria oculta para siempre)", () => {
   const fnSource = extractFunction("collectInvoiceTip");
-  assert.match(fnSource, /let payable = dbTable\("propinas"\)\.find\(\(row\) => row\.sourceKey === sourceKey\);/);
+  assert.match(fnSource, /let payable = dbTable\("propinas"\)\.find\(\(row\) => row\.sourceKey === sourceKey && normalize\(row\.estadoPagoNomina \|\| "Pendiente"\) === "pendiente"\);/);
   assert.match(fnSource, /if \(!payable\) \{/);
+});
+
+test("regresion: collectInvoiceTip() crea una fila NUEVA (nunca reutiliza una ya Pagada) cuando llega mas propina despues de que la obligacion anterior de esa factura+colaboradora ya se pago en nomina", () => {
+  const fnSource = extractFunction("collectInvoiceTip");
+  assert.match(fnSource, /estadoPagoNomina \|\| "Pendiente"\) === "pendiente"/);
+  // invoiceTipReversalBlockedReason/reverseInvoiceTipCollection deben poder
+  // convivir con varias filas para la misma factura+colaboradora: filtran
+  // por facturaID y por "source" dentro de pagosAplicados, nunca asumen una
+  // unica fila por sourceKey.
+  const blockedSource = extractFunction("invoiceTipReversalBlockedReason");
+  assert.match(blockedSource, /dbTable\("propinas"\)\.filter\(\s*\(row\) => row\.facturaID === cxc\.facturaID/);
+  const reverseSource = extractFunction("reverseInvoiceTipCollection");
+  assert.match(reverseSource, /dbTable\("propinas"\)\s*\.filter\(\(row\) => row\.facturaID === cxc\.facturaID\)/);
 });
 
 // --- 49-52: reversion ---

@@ -3462,9 +3462,18 @@ function collaboratorReceivablesSorted(staff, staffName) {
 // canceladas) del colaborador.
 function collaboratorVacationOffsetForRange(staff, staffName, salaryRange) {
   if (!salaryRange) return 0;
+  // "Disfrutada" es una anotacion POSTERIOR sobre unas vacaciones que ya
+  // fueron pagadas anticipadamente (ver markVacationEnjoyed): el dinero
+  // sigue habiendo salido una sola vez por adelantado, asi que el ajuste
+  // salarial debe seguir aplicando igual que con "Pagada anticipadamente".
+  // Si el filtro solo aceptara "Pagada anticipadamente", una nomina creada
+  // DESPUES de marcar la vacacion como Disfrutada pagaria esos dias dos
+  // veces (una vez en el anticipo, otra vez en el salario ordinario sin
+  // descuento).
   const vacations = dbTable("vacaciones").filter((row) => {
     const sameStaff = row.colaboradorID ? row.colaboradorID === staff?.colaboradorID : normalize(row.colaboradorNombre) === normalize(staffName);
-    return sameStaff && normalize(row.estado || "") === "pagada anticipadamente";
+    const estado = normalize(row.estado || "");
+    return sameStaff && (estado === "pagada anticipadamente" || estado === "disfrutada");
   });
   return vacations.reduce((sum, vac) => {
     const offset = DalfiClosingMath.computeVacationSalaryOffset({
@@ -3484,7 +3493,14 @@ function collaboratorVacationOffsetForRange(staff, staffName, salaryRange) {
 function existingActivePayrollFor(colaboradorID, staffName, periodoInicio, periodoFin) {
   return dbTable("nomina").find((row) => {
     const sameStaff = colaboradorID ? row.colaboradorID === colaboradorID : normalize(row.colaboradorNombre) === normalize(staffName);
-    return sameStaff && row.periodoInicio === periodoInicio && row.periodoFin === periodoFin && normalize(row.estado || "") !== "revertida";
+    if (!sameStaff || normalize(row.estado || "") === "revertida") return false;
+    // Solapamiento de RANGO de fechas, no solo coincidencia exacta: una
+    // nomina "Mes completo" cubre el mismo salario/TSS que "Primera" +
+    // "Segunda" quincena juntas, asi que tambien deben bloquearse entre si
+    // (si no, TSS o el salario del mes podrian pagarse dos veces sin que
+    // ningun chequeo lo detecte). "Primera" (01-15) y "Segunda" (16-fin) no
+    // se solapan entre si, por eso siguen pudiendo coexistir normalmente.
+    return row.periodoInicio <= periodoFin && row.periodoFin >= periodoInicio;
   });
 }
 
@@ -7718,7 +7734,16 @@ function collectInvoiceTip(dbInvoice, amount, { cardPortion = 0, source = "" } =
     const cardAmount = safeCardPortion * shareOfCollection;
     const retention = cardAmount * 0.05;
     const sourceKey = `${dbInvoice.facturaID}:${allocation.colaboradorID}`;
-    let payable = dbTable("propinas").find((row) => row.sourceKey === sourceKey);
+    // Solo se reutiliza una obligacion TODAVIA pendiente de nomina. Si la
+    // unica fila para esta factura+colaboradora ya se pago (nomina Pagada),
+    // NO se le suma dinero nuevo a esa fila -quedaria oculta para siempre,
+    // porque una fila Pagada nunca vuelve a calificar para una nomina
+    // futura-: se crea una fila nueva (mismo sourceKey, otro propinaID) que
+    // si puede incluirse en la proxima nomina. invoiceTipReversalBlockedReason/
+    // reverseInvoiceTipCollection ya filtran por facturaID y por el "source"
+    // dentro de pagosAplicados, nunca por sourceKey unico, asi que soportan
+    // varias filas para la misma factura+colaboradora sin cambios.
+    let payable = dbTable("propinas").find((row) => row.sourceKey === sourceKey && normalize(row.estadoPagoNomina || "Pendiente") === "pendiente");
     if (!payable) {
       payable = stampRecord({
         propinaID: nextDbId("propinas", "propinaID", "PRO"),
@@ -9674,13 +9699,16 @@ function wireForms() {
 
   byId("vacation-search").addEventListener("input", renderVacations);
 
+  let collaboratorChargeSubmitInFlight = false;
   byId("collaborator-charge-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (collaboratorChargeSubmitInFlight) return;
     const staffName = byId("collaborator-charge-staff").value.trim();
     const staffRecord = findStaffByName(staffName);
     const amount = Number(byId("collaborator-charge-amount").value) || 0;
     const concept = byId("collaborator-charge-concept").value.trim();
     const tipoCxC = byId("collaborator-charge-type").value;
+    collaboratorChargeSubmitInFlight = true;
     try {
       createCollaboratorInternalCharge({ staffRecord, staffName, amount, concept, tipoCxC });
       event.target.reset();
@@ -9688,6 +9716,8 @@ function wireForms() {
       renderAll();
     } catch (error) {
       alert(error?.message || "No se pudo registrar el cargo.");
+    } finally {
+      collaboratorChargeSubmitInFlight = false;
     }
   });
 
