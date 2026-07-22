@@ -1959,6 +1959,424 @@
     return { movementPlan, allowed: blockingErrors.length === 0, blockingErrors };
   }
 
+  // ===========================================================================
+  // Fase "Cerrar reportes alertas y auditoria por colaboradora" (julio 2026).
+  // Funciones puras nuevas: consolidacion de auditoria de inventario por
+  // colaboradora, distribucion administrativa OPCIONAL de variacion
+  // compartida, minimos/reposicion por mesa, clasificacion de vencimiento de
+  // lotes, FEFO multi-articulo, y evaluacion de reglas de consumo anormal de
+  // activos. Ninguna de estas funciones lee DOM ni persiste nada.
+  // ===========================================================================
+
+  // true si [aStart,aEnd] y [bStart,bEnd] se solapan; un rango vacio de
+  // cualquiera de los dos lados se trata como "sin filtro" (coincide con
+  // todo), nunca como "no hay match".
+  function periodsOverlap(aStart, aEnd, bStart, bEnd) {
+    if (!aStart || !aEnd) return true;
+    if (!bStart || !bEnd) return true;
+    return aStart <= bEnd && aEnd >= bStart;
+  }
+
+  // Consolida auditoriasMesa + lineas de servicio + entregas directas +
+  // salidas de area general por colaboradora, SIN atribuir jamas de forma
+  // automatica el consumo de una mesa compartida (collaboratorIds.length>1)
+  // a una sola persona: esas mesas quedan en sharedStationSummaries con su
+  // variacion como valor UNICO compartido. "Consumo esperado/observado/
+  // declarado/variacion" por colaboradora solo se suma de sus mesas
+  // INDIVIDUALES (una sola colaboradora en collaboratorIds), tomando los
+  // numeros ya calculados por calculateStationInventoryAuditLine (no se
+  // recalculan aqui con fichas tecnicas, para no duplicar
+  // aggregateExpectedServiceConsumptionByStation). serviceLines solo aporta
+  // conteo de servicios realizados y deteccion de consumo sin asignar
+  // (linea sin mesa o sin colaboradora); nunca se usa para inventar un
+  // consumo esperado por colaboradora en mesa compartida.
+  function aggregateInventoryAuditByCollaborator({
+    stationAudits = [],
+    serviceLines = [],
+    directDeliveries = [],
+    internalIssues = [],
+    periodStart = "",
+    periodEnd = "",
+  } = {}) {
+    const validationErrors = [];
+    const warnings = [];
+    if (periodStart && periodEnd && periodStart > periodEnd) {
+      validationErrors.push("El período inicial no puede ser posterior al período final.");
+      return { collaboratorSummaries: [], sharedStationSummaries: [], unassignedConsumption: [], totals: {}, warnings, validationErrors };
+    }
+
+    const collaborators = new Map();
+    function touchCollaborator(id, name) {
+      if (!id) return;
+      const existing = collaborators.get(id);
+      if (!existing) collaborators.set(id, { collaboratorId: id, collaboratorName: name || "" });
+      else if (!existing.collaboratorName && name) existing.collaboratorName = name;
+    }
+
+    const individualStationsByCollaborator = new Map();
+    const sharedStationsByCollaborator = new Map();
+    const sharedStationSummaries = [];
+    const unassignedConsumption = [];
+    const seenAuditIds = new Set();
+
+    (Array.isArray(stationAudits) ? stationAudits : []).forEach((audit) => {
+      if (!audit || !audit.stationAuditId || seenAuditIds.has(audit.stationAuditId)) return;
+      seenAuditIds.add(audit.stationAuditId);
+      if (!periodsOverlap(periodStart, periodEnd, audit.periodStart, audit.periodEnd)) return;
+
+      const ids = Array.isArray(audit.collaboratorIds) ? audit.collaboratorIds.filter(Boolean) : [];
+      const names = Array.isArray(audit.collaboratorNames) ? audit.collaboratorNames : [];
+      const lines = Array.isArray(audit.varianceLines) ? audit.varianceLines : [];
+      const expected = roundMoney(lines.reduce((sum, l) => sum + sanitizeAmount(l.expectedConsumption), 0));
+      const observed = roundMoney(lines.reduce((sum, l) => sum + sanitizeAmount(l.observedConsumption), 0));
+      const declared = roundMoney(lines.reduce((sum, l) => sum + sanitizeAmount(l.declaredActual), 0));
+      const varianceQuantity = roundMoney(lines.reduce((sum, l) => sum + sanitizeAmount(l.varianceQuantity), 0));
+      const varianceCost = roundMoney(lines.reduce((sum, l) => sum + sanitizeAmount(l.varianceCost), 0));
+      const unexplainedCount = lines.filter((l) => l.classification !== "within_tolerance" && !(audit.explanations || {})[l.itemId]).length;
+
+      if (ids.length === 0) {
+        unassignedConsumption.push({
+          source: "audit_without_collaborator",
+          stationAuditId: audit.stationAuditId,
+          stationId: audit.stationId || "",
+          stationName: audit.stationName || "",
+          varianceCost,
+        });
+        return;
+      }
+
+      if (ids.length === 1) {
+        const collaboratorId = ids[0];
+        touchCollaborator(collaboratorId, names[0]);
+        const list = individualStationsByCollaborator.get(collaboratorId) || [];
+        list.push({
+          stationAuditId: audit.stationAuditId,
+          stationId: audit.stationId || "",
+          stationName: audit.stationName || "",
+          status: audit.status || "",
+          periodStart: audit.periodStart || "",
+          periodEnd: audit.periodEnd || "",
+          expectedConsumption: expected,
+          observedConsumption: observed,
+          declaredConsumption: declared,
+          varianceQuantity,
+          varianceCost,
+          unexplainedCount,
+        });
+        individualStationsByCollaborator.set(collaboratorId, list);
+        return;
+      }
+
+      const participants = ids.map((id, idx) => ({ collaboratorId: id, collaboratorName: names[idx] || "" }));
+      participants.forEach((participant) => {
+        touchCollaborator(participant.collaboratorId, participant.collaboratorName);
+        const list = sharedStationsByCollaborator.get(participant.collaboratorId) || [];
+        list.push({
+          stationAuditId: audit.stationAuditId,
+          stationId: audit.stationId || "",
+          stationName: audit.stationName || "",
+          status: audit.status || "",
+          participantCount: ids.length,
+        });
+        sharedStationsByCollaborator.set(participant.collaboratorId, list);
+      });
+      sharedStationSummaries.push({
+        stationAuditId: audit.stationAuditId,
+        stationId: audit.stationId || "",
+        stationName: audit.stationName || "",
+        status: audit.status || "",
+        periodStart: audit.periodStart || "",
+        periodEnd: audit.periodEnd || "",
+        participants,
+        sharedExpectedConsumption: expected,
+        sharedObservedConsumption: observed,
+        sharedDeclaredConsumption: declared,
+        sharedVarianceQuantity: varianceQuantity,
+        sharedVarianceCost: varianceCost,
+        unexplainedCount,
+        varianceLines: lines,
+      });
+    });
+
+    const servicesCountByCollaborator = new Map();
+    const seenServiceKeys = new Set();
+    (Array.isArray(serviceLines) ? serviceLines : []).forEach((line) => {
+      if (!line) return;
+      const key = line.detalleID || `${line.stationId || ""}:${line.colaboradorID || ""}:${line.servicio || ""}:${line.fecha || ""}`;
+      if (seenServiceKeys.has(key)) return;
+      seenServiceKeys.add(key);
+      if (line.fecha && !periodsOverlap(periodStart, periodEnd, line.fecha, line.fecha)) return;
+      const collaboratorId = line.colaboradorID || "";
+      const collaboratorName = line.colaboradorNombre || "";
+      if (!collaboratorId) {
+        unassignedConsumption.push({ source: "service_without_collaborator", detalleID: line.detalleID || "", servicio: line.servicio || "", stationId: line.stationId || "" });
+        return;
+      }
+      touchCollaborator(collaboratorId, collaboratorName);
+      if (!line.stationId) {
+        unassignedConsumption.push({ source: "service_without_station", detalleID: line.detalleID || "", servicio: line.servicio || "", collaboratorId, collaboratorName });
+      }
+      servicesCountByCollaborator.set(collaboratorId, (servicesCountByCollaborator.get(collaboratorId) || 0) + 1);
+    });
+
+    const deliveriesByCollaborator = new Map();
+    const seenDeliveryIds = new Set();
+    (Array.isArray(directDeliveries) ? directDeliveries : []).forEach((row) => {
+      if (!row) return;
+      const key = row.deliveryId || `${row.itemId || ""}:${row.collaboratorId || ""}:${row.fecha || ""}`;
+      if (seenDeliveryIds.has(key)) return;
+      seenDeliveryIds.add(key);
+      if (row.fecha && !periodsOverlap(periodStart, periodEnd, row.fecha, row.fecha)) return;
+      const collaboratorId = row.collaboratorId || "";
+      const quantity = sanitizeAmount(row.cantidad);
+      const cost = sanitizeAmount(row.totalCost ?? sanitizeAmount(row.historicalUnitCost) * quantity);
+      if (!collaboratorId) {
+        unassignedConsumption.push({ source: "direct_delivery_without_collaborator", deliveryId: row.deliveryId || "", itemId: row.itemId || "", quantity, cost });
+        return;
+      }
+      touchCollaborator(collaboratorId, row.collaboratorName);
+      const list = deliveriesByCollaborator.get(collaboratorId) || [];
+      list.push({ deliveryId: row.deliveryId || "", itemId: row.itemId || "", itemNombre: row.itemNombre || row.itemId || "", quantity, cost, fecha: row.fecha || "" });
+      deliveriesByCollaborator.set(collaboratorId, list);
+    });
+
+    const seenInternalIds = new Set();
+    (Array.isArray(internalIssues) ? internalIssues : []).forEach((row) => {
+      if (!row) return;
+      const key = row.internalConsumptionId || `${row.itemId || ""}:${row.fecha || ""}`;
+      if (seenInternalIds.has(key)) return;
+      seenInternalIds.add(key);
+      if (row.fecha && !periodsOverlap(periodStart, periodEnd, row.fecha, row.fecha)) return;
+      const quantity = sanitizeAmount(row.cantidad);
+      const cost = sanitizeAmount(row.totalCost ?? sanitizeAmount(row.historicalUnitCost) * quantity);
+      unassignedConsumption.push({ source: "internal_issue_area_general", internalConsumptionId: row.internalConsumptionId || "", itemId: row.itemId || "", destinationType: row.destinationType || "", quantity, cost });
+    });
+
+    const collaboratorSummaries = [...collaborators.values()]
+      .map((c) => {
+        const individualStations = individualStationsByCollaborator.get(c.collaboratorId) || [];
+        const sharedStations = sharedStationsByCollaborator.get(c.collaboratorId) || [];
+        const deliveries = deliveriesByCollaborator.get(c.collaboratorId) || [];
+        const individualConsumption = individualStations.reduce(
+          (acc, s) => ({
+            expected: roundMoney(acc.expected + s.expectedConsumption),
+            observed: roundMoney(acc.observed + s.observedConsumption),
+            declared: roundMoney(acc.declared + s.declaredConsumption),
+            varianceQuantity: roundMoney(acc.varianceQuantity + s.varianceQuantity),
+            varianceCost: roundMoney(acc.varianceCost + s.varianceCost),
+          }),
+          { expected: 0, observed: 0, declared: 0, varianceQuantity: 0, varianceCost: 0 },
+        );
+        return {
+          collaboratorId: c.collaboratorId,
+          collaboratorName: c.collaboratorName || c.collaboratorId,
+          individualStations,
+          sharedStations,
+          directDeliveries: deliveries,
+          directDeliveriesTotalQuantity: roundMoney(deliveries.reduce((s, d) => s + d.quantity, 0)),
+          directDeliveriesTotalCost: roundMoney(deliveries.reduce((s, d) => s + d.cost, 0)),
+          servicesCount: servicesCountByCollaborator.get(c.collaboratorId) || 0,
+          individualConsumption,
+          relatedAuditIds: [...individualStations.map((s) => s.stationAuditId), ...sharedStations.map((s) => s.stationAuditId)],
+        };
+      })
+      .sort((a, b) => a.collaboratorName.localeCompare(b.collaboratorName));
+
+    const totals = {
+      collaboratorsCount: collaboratorSummaries.length,
+      individualStationsCount: [...individualStationsByCollaborator.values()].reduce((s, l) => s + l.length, 0),
+      sharedStationsCount: sharedStationSummaries.length,
+      totalDirectDeliveryCost: roundMoney(collaboratorSummaries.reduce((s, c) => s + c.directDeliveriesTotalCost, 0)),
+      totalIndividualVarianceCost: roundMoney(collaboratorSummaries.reduce((s, c) => s + c.individualConsumption.varianceCost, 0)),
+      totalSharedVarianceCost: roundMoney(sharedStationSummaries.reduce((s, r) => s + r.sharedVarianceCost, 0)),
+      totalUnassignedCost: roundMoney(unassignedConsumption.reduce((s, u) => s + sanitizeAmount(u.cost ?? u.varianceCost), 0)),
+    };
+
+    if (unassignedConsumption.length) {
+      warnings.push(`${unassignedConsumption.length} registro(s) de consumo sin colaboradora o mesa asignada en el período.`);
+    }
+
+    return { collaboratorSummaries, sharedStationSummaries, unassignedConsumption, totals, warnings, validationErrors };
+  }
+
+  // Distribucion administrativa OPCIONAL de la variacion de una mesa
+  // COMPARTIDA (seccion 4): nunca es automatica, exige motivo + quien la
+  // realiza, exige que la suma (porcentajes=100 o cantidades=variacion
+  // original) sea EXACTA, y jamas crea CxC ni sancion (createsReceivable y
+  // createsPenalty siempre false: no existe ningun camino de codigo que
+  // genere eso a partir de esto). El valor original compartido se conserva
+  // siempre en originalVarianceQuantity/originalVarianceCost.
+  function allocateSharedStationVariance({
+    varianceQuantity = 0,
+    varianceCost = 0,
+    allocations = [],
+    mode = "percent",
+    reason = "",
+    allocatedBy = "",
+  } = {}) {
+    const blockingErrors = [];
+    const totalVariance = sanitizeAmount(varianceQuantity);
+    const totalCost = sanitizeAmount(varianceCost);
+    if (!String(reason || "").trim()) blockingErrors.push("La distribución administrativa requiere un motivo/justificación.");
+    if (!allocatedBy) blockingErrors.push("La distribución requiere identificar quién la realizó.");
+    const list = Array.isArray(allocations) ? allocations : [];
+    if (!list.length) blockingErrors.push("Debe indicar al menos una colaboradora para distribuir.");
+    list.forEach((a) => {
+      if (!a?.collaboratorId) blockingErrors.push("Cada distribución requiere identificar la colaboradora.");
+    });
+
+    let normalized = [];
+    if (mode === "percent") {
+      const totalPercent = roundMoney(list.reduce((sum, a) => sum + sanitizeAmount(a.percent), 0));
+      if (Math.abs(totalPercent - 100) > 0.01) {
+        blockingErrors.push(`La suma de porcentajes debe ser exactamente 100% (actual: ${totalPercent}%).`);
+      }
+      normalized = list.map((a) => ({
+        collaboratorId: a.collaboratorId || "",
+        collaboratorName: a.collaboratorName || "",
+        percent: sanitizeAmount(a.percent),
+        quantity: roundMoney((sanitizeAmount(a.percent) / 100) * totalVariance),
+        cost: roundMoney((sanitizeAmount(a.percent) / 100) * totalCost),
+      }));
+    } else if (mode === "quantity") {
+      const totalQuantity = roundMoney(list.reduce((sum, a) => sum + sanitizeAmount(a.quantity), 0));
+      if (Math.abs(totalQuantity - totalVariance) > 0.01) {
+        blockingErrors.push(`La suma de cantidades (${totalQuantity}) debe ser exactamente igual a la variación compartida (${totalVariance}).`);
+      }
+      normalized = list.map((a) => ({
+        collaboratorId: a.collaboratorId || "",
+        collaboratorName: a.collaboratorName || "",
+        quantity: sanitizeAmount(a.quantity),
+        percent: totalVariance !== 0 ? roundMoney((sanitizeAmount(a.quantity) / totalVariance) * 100) : 0,
+        cost: totalVariance !== 0 ? roundMoney((sanitizeAmount(a.quantity) / totalVariance) * totalCost) : 0,
+      }));
+    } else {
+      blockingErrors.push(`Modo de distribución inválido: "${mode}".`);
+    }
+
+    const allowed = blockingErrors.length === 0;
+    return {
+      allowed,
+      blockingErrors,
+      originalVarianceQuantity: totalVariance,
+      originalVarianceCost: totalCost,
+      allocations: allowed ? normalized : [],
+      mode,
+      reason: String(reason || "").trim(),
+      allocatedBy,
+      createsReceivable: false,
+      createsPenalty: false,
+    };
+  }
+
+  // Reposicion sugerida de UNA regla de minimo por mesa (seccion 6):
+  // maximo entre 0 y (stock objetivo - existencia actual). Nunca sobrescribe
+  // existencias ni movimientos: es un calculo de solo lectura.
+  function calculateStationReplenishment({ minimumStock = 0, targetStock = 0, currentStock = 0 } = {}) {
+    const minimum = Math.max(0, sanitizeAmount(minimumStock));
+    const target = Math.max(0, sanitizeAmount(targetStock));
+    const current = sanitizeAmount(currentStock);
+    return {
+      minimumStock: minimum,
+      targetStock: target,
+      currentStock: roundMoney(current),
+      suggestedReplenishment: roundMoney(Math.max(0, target - current)),
+      belowMinimum: current < minimum,
+      stockedOut: current <= 0,
+    };
+  }
+
+  // Clasifica el vencimiento de UN lote en 5 categorias segun 3 plazos
+  // configurables (seccion 10): sin_vencimiento (articulo sin fecha),
+  // vencido (dias<0), urgente (dias<=urgentAlertDays), proximo
+  // (dias<=nearAlertDays O dias<=earlyAlertDays: las dos alertas "temprana"
+  // y "proxima" caen en el mismo bucket de estado; la severidad fina para
+  // la ALERTA se puede derivar por separado comparando daysToExpire contra
+  // cada plazo), vigente (mas alla de todos los plazos). Nunca hardcodea
+  // 7/30/60: los 3 plazos SIEMPRE vienen de la configuracion del llamador.
+  function daysBetweenIsoDates(fromDate, toDate) {
+    const from = new Date(`${fromDate}T00:00:00Z`);
+    const to = new Date(`${toDate}T00:00:00Z`);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+    return Math.round((to.getTime() - from.getTime()) / 86400000);
+  }
+
+  function classifyLotExpiration({ expirationDate = "", referenceDate = "", earlyAlertDays = 60, nearAlertDays = 30, urgentAlertDays = 7 } = {}) {
+    if (!expirationDate) return { bucket: "sin_vencimiento", daysToExpire: null };
+    const days = daysBetweenIsoDates(referenceDate, expirationDate);
+    if (days === null) return { bucket: "sin_vencimiento", daysToExpire: null };
+    const urgent = Math.max(0, sanitizeAmount(urgentAlertDays));
+    const near = Math.max(urgent, sanitizeAmount(nearAlertDays));
+    const early = Math.max(near, sanitizeAmount(earlyAlertDays));
+    let bucket = "vigente";
+    if (days < 0) bucket = "vencido";
+    else if (days <= urgent) bucket = "urgente";
+    else if (days <= near) bucket = "proximo";
+    else if (days <= early) bucket = "proximo";
+    return { bucket, daysToExpire: days };
+  }
+
+  // Estado derivado de UN lote (seccion 8): un estado manual (Cuarentena,
+  // Retirado, Revertido) SIEMPRE gana sobre lo derivado (accion humana
+  // explicita). Si no hay estado manual: vencido > agotado > proximo a
+  // vencer > disponible. availableQuantity NUNCA se recibe como campo
+  // editable aqui: el llamador la deriva de inventarioMovimientos
+  // (calculateInventoryByLocation) antes de invocar esto.
+  const MANUAL_LOT_STATUSES = new Set(["Cuarentena", "Retirado", "Revertido"]);
+  function deriveLotStatus({ manualStatus = "", availableQuantity = 0, expirationBucket = "vigente" } = {}) {
+    if (MANUAL_LOT_STATUSES.has(manualStatus)) return manualStatus;
+    if (expirationBucket === "vencido") return "Vencido";
+    if (sanitizeAmount(availableQuantity) <= 0) return "Agotado";
+    if (expirationBucket === "urgente" || expirationBucket === "proximo") return "Próximo a vencer";
+    return "Disponible";
+  }
+
+  // FEFO para VARIOS articulos a la vez (seccion 11): envoltorio delgado de
+  // allocateFEFO reutilizado por consumo de servicio, transferencias y
+  // salidas internas cuando necesitan resolver el plan de lotes de mas de
+  // un articulo en una sola llamada.
+  function allocateFEFOAcrossItems({ requirements = [], lotsByItem = {}, referenceDate = "" } = {}) {
+    const allocationsByItem = {};
+    const shortages = [];
+    (Array.isArray(requirements) ? requirements : []).forEach((req) => {
+      const itemId = req?.itemId || "";
+      const quantityNeeded = Math.max(0, sanitizeAmount(req?.quantity));
+      if (!itemId || quantityNeeded <= 0) return;
+      const lots = Array.isArray(lotsByItem[itemId]) ? lotsByItem[itemId] : [];
+      const fefo = allocateFEFO({ lots, quantityNeeded, referenceDate });
+      allocationsByItem[itemId] = fefo.allocations;
+      if (fefo.unallocated > 0) shortages.push({ itemId, needed: quantityNeeded, shortfall: fefo.unallocated });
+    });
+    return { allocationsByItem, shortages, allowed: shortages.length === 0 };
+  }
+
+  // Evalua UNA regla de consumo anormal de activo (seccion 12): sin regla
+  // (o inactiva) NUNCA genera alerta (no se inventa una media ni se
+  // bloquea el consumo). Cuando hay regla, compara cantidad y/o costo del
+  // periodo contra los maximos configurados; cualquiera de los dos que se
+  // supere marca exceeded=true.
+  function evaluateAssetConsumptionRule({ rule = null, periodQuantity = 0, periodCost = 0 } = {}) {
+    if (!rule || rule.active === false) {
+      return { hasRule: false, exceeded: false, quantityExceeded: false, costExceeded: false, excessQuantity: 0, excessCost: 0 };
+    }
+    const hasMaxQty = rule.maximumQuantity !== "" && rule.maximumQuantity !== null && rule.maximumQuantity !== undefined;
+    const hasMaxCost = rule.maximumCost !== "" && rule.maximumCost !== null && rule.maximumCost !== undefined;
+    const maxQty = hasMaxQty ? Math.max(0, sanitizeAmount(rule.maximumQuantity)) : null;
+    const maxCost = hasMaxCost ? Math.max(0, sanitizeAmount(rule.maximumCost)) : null;
+    const qty = Math.max(0, sanitizeAmount(periodQuantity));
+    const cost = Math.max(0, sanitizeAmount(periodCost));
+    const quantityExceeded = maxQty !== null && qty > maxQty;
+    const costExceeded = maxCost !== null && cost > maxCost;
+    return {
+      hasRule: true,
+      exceeded: quantityExceeded || costExceeded,
+      quantityExceeded,
+      costExceeded,
+      excessQuantity: quantityExceeded ? roundMoney(qty - maxQty) : 0,
+      excessCost: costExceeded ? roundMoney(cost - maxCost) : 0,
+    };
+  }
+
   return {
     localDateStringInZone,
     nowPartsInZone,
@@ -2027,5 +2445,14 @@
     canTransitionInventoryAuditStatus,
     buildInventoryAuditAdjustmentPlan,
     buildInventoryAuditReversalPlan,
+    periodsOverlap,
+    aggregateInventoryAuditByCollaborator,
+    allocateSharedStationVariance,
+    calculateStationReplenishment,
+    daysBetweenIsoDates,
+    classifyLotExpiration,
+    deriveLotStatus,
+    allocateFEFOAcrossItems,
+    evaluateAssetConsumptionRule,
   };
 });

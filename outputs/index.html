@@ -955,8 +955,18 @@
                   <input id="purchase-account" list="accounts-list" />
                 </label>
               </div>
+              <div class="form-row">
+                <label>
+                  Número de lote (opcional, solo artículos que controlan lote)
+                  <input id="purchase-lot-batch" placeholder="Se genera automáticamente si se deja en blanco" />
+                </label>
+                <label>
+                  Fecha de vencimiento del lote (opcional)
+                  <input id="purchase-lot-expiration" type="date" />
+                </label>
+              </div>
               <button class="primary-btn" id="purchase-submit" type="submit">Confirmar compra</button>
-              <p class="panel-note">El destino de la compra depende de la configuración de Almacén de provisiones (arriba). Crea la entrada de inventario una sola vez y actualiza el costo promedio.</p>
+              <p class="panel-note">El destino de la compra depende de la configuración de Almacén de provisiones (arriba). Crea la entrada de inventario una sola vez y actualiza el costo promedio. Si el artículo controla lote, crea el lote automáticamente.</p>
             </form>
             <section class="panel">
               <div class="panel-head">
@@ -977,6 +987,57 @@
                   <tbody id="purchase-table"></tbody>
                 </table>
               </div>
+            </section>
+
+            <form class="panel form-panel" id="inventory-lot-form">
+              <div class="panel-head">
+                <h3>Lotes de inventario</h3>
+                <p class="panel-note">Registro manual de lote (entradas fuera de una compra). Un artículo sin control de lote sigue funcionando igual que antes: nunca se le obliga a tener lote.</p>
+              </div>
+              <label>
+                Artículo
+                <input id="lot-item" list="inventory-item-list" required />
+              </label>
+              <label>
+                Ubicación
+                <input id="lot-location" list="warehouse-list-options" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Número de lote
+                  <input id="lot-batch-number" placeholder="Se genera automáticamente si se deja en blanco" />
+                </label>
+                <label>
+                  Fecha de recepción
+                  <input id="lot-received-date" type="date" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Fecha de vencimiento (opcional)
+                  <input id="lot-expiration-date" type="date" />
+                </label>
+                <label>
+                  Cantidad original
+                  <input id="lot-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+              </div>
+              <label>
+                Costo histórico unitario
+                <input id="lot-cost" type="number" min="0" step="0.01" />
+              </label>
+              <label>
+                Observación
+                <input id="lot-observation" />
+              </label>
+              <button class="primary-btn" type="submit">Registrar lote</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Lotes registrados</h3>
+                <input class="inline-search" id="inventory-lot-search" placeholder="Buscar por artículo, lote o ubicación" />
+              </div>
+              <div class="simple-list" id="inventory-lot-list"></div>
             </section>
 
             <section class="panel">
@@ -1062,6 +1123,43 @@
                 <h3>Mesas registradas</h3>
               </div>
               <div class="simple-list" id="station-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="station-rule-form">
+              <div class="panel-head">
+                <h3>Mínimos y reposición por mesa</h3>
+                <p class="panel-note">Cantidad sugerida de reposición = máximo entre 0 y (stock objetivo − existencia actual). Nunca sobrescribe existencias ni movimientos.</p>
+              </div>
+              <input id="station-rule-edit-id" type="hidden" />
+              <label>
+                Mesa
+                <input id="station-rule-station" list="stations-list" required />
+              </label>
+              <label>
+                Artículo
+                <input id="station-rule-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Mínimo
+                  <input id="station-rule-minimum" type="number" min="0" step="0.0001" required />
+                </label>
+                <label>
+                  Objetivo (stock ideal)
+                  <input id="station-rule-target" type="number" min="0" step="0.0001" required />
+                </label>
+              </div>
+              <label>
+                Observación
+                <input id="station-rule-observation" />
+              </label>
+              <button class="primary-btn" type="submit">Guardar regla de mínimo</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Reglas de mínimo por mesa</h3>
+              </div>
+              <div class="simple-list" id="station-rule-list"></div>
             </section>
 
             <form class="panel form-panel" id="recipe-form">
@@ -1225,10 +1323,32 @@
               <div class="simple-list" id="retail-sale-list"></div>
             </section>
 
+            <form class="panel form-panel" id="inventory-expiration-config-form">
+              <div class="panel-head">
+                <h3>Plazos de alerta de vencimiento</h3>
+                <p class="panel-note">Días antes del vencimiento en que un lote pasa a "próximo a vencer" (temprana/próxima) o "urgente". Nunca están fijos en el código.</p>
+              </div>
+              <div class="form-row">
+                <label>
+                  Alerta temprana (días)
+                  <input id="config-days-early" type="number" min="1" step="1" />
+                </label>
+                <label>
+                  Alerta próxima (días)
+                  <input id="config-days-near" type="number" min="1" step="1" />
+                </label>
+                <label>
+                  Alerta urgente (días)
+                  <input id="config-days-urgent" type="number" min="1" step="1" />
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Guardar plazos de vencimiento</button>
+            </form>
+
             <section class="panel">
               <div class="panel-head">
                 <h3>Alertas de inventario</h3>
-                <p class="panel-note">Ubicación bajo mínimo, entregas de mesa pendientes de recepción, auditorías pendientes y variaciones sin justificar.</p>
+                <p class="panel-note">Ubicación/mesa bajo mínimo, entregas pendientes de recepción, auditorías pendientes, variaciones sin justificar, lotes próximos a vencer/vencidos/en cuarentena y consumo anormal de activos.</p>
               </div>
               <div class="simple-list" id="inventory-alert-list"></div>
             </section>
@@ -1609,6 +1729,60 @@
                 <h3>Historial de mantenimiento/daño/pérdida</h3>
               </div>
               <div class="simple-list" id="asset-event-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="asset-consumption-rule-form">
+              <div class="panel-head">
+                <h3>Regla de consumo anormal de activo</h3>
+                <p class="panel-note">Sin regla, nunca se genera alerta de consumo anormal (no se inventa una media ni se bloquea el consumo). Indica un activo específico o una categoría, y al menos un máximo (cantidad y/o costo).</p>
+              </div>
+              <label>
+                Activo específico (opcional)
+                <input id="asset-rule-asset" list="asset-list-options" />
+              </label>
+              <label>
+                Categoría de activo (opcional, si no se indica un activo específico)
+                <input id="asset-rule-category" />
+              </label>
+              <label>
+                Artículo consumido (opcional, deja en blanco para cualquier artículo)
+                <input id="asset-rule-item" list="inventory-item-list" />
+              </label>
+              <div class="form-row">
+                <label>
+                  Período
+                  <select id="asset-rule-period">
+                    <option value="daily">Diario</option>
+                    <option value="weekly">Semanal</option>
+                    <option value="monthly" selected>Mensual</option>
+                  </select>
+                </label>
+                <label>
+                  Cantidad máxima (opcional)
+                  <input id="asset-rule-max-quantity" type="number" min="0" step="0.0001" />
+                </label>
+                <label>
+                  Costo máximo (opcional)
+                  <input id="asset-rule-max-cost" type="number" min="0" step="0.01" />
+                </label>
+              </div>
+              <label>
+                Observación
+                <input id="asset-rule-observation" />
+              </label>
+              <button class="primary-btn" type="submit">Guardar regla</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Reglas de consumo de activos</h3>
+              </div>
+              <div class="simple-list" id="asset-consumption-rule-list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Alertas de consumo anormal de activos</h3>
+              </div>
+              <div class="simple-list" id="asset-abnormal-consumption-list"></div>
             </section>
           </div>
         </section>
@@ -2373,6 +2547,12 @@
                     <option value="academy-consumption">Consumo de Academia</option>
                     <option value="academy-inventory">Existencia y reposición de Academia</option>
                     <option value="internal-issues">Salidas internas</option>
+                    <option value="collaborator-audit">Auditoría de inventario por colaboradora</option>
+                    <option value="shared-stations">Mesas compartidas</option>
+                    <option value="unassigned-consumption">Consumo sin asignar</option>
+                    <option value="station-minimums">Mínimos y reposición por mesa</option>
+                    <option value="inventory-lots">Lotes de inventario y vencimientos</option>
+                    <option value="asset-consumption">Consumo y alertas de activos</option>
                   </select>
                 </label>
                 <label>
@@ -2394,6 +2574,25 @@
                 <label id="report-client-filter">
                   Cliente
                   <input id="report-client" list="clients-list" placeholder="Todos los clientes" />
+                </label>
+                <label id="report-station-filter">
+                  Mesa
+                  <input id="report-station" list="stations-list" placeholder="Todas las mesas" />
+                </label>
+                <label id="report-item-filter">
+                  Artículo
+                  <input id="report-item" list="inventory-item-list" placeholder="Todos los artículos" />
+                </label>
+                <label id="report-audit-status-filter">
+                  Estado de auditoría
+                  <select id="report-audit-status">
+                    <option value="">Todos los estados</option>
+                    <option value="Abierta">Abierta</option>
+                    <option value="En revisión">En revisión</option>
+                    <option value="Justificada">Justificada</option>
+                    <option value="Confirmada">Confirmada</option>
+                    <option value="Revertida">Revertida</option>
+                  </select>
                 </label>
                 <label class="toggle-field" id="report-tips-filter">
                   <input id="report-include-tips" type="checkbox" checked />

@@ -5223,9 +5223,20 @@ function inventoryConfig() {
       config.modoConsumoInventario = config.consumirInventarioEnFacturacion ? "required" : "disabled";
     }
     if (!config.modoMesaServicio) config.modoMesaServicio = "disabled";
+    if (!config.diasAlertaTemprana) config.diasAlertaTemprana = 60;
+    if (!config.diasAlertaProxima) config.diasAlertaProxima = 30;
+    if (!config.diasAlertaUrgente) config.diasAlertaUrgente = 7;
     return config;
   }
-  const config = stampRecord({ configId: "INVCFG-1", usarAlmacenProvisiones: false, modoConsumoInventario: "disabled", modoMesaServicio: "disabled" });
+  const config = stampRecord({
+    configId: "INVCFG-1",
+    usarAlmacenProvisiones: false,
+    modoConsumoInventario: "disabled",
+    modoMesaServicio: "disabled",
+    diasAlertaTemprana: 60,
+    diasAlertaProxima: 30,
+    diasAlertaUrgente: 7,
+  });
   table.push(config);
   return config;
 }
@@ -5316,37 +5327,84 @@ function createInventoryMovement({
 // entre ubicaciones.
 function createInventoryTransfer({ itemId, cantidadBase, fromLocationId, toLocationId, motivo = "", usuario = "", sourceId = "" } = {}) {
   const transferId = nextDbId("transferenciasInventario", "transferId", "TRI");
-  const outSourceKey = `${transferId}:out`;
-  const outMove = createInventoryMovement({
-    itemId,
-    tipo: "transferencia_salida",
-    cantidadBase,
-    locationId: fromLocationId,
-    origen: "Transferencia",
-    sourceId: sourceId || transferId,
-    sourceKey: outSourceKey,
-    motivo,
-    usuario,
-    transferId,
-  });
-  if (!outMove.movement) return { transferId: "", outMove, inMove: null };
-  const inSourceKey = `${transferId}:in`;
-  const inMove = createInventoryMovement({
-    itemId,
-    tipo: "transferencia_entrada",
-    cantidadBase,
-    locationId: toLocationId,
-    origen: "Transferencia",
-    sourceId: sourceId || transferId,
-    sourceKey: inSourceKey,
-    motivo,
-    usuario,
-    transferId,
-  });
+  // FEFO real (seccion 11): un articulo con lotes disponibles en el origen
+  // divide la transferencia en un par salida/entrada POR LOTE (mismo lotId
+  // en ambos extremos, respeta la ubicacion de origen). Un articulo sin
+  // lotes reales (la gran mayoria historica) sigue EXACTAMENTE el camino
+  // original de abajo: un solo par de movimientos, mismo sourceKey de
+  // siempre (transferId:out / transferId:in).
+  const realLots = lotsAvailableForFEFO(itemId, fromLocationId);
+  const fefo = realLots.length ? DalfiClosingMath.allocateFEFO({ lots: realLots, quantityNeeded: cantidadBase, referenceDate: today }) : null;
+  let outMove;
+  let inMove;
+  let totalMoved = 0;
+  if (fefo && fefo.unallocated <= 0 && fefo.allocations.length) {
+    for (const allocation of fefo.allocations) {
+      const allocQty = Number(allocation.quantityTaken) || 0;
+      if (allocQty <= 0) continue;
+      outMove = createInventoryMovement({
+        itemId,
+        tipo: "transferencia_salida",
+        cantidadBase: allocQty,
+        locationId: fromLocationId,
+        lotId: allocation.lotId,
+        origen: "Transferencia",
+        sourceId: sourceId || transferId,
+        sourceKey: `${transferId}:out:${allocation.lotId}`,
+        motivo,
+        usuario,
+        transferId,
+      });
+      if (!outMove.movement) return { transferId: "", outMove, inMove: null };
+      inMove = createInventoryMovement({
+        itemId,
+        tipo: "transferencia_entrada",
+        cantidadBase: allocQty,
+        locationId: toLocationId,
+        lotId: allocation.lotId,
+        origen: "Transferencia",
+        sourceId: sourceId || transferId,
+        sourceKey: `${transferId}:in:${allocation.lotId}`,
+        motivo,
+        usuario,
+        transferId,
+      });
+      totalMoved += outMove.result.normalizedQuantity;
+    }
+  } else {
+    const outSourceKey = `${transferId}:out`;
+    outMove = createInventoryMovement({
+      itemId,
+      tipo: "transferencia_salida",
+      cantidadBase,
+      locationId: fromLocationId,
+      origen: "Transferencia",
+      sourceId: sourceId || transferId,
+      sourceKey: outSourceKey,
+      motivo,
+      usuario,
+      transferId,
+    });
+    if (!outMove.movement) return { transferId: "", outMove, inMove: null };
+    const inSourceKey = `${transferId}:in`;
+    inMove = createInventoryMovement({
+      itemId,
+      tipo: "transferencia_entrada",
+      cantidadBase,
+      locationId: toLocationId,
+      origen: "Transferencia",
+      sourceId: sourceId || transferId,
+      sourceKey: inSourceKey,
+      motivo,
+      usuario,
+      transferId,
+    });
+    totalMoved = outMove.result.normalizedQuantity;
+  }
   dbTable("transferenciasInventario").push(stampRecord({
     transferId,
     itemId,
-    cantidadBase: outMove.result.normalizedQuantity,
+    cantidadBase: totalMoved,
     fromLocationId,
     toLocationId,
     fecha: dateTimeForOperationalDate(today),
@@ -5358,8 +5416,8 @@ function createInventoryTransfer({ itemId, cantidadBase, fromLocationId, toLocat
   logAudit("inventory_transfer_created", {
     entity: "transferenciasInventario",
     entityId: transferId,
-    newData: { itemId, cantidadBase: outMove.result.normalizedQuantity, fromLocationId, toLocationId },
-    note: `Transferencia ${transferId}: ${outMove.result.normalizedQuantity} de ${fromLocationId} a ${toLocationId}.`,
+    newData: { itemId, cantidadBase: totalMoved, fromLocationId, toLocationId },
+    note: `Transferencia ${transferId}: ${totalMoved} de ${fromLocationId} a ${toLocationId}.`,
     success: true,
   });
   return { transferId, outMove, inMove };
@@ -5520,34 +5578,61 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
   const warehouse = defaultSalonWarehouse();
   requiredLines.forEach(({ detail, item, baseQuantity }) => {
     const sourceKey = `consumo:${invoiceId}:${detail.detalleID}:${item.itemID}`;
-    const movementResult = createInventoryMovement({
-      itemId: item.itemID,
-      tipo: "consumo_servicio",
-      cantidadBase: baseQuantity,
-      costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
-      locationId: warehouse.locationId,
-      origen: "Consumo por servicio",
-      sourceId: invoiceId,
-      sourceKey,
-      motivo: `Consumo estimado: ${detail.servicio}`,
-      allowNegativeStock: item.controlaExistencia === false,
+    const allowNegative = item.controlaExistencia === false;
+    // FEFO real (seccion 11): un articulo con lotes reales reparte el
+    // consumo entre ellos; si los lotes no alcanzan y NO se permite
+    // negativo, se intenta como una sola solicitud por el total (igual que
+    // antes de esta fase) para que applyInventoryMovement la rechace
+    // exactamente igual que sin lotes, nunca un consumo parcial silencioso.
+    const realLots = lotsAvailableForFEFO(item.itemID, warehouse.locationId);
+    let allocations = [{ lotId: "", quantityTaken: baseQuantity }];
+    if (realLots.length) {
+      const fefo = DalfiClosingMath.allocateFEFO({ lots: realLots, quantityNeeded: baseQuantity, referenceDate: today });
+      if (fefo.unallocated <= 0) allocations = fefo.allocations;
+      else if (allowNegative) allocations = [...fefo.allocations, { lotId: "", quantityTaken: fefo.unallocated }];
+    }
+    const movementIds = [];
+    let lineError = "";
+    allocations.forEach((allocation) => {
+      if (lineError) return;
+      const allocQty = Number(allocation.quantityTaken) || 0;
+      if (allocQty <= 0) return;
+      const lotSuffix = allocation.lotId ? `:${allocation.lotId}` : "";
+      const movementResult = createInventoryMovement({
+        itemId: item.itemID,
+        tipo: "consumo_servicio",
+        cantidadBase: allocQty,
+        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+        locationId: warehouse.locationId,
+        lotId: allocation.lotId || "",
+        origen: "Consumo por servicio",
+        sourceId: invoiceId,
+        sourceKey: `${sourceKey}${lotSuffix}`,
+        motivo: `Consumo estimado: ${detail.servicio}`,
+        allowNegativeStock: allowNegative,
+      });
+      if (!movementResult.movement) {
+        lineError = movementResult.result.validationErrors.join(" ");
+        return;
+      }
+      movementIds.push(movementResult.movement.movementId);
     });
-    if (!movementResult.movement) {
-      result.errors.push(`No se pudo consumir ${item.nombre} para "${detail.servicio}": ${movementResult.result.validationErrors.join(" ")}`);
+    if (lineError || !movementIds.length) {
+      result.errors.push(`No se pudo consumir ${item.nombre} para "${detail.servicio}": ${lineError || "existencia insuficiente"}`);
       logAudit("service_inventory_failed", {
         entity: "inventarioMovimientos",
         entityId: sourceKey,
-        newData: { invoiceId, itemId: item.itemID, detalleID: detail.detalleID, errors: movementResult.result.validationErrors },
-        note: `Consumo de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}) falló: ${movementResult.result.validationErrors.join(" ")}`,
+        newData: { invoiceId, itemId: item.itemID, detalleID: detail.detalleID, errors: lineError },
+        note: `Consumo de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}) falló: ${lineError}`,
         success: false,
       });
       return;
     }
-    result.consumptionsCreated.push(movementResult.movement.movementId);
+    result.consumptionsCreated.push(...movementIds);
     logAudit("service_inventory_consumed", {
       entity: "inventarioMovimientos",
-      entityId: movementResult.movement.movementId,
-      newData: { invoiceId, itemId: item.itemID, cantidadBase: baseQuantity, detalleID: detail.detalleID },
+      entityId: movementIds[0],
+      newData: { invoiceId, itemId: item.itemID, cantidadBase: baseQuantity, detalleID: detail.detalleID, movementIds },
       note: `Consumo de ${baseQuantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}).`,
       success: true,
     });
@@ -6289,12 +6374,15 @@ function renderStationAudits() {
 }
 
 // ===========================================================================
-// Alertas de inventario (julio 2026, seccion 31). Cada alerta enlaza al
-// registro relacionado (linkTarget = tab a abrir). Subconjunto real y
-// verificable con los datos que este modulo ya persiste: no se fabrican
-// alertas para datos que el sistema todavia no rastrea (lotes con
-// vencimiento real, minimo por mesa, consumo anormal de activos, auditoria
-// de Academia) — ver limitaciones documentadas en el informe final.
+// Alertas de inventario (julio 2026, seccion 31; ampliado en la fase
+// "Cerrar reportes alertas y auditoria por colaboradora"). Cada alerta
+// enlaza al registro relacionado (linkTarget = tab a abrir, recordId cuando
+// aplica). Subconjunto real y verificable con los datos que este modulo ya
+// persiste: minimo/reposicion por mesa (stationInventoryRules), vencimiento
+// de lotes (lotesInventario + expirationAlertThresholds) y consumo anormal
+// de activos (assetConsumptionRules) YA se generan aqui porque esos datos
+// ahora se persisten de verdad; nunca se fabrica una alerta para un dato
+// que el sistema no rastrea.
 // ===========================================================================
 
 function computeInventoryAlerts() {
@@ -6395,6 +6483,65 @@ function computeInventoryAlerts() {
       });
     }
   });
+  // Minimo/reposicion por mesa (seccion 7): solo reglas activas.
+  stationReplenishmentRows().forEach(({ rule, item, station, currentStock, suggestedReplenishment, belowMinimum, stockedOut }) => {
+    if (!belowMinimum) return;
+    alerts.push({
+      type: "station_below_minimum",
+      severity: stockedOut ? "danger" : "warning",
+      message: `${item?.nombre || rule.itemId} bajo mínimo en ${station?.nombre || rule.stationId}: ${currentStock} (mínimo ${rule.minimumStock}, reponer ${suggestedReplenishment}).`,
+      linkTarget: "inventory",
+      recordId: rule.ruleId,
+    });
+  });
+  // Regla de minimo cuyo articulo ya no esta activo (seccion 7).
+  dbTable("stationInventoryRules")
+    .filter((rule) => rule.active !== false)
+    .forEach((rule) => {
+      const item = dbTable("inventario").find((row) => row.itemID === rule.itemId);
+      if (!item || item.estado === "Inactivo") {
+        alerts.push({
+          type: "station_rule_missing_active_item",
+          severity: "warning",
+          message: `Regla de mínimo ${rule.ruleId} referencia un artículo inexistente o inactivo (${rule.itemId}).`,
+          linkTarget: "inventory",
+          recordId: rule.ruleId,
+        });
+      }
+    });
+  // Vencimientos de lotes (seccion 10): cuarentena, proximo, urgente, vencido.
+  allInventoryLotsDerived().forEach((lot) => {
+    if (lot.status === "Vencido" || lot.status === "Próximo a vencer") {
+      const item = dbTable("inventario").find((row) => row.itemID === lot.itemId);
+      alerts.push({
+        type: lot.status === "Vencido" ? "lot_expired" : "lot_expiring",
+        severity: lot.status === "Vencido" ? "danger" : "warning",
+        message: `Lote ${lot.batchNumber || lot.lotId} de ${item?.nombre || lot.itemId} ${lot.status === "Vencido" ? "venció" : "vence pronto"}${lot.expirationDate ? ` (${lot.expirationDate})` : ""}: ${lot.availableQuantity} disponible.`,
+        linkTarget: "inventory",
+        recordId: lot.lotId,
+      });
+    }
+    if (lot.status === "Cuarentena") {
+      const item = dbTable("inventario").find((row) => row.itemID === lot.itemId);
+      alerts.push({
+        type: "lot_quarantined",
+        severity: "warning",
+        message: `Lote ${lot.batchNumber || lot.lotId} de ${item?.nombre || lot.itemId} está en cuarentena: pendiente de liberar o retirar.`,
+        linkTarget: "inventory",
+        recordId: lot.lotId,
+      });
+    }
+  });
+  // Consumo anormal de activos (seccion 13): solo cuando hay regla activa.
+  assetAbnormalConsumptionAlerts().forEach((alert) => {
+    alerts.push({
+      type: "asset_abnormal_consumption",
+      severity: "danger",
+      message: `Consumo anormal: ${alert.assetNombre} · ${alert.itemNombre} (${alert.periodQuantity} unid. / ${money.format(alert.periodCost)} en ${alert.periodStart} a ${alert.periodEnd}, excedente ${alert.excessQuantity || 0} unid. / ${money.format(alert.excessCost || 0)}).`,
+      linkTarget: "fixed-assets",
+      recordId: alert.assetId,
+    });
+  });
   return alerts;
 }
 
@@ -6405,6 +6552,564 @@ function renderInventoryAlerts() {
   el.innerHTML = alerts.length
     ? alerts.map((alert) => `<div class="list-item"><span class="${alert.severity}">${alert.message}</span></div>`).join("")
     : '<p class="empty">No hay alertas de inventario pendientes.</p>';
+}
+
+// ===========================================================================
+// Fase "Cerrar reportes alertas y auditoria por colaboradora" (julio 2026).
+// Minimos por mesa, lotes de inventario, reglas de consumo anormal de
+// activos, distribucion administrativa opcional de variacion compartida, y
+// auditoria consolidada por colaboradora. Mismo patron del resto del
+// modulo: dbTable() declara la coleccion la primera vez que se usa, todo
+// vive dentro de erp_records.data (sin migracion).
+// ===========================================================================
+
+// --- Minimos y reposicion por mesa (secciones 6-7) ---
+
+function saveStationInventoryRule({ ruleId = "", stationId, itemId, minimumStock, targetStock, observation = "" } = {}) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para configurar mínimos por mesa." };
+  if (!stationId || !itemId) return { ok: false, error: "Selecciona mesa y artículo." };
+  const min = Math.max(0, Number(minimumStock) || 0);
+  const target = Math.max(0, Number(targetStock) || 0);
+  if (target < min) return { ok: false, error: "El stock objetivo no puede ser menor que el mínimo." };
+  const table = dbTable("stationInventoryRules");
+  let rule = ruleId ? table.find((row) => row.ruleId === ruleId) : null;
+  const isNew = !rule;
+  if (!rule) {
+    rule = stampRecord({
+      ruleId: nextDbId("stationInventoryRules", "ruleId", "SIR"),
+      stationId,
+      itemId,
+      minimumStock: min,
+      targetStock: target,
+      active: true,
+      effectiveFrom: today,
+      observation,
+      sourceKey: `regla_minimo:${stationId}:${itemId}`,
+    });
+    table.push(rule);
+  } else {
+    Object.assign(rule, { stationId, itemId, minimumStock: min, targetStock: target, observation });
+    stampRecord(rule, "updated");
+  }
+  logAudit(isNew ? "station_inventory_rule_created" : "station_inventory_rule_updated", {
+    entity: "stationInventoryRules",
+    entityId: rule.ruleId,
+    newData: { stationId, itemId, minimumStock: min, targetStock: target },
+    note: `Regla de mínimo ${rule.ruleId} para ${itemId} en mesa ${stationId}: mínimo ${min}, objetivo ${target}.`,
+    success: true,
+  });
+  return { ok: true, rule };
+}
+
+function deactivateStationInventoryRule(ruleId) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para desactivar reglas de mínimo por mesa." };
+  const rule = dbTable("stationInventoryRules").find((row) => row.ruleId === ruleId);
+  if (!rule) return { ok: false, error: "Regla no encontrada." };
+  rule.active = false;
+  stampRecord(rule, "updated");
+  logAudit("station_inventory_rule_updated", {
+    entity: "stationInventoryRules",
+    entityId: ruleId,
+    newData: { active: false },
+    note: `Regla de mínimo ${ruleId} desactivada.`,
+    success: true,
+  });
+  return { ok: true, rule };
+}
+
+// Reposicion sugerida de CADA regla activa, siempre a partir de la
+// existencia actual real (itemStockAt, derivada de inventarioMovimientos):
+// nunca sobrescribe existencias ni movimientos, es de solo lectura.
+function stationReplenishmentRows() {
+  return dbTable("stationInventoryRules")
+    .filter((rule) => rule.active !== false)
+    .map((rule) => {
+      const item = dbTable("inventario").find((row) => row.itemID === rule.itemId);
+      const station = dbTable("mesas").find((row) => row.stationId === rule.stationId);
+      const currentStock = itemStockAt(rule.itemId, rule.stationId);
+      const replenishment = DalfiClosingMath.calculateStationReplenishment({ minimumStock: rule.minimumStock, targetStock: rule.targetStock, currentStock });
+      return { rule, item, station, ...replenishment };
+    });
+}
+
+function renderStationInventoryRules() {
+  const el = byId("station-rule-list");
+  if (!el) return;
+  const rows = stationReplenishmentRows();
+  el.innerHTML = rows.length
+    ? rows
+        .map(({ rule, item, station, currentStock, suggestedReplenishment, belowMinimum, stockedOut }) => {
+          const badge = stockedOut ? "danger" : belowMinimum ? "warning" : "";
+          return `<div class="list-item"><span>${station?.nombre || rule.stationId} · ${item?.nombre || rule.itemId}</span><span class="${badge}">Mín ${rule.minimumStock} · Obj ${rule.targetStock} · Actual ${currentStock}${suggestedReplenishment > 0 ? ` · Reponer ${suggestedReplenishment}` : ""} <button type="button" class="secondary-btn compact station-rule-edit" data-rule-id="${rule.ruleId}">Editar</button> <button type="button" class="secondary-btn compact danger station-rule-deactivate" data-rule-id="${rule.ruleId}">Desactivar</button></span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay reglas de mínimo por mesa registradas.</p>';
+}
+
+// --- Lotes de inventario (secciones 8-11) ---
+
+function expirationAlertThresholds() {
+  const config = inventoryConfig();
+  return {
+    earlyAlertDays: Number(config.diasAlertaTemprana) || 60,
+    nearAlertDays: Number(config.diasAlertaProxima) || 30,
+    urgentAlertDays: Number(config.diasAlertaUrgente) || 7,
+  };
+}
+
+// Estado + existencia disponible SIEMPRE derivados (nunca campos editables):
+// availableQuantity viene de calculateInventoryByLocation (misma fuente
+// unica de existencia que el resto del modulo), y el estado de vencimiento
+// de classifyLotExpiration/deriveLotStatus con los plazos configurados.
+function lotWithDerivedFields(lot, referenceDate = today) {
+  const availableQuantity = DalfiClosingMath.calculateInventoryByLocation({ movements: dbTable("inventarioMovimientos"), itemId: lot.itemId, lotId: lot.lotId }).quantity;
+  const expiration = DalfiClosingMath.classifyLotExpiration({ expirationDate: lot.expirationDate || "", referenceDate, ...expirationAlertThresholds() });
+  const status = DalfiClosingMath.deriveLotStatus({ manualStatus: lot.status || "", availableQuantity, expirationBucket: expiration.bucket });
+  return { ...lot, availableQuantity: DalfiClosingMath.roundMoney(availableQuantity), expirationBucket: expiration.bucket, daysToExpire: expiration.daysToExpire, status };
+}
+
+function allInventoryLotsDerived() {
+  return dbTable("lotesInventario").map((lot) => lotWithDerivedFields(lot));
+}
+
+// Lotes utilizables por FEFO de UN articulo en UNA ubicacion: solo estado
+// derivado "Disponible" y existencia > 0 (vencidos, cuarentena, retirados y
+// agotados quedan excluidos por construccion, nunca por un filtro aparte
+// que se pueda olvidar en un call site nuevo).
+function lotsAvailableForFEFO(itemId, locationId) {
+  return dbTable("lotesInventario")
+    .filter((lot) => lot.itemId === itemId)
+    .map((lot) => {
+      const quantityAtLocation = DalfiClosingMath.calculateInventoryByLocation({ movements: dbTable("inventarioMovimientos"), itemId, locationId, lotId: lot.lotId }).quantity;
+      const expiration = DalfiClosingMath.classifyLotExpiration({ expirationDate: lot.expirationDate || "", referenceDate: today, ...expirationAlertThresholds() });
+      const status = DalfiClosingMath.deriveLotStatus({ manualStatus: lot.status || "", availableQuantity: quantityAtLocation, expirationBucket: expiration.bucket });
+      return { lotId: lot.lotId, quantity: DalfiClosingMath.roundMoney(quantityAtLocation), fechaVencimiento: lot.expirationDate || "", fechaEntrada: lot.receivedDate || "", status };
+    })
+    .filter((lot) => lot.status === "Disponible" && lot.quantity > 0);
+}
+
+function lotsMapForItems(itemIds, locationId) {
+  const map = {};
+  [...new Set(itemIds)].forEach((itemId) => {
+    if (!itemId) return;
+    map[itemId] = lotsAvailableForFEFO(itemId, locationId);
+  });
+  return map;
+}
+
+// Articulos SIN control de lote (item.controlaLote !== true) siguen
+// funcionando exactamente igual que antes: lotsMapForItems() les devuelve
+// un array vacio, y las funciones preflight ya caen a su fallback de "un
+// solo lote sin vencimiento" (ver closing-math.js). Nunca se obliga a crear
+// un lote para un articulo historico que no lo requeria (seccion 9).
+function createInventoryLot({ itemId, batchNumber = "", supplierId = "", purchaseId = "", locationId, receivedDate = today, expirationDate = "", originalQuantity, historicalUnitCost = 0, observation = "" } = {}) {
+  const quantity = Math.max(0, Number(originalQuantity) || 0);
+  if (!itemId || !locationId || quantity <= 0) return { lot: null, error: "Lote inválido: falta artículo, ubicación o cantidad." };
+  const lotId = nextDbId("lotesInventario", "lotId", "LOT");
+  const lot = stampRecord({
+    lotId,
+    itemId,
+    batchNumber: batchNumber || lotId,
+    supplierId,
+    purchaseId,
+    locationId,
+    receivedDate,
+    expirationDate,
+    originalQuantity: quantity,
+    historicalUnitCost: Math.max(0, Number(historicalUnitCost) || 0),
+    status: "Disponible",
+    sourceKey: purchaseId ? `compra:${purchaseId}:lote` : `lote:${lotId}`,
+    observation,
+  });
+  dbTable("lotesInventario").push(lot);
+  logAudit("inventory_lot_created", {
+    entity: "lotesInventario",
+    entityId: lotId,
+    newData: { itemId, batchNumber: lot.batchNumber, locationId, originalQuantity: quantity, expirationDate },
+    note: `Lote ${lot.batchNumber} creado para ${itemId} (${quantity} unidades) en ${locationId}.`,
+    success: true,
+  });
+  return { lot, error: "" };
+}
+
+// Transiciones MANUALES de estado de lote (seccion 9): un estado derivado
+// (Agotado/Próximo a vencer/Vencido) no es un destino valido aqui porque
+// nunca se "asigna", se recalcula solo; solo Cuarentena/Retirado/Disponible
+// son acciones humanas explicitas.
+const LOT_MANUAL_TRANSITIONS = {
+  Disponible: ["Cuarentena", "Retirado"],
+  Cuarentena: ["Disponible", "Retirado"],
+  "Próximo a vencer": ["Cuarentena", "Retirado"],
+  Vencido: ["Cuarentena", "Retirado"],
+  Agotado: ["Retirado"],
+};
+
+function changeInventoryLotStatus(lotId, nextStatus, { reason = "" } = {}) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para modificar el estado de un lote." };
+  const lot = dbTable("lotesInventario").find((row) => row.lotId === lotId);
+  if (!lot) return { ok: false, error: "Lote no encontrado." };
+  const current = lotWithDerivedFields(lot).status;
+  const allowed = LOT_MANUAL_TRANSITIONS[current] || [];
+  if (!allowed.includes(nextStatus)) return { ok: false, error: `No se puede pasar el lote de "${current}" a "${nextStatus}".` };
+  if ((nextStatus === "Retirado" || nextStatus === "Cuarentena") && !reason) return { ok: false, error: "Indica un motivo." };
+  const previousStatus = lot.status || "";
+  lot.status = nextStatus;
+  lot.statusReason = reason;
+  stampRecord(lot, "updated");
+  const action = nextStatus === "Cuarentena" ? "inventory_lot_quarantined" : nextStatus === "Disponible" ? "inventory_lot_released" : "inventory_lot_status_changed";
+  logAudit(action, {
+    entity: "lotesInventario",
+    entityId: lotId,
+    oldData: { status: previousStatus },
+    newData: { status: nextStatus, reason },
+    note: `Lote ${lot.batchNumber || lotId}: ${previousStatus || "(sin estado)"} → ${nextStatus}. ${reason || ""}`.trim(),
+    success: true,
+  });
+  return { ok: true, lot };
+}
+
+function renderInventoryLots() {
+  const el = byId("inventory-lot-list");
+  if (!el) return;
+  const query = normalize(byId("inventory-lot-search")?.value || "");
+  const rows = allInventoryLotsDerived()
+    .filter((lot) => {
+      if (!query) return true;
+      const item = dbTable("inventario").find((row) => row.itemID === lot.itemId);
+      return [lot.batchNumber, lot.lotId, item?.nombre, lot.locationId].some((field) => normalize(field).includes(query));
+    })
+    .sort((a, b) => String(a.expirationDate || "9999-99-99").localeCompare(String(b.expirationDate || "9999-99-99")));
+  el.innerHTML = rows.length
+    ? rows
+        .map((lot) => {
+          const item = dbTable("inventario").find((row) => row.itemID === lot.itemId);
+          const warehouse = dbTable("almacenes").find((row) => row.locationId === lot.locationId);
+          const severity = lot.status === "Vencido" ? "danger" : lot.status === "Próximo a vencer" || lot.status === "Cuarentena" ? "warning" : "";
+          const actions = [];
+          if (["Disponible", "Próximo a vencer", "Vencido"].includes(lot.status)) {
+            actions.push(`<button type="button" class="secondary-btn compact lot-quarantine" data-lot-id="${lot.lotId}">Cuarentena</button>`);
+            actions.push(`<button type="button" class="secondary-btn compact danger lot-retire" data-lot-id="${lot.lotId}">Retirar</button>`);
+          }
+          if (lot.status === "Cuarentena") actions.push(`<button type="button" class="secondary-btn compact lot-release" data-lot-id="${lot.lotId}">Liberar</button>`);
+          actions.push(`<button type="button" class="secondary-btn compact lot-movements" data-lot-id="${lot.lotId}">Movimientos</button>`);
+          return `<div class="list-item"><span>${lot.batchNumber || lot.lotId} · ${item?.nombre || lot.itemId} · ${warehouse?.nombre || lot.locationId}</span><span class="${severity}">${lot.status} · Disp. ${lot.availableQuantity}${lot.expirationDate ? ` · Vence ${lot.expirationDate}` : ""} ${actions.join(" ")}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay lotes registrados.</p>';
+}
+
+function showLotMovements(lotId) {
+  const lot = dbTable("lotesInventario").find((row) => row.lotId === lotId);
+  if (!lot) return;
+  const movements = dbTable("inventarioMovimientos").filter((row) => row.lotId === lotId);
+  if (!movements.length) {
+    alert(`El lote ${lot.batchNumber || lotId} no tiene movimientos registrados.`);
+    return;
+  }
+  const lines = movements.map((m) => `${dateOnly(m.fecha)} · ${m.tipo} · ${m.cantidadBase} · ${m.locationId}`).join("\n");
+  alert(`Movimientos del lote ${lot.batchNumber || lotId}:\n${lines}`);
+}
+
+// --- Reglas de consumo anormal de activos (secciones 12-13) ---
+
+function saveAssetConsumptionRule({ ruleId = "", assetId = "", assetCategory = "", itemId = "", periodType = "monthly", maximumQuantity = "", maximumCost = "", observation = "" } = {}) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para configurar reglas de consumo de activos." };
+  if (!assetId && !assetCategory) return { ok: false, error: "Indica un activo específico o una categoría." };
+  if (maximumQuantity === "" && maximumCost === "") return { ok: false, error: "Indica un máximo de cantidad y/o de costo." };
+  const table = dbTable("assetConsumptionRules");
+  let rule = ruleId ? table.find((row) => row.ruleId === ruleId) : null;
+  const isNew = !rule;
+  const payload = {
+    assetId,
+    assetCategory,
+    itemId,
+    periodType,
+    maximumQuantity: maximumQuantity === "" ? "" : Math.max(0, Number(maximumQuantity) || 0),
+    maximumCost: maximumCost === "" ? "" : Math.max(0, Number(maximumCost) || 0),
+    observation,
+  };
+  if (!rule) {
+    rule = stampRecord({ ruleId: nextDbId("assetConsumptionRules", "ruleId", "ACR"), active: true, effectiveFrom: today, ...payload });
+    table.push(rule);
+  } else {
+    Object.assign(rule, payload);
+    stampRecord(rule, "updated");
+  }
+  logAudit(isNew ? "asset_consumption_rule_created" : "asset_consumption_rule_updated", {
+    entity: "assetConsumptionRules",
+    entityId: rule.ruleId,
+    newData: payload,
+    note: `Regla de consumo de activo ${rule.ruleId} (${assetId || assetCategory}).`,
+    success: true,
+  });
+  return { ok: true, rule };
+}
+
+function deactivateAssetConsumptionRule(ruleId) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado." };
+  const rule = dbTable("assetConsumptionRules").find((row) => row.ruleId === ruleId);
+  if (!rule) return { ok: false, error: "Regla no encontrada." };
+  rule.active = false;
+  stampRecord(rule, "updated");
+  logAudit("asset_consumption_rule_updated", { entity: "assetConsumptionRules", entityId: ruleId, newData: { active: false }, note: `Regla ${ruleId} desactivada.`, success: true });
+  return { ok: true, rule };
+}
+
+function assetConsumptionPeriodBounds(periodType, referenceDate = today) {
+  const ref = new Date(`${referenceDate}T00:00:00Z`);
+  if (periodType === "weekly") {
+    const day = ref.getUTCDay();
+    const start = new Date(ref);
+    start.setUTCDate(ref.getUTCDate() - day);
+    const end = new Date(start);
+    end.setUTCDate(start.getUTCDate() + 6);
+    return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+  }
+  if (periodType === "daily") return { start: referenceDate, end: referenceDate };
+  const start = `${referenceDate.slice(0, 7)}-01`;
+  const endDate = new Date(Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth() + 1, 0));
+  return { start, end: endDate.toISOString().slice(0, 10) };
+}
+
+function assetConsumptionRulesFor(assetId, assetCategory, itemId) {
+  return dbTable("assetConsumptionRules").filter((rule) => {
+    if (rule.active === false) return false;
+    if (!rule.assetId && !rule.assetCategory) return false;
+    if (rule.assetId && rule.assetId !== assetId) return false;
+    if (rule.assetCategory && rule.assetCategory !== assetCategory) return false;
+    if (rule.itemId && rule.itemId !== itemId) return false;
+    return true;
+  });
+}
+
+// Sin regla activa para el par activo/articulo, NUNCA se genera alerta
+// (seccion 12): no se inventa una media historica ni se bloquea el
+// consumo. Recorre unicamente combinaciones activo+articulo que ya tienen
+// consumo registrado (consumosActivos), nunca combinaciones hipoteticas.
+function assetAbnormalConsumptionAlerts(referenceDate = today) {
+  const alerts = [];
+  const byAssetItem = new Map();
+  dbTable("consumosActivos").forEach((row) => {
+    const key = `${row.assetId}:${row.itemId}`;
+    const list = byAssetItem.get(key) || [];
+    list.push(row);
+    byAssetItem.set(key, list);
+  });
+  byAssetItem.forEach((rows, key) => {
+    const [assetId, itemId] = key.split(":");
+    const asset = dbTable("activosFijos").find((row) => row.activoID === assetId);
+    const rules = assetConsumptionRulesFor(assetId, asset?.categoria || "", itemId);
+    rules.forEach((rule) => {
+      const { start, end } = assetConsumptionPeriodBounds(rule.periodType || "monthly", referenceDate);
+      const periodRows = rows.filter((row) => inRangeDate(row.fecha, start, end));
+      const periodQuantity = periodRows.reduce((sum, row) => sum + (Number(row.cantidad) || 0), 0);
+      const periodCost = periodRows.reduce((sum, row) => sum + (Number(row.totalCost) || 0), 0);
+      const evaluation = DalfiClosingMath.evaluateAssetConsumptionRule({ rule, periodQuantity, periodCost });
+      if (!evaluation.exceeded) return;
+      alerts.push({
+        ruleId: rule.ruleId,
+        assetId,
+        assetNombre: asset?.nombre || assetId,
+        itemId,
+        itemNombre: dbTable("inventario").find((row) => row.itemID === itemId)?.nombre || itemId,
+        periodType: rule.periodType,
+        periodStart: start,
+        periodEnd: end,
+        periodQuantity,
+        periodCost,
+        maximumQuantity: rule.maximumQuantity,
+        maximumCost: rule.maximumCost,
+        excessQuantity: evaluation.excessQuantity,
+        excessCost: evaluation.excessCost,
+        relatedMovementIds: periodRows.map((row) => row.movementId).filter(Boolean),
+        relatedConsumptionIds: periodRows.map((row) => row.assetConsumptionId),
+      });
+    });
+  });
+  return alerts;
+}
+
+// Se llama SOLO cuando se registra un consumo de activo nuevo (nunca en
+// cada render/recalculo de pantalla, seccion 17): revisa las reglas que
+// aplican a ESE activo+articulo y audita cada exceso detectado una vez.
+function checkAndLogAssetAbnormalConsumption(assetId, itemId) {
+  const alerts = assetAbnormalConsumptionAlerts().filter((alert) => alert.assetId === assetId && alert.itemId === itemId);
+  alerts.forEach((alert) => {
+    logAudit("asset_abnormal_consumption_detected", {
+      entity: "consumosActivos",
+      entityId: assetId,
+      newData: { itemId, periodQuantity: alert.periodQuantity, periodCost: alert.periodCost, excessQuantity: alert.excessQuantity, excessCost: alert.excessCost },
+      note: `Consumo anormal detectado: ${alert.assetNombre} · ${alert.itemNombre} en el período ${alert.periodStart} a ${alert.periodEnd}.`,
+      success: true,
+    });
+  });
+}
+
+function renderAssetConsumptionRules() {
+  const el = byId("asset-consumption-rule-list");
+  if (el) {
+    const rows = dbTable("assetConsumptionRules").filter((row) => row.active !== false);
+    el.innerHTML = rows.length
+      ? rows
+          .map((rule) => {
+            const asset = dbTable("activosFijos").find((row) => row.activoID === rule.assetId);
+            const target = asset?.nombre || rule.assetCategory || "(sin destino)";
+            const itemLabel = rule.itemId ? ` · ${dbTable("inventario").find((row) => row.itemID === rule.itemId)?.nombre || rule.itemId}` : "";
+            const limits = [rule.maximumQuantity !== "" ? `Máx. ${rule.maximumQuantity} unid.` : "", rule.maximumCost !== "" ? `Máx. ${money.format(rule.maximumCost)}` : ""].filter(Boolean).join(" · ");
+            return `<div class="list-item"><span>${target}${itemLabel}</span><span>${rule.periodType} · ${limits} <button type="button" class="secondary-btn compact danger asset-rule-deactivate" data-rule-id="${rule.ruleId}">Desactivar</button></span></div>`;
+          })
+          .join("")
+      : '<p class="empty">No hay reglas de consumo de activos registradas.</p>';
+  }
+  const alertsEl = byId("asset-abnormal-consumption-list");
+  if (alertsEl) {
+    const alerts = assetAbnormalConsumptionAlerts();
+    alertsEl.innerHTML = alerts.length
+      ? alerts
+          .map(
+            (alert) =>
+              `<div class="list-item"><span class="danger">${alert.assetNombre} · ${alert.itemNombre}</span><span>${alert.periodQuantity} unid. / ${money.format(alert.periodCost)} en ${alert.periodStart} a ${alert.periodEnd} (máx ${alert.maximumQuantity !== "" ? alert.maximumQuantity : "-"} / ${alert.maximumCost !== "" ? money.format(alert.maximumCost) : "-"})</span></div>`,
+          )
+          .join("")
+      : '<p class="empty">No hay consumo anormal de activos detectado.</p>';
+  }
+}
+
+// --- Auditoria de inventario por colaboradora (secciones 3-5) ---
+
+// Arma el input real para aggregateInventoryAuditByCollaborator a partir de
+// lo YA persistido (nunca inventa colaboradora, mesa ni cantidad): filtra
+// por mesa/articulo/estado a nivel de auditoriasMesa ANTES de agregar, para
+// que el filtro de articulo/mesa/estado sea exacto y no solo cosmetico.
+function buildCollaboratorInventoryAuditReport({ start, end, stationId = "", itemId = "", collaboratorId = "", status = "", scope = "" } = {}) {
+  let audits = dbTable("auditoriasMesa");
+  if (itemId) audits = audits.filter((row) => (row.varianceLines || []).some((line) => line.itemId === itemId));
+  if (stationId) audits = audits.filter((row) => row.stationId === stationId);
+  if (status) audits = audits.filter((row) => row.status === status);
+
+  const serviceLines = facturaDetalleLinesInRange(start, end).map((detail) => ({
+    detalleID: detail.detalleID,
+    stationId: detail.stationId || "",
+    colaboradorID: detail.colaboradorID || "",
+    colaboradorNombre: detail.colaboradorNombre || "",
+    servicio: detail.servicio,
+    fecha: detail.fecha || start,
+  }));
+  let directDeliveries = dbTable("entregasColaboradoras");
+  if (itemId) directDeliveries = directDeliveries.filter((row) => row.itemId === itemId);
+  const internalIssues = dbTable("consumosGenerales");
+
+  const result = DalfiClosingMath.aggregateInventoryAuditByCollaborator({
+    stationAudits: audits,
+    serviceLines,
+    directDeliveries,
+    internalIssues,
+    periodStart: start,
+    periodEnd: end,
+  });
+
+  let collaboratorSummaries = result.collaboratorSummaries;
+  if (collaboratorId) collaboratorSummaries = collaboratorSummaries.filter((c) => c.collaboratorId === collaboratorId);
+  if (scope === "individual") collaboratorSummaries = collaboratorSummaries.filter((c) => c.individualStations.length > 0);
+  if (scope === "shared") collaboratorSummaries = collaboratorSummaries.filter((c) => c.sharedStations.length > 0);
+
+  let sharedStationSummaries = result.sharedStationSummaries;
+  if (scope === "individual") sharedStationSummaries = [];
+
+  return { ...result, collaboratorSummaries, sharedStationSummaries };
+}
+
+// Distribucion administrativa OPCIONAL de la variacion de UNA mesa
+// compartida (seccion 4): nunca automatica, exige motivo, y el valor
+// original compartido se conserva en auditoriasMesa.varianceLines (esta
+// funcion NUNCA lo modifica, solo agrega un registro informativo aparte en
+// distribucionesVariacionMesa). Nunca crea CxC ni sancion.
+function applySharedStationVarianceDistribution({ stationAuditId, itemId, mode, allocations, reason, allocatedBy }) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para distribuir variación compartida de mesa." };
+  const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === stationAuditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if ((audit.collaboratorIds || []).length < 2) return { ok: false, error: "Esta mesa no es compartida (una sola colaboradora)." };
+  const line = (audit.varianceLines || []).find((row) => row.itemId === itemId);
+  if (!line) return { ok: false, error: "No se encontró la línea de variación para este artículo." };
+  const result = DalfiClosingMath.allocateSharedStationVariance({
+    varianceQuantity: line.varianceQuantity,
+    varianceCost: line.varianceCost,
+    allocations,
+    mode,
+    reason,
+    allocatedBy,
+  });
+  if (!result.allowed) return { ok: false, error: result.blockingErrors.join(" ") };
+  const distributionId = nextDbId("distribucionesVariacionMesa", "distributionId", "DVM");
+  const record = stampRecord({
+    distributionId,
+    stationAuditId,
+    itemId,
+    mode,
+    allocations: result.allocations,
+    originalVarianceQuantity: result.originalVarianceQuantity,
+    originalVarianceCost: result.originalVarianceCost,
+    reason: result.reason,
+    allocatedBy,
+    sourceKey: `distribucion:${stationAuditId}:${itemId}`,
+  });
+  dbTable("distribucionesVariacionMesa").push(record);
+  logAudit("shared_station_variance_allocated", {
+    entity: "distribucionesVariacionMesa",
+    entityId: distributionId,
+    newData: { stationAuditId, itemId, mode, reason, allocatedBy },
+    note: `Distribución administrativa de variación compartida en mesa ${audit.stationName || audit.stationId}, artículo ${itemId}. El valor compartido original se conserva en la auditoría.`,
+    success: true,
+  });
+  return { ok: true, record };
+}
+
+function promptDistributeSharedStationVariance(auditId) {
+  const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+  if (!audit) return;
+  const items = (audit.varianceLines || []).filter((line) => Math.abs(line.varianceQuantity) > 0 || Math.abs(line.varianceCost) > 0);
+  if (!items.length) {
+    alert("Esta mesa no tiene variación pendiente para distribuir.");
+    return;
+  }
+  const itemLabel = items.map((line, index) => `${index + 1}. ${line.itemNombre} (variación ${line.varianceQuantity})`).join("\n");
+  const choice = prompt(`¿Qué artículo deseas distribuir?\n${itemLabel}\nEscribe el número:`);
+  if (choice === null) return;
+  const line = items[Number(choice) - 1];
+  if (!line) {
+    alert("Selección inválida.");
+    return;
+  }
+  const modeChoice = (prompt('¿Distribuir por "porcentaje" o "cantidad"?', "porcentaje") || "").trim().toLowerCase();
+  if (!modeChoice) return;
+  const mode = modeChoice.startsWith("cant") ? "quantity" : "percent";
+  const participants = (audit.collaboratorIds || []).map((id, index) => ({ collaboratorId: id, collaboratorName: (audit.collaboratorNames || [])[index] || id }));
+  const allocations = [];
+  for (const participant of participants) {
+    const value = prompt(`${mode === "percent" ? "Porcentaje" : "Cantidad"} para ${participant.collaboratorName}:`, "0");
+    if (value === null) return;
+    allocations.push({ collaboratorId: participant.collaboratorId, collaboratorName: participant.collaboratorName, [mode === "percent" ? "percent" : "quantity"]: Number(value) || 0 });
+  }
+  const reason = prompt("Motivo de la distribución administrativa (obligatorio):");
+  if (!reason) {
+    alert("La distribución requiere un motivo.");
+    return;
+  }
+  const result = applySharedStationVarianceDistribution({ stationAuditId: auditId, itemId: line.itemId, mode, allocations, reason, allocatedBy: currentUserEmail() });
+  if (!result.ok) {
+    alert(result.error);
+    return;
+  }
+  alert("Distribución administrativa registrada. El valor compartido original se conserva en la auditoría: esto es solo un desglose informativo, no crea CxC ni sanción.");
+  saveState();
+  renderAll();
+}
+
+function openStationAuditFromReport(auditId) {
+  switchToView("inventory");
+  requestAnimationFrame(() => {
+    byId("station-audit-list")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 }
 
 // ===========================================================================
@@ -6909,6 +7614,20 @@ function retailSalePreflightItemsInput() {
   }));
 }
 
+// Lotes FEFO reales por linea (seccion 11): un articulo sin lotes
+// registrados (item.controlaLote=false o sin compras con lote) le devuelve
+// [] a preflightRetailProductSale, que ya cae a su fallback historico de
+// "un solo lote sin vencimiento" (closing-math.js) — nunca se bloquea una
+// venta por falta de lotes en un articulo que nunca los tuvo.
+function retailLineLotsSnapshot(lines) {
+  const map = {};
+  lines.forEach((line) => {
+    if (!line.itemId || !line.locationId || map[line.itemId]) return;
+    map[line.itemId] = lotsAvailableForFEFO(line.itemId, line.locationId);
+  });
+  return map;
+}
+
 function runRetailSalePreflight(lines) {
   const validLines = lines.filter((line) => line.itemId && line.quantity > 0);
   return DalfiClosingMath.preflightRetailProductSale({
@@ -6916,6 +7635,7 @@ function runRetailSalePreflight(lines) {
     items: retailSalePreflightItemsInput(),
     locations: saleEligibleLocations(),
     inventoryByLocation: retailLineInventorySnapshot(validLines),
+    lots: retailLineLotsSnapshot(validLines),
     referenceDate: today,
   });
 }
@@ -8178,11 +8898,134 @@ function renderFixedAssetsReport() {
   }));
 }
 
+// --- Reportes nuevos: auditoria por colaboradora, mesas compartidas,
+// consumo sin asignar, minimos/reposicion, lotes, vencimientos, consumo de
+// activos (secciones 3, 4, 14). Reutilizan reportCards/renderReportTable,
+// el mismo patron que el resto de reportes de este modulo.
+
+function collaboratorReportFilters() {
+  const stationName = byId("report-station")?.value.trim() || "";
+  const stationId = stationName ? findStationByName(stationName)?.stationId || "" : "";
+  const itemName = byId("report-item")?.value.trim() || "";
+  const itemId = itemName ? findInventoryItemByName(itemName)?.itemID || "" : "";
+  const collaboratorName = byId("report-staff")?.value.trim() || "";
+  const collaboratorId = collaboratorName ? dbTable("facturaDetalle").find((row) => normalize(row.colaboradorNombre) === normalize(collaboratorName))?.colaboradorID || "" : "";
+  const status = byId("report-audit-status")?.value || "";
+  return { stationId, itemId, collaboratorId, status };
+}
+
+function renderCollaboratorAuditReport(start, end) {
+  const filters = collaboratorReportFilters();
+  const report = buildCollaboratorInventoryAuditReport({ start, end, ...filters });
+  reportCards([
+    { label: "Colaboradoras", value: String(report.totals.collaboratorsCount || 0) },
+    { label: "Mesas individuales", value: String(report.totals.individualStationsCount || 0) },
+    { label: "Mesas compartidas", value: String(report.totals.sharedStationsCount || 0) },
+    { label: "Variación individual", value: money.format(report.totals.totalIndividualVarianceCost || 0) },
+    { label: "Variación compartida", value: money.format(report.totals.totalSharedVarianceCost || 0) },
+    { label: "Sin asignar", value: money.format(report.totals.totalUnassignedCost || 0) },
+  ]);
+  const rows = [];
+  report.collaboratorSummaries.forEach((c) => {
+    c.individualStations.forEach((s) => {
+      rows.push(
+        `<tr><td>${escapeHtml(c.collaboratorName)}</td><td>${escapeHtml(s.stationName)}</td><td>Individual</td><td>${s.status}</td><td class="amount">${s.expectedConsumption}</td><td class="amount">${s.observedConsumption}</td><td class="amount">${s.varianceQuantity}</td><td class="amount">${money.format(s.varianceCost)}</td><td><button type="button" class="secondary-btn compact open-station-audit" data-audit-id="${s.stationAuditId}">Ver auditoría</button></td></tr>`,
+      );
+    });
+    c.sharedStations.forEach((s) => {
+      rows.push(
+        `<tr><td>${escapeHtml(c.collaboratorName)}</td><td>${escapeHtml(s.stationName)}</td><td>Compartida (${s.participantCount})</td><td>${s.status}</td><td colspan="3">Variación compartida: ver reporte "Mesas compartidas" (nunca se atribuye automáticamente)</td><td><button type="button" class="secondary-btn compact open-station-audit" data-audit-id="${s.stationAuditId}">Ver auditoría</button></td></tr>`,
+      );
+    });
+    if (!c.individualStations.length && !c.sharedStations.length) {
+      rows.push(`<tr><td>${escapeHtml(c.collaboratorName)}</td><td colspan="8">${c.servicesCount} servicio(s), ${c.directDeliveries.length} entrega(s) directa(s) en el período. Sin auditoría de mesa.</td></tr>`);
+    }
+  });
+  renderReportTable(["Colaboradora", "Mesa", "Tipo", "Estado", "Esperado", "Observado", "Variación", "Costo", ""], rows, "No hay auditorías de mesa en este período.");
+}
+
+function renderSharedStationsReport(start, end) {
+  const report = buildCollaboratorInventoryAuditReport({ start, end });
+  reportCards([
+    { label: "Mesas compartidas", value: String(report.sharedStationSummaries.length) },
+    { label: "Variación compartida total", value: money.format(report.totals.totalSharedVarianceCost || 0) },
+  ]);
+  const rows = report.sharedStationSummaries.map((s) => {
+    const participants = s.participants.map((p) => escapeHtml(p.collaboratorName || p.collaboratorId)).join(", ");
+    return `<tr><td>${escapeHtml(s.stationName)}</td><td>${participants}</td><td>${s.status}</td><td class="amount">${s.sharedVarianceQuantity}</td><td class="amount">${money.format(s.sharedVarianceCost)}</td><td><button type="button" class="secondary-btn compact distribute-shared-variance" data-audit-id="${s.stationAuditId}">Distribuir</button> <button type="button" class="secondary-btn compact open-station-audit" data-audit-id="${s.stationAuditId}">Ver auditoría</button></td></tr>`;
+  });
+  renderReportTable(["Mesa", "Colaboradoras", "Estado", "Variación", "Costo", ""], rows, "No hay mesas compartidas en este período.");
+}
+
+function renderUnassignedConsumptionReport(start, end) {
+  const report = buildCollaboratorInventoryAuditReport({ start, end });
+  reportCards([
+    { label: "Registros sin asignar", value: String(report.unassignedConsumption.length) },
+    { label: "Costo sin asignar", value: money.format(report.totals.totalUnassignedCost || 0) },
+  ]);
+  const rows = report.unassignedConsumption.map(
+    (u) => `<tr><td>${u.source}</td><td>${u.itemId || u.stationId || u.detalleID || "-"}</td><td class="amount">${u.quantity ?? "-"}</td><td class="amount">${money.format(u.cost || u.varianceCost || 0)}</td></tr>`,
+  );
+  renderReportTable(["Origen", "Referencia", "Cantidad", "Costo"], rows, "No hay consumo sin asignar en este período.");
+}
+
+function renderStationMinimumsReport() {
+  const rows = stationReplenishmentRows();
+  reportCards([{ label: "Reglas activas", value: String(rows.length) }, { label: "Bajo mínimo", value: String(rows.filter((row) => row.belowMinimum).length) }]);
+  renderReportTable(
+    ["Mesa", "Artículo", "Mínimo", "Objetivo", "Actual", "Reponer"],
+    rows.map(
+      ({ rule, item, station, currentStock, suggestedReplenishment, belowMinimum, stockedOut }) =>
+        `<tr class="${stockedOut ? "danger" : belowMinimum ? "warning" : ""}"><td>${station?.nombre || rule.stationId}</td><td>${item?.nombre || rule.itemId}</td><td class="amount">${rule.minimumStock}</td><td class="amount">${rule.targetStock}</td><td class="amount">${currentStock}</td><td class="amount">${suggestedReplenishment}</td></tr>`,
+    ),
+    "No hay reglas de mínimo por mesa registradas.",
+  );
+}
+
+function renderInventoryLotsReport() {
+  const lots = allInventoryLotsDerived();
+  reportCards([
+    { label: "Lotes", value: String(lots.length) },
+    { label: "Próximos a vencer", value: String(lots.filter((lot) => lot.status === "Próximo a vencer").length) },
+    { label: "Vencidos", value: String(lots.filter((lot) => lot.status === "Vencido").length) },
+    { label: "En cuarentena", value: String(lots.filter((lot) => lot.status === "Cuarentena").length) },
+  ]);
+  renderReportTable(
+    ["Lote", "Artículo", "Ubicación", "Estado", "Disponible", "Vencimiento"],
+    lots.map((lot) => {
+      const item = dbTable("inventario").find((row) => row.itemID === lot.itemId);
+      const warehouse = dbTable("almacenes").find((row) => row.locationId === lot.locationId);
+      return `<tr><td>${lot.batchNumber || lot.lotId}</td><td>${item?.nombre || lot.itemId}</td><td>${warehouse?.nombre || lot.locationId}</td><td>${lot.status}</td><td class="amount">${lot.availableQuantity}</td><td>${lot.expirationDate || "-"}</td></tr>`;
+    }),
+    "No hay lotes registrados.",
+  );
+}
+
+function renderAssetConsumptionReportView(start, end) {
+  const alerts = assetAbnormalConsumptionAlerts();
+  const consumptions = dbTable("consumosActivos").filter((row) => inRangeDate(row.fecha, start, end));
+  reportCards([
+    { label: "Consumos en el período", value: String(consumptions.length) },
+    { label: "Costo total", value: money.format(consumptions.reduce((sum, row) => sum + (Number(row.totalCost) || 0), 0)) },
+    { label: "Alertas de consumo anormal", value: String(alerts.length) },
+  ]);
+  const rows = consumptions.map((row) => {
+    const asset = dbTable("activosFijos").find((a) => a.activoID === row.assetId);
+    const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+    const flagged = alerts.some((a) => a.assetId === row.assetId && a.itemId === row.itemId);
+    return `<tr class="${flagged ? "danger" : ""}"><td>${dateOnly(row.fecha)}</td><td>${asset?.nombre || row.assetId}</td><td>${item?.nombre || row.itemId}</td><td class="amount">${row.cantidad}</td><td class="amount">${money.format(row.totalCost || 0)}</td></tr>`;
+  });
+  renderReportTable(["Fecha", "Activo", "Artículo", "Cantidad", "Costo"], rows, "No hay consumo de activos en este período.");
+}
+
 function updateReportFilters() {
   const type = byId("report-type").value;
   byId("report-account-filter").classList.toggle("hidden", !["account-balances", "account-movements"].includes(type));
-  byId("report-staff-filter").classList.toggle("hidden", !["payroll", "staff-billing"].includes(type));
+  byId("report-staff-filter").classList.toggle("hidden", !["payroll", "staff-billing", "collaborator-audit"].includes(type));
   byId("report-client-filter").classList.toggle("hidden", !["billing", "receivables"].includes(type));
+  byId("report-station-filter")?.classList.toggle("hidden", !["collaborator-audit", "shared-stations"].includes(type));
+  byId("report-item-filter")?.classList.toggle("hidden", !["collaborator-audit", "inventory-lots"].includes(type));
+  byId("report-audit-status-filter")?.classList.toggle("hidden", !["collaborator-audit", "shared-stations"].includes(type));
   byId("report-tips-filter").classList.toggle("hidden", type !== "staff-billing");
   byId("report-commission-filter").classList.toggle("hidden", type !== "staff-billing");
   byId("report-deductions-filter").classList.toggle("hidden", type !== "staff-billing");
@@ -8220,6 +9063,12 @@ function renderReports() {
     "academy-consumption": "Consumo de Academia",
     "academy-inventory": "Existencia y reposición de Academia",
     "internal-issues": "Salidas internas (colaboradoras, área general, activos)",
+    "collaborator-audit": "Auditoría de inventario por colaboradora",
+    "shared-stations": "Mesas compartidas y variación sin atribuir",
+    "unassigned-consumption": "Consumo de inventario sin asignar",
+    "station-minimums": "Mínimos y reposición por mesa",
+    "inventory-lots": "Lotes de inventario y vencimientos",
+    "asset-consumption": "Consumo y alertas de activos",
   };
   byId("report-title").textContent = `${titles[type]} · ${start} a ${end}`;
   if (!reportGenerated) {
@@ -8253,6 +9102,12 @@ function renderReports() {
   if (type === "academy-consumption") return renderAcademyConsumptionReport(start, end);
   if (type === "academy-inventory") return renderAcademyInventoryReport();
   if (type === "internal-issues") return renderInternalIssuesReport(start, end);
+  if (type === "collaborator-audit") return renderCollaboratorAuditReport(start, end);
+  if (type === "shared-stations") return renderSharedStationsReport(start, end);
+  if (type === "unassigned-consumption") return renderUnassignedConsumptionReport(start, end);
+  if (type === "station-minimums") return renderStationMinimumsReport();
+  if (type === "inventory-lots") return renderInventoryLotsReport();
+  if (type === "asset-consumption") return renderAssetConsumptionReportView(start, end);
   return renderExecutiveReport(start, end);
 }
 
@@ -8456,6 +9311,9 @@ function renderAll() {
   safeRender("auditorias de mesa", renderStationAudits);
   safeRender("auditorias de academia", renderAcademyAudits);
   safeRender("alertas de inventario", renderInventoryAlerts);
+  safeRender("minimos por mesa", renderStationInventoryRules);
+  safeRender("lotes de inventario", renderInventoryLots);
+  safeRender("reglas de consumo de activos", renderAssetConsumptionRules);
   safeRender("activos fijos", renderFixedAssets);
   safeRender("custodia de activos", renderAssetCustodies);
   safeRender("eventos de activos", renderAssetEvents);
@@ -10367,8 +11225,33 @@ function wireForms() {
 
   byId("generate-report").addEventListener("click", () => {
     reportGenerated = true;
+    const reportType = byId("report-type").value;
+    // Auditado UNA vez por click explicito (no en cada re-render de
+    // renderAll, seccion 17): esto es lo que distingue "el usuario abrio
+    // este reporte" de un simple recalculo de pantalla.
+    if (reportType === "collaborator-audit") {
+      logAudit("collaborator_inventory_audit_viewed", {
+        entity: "reportes",
+        entityId: "collaborator-audit",
+        newData: { start: byId("report-start").value, end: byId("report-end").value },
+        note: "Reporte de auditoría de inventario por colaboradora generado.",
+        success: true,
+      });
+    }
     renderReports();
     byId("report-result-panel").scrollIntoView({ block: "start", behavior: "smooth" });
+  });
+
+  byId("report-result-panel").addEventListener("click", (event) => {
+    const auditButton = event.target.closest(".open-station-audit");
+    if (auditButton) {
+      openStationAuditFromReport(auditButton.dataset.auditId);
+      return;
+    }
+    const distributeButton = event.target.closest(".distribute-shared-variance");
+    if (distributeButton) {
+      promptDistributeSharedStationVariance(distributeButton.dataset.auditId);
+    }
   });
 
   byId("move-today-invoices-yesterday").addEventListener("click", moveTodayInvoicesToYesterday);
@@ -11907,12 +12790,32 @@ function wireForms() {
       const purchaseId = nextDbId("comprasInventario", "purchaseId", "COMP");
       const costPerBaseUnit = data.baseQuantity > 0 ? data.total / data.baseQuantity : 0;
       const previousGlobalStock = itemStockAt(data.item.itemID);
+      // Lote real (seccion 8-9): solo cuando el articulo controla lote
+      // (item.controlaLote); un articulo historico sin ese flag sigue
+      // comprandose exactamente igual que antes, sin lote.
+      let purchaseLotId = "";
+      if (data.item.controlaLote) {
+        const lotResult = createInventoryLot({
+          itemId: data.item.itemID,
+          batchNumber: byId("purchase-lot-batch")?.value.trim() || "",
+          supplierId: supplier.suplidorID,
+          purchaseId,
+          locationId: destinationWarehouse.locationId,
+          receivedDate: purchaseDate,
+          expirationDate: byId("purchase-lot-expiration")?.value || "",
+          originalQuantity: data.baseQuantity,
+          historicalUnitCost: costPerBaseUnit,
+          observation: "Creado desde compra de inventario.",
+        });
+        if (lotResult.lot) purchaseLotId = lotResult.lot.lotId;
+      }
       const movementResult = createInventoryMovement({
         itemId: data.item.itemID,
         tipo: "compra",
         cantidadBase: data.baseQuantity,
         costoUnitario: costPerBaseUnit,
         locationId: destinationWarehouse.locationId,
+        lotId: purchaseLotId,
         origen: "Compra",
         sourceId: purchaseId,
         sourceKey: `compra:${purchaseId}`,
@@ -12342,6 +13245,7 @@ function wireForms() {
       responsiblePersonId: responsibleName,
       responsiblePersonName: responsibleName,
       inventory: { [item.itemID]: itemStockAt(item.itemID, sourceLocation.locationId) },
+      lots: { [item.itemID]: lotsAvailableForFEFO(item.itemID, sourceLocation.locationId) },
       existingSourceKeys: activeInventorySourceKeys(),
       referenceDate: today,
     });
@@ -12358,22 +13262,40 @@ function wireForms() {
     const recordId = deliveryId || assetConsumptionId || internalConsumptionId;
     const sourceKey = `salida_interna:${recordId}`;
 
-    const movementResult = createInventoryMovement({
-      itemId: item.itemID,
-      tipo: movementTipo,
-      cantidadBase: quantity,
-      costoUnitario: unitCost,
-      locationId: sourceLocation.locationId,
-      origen: "Salida interna",
-      sourceId: recordId,
-      sourceKey,
-      motivo: reason,
-      usuario: currentUserEmail(),
+    // FEFO puede dividir esta salida entre varios lotes (seccion 11): un
+    // movimiento por lote, todos con el mismo sourceId/registro.
+    const plannedAllocations = preflight.movementPlan[0]?.lotAllocations?.length ? preflight.movementPlan[0].lotAllocations : [{ lotId: "", quantityTaken: quantity }];
+    const movementIds = [];
+    let movementError = "";
+    plannedAllocations.forEach((allocation) => {
+      if (movementError) return;
+      const allocQty = Number(allocation.quantityTaken) || 0;
+      if (allocQty <= 0) return;
+      const lotSuffix = allocation.lotId ? `:${allocation.lotId}` : "";
+      const movementResult = createInventoryMovement({
+        itemId: item.itemID,
+        tipo: movementTipo,
+        cantidadBase: allocQty,
+        costoUnitario: unitCost,
+        locationId: sourceLocation.locationId,
+        lotId: allocation.lotId || "",
+        origen: "Salida interna",
+        sourceId: recordId,
+        sourceKey: `${sourceKey}${lotSuffix}`,
+        motivo: reason,
+        usuario: currentUserEmail(),
+      });
+      if (!movementResult.movement) {
+        movementError = movementResult.result.validationErrors.join(" ") || "No se pudo registrar la salida interna.";
+        return;
+      }
+      movementIds.push(movementResult.movement.movementId);
     });
-    if (!movementResult.movement) {
-      alert(movementResult.result.validationErrors.join(" ") || "No se pudo registrar la salida interna.");
+    if (movementError || !movementIds.length) {
+      alert(movementError || "No se pudo registrar la salida interna.");
       return;
     }
+    const movementResult = { movement: { movementId: movementIds[0] } };
 
     if (destinationType === "collaborator") {
       dbTable("entregasColaboradoras").push(stampRecord({
@@ -12392,6 +13314,7 @@ function wireForms() {
         purpose: reason,
         sourceKey,
         movementId: movementResult.movement.movementId,
+        movementIds,
         status: "Registrada",
       }));
       logAudit("collaborator_inventory_delivered", {
@@ -12416,6 +13339,7 @@ function wireForms() {
         totalCost: DalfiClosingMath.roundMoney(unitCost * quantity),
         responsibleUser: responsibleName,
         movementId: movementResult.movement.movementId,
+        movementIds,
         sourceKey,
       }));
       logAudit("asset_inventory_consumed", {
@@ -12425,6 +13349,7 @@ function wireForms() {
         note: `Consumo de ${quantity} ${item.nombre} para el activo ${destinationName}.`,
         success: true,
       });
+      checkAndLogAssetAbnormalConsumption(destinationId, item.itemID);
     } else {
       dbTable("consumosGenerales").push(stampRecord({
         internalConsumptionId,
@@ -12439,6 +13364,7 @@ function wireForms() {
         historicalUnitCost: unitCost,
         totalCost: DalfiClosingMath.roundMoney(unitCost * quantity),
         movementId: movementResult.movement.movementId,
+        movementIds,
         sourceKey,
       }));
       logAudit("internal_inventory_consumed", {
@@ -12501,6 +13427,7 @@ function wireForms() {
     const preflight = DalfiClosingMath.preflightAcademyInventoryConsumption({
       lines: [{ itemId: item.itemID, quantity, historicalUnitCost: unitCost, activityType: byId("academy-consumption-activity").value }],
       academyInventory: { [item.itemID]: itemStockAt(item.itemID, academyWarehouse.locationId) },
+      lots: { [item.itemID]: lotsAvailableForFEFO(item.itemID, academyWarehouse.locationId) },
       existingSourceKeys: activeInventorySourceKeys(),
       sourceKey,
       referenceDate: today,
@@ -12509,20 +13436,36 @@ function wireForms() {
       alert(`No se puede registrar el consumo de Academia: ${preflight.blockingErrors.join(" ")}`);
       return;
     }
-    const movementResult = createInventoryMovement({
-      itemId: item.itemID,
-      tipo: "consumo_academia",
-      cantidadBase: quantity,
-      costoUnitario: unitCost,
-      locationId: academyWarehouse.locationId,
-      origen: "Consumo de Academia",
-      sourceId: consumptionId,
-      sourceKey,
-      motivo: byId("academy-consumption-activity").value,
-      usuario: currentUserEmail(),
+    // FEFO puede dividir este consumo entre varios lotes (seccion 11).
+    const academyAllocations = preflight.movementPlan[0]?.lotAllocations?.length ? preflight.movementPlan[0].lotAllocations : [{ lotId: "", quantityTaken: quantity }];
+    const academyMovementIds = [];
+    let academyMovementError = "";
+    academyAllocations.forEach((allocation) => {
+      if (academyMovementError) return;
+      const allocQty = Number(allocation.quantityTaken) || 0;
+      if (allocQty <= 0) return;
+      const lotSuffix = allocation.lotId ? `:${allocation.lotId}` : "";
+      const movementResult = createInventoryMovement({
+        itemId: item.itemID,
+        tipo: "consumo_academia",
+        cantidadBase: allocQty,
+        costoUnitario: unitCost,
+        locationId: academyWarehouse.locationId,
+        lotId: allocation.lotId || "",
+        origen: "Consumo de Academia",
+        sourceId: consumptionId,
+        sourceKey: `${sourceKey}${lotSuffix}`,
+        motivo: byId("academy-consumption-activity").value,
+        usuario: currentUserEmail(),
+      });
+      if (!movementResult.movement) {
+        academyMovementError = movementResult.result.validationErrors.join(" ") || "No se pudo registrar el consumo de Academia.";
+        return;
+      }
+      academyMovementIds.push(movementResult.movement.movementId);
     });
-    if (!movementResult.movement) {
-      alert(movementResult.result.validationErrors.join(" ") || "No se pudo registrar el consumo de Academia.");
+    if (academyMovementError || !academyMovementIds.length) {
+      alert(academyMovementError || "No se pudo registrar el consumo de Academia.");
       return;
     }
     dbTable("consumosAcademia").push(stampRecord({
@@ -12532,6 +13475,7 @@ function wireForms() {
       cantidad: quantity,
       unidad: item.unidad || item.unidadBase || "",
       cantidadBase: quantity,
+      movementIds: academyMovementIds,
       fecha: today,
       activityType: byId("academy-consumption-activity").value,
       courseId: "",
@@ -12545,7 +13489,7 @@ function wireForms() {
       reason: byId("academy-consumption-activity").value,
       historicalUnitCost: unitCost,
       totalCost: DalfiClosingMath.roundMoney(unitCost * quantity),
-      movementId: movementResult.movement.movementId,
+      movementId: academyMovementIds[0],
       sourceKey,
       status: "Confirmado",
     }));
@@ -13093,8 +14037,9 @@ function wireForms() {
       const movements = [];
       let stockFailed = "";
       // Cada linea descuenta EXCLUSIVAMENTE su propia ubicacion seleccionada
-      // (nunca la estanteria por defecto, nunca un respaldo automatico):
-      // un solo movimiento de salida por linea, jamas dos ubicaciones para
+      // (nunca la estanteria por defecto, nunca un respaldo automatico); un
+      // solo movimiento de salida por linea/lote (FEFO puede dividir una
+      // linea entre varios lotes, seccion 11), jamas dos ubicaciones para
       // el mismo producto (seccion 6).
       preflight.normalizedLines.forEach((normalized) => {
         if (stockFailed) return;
@@ -13105,22 +14050,30 @@ function wireForms() {
           note: `Ubicación seleccionada para ${normalized.descripcion}: ${normalized.selectedLocationName || normalized.selectedLocationId}.`,
           success: true,
         });
-        const movementResult = createInventoryMovement({
-          itemId: normalized.itemId,
-          tipo: "venta",
-          cantidadBase: normalized.cantidad,
-          costoUnitario: normalized.historicalUnitCost,
-          locationId: normalized.selectedLocationId,
-          origen: "Venta de producto",
-          sourceId: retailSaleId,
-          sourceKey: `venta:${retailSaleId}:${normalized.itemId}:${normalized.selectedLocationId}`,
-          motivo: `Venta de producto (${normalized.selectedLocationName || normalized.selectedLocationId})`,
+        const allocations = normalized.lotAllocations && normalized.lotAllocations.length ? normalized.lotAllocations : [{ lotId: "", quantityTaken: normalized.cantidad }];
+        allocations.forEach((allocation) => {
+          if (stockFailed) return;
+          const allocQty = Number(allocation.quantityTaken) || 0;
+          if (allocQty <= 0) return;
+          const lotSuffix = allocation.lotId ? `:${allocation.lotId}` : "";
+          const movementResult = createInventoryMovement({
+            itemId: normalized.itemId,
+            tipo: "venta",
+            cantidadBase: allocQty,
+            costoUnitario: normalized.historicalUnitCost,
+            locationId: normalized.selectedLocationId,
+            lotId: allocation.lotId || "",
+            origen: "Venta de producto",
+            sourceId: retailSaleId,
+            sourceKey: `venta:${retailSaleId}:${normalized.itemId}:${normalized.selectedLocationId}${lotSuffix}`,
+            motivo: `Venta de producto (${normalized.selectedLocationName || normalized.selectedLocationId})`,
+          });
+          if (!movementResult.movement) {
+            stockFailed = movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de la ubicación seleccionada.";
+            return;
+          }
+          movements.push(movementResult.movement);
         });
-        if (!movementResult.movement) {
-          stockFailed = movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de la ubicación seleccionada.";
-          return;
-        }
-        movements.push(movementResult.movement);
       });
       if (stockFailed) {
         alert(stockFailed);
@@ -14667,6 +15620,242 @@ function wireNumberFieldFocus() {
   });
 }
 
+// ===========================================================================
+// Wiring de la fase "Cerrar reportes alertas y auditoria por colaboradora":
+// minimos por mesa, lotes de inventario, reglas de consumo de activos y
+// configuracion de plazos de vencimiento. Funcion separada (en vez de
+// insertarla dentro de wireForms(), que ya es enorme) para que el diff de
+// esta fase sea facil de revisar de forma aislada.
+// ===========================================================================
+function wireInventoryCollaboratorAuditPhase() {
+  byId("station-rule-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const station = findStationByName(byId("station-rule-station").value.trim());
+    if (!station) {
+      alert("Selecciona una mesa existente.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("station-rule-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      return;
+    }
+    const result = saveStationInventoryRule({
+      ruleId: byId("station-rule-edit-id").value,
+      stationId: station.stationId,
+      itemId: item.itemID,
+      minimumStock: byId("station-rule-minimum").value,
+      targetStock: byId("station-rule-target").value,
+      observation: byId("station-rule-observation").value.trim(),
+    });
+    if (!result.ok) {
+      alert(result.error);
+      return;
+    }
+    event.target.reset();
+    byId("station-rule-edit-id").value = "";
+    saveState();
+    renderAll();
+  });
+
+  byId("station-rule-list")?.addEventListener("click", (event) => {
+    const ruleId = event.target.dataset.ruleId;
+    if (!ruleId) return;
+    if (event.target.classList.contains("station-rule-edit")) {
+      const rule = dbTable("stationInventoryRules").find((row) => row.ruleId === ruleId);
+      if (!rule) return;
+      const station = dbTable("mesas").find((row) => row.stationId === rule.stationId);
+      const item = dbTable("inventario").find((row) => row.itemID === rule.itemId);
+      byId("station-rule-edit-id").value = rule.ruleId;
+      byId("station-rule-station").value = station?.nombre || rule.stationId;
+      byId("station-rule-item").value = item?.nombre || rule.itemId;
+      byId("station-rule-minimum").value = rule.minimumStock;
+      byId("station-rule-target").value = rule.targetStock;
+      byId("station-rule-observation").value = rule.observation || "";
+      byId("station-rule-form").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    if (event.target.classList.contains("station-rule-deactivate")) {
+      const result = deactivateStationInventoryRule(ruleId);
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+    }
+  });
+
+  byId("inventory-lot-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar lotes.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("lot-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      return;
+    }
+    const warehouse = findWarehouseByName(byId("lot-location").value.trim());
+    if (!warehouse) {
+      alert("Selecciona una ubicación existente.");
+      return;
+    }
+    const quantity = Number(byId("lot-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      return;
+    }
+    const result = createInventoryLot({
+      itemId: item.itemID,
+      batchNumber: byId("lot-batch-number").value.trim(),
+      locationId: warehouse.locationId,
+      receivedDate: byId("lot-received-date").value || today,
+      expirationDate: byId("lot-expiration-date").value || "",
+      originalQuantity: quantity,
+      historicalUnitCost: Number(byId("lot-cost").value) || Number(item.costoPromedio) || Number(item.costo) || 0,
+      observation: byId("lot-observation").value.trim(),
+    });
+    if (!result.lot) {
+      alert(result.error);
+      return;
+    }
+    // Un lote registrado manualmente (fuera de una compra) tambien entra
+    // como entrada real de inventario, para que su existencia disponible
+    // sea utilizable de inmediato por FEFO (seccion 9).
+    createInventoryMovement({
+      itemId: item.itemID,
+      tipo: "entrada",
+      cantidadBase: quantity,
+      costoUnitario: result.lot.historicalUnitCost,
+      locationId: warehouse.locationId,
+      lotId: result.lot.lotId,
+      origen: "Registro manual de lote",
+      sourceId: result.lot.lotId,
+      sourceKey: `lote:${result.lot.lotId}:entrada`,
+      motivo: "Entrada inicial del lote",
+      usuario: currentUserEmail(),
+    });
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("inventory-lot-search")?.addEventListener("input", renderInventoryLots);
+
+  byId("inventory-lot-list")?.addEventListener("click", (event) => {
+    const lotId = event.target.dataset.lotId;
+    if (!lotId) return;
+    if (event.target.classList.contains("lot-movements")) {
+      showLotMovements(lotId);
+      return;
+    }
+    if (event.target.classList.contains("lot-quarantine")) {
+      const reason = prompt("Motivo para poner este lote en cuarentena:");
+      if (!reason) {
+        alert("La cuarentena requiere un motivo.");
+        return;
+      }
+      const result = changeInventoryLotStatus(lotId, "Cuarentena", { reason });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("lot-retire")) {
+      const reason = prompt("Motivo para retirar este lote:");
+      if (!reason) {
+        alert("El retiro requiere un motivo.");
+        return;
+      }
+      const result = changeInventoryLotStatus(lotId, "Retirado", { reason });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("lot-release")) {
+      const result = changeInventoryLotStatus(lotId, "Disponible", { reason: "Liberado de cuarentena" });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+    }
+  });
+
+  byId("inventory-expiration-config-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede configurar los plazos de vencimiento.");
+      return;
+    }
+    const config = inventoryConfig();
+    const oldData = { diasAlertaTemprana: config.diasAlertaTemprana, diasAlertaProxima: config.diasAlertaProxima, diasAlertaUrgente: config.diasAlertaUrgente };
+    config.diasAlertaTemprana = Math.max(1, Number(byId("config-days-early").value) || 60);
+    config.diasAlertaProxima = Math.max(1, Number(byId("config-days-near").value) || 30);
+    config.diasAlertaUrgente = Math.max(1, Number(byId("config-days-urgent").value) || 7);
+    stampRecord(config, "updated");
+    logAudit("inventory_expiration_configuration_changed", {
+      entity: "configuracionInventario",
+      entityId: config.configId,
+      oldData,
+      newData: { diasAlertaTemprana: config.diasAlertaTemprana, diasAlertaProxima: config.diasAlertaProxima, diasAlertaUrgente: config.diasAlertaUrgente },
+      note: "Plazos de alerta de vencimiento de lotes actualizados.",
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
+  byId("asset-consumption-rule-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const assetName = byId("asset-rule-asset").value.trim();
+    const asset = assetName ? dbTable("activosFijos").find((row) => normalize(row.nombre) === normalize(assetName)) : null;
+    const category = byId("asset-rule-category").value.trim();
+    const itemName = byId("asset-rule-item").value.trim();
+    const item = itemName ? findInventoryItemByName(itemName) : null;
+    const maxQuantityRaw = byId("asset-rule-max-quantity").value;
+    const maxCostRaw = byId("asset-rule-max-cost").value;
+    const result = saveAssetConsumptionRule({
+      assetId: asset?.activoID || "",
+      assetCategory: asset ? "" : category,
+      itemId: item?.itemID || "",
+      periodType: byId("asset-rule-period").value,
+      maximumQuantity: maxQuantityRaw === "" ? "" : Number(maxQuantityRaw),
+      maximumCost: maxCostRaw === "" ? "" : Number(maxCostRaw),
+      observation: byId("asset-rule-observation").value.trim(),
+    });
+    if (!result.ok) {
+      alert(result.error);
+      return;
+    }
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("asset-consumption-rule-list")?.addEventListener("click", (event) => {
+    const ruleId = event.target.dataset.ruleId;
+    if (!ruleId || !event.target.classList.contains("asset-rule-deactivate")) return;
+    const result = deactivateAssetConsumptionRule(ruleId);
+    if (!result.ok) {
+      alert(result.error);
+      return;
+    }
+    saveState();
+    renderAll();
+  });
+}
+
 async function init() {
   await loadDatabase();
   ensureCashModuleMarkup();
@@ -14684,6 +15873,10 @@ async function init() {
   byId("expense-date").value = today;
   byId("inventory-entry-date").value = today;
   byId("asset-acquired-date").value = today;
+  if (byId("lot-received-date")) byId("lot-received-date").value = today;
+  if (byId("config-days-early")) byId("config-days-early").value = inventoryConfig().diasAlertaTemprana;
+  if (byId("config-days-near")) byId("config-days-near").value = inventoryConfig().diasAlertaProxima;
+  if (byId("config-days-urgent")) byId("config-days-urgent").value = inventoryConfig().diasAlertaUrgente;
   byId("report-start").value = `${month}-01`;
   byId("report-end").value = today;
   byId("accounts-filter-start").value = today;
@@ -14697,6 +15890,7 @@ async function init() {
   wireDataFormToggles();
   wireInlineListToggles();
   wireForms();
+  wireInventoryCollaboratorAuditPhase();
   wireSearches();
   wireNumberFieldFocus();
   byId("accounts-filter-apply")?.addEventListener("click", renderAccountsView);
