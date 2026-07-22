@@ -806,6 +806,7 @@
                   <option value="mantenimiento">Taller o mantenimiento</option>
                   <option value="danados">Artículos dañados</option>
                   <option value="cuarentena">Cuarentena</option>
+                  <option value="academia">Almacén de la Academia</option>
                   <option value="sucursal_futura">Ubicación futura de otra sucursal</option>
                 </select>
               </label>
@@ -816,6 +817,9 @@
               <div class="form-row">
                 <label><input id="warehouse-allows-consumption" type="checkbox" checked /> Permite consumo</label>
                 <label><input id="warehouse-allows-custody" type="checkbox" /> Permite custodia</label>
+              </div>
+              <div class="form-row">
+                <label><input id="warehouse-allows-transfer" type="checkbox" checked /> Permite transferencia</label>
               </div>
               <label>
                 Observación
@@ -916,6 +920,7 @@
                 Artículo
                 <input id="purchase-item" list="inventory-item-list" required />
               </label>
+              <label><input id="purchase-to-academy" type="checkbox" /> Comprar directo para el Almacén de la Academia (en vez de provisiones/almacén del salón)</label>
               <div class="form-row">
                 <label>
                   Cantidad (unidad de compra)
@@ -1190,9 +1195,9 @@
 
             <form class="panel form-panel" id="retail-sale-form">
               <div class="panel-head">
-                <h3>Ventas de productos (estantería)</h3>
+                <h3>Ventas de productos</h3>
               </div>
-              <p class="panel-note">Módulo independiente de Facturación de servicios: solo productos de estantería, nunca servicios, colaboradoras de servicio ni propinas.</p>
+              <p class="panel-note">Módulo independiente de Facturación de servicios: solo productos, nunca servicios, colaboradoras de servicio ni propinas. Cada línea selecciona su propia ubicación de salida (estantería, almacén del salón u otra ubicación autorizada); nunca hay respaldo automático a otra ubicación.</p>
               <label>
                 Cliente (opcional en efectivo; obligatorio a crédito o transferencia pendiente)
                 <input id="retail-sale-client-search" list="clients-list" placeholder="Buscar o dejar en blanco para consumidor final" />
@@ -1211,13 +1216,242 @@
               <button class="secondary-btn compact" id="add-retail-sale-payment-line" type="button">Agregar forma de pago</button>
               <output id="retail-sale-payment-summary">Pagado: RD$0.00 · Pendiente: RD$0.00</output>
               <button class="primary-btn" id="retail-sale-submit" type="submit">Confirmar venta</button>
-              <p class="panel-note">Sale EXCLUSIVAMENTE de Estantería de venta: nunca del almacén del salón, de provisiones, de una mesa ni de una custodia. Si falta la estantería o la cantidad, la venta se bloquea. El saldo no cubierto con pago confirmado crea una cuenta por cobrar del cliente (misma cuenta corriente que Facturación de servicios, identificada como origen "Producto").</p>
+              <p class="panel-note">Descuenta EXCLUSIVAMENTE la ubicación seleccionada en cada línea: nunca hay respaldo automático a otra ubicación. Si falta existencia o la ubicación no está habilitada para vender, la venta se bloquea. El saldo no cubierto con pago confirmado crea una cuenta por cobrar del cliente (misma cuenta corriente que Facturación de servicios, identificada como origen "Producto").</p>
             </form>
             <section class="panel">
               <div class="panel-head">
                 <h3>Ventas de productos</h3>
               </div>
               <div class="simple-list" id="retail-sale-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Alertas de inventario</h3>
+                <p class="panel-note">Ubicación bajo mínimo, entregas de mesa pendientes de recepción, auditorías pendientes y variaciones sin justificar.</p>
+              </div>
+              <div class="simple-list" id="inventory-alert-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="station-delivery-form">
+              <div class="panel-head">
+                <h3>Entrega a mesa</h3>
+                <p class="panel-note">Almacén → Mesa: transferencia interna (nunca genera ingreso, nunca entra en Cierres). Queda "Pendiente de recepción" hasta que la colaboradora confirme.</p>
+              </div>
+              <label>
+                Artículo
+                <input id="station-delivery-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Ubicación de origen
+                  <input id="station-delivery-from" list="warehouse-list-options" required />
+                </label>
+                <label>
+                  Mesa destino
+                  <input id="station-delivery-station" list="stations-list" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Cantidad
+                  <input id="station-delivery-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+                <label>
+                  Colaboradora que recibe
+                  <input id="station-delivery-collaborator" list="staff-list" />
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Registrar entrega a mesa</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Entregas y devoluciones de mesa</h3>
+              </div>
+              <div class="simple-list" id="station-delivery-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="internal-issue-form">
+              <div class="panel-head">
+                <h3>Salidas internas de inventario</h3>
+                <p class="panel-note">Colaboradora, área general, activo/equipo, mantenimiento u otro destino. Toda salida interna debe identificar destino y responsable; nunca genera egreso nuevo (el egreso ya ocurrió al comprar).</p>
+              </div>
+              <label>
+                Artículo
+                <input id="internal-issue-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Ubicación de origen
+                  <input id="internal-issue-from" list="warehouse-list-options" required />
+                </label>
+                <label>
+                  Cantidad
+                  <input id="internal-issue-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+              </div>
+              <label>
+                Destino
+                <select id="internal-issue-destination-type">
+                  <option value="collaborator">Colaboradora</option>
+                  <option value="general_area">Área general del centro</option>
+                  <option value="asset">Activo o equipo</option>
+                  <option value="maintenance">Mantenimiento</option>
+                  <option value="other">Otro</option>
+                </select>
+              </label>
+              <div id="internal-issue-collaborator-fields" class="form-row">
+                <label>
+                  Colaboradora
+                  <input id="internal-issue-collaborator" list="staff-list" />
+                </label>
+                <label>
+                  Tipo de entrega
+                  <select id="internal-issue-collaborator-case">
+                    <option value="custody">Transferencia bajo su responsabilidad</option>
+                    <option value="immediate">Consumo inmediato</option>
+                  </select>
+                </label>
+              </div>
+              <div id="internal-issue-general-fields" class="form-row hidden">
+                <label>
+                  Área
+                  <input id="internal-issue-area" placeholder="Recepción, baño, limpieza, oficina..." />
+                </label>
+              </div>
+              <div id="internal-issue-asset-fields" class="form-row hidden">
+                <label>
+                  Activo
+                  <input id="internal-issue-asset" list="asset-list-options" />
+                </label>
+              </div>
+              <label>
+                Responsable
+                <input id="internal-issue-responsible" list="staff-list" required />
+              </label>
+              <label>
+                Motivo
+                <input id="internal-issue-reason" required />
+              </label>
+              <button class="primary-btn" type="submit">Registrar salida interna</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Salidas internas registradas</h3>
+              </div>
+              <div class="simple-list" id="internal-issue-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="academy-consumption-form">
+              <div class="panel-head">
+                <h3>Almacén de la Academia: consumo</h3>
+                <p class="panel-note">Clase, práctica, taller, demostración, evaluación o uso administrativo. Nunca se mezcla con el consumo del salón.</p>
+              </div>
+              <label>
+                Artículo
+                <input id="academy-consumption-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Cantidad
+                  <input id="academy-consumption-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+                <label>
+                  Actividad
+                  <select id="academy-consumption-activity">
+                    <option value="clase">Clase</option>
+                    <option value="practica">Práctica</option>
+                    <option value="taller">Taller</option>
+                    <option value="demostracion">Demostración</option>
+                    <option value="evaluacion">Evaluación</option>
+                    <option value="administrativo">Uso administrativo</option>
+                    <option value="otro">Otro</option>
+                  </select>
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Curso/clase
+                  <input id="academy-consumption-course" />
+                </label>
+                <label>
+                  Instructora
+                  <input id="academy-consumption-instructor" list="staff-list" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Grupo (opcional)
+                  <input id="academy-consumption-group" />
+                </label>
+                <label>
+                  Participantes (opcional)
+                  <input id="academy-consumption-participants" type="number" min="0" step="1" />
+                </label>
+              </div>
+              <label>
+                Responsable
+                <input id="academy-consumption-responsible" list="staff-list" required />
+              </label>
+              <button class="primary-btn" type="submit">Registrar consumo de Academia</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Consumos de Academia registrados</h3>
+              </div>
+              <div class="simple-list" id="academy-consumption-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="academy-audit-form">
+              <div class="panel-head">
+                <h3>Auditoría de Academia</h3>
+                <p class="panel-note">Compara saldo inicial, compras/transferencias recibidas, devoluciones y consumo registrado contra el conteo físico. Nunca se mezcla con la auditoría de mesas del salón.</p>
+              </div>
+              <div class="form-row">
+                <label>
+                  Desde
+                  <input id="academy-audit-start" type="date" required />
+                </label>
+                <label>
+                  Hasta
+                  <input id="academy-audit-end" type="date" required />
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Abrir auditoría de Academia</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Auditorías de Academia</h3>
+              </div>
+              <div class="simple-list" id="academy-audit-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="station-audit-form">
+              <div class="panel-head">
+                <h3>Auditoría de mesas</h3>
+                <p class="panel-note">Compara consumo esperado (fichas técnicas de servicios), consumo observado (saldo inicial + entregas − devoluciones − conteo físico) y consumo real declarado. Nunca crea sanciones ni egresos automáticos.</p>
+              </div>
+              <div class="form-row">
+                <label>
+                  Mesa
+                  <input id="station-audit-station" list="stations-list" required />
+                </label>
+                <label>
+                  Desde
+                  <input id="station-audit-start" type="date" required />
+                </label>
+                <label>
+                  Hasta
+                  <input id="station-audit-end" type="date" required />
+                </label>
+              </div>
+              <button class="primary-btn" type="submit">Abrir auditoría</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Auditorías de mesa</h3>
+              </div>
+              <div class="simple-list" id="station-audit-list"></div>
             </section>
           </div>
         </section>
@@ -2135,6 +2369,10 @@
                     <option value="service-direct-margin">Costo y margen directo por servicio</option>
                     <option value="pending-consumption">Consumo pendiente de confirmación</option>
                     <option value="fixed-assets">Activos fijos</option>
+                    <option value="station-audits">Auditorías de mesa y variaciones</option>
+                    <option value="academy-consumption">Consumo de Academia</option>
+                    <option value="academy-inventory">Existencia y reposición de Academia</option>
+                    <option value="internal-issues">Salidas internas</option>
                   </select>
                 </label>
                 <label>

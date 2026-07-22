@@ -1001,6 +1001,8 @@
     "entrega_mesa",
     "entrega_custodia",
     "devolucion_suplidor",
+    "consumo_academia",
+    "consumo_interno",
   ]);
   const INVENTORY_INBOUND_TYPES = new Set([
     "entrada",
@@ -1011,6 +1013,7 @@
     "devolucion_mesa",
     "retorno_custodia",
     "reversion",
+    "devolucion_academia",
   ]);
 
   // Valida y calcula el efecto de UN movimiento de inventario, sin aplicarlo
@@ -1510,16 +1513,26 @@
   // unico lote sin vencimiento (compatibilidad con el inventario actual,
   // que todavia no tiene lotes reales) para no inventar bloqueos donde
   // nunca existieron.
+  // locationId por linea (julio 2026): una venta ya NO esta atada a una
+  // unica estanteria global. Cuando una linea trae locationId, la
+  // existencia se lee EXCLUSIVAMENTE de inventoryByLocation[`${itemId}:${locationId}`]
+  // y la ubicacion debe existir, estar activa y tener permiteVenta=true (sin
+  // respaldo automatico a otra ubicacion). Una linea SIN locationId conserva
+  // el comportamiento historico (shelfInventory[itemId]), para no romper
+  // llamadores/pruebas existentes que todavia no seleccionan ubicacion.
   function preflightRetailProductSale({
     lines = [],
     items = [],
     shelfInventory = {},
+    inventoryByLocation = {},
+    locations = [],
     lots = {},
     existingSourceKeys = [],
     sourceKey = "",
     referenceDate = "",
   } = {}) {
     const itemById = new Map((Array.isArray(items) ? items : []).map((item) => [item.itemId, item]));
+    const locationById = new Map((Array.isArray(locations) ? locations : []).map((location) => [location.locationId, location]));
     const blockingErrors = [];
     const warnings = [];
     const shortages = [];
@@ -1565,15 +1578,38 @@
       const grossAmount = Math.max(0, roundMoney(quantity * unitPrice - discount));
       const split = splitInvoiceLineTax({ amount: grossAmount, taxable, taxRate, priceIncludesTax: Boolean(item.priceIncludesTax) });
 
-      // Existencia y lote FEFO en la estanteria de venta.
-      const available = Math.max(0, sanitizeAmount(shelfInventory[item.itemId]));
+      // Ubicacion de salida: explicita por linea (nunca respaldo automatico)
+      // o, por compatibilidad historica, la estanteria global implicita en
+      // shelfInventory cuando la linea no trae locationId.
+      const requestedLocationId = line.locationId || "";
+      let selectedLocationName = "";
+      let available = 0;
+      if (requestedLocationId) {
+        const location = locationById.get(requestedLocationId);
+        if (!location) {
+          blockingErrors.push(`Ubicación no encontrada para "${item.nombre || item.itemId}".`);
+          return;
+        }
+        if (location.activa === false) {
+          blockingErrors.push(`La ubicación "${location.nombre || requestedLocationId}" está inactiva.`);
+          return;
+        }
+        if (location.permiteVenta !== true) {
+          blockingErrors.push(`La ubicación "${location.nombre || requestedLocationId}" no está habilitada para venta.`);
+          return;
+        }
+        selectedLocationName = location.nombre || "";
+        available = Math.max(0, sanitizeAmount(inventoryByLocation[`${item.itemId}:${requestedLocationId}`]));
+      } else {
+        available = Math.max(0, sanitizeAmount(shelfInventory[item.itemId]));
+      }
       const itemLots = Array.isArray(lots[item.itemId]) && lots[item.itemId].length
         ? lots[item.itemId]
         : [{ lotId: "", quantity: available, fechaVencimiento: "", fechaEntrada: "" }];
       const fefo = allocateFEFO({ lots: itemLots, quantityNeeded: quantity, referenceDate });
       if (fefo.unallocated > 0) {
-        shortages.push({ itemId: item.itemId, needed: quantity, available: roundMoney(quantity - fefo.unallocated), shortfall: fefo.unallocated });
-        blockingErrors.push(`Existencia insuficiente de "${item.nombre || item.itemId}" en estantería: faltan ${fefo.unallocated}.`);
+        shortages.push({ itemId: item.itemId, locationId: requestedLocationId, needed: quantity, available: roundMoney(quantity - fefo.unallocated), shortfall: fefo.unallocated });
+        blockingErrors.push(`Existencia insuficiente de "${item.nombre || item.itemId}"${selectedLocationName ? ` en ${selectedLocationName}` : " en estantería"}: faltan ${fefo.unallocated}.`);
       }
       fefo.allocations.forEach((allocation) => {
         selectedLots.push({ itemId: item.itemId, lotId: allocation.lotId, quantity: allocation.quantityTaken });
@@ -1600,13 +1636,16 @@
         taxAmount: split.taxAmount,
         total: split.totalAmount,
         shelfLocationId: item.shelfLocationId || "",
+        selectedLocationId: requestedLocationId,
+        selectedLocationName,
+        availableStock: available,
         lotAllocations: fefo.allocations,
         historicalUnitCost: unitCost,
         totalHistoricalCost,
         grossMargin: margin.marginAmount,
         grossMarginPercentage: margin.marginPercent,
       });
-      stockPlan.push({ itemId: item.itemId, quantity, lotAllocations: fefo.allocations });
+      stockPlan.push({ itemId: item.itemId, locationId: requestedLocationId, quantity, lotAllocations: fefo.allocations });
 
       discounts = roundMoney(discounts + discount);
       taxableBase = roundMoney(taxableBase + split.baseAmount);
@@ -1639,6 +1678,285 @@
       warnings,
       allowed,
     };
+  }
+
+  // ===========================================================================
+  // Almacen de Academia, salidas internas y auditoria de mesas/Academia
+  // (julio 2026). Funciones puras: no leen DOM, no persisten, no crean
+  // egreso/CxC/auditoria por si mismas. app.js decide que hacer con el
+  // resultado.
+  // ===========================================================================
+
+  // Todo destino interno normalizado (seccion 16): nunca se permite una
+  // salida interna sin destino conocido.
+  const INTERNAL_ISSUE_DESTINATION_TYPES = new Set([
+    "station",
+    "collaborator",
+    "general_area",
+    "asset",
+    "academy",
+    "maintenance",
+    "loss",
+    "damage",
+    "expiration",
+    "quarantine",
+    "supplier_return",
+    "other",
+  ]);
+
+  // Prevalidacion COMPLETA de una salida interna de inventario (entrega a
+  // colaboradora, consumo general del centro, consumo de activo,
+  // mantenimiento, perdida/dano/vencimiento/cuarentena/devolucion a
+  // suplidor/otro). Nunca vende, nunca genera egreso ni CxC: solo dice que
+  // se necesita, que hay disponible y si la operacion queda permitida.
+  // Bloquea sin destino y sin responsable (seccion 16: "no permitir salida
+  // interna sin destino").
+  function preflightInternalInventoryIssue({
+    lines = [],
+    sourceLocation = null,
+    destinationType = "",
+    destinationId = "",
+    destinationName = "",
+    responsiblePersonId = "",
+    responsiblePersonName = "",
+    inventory = {},
+    lots = {},
+    negativeStockPolicy = () => false,
+    existingSourceKeys = [],
+    sourceKey = "",
+    referenceDate = "",
+  } = {}) {
+    const blockingErrors = [];
+    const warnings = [];
+    const shortages = [];
+    const normalizedLines = [];
+    const selectedLots = [];
+    const movementPlan = [];
+    let historicalCost = 0;
+
+    if (!sourceLocation || !sourceLocation.locationId) {
+      blockingErrors.push("Selecciona la ubicación de origen de la salida interna.");
+    } else if (sourceLocation.activa === false) {
+      blockingErrors.push(`La ubicación "${sourceLocation.nombre || sourceLocation.locationId}" está inactiva.`);
+    }
+
+    if (!INTERNAL_ISSUE_DESTINATION_TYPES.has(destinationType)) {
+      blockingErrors.push(`Destino de salida interna inválido o no especificado: "${destinationType || "(vacío)"}".`);
+    }
+    if (!destinationId && !destinationName) {
+      blockingErrors.push("Toda salida interna debe identificar un destino.");
+    }
+    if (!responsiblePersonId) {
+      blockingErrors.push("Toda salida interna debe identificar un responsable.");
+    }
+
+    const duplicate = Boolean(sourceKey) && (Array.isArray(existingSourceKeys) ? existingSourceKeys : []).includes(sourceKey);
+    if (duplicate) blockingErrors.push("Esta salida interna ya fue registrada antes (sourceKey duplicado).");
+
+    (Array.isArray(lines) ? lines : []).forEach((line, index) => {
+      const itemId = line?.itemId || "";
+      const quantity = Math.max(0, sanitizeAmount(line?.quantity));
+      if (!itemId) {
+        blockingErrors.push(`Artículo no especificado (línea ${index + 1}).`);
+        return;
+      }
+      if (quantity <= 0) {
+        blockingErrors.push(`Cantidad inválida para "${itemId}".`);
+        return;
+      }
+      const available = Math.max(0, sanitizeAmount(inventory[itemId]));
+      const itemLots = Array.isArray(lots[itemId]) && lots[itemId].length
+        ? lots[itemId]
+        : [{ lotId: "", quantity: available, fechaVencimiento: "", fechaEntrada: "" }];
+      const fefo = allocateFEFO({ lots: itemLots, quantityNeeded: quantity, referenceDate });
+      const negativeAllowed = Boolean(negativeStockPolicy(itemId));
+      if (fefo.unallocated > 0 && !negativeAllowed) {
+        shortages.push({ itemId, needed: quantity, available: roundMoney(quantity - fefo.unallocated), shortfall: fefo.unallocated });
+        blockingErrors.push(`Existencia insuficiente de "${itemId}": faltan ${fefo.unallocated}.`);
+      }
+      fefo.allocations.forEach((allocation) => selectedLots.push({ itemId, lotId: allocation.lotId, quantity: allocation.quantityTaken }));
+      const unitCost = Math.max(0, sanitizeAmount(line?.historicalUnitCost));
+      const totalCost = roundMoney(unitCost * quantity);
+      historicalCost = roundMoney(historicalCost + totalCost);
+      normalizedLines.push({ itemId, quantity, unitCost, totalCost, lotAllocations: fefo.allocations });
+      movementPlan.push({ itemId, quantity, unitCost, lotAllocations: fefo.allocations, allowNegativeStock: negativeAllowed });
+    });
+
+    const allowed = blockingErrors.length === 0 && normalizedLines.length > 0;
+    return {
+      normalizedLines,
+      destination: { destinationType, destinationId, destinationName, responsiblePersonId, responsiblePersonName },
+      movementPlan,
+      selectedLots,
+      historicalCost,
+      shortages,
+      duplicate,
+      blockingErrors,
+      warnings,
+      allowed,
+    };
+  }
+
+  // Prevalidacion COMPLETA de un consumo del Almacen de la Academia (clase,
+  // practica, taller, demostracion, evaluacion, uso administrativo, otro).
+  // Nunca mezcla con el consumo del salon: usa exclusivamente el inventario
+  // de esta ubicacion (academyInventory), pasado por el llamador.
+  function preflightAcademyInventoryConsumption({
+    lines = [],
+    academyInventory = {},
+    lots = {},
+    existingSourceKeys = [],
+    sourceKey = "",
+    referenceDate = "",
+  } = {}) {
+    const blockingErrors = [];
+    const warnings = [];
+    const shortages = [];
+    const normalizedLines = [];
+    const selectedLots = [];
+    const stockPlan = [];
+    let totalHistoricalCost = 0;
+
+    const duplicate = Boolean(sourceKey) && (Array.isArray(existingSourceKeys) ? existingSourceKeys : []).includes(sourceKey);
+    if (duplicate) blockingErrors.push("Este consumo de Academia ya fue registrado antes (sourceKey duplicado).");
+
+    (Array.isArray(lines) ? lines : []).forEach((line, index) => {
+      const itemId = line?.itemId || "";
+      const quantity = Math.max(0, sanitizeAmount(line?.quantity));
+      if (!itemId) {
+        blockingErrors.push(`Artículo no especificado (línea ${index + 1}).`);
+        return;
+      }
+      if (quantity <= 0) {
+        blockingErrors.push(`Cantidad inválida para "${itemId}".`);
+        return;
+      }
+      const available = Math.max(0, sanitizeAmount(academyInventory[itemId]));
+      const itemLots = Array.isArray(lots[itemId]) && lots[itemId].length
+        ? lots[itemId]
+        : [{ lotId: "", quantity: available, fechaVencimiento: "", fechaEntrada: "" }];
+      const fefo = allocateFEFO({ lots: itemLots, quantityNeeded: quantity, referenceDate });
+      if (fefo.unallocated > 0) {
+        shortages.push({ itemId, needed: quantity, available: roundMoney(quantity - fefo.unallocated), shortfall: fefo.unallocated });
+        blockingErrors.push(`Existencia insuficiente de "${itemId}" en Almacén de la Academia: faltan ${fefo.unallocated}.`);
+      }
+      fefo.allocations.forEach((allocation) => selectedLots.push({ itemId, lotId: allocation.lotId, quantity: allocation.quantityTaken }));
+      const unitCost = Math.max(0, sanitizeAmount(line?.historicalUnitCost));
+      const totalCost = roundMoney(unitCost * quantity);
+      totalHistoricalCost = roundMoney(totalHistoricalCost + totalCost);
+      normalizedLines.push({
+        itemId,
+        quantity,
+        unitCost,
+        totalCost,
+        activityType: line?.activityType || "",
+        courseId: line?.courseId || "",
+        classId: line?.classId || "",
+        courseName: line?.courseName || line?.className || "",
+        instructorId: line?.instructorId || "",
+        instructorName: line?.instructorName || "",
+        groupReference: line?.groupReference || "",
+        participantCount: Math.max(0, sanitizeAmount(line?.participantCount)),
+        lotAllocations: fefo.allocations,
+      });
+      stockPlan.push({ itemId, quantity, lotAllocations: fefo.allocations });
+    });
+
+    const allowed = blockingErrors.length === 0 && normalizedLines.length > 0;
+    return { normalizedLines, stockPlan, selectedLots, totalHistoricalCost, shortages, duplicate, blockingErrors, warnings, allowed };
+  }
+
+  // Clasifica UNA variacion de auditoria (mesa o Academia) ya calculada por
+  // calculateStationInventoryAuditLine. Nunca decide sanciones ni ajustes:
+  // solo etiqueta para justificacion/reporte. expectedConsumption=0 nunca
+  // produce division por cero (variancePercent ya viene resuelto por el
+  // llamador con esa misma regla).
+  function classifyInventoryVarianceLine({
+    varianceQuantity = 0,
+    variancePercent = 0,
+    expectedConsumption = 0,
+    tolerancePercent = 0,
+    expectedKnown = true,
+  } = {}) {
+    const variance = sanitizeAmount(varianceQuantity);
+    const expected = sanitizeAmount(expectedConsumption);
+    const tolerance = Math.max(0, sanitizeAmount(tolerancePercent));
+    if (!expectedKnown) return "missing_information";
+    if (!Number.isFinite(variancePercent)) return "requires_review";
+    if (expected === 0 && variance !== 0) return "no_expected_consumption";
+    if (Math.abs(variancePercent) <= tolerance) return "within_tolerance";
+    if (variance > 0) return "higher_consumption";
+    if (variance < 0) return "lower_consumption";
+    return "within_tolerance";
+  }
+
+  // Maquina de estados de una auditoria de mesa/Academia (seccion 18):
+  // Abierta -> En revision -> Justificada -> Confirmada -> Revertida. Nunca
+  // permite saltar pasos ni retroceder salvo Confirmada -> Revertida.
+  const INVENTORY_AUDIT_TRANSITIONS = {
+    Abierta: ["En revisión"],
+    "En revisión": ["Justificada"],
+    Justificada: ["Confirmada"],
+    Confirmada: ["Revertida"],
+    Revertida: [],
+  };
+  function canTransitionInventoryAuditStatus(currentStatus, nextStatus) {
+    const allowed = INVENTORY_AUDIT_TRANSITIONS[currentStatus] || [];
+    return allowed.includes(nextStatus);
+  }
+
+  // Arma el plan de ajustes de UNA auditoria Justificada al confirmarla.
+  // Nunca genera un ajuste para variacion cero; nunca duplica un ajuste ya
+  // aplicado (sourceKey estable ajuste:<auditId>:<itemId>, idempotente por
+  // construccion). observedConsumption > expectedConsumption implica que el
+  // sistema debe reconocer una salida adicional (ajuste_negativo); lo
+  // contrario implica una entrada de ajuste (ajuste_positivo).
+  function buildInventoryAuditAdjustmentPlan({ auditId = "", varianceLines = [], existingSourceKeys = [] } = {}) {
+    const blockingErrors = [];
+    if (!auditId) blockingErrors.push("Falta el identificador de la auditoría para generar ajustes.");
+    const movementPlan = [];
+    (Array.isArray(varianceLines) ? varianceLines : []).forEach((line) => {
+      const quantity = sanitizeAmount(line?.varianceQuantity);
+      if (!line?.itemId || quantity === 0) return;
+      const lineSourceKey = `ajuste:${auditId}:${line.itemId}`;
+      const duplicate = (Array.isArray(existingSourceKeys) ? existingSourceKeys : []).includes(lineSourceKey);
+      if (duplicate) return;
+      movementPlan.push({
+        itemId: line.itemId,
+        locationId: line.locationId || "",
+        quantity: roundMoney(Math.abs(quantity)),
+        tipo: quantity > 0 ? "ajuste_negativo" : "ajuste_positivo",
+        unitCost: Math.max(0, sanitizeAmount(line.unitCost)),
+        sourceKey: lineSourceKey,
+      });
+    });
+    return { movementPlan, allowed: blockingErrors.length === 0, blockingErrors };
+  }
+
+  // Arma el plan de reversion de los ajustes de UNA auditoria Confirmada.
+  // Nunca revierte dos veces el mismo ajuste (sourceKey estable
+  // reversion:ajuste:<auditId>:<itemId>) y nunca genera negativos nuevos:
+  // simplemente invierte la direccion de cada ajuste ya aplicado.
+  function buildInventoryAuditReversalPlan({ auditId = "", appliedAdjustments = [], existingSourceKeys = [] } = {}) {
+    const blockingErrors = [];
+    if (!auditId) blockingErrors.push("Falta el identificador de la auditoría para revertir sus ajustes.");
+    const movementPlan = [];
+    (Array.isArray(appliedAdjustments) ? appliedAdjustments : []).forEach((adjustment) => {
+      if (!adjustment?.itemId || !adjustment?.sourceKey) return;
+      const reversalKey = `reversion:${adjustment.sourceKey}`;
+      const duplicate = (Array.isArray(existingSourceKeys) ? existingSourceKeys : []).includes(reversalKey);
+      if (duplicate) return;
+      movementPlan.push({
+        itemId: adjustment.itemId,
+        locationId: adjustment.locationId || "",
+        quantity: roundMoney(Math.abs(sanitizeAmount(adjustment.quantity))),
+        tipo: adjustment.tipo === "ajuste_negativo" ? "ajuste_positivo" : "ajuste_negativo",
+        unitCost: Math.max(0, sanitizeAmount(adjustment.unitCost)),
+        sourceKey: reversalKey,
+        originalSourceKey: adjustment.sourceKey,
+      });
+    });
+    return { movementPlan, allowed: blockingErrors.length === 0, blockingErrors };
   }
 
   return {
@@ -1703,5 +2021,11 @@
     calculateProductMargin,
     summarizeTaxableDocumentLines,
     preflightRetailProductSale,
+    preflightInternalInventoryIssue,
+    preflightAcademyInventoryConsumption,
+    classifyInventoryVarianceLine,
+    canTransitionInventoryAuditStatus,
+    buildInventoryAuditAdjustmentPlan,
+    buildInventoryAuditReversalPlan,
   };
 });

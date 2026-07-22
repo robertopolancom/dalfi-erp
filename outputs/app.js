@@ -5126,6 +5126,13 @@ function startExpenseEdit(expenseId) {
 // Almacen operativo por defecto ("Almacen de insumos del salon"): se
 // autocrea una sola vez si todavia no existe ningun almacen de ese tipo
 // (primer uso del modulo), nunca se duplica en usos posteriores.
+// permiteVenta:true por defecto (julio 2026, seccion 3 de la politica de
+// ubicaciones): una venta de producto ya puede salir directamente del
+// almacen del salon, ademas de la estanteria. Este default SOLO aplica a
+// almacenes creados desde ahora: uno ya existente (creado antes de este
+// cambio con permiteVenta:false) no se reescribe solo — administracion
+// debe habilitarlo explicitamente en Base de datos → Almacenes si asi lo
+// decide (nunca backfill silencioso de un permiso de venta).
 function defaultSalonWarehouse() {
   const existing = dbTable("almacenes").find((row) => row.tipo === "almacen_salon");
   if (existing) return existing;
@@ -5135,8 +5142,9 @@ function defaultSalonWarehouse() {
     tipo: "almacen_salon",
     activa: true,
     controlaExistencia: true,
-    permiteVenta: false,
+    permiteVenta: true,
     permiteConsumo: true,
+    permiteTransferencia: true,
     permiteCustodia: false,
     observaciones: "Creado automáticamente como almacén operativo principal.",
   });
@@ -5149,6 +5157,47 @@ function defaultSalonWarehouse() {
     success: true,
   });
   return warehouse;
+}
+
+// Almacen de la Academia (julio 2026): ubicacion independiente con sus
+// propios movimientos, minimos, consumos, transferencias, auditoria y
+// costos. Se autocrea UNA sola vez (mismo patron idempotente que
+// defaultSalonWarehouse: busca por tipo antes de crear), permiteVenta:false
+// salvo que administracion lo habilite despues manualmente en Base de
+// datos → Almacenes (nunca hardcodeado a true).
+function defaultAcademyWarehouse() {
+  const existing = dbTable("almacenes").find((row) => row.tipo === "academia");
+  if (existing) return existing;
+  const warehouse = stampRecord({
+    locationId: nextDbId("almacenes", "locationId", "ALM"),
+    nombre: "Almacén de la Academia",
+    tipo: "academia",
+    activa: true,
+    controlaExistencia: true,
+    permiteVenta: false,
+    permiteConsumo: true,
+    permiteTransferencia: true,
+    permiteCustodia: true,
+    stockMinimo: 0,
+    stockObjetivo: 0,
+    observaciones: "Creado automáticamente como almacén independiente de la Academia.",
+  });
+  dbTable("almacenes").push(warehouse);
+  logAudit("academy_warehouse_created", {
+    entity: "almacenes",
+    entityId: warehouse.locationId,
+    newData: { nombre: warehouse.nombre, tipo: warehouse.tipo },
+    note: "Almacén de la Academia creado automáticamente (primer uso del módulo).",
+    success: true,
+  });
+  return warehouse;
+}
+
+// Ubicaciones visibles para VENDER (seccion 3-4): activas y con
+// permiteVenta=true, explicitamente. Nunca incluye estanteria/salon "porque
+// siempre fueron las unicas": cualquier almacen puede habilitarse.
+function saleEligibleLocations() {
+  return dbTable("almacenes").filter((row) => row.activa !== false && row.permiteVenta === true);
 }
 
 // Configuracion singleton del modulo de inventario, pensada para crecer sin
@@ -5600,6 +5649,11 @@ function renderInventory() {
 }
 
 function renderWarehouses() {
+  // Autocrea el Almacen de la Academia al primer uso del modulo (mismo
+  // patron idempotente que defaultSalonWarehouse): asi queda disponible
+  // como destino de compras/transferencias desde que se visita este panel,
+  // sin necesitar que administracion la cree manualmente primero.
+  defaultAcademyWarehouse();
   const rows = dbTable("almacenes");
   byId("warehouse-list").innerHTML = rows.length
     ? rows
@@ -5608,7 +5662,7 @@ function renderWarehouses() {
             <article class="list-item">
               <div>
                 <strong>${row.nombre}</strong>
-                <span>${row.tipo} · ${row.activa === false ? "Inactiva" : "Activa"} · Existencia ${row.controlaExistencia === false ? "no controlada" : "controlada"}</span>
+                <span>${row.tipo} · ${row.activa === false ? "Inactiva" : "Activa"} · Existencia ${row.controlaExistencia === false ? "no controlada" : "controlada"} · ${row.permiteVenta ? "Permite venta" : "No vende"}</span>
               </div>
               <div class="row-actions">
                 <button class="secondary-btn compact toggle-warehouse-status" data-id="${row.locationId}" type="button">${row.activa === false ? "Activar" : "Desactivar"}</button>
@@ -5705,6 +5759,926 @@ function renderStations() {
   byId("station-list").innerHTML = rows.length
     ? rows.map((row) => `<div class="list-item"><span>${row.nombre}</span><span>${row.colaboradoraPrincipal || "Sin asignar"} · ${row.estado || "Disponible"}</span></div>`).join("")
     : '<p class="empty">No hay mesas registradas.</p>';
+}
+
+// ===========================================================================
+// Entrega/devolucion de mesa (julio 2026, seccion 13): Almacen <-> Mesa es
+// SIEMPRE una transferencia interna real (createInventoryTransfer, ya
+// probada): la mesa se trata como una ubicacion mas (locationId=stationId),
+// la existencia GLOBAL nunca cambia, nunca genera ingreso ni entra en
+// Cierres. Una entrega queda "Pendiente de recepción" hasta que la
+// colaboradora confirme; no se considera consumo hasta que se use o
+// concilie en la Auditoria de mesas (seccion 21).
+// ===========================================================================
+
+function deliverInventoryToStation({ itemId, cantidadBase, fromLocationId, stationId, stationName = "", collaboratorName = "", usuario = "", motivo = "" } = {}) {
+  const transfer = createInventoryTransfer({
+    itemId,
+    cantidadBase,
+    fromLocationId,
+    toLocationId: stationId,
+    motivo: motivo || `Entrega a mesa ${stationName || stationId}`,
+    usuario,
+  });
+  if (!transfer.transferId) return transfer;
+  const record = dbTable("transferenciasInventario").find((row) => row.transferId === transfer.transferId);
+  if (record) {
+    record.estado = "Pendiente de recepción";
+    record.destinationType = "station";
+    record.stationId = stationId;
+    record.stationName = stationName;
+    record.collaboratorName = collaboratorName;
+    stampRecord(record, "updated");
+  }
+  logAudit("station_inventory_delivered", {
+    entity: "transferenciasInventario",
+    entityId: transfer.transferId,
+    newData: { itemId, cantidadBase, stationId, collaboratorName },
+    note: `Entrega a mesa ${stationName || stationId}: ${cantidadBase} de ${itemId}.`,
+    success: true,
+  });
+  return transfer;
+}
+
+// Idempotente: solo actua sobre una entrega real todavia "Pendiente de
+// recepción" (una segunda confirmacion no encuentra nada que cambiar).
+function confirmStationDeliveryReceipt(transferId, { receivedBy = "" } = {}) {
+  const record = dbTable("transferenciasInventario").find((row) => row.transferId === transferId && row.destinationType === "station");
+  if (!record || record.estado !== "Pendiente de recepción") return null;
+  record.estado = "Recibida";
+  record.receivedBy = receivedBy;
+  record.receivedAt = new Date().toISOString();
+  stampRecord(record, "updated");
+  logAudit("station_inventory_delivery_received", {
+    entity: "transferenciasInventario",
+    entityId: transferId,
+    newData: { receivedBy },
+    note: `Entrega ${transferId} confirmada por ${receivedBy || "colaboradora"}.`,
+    success: true,
+  });
+  return record;
+}
+
+function returnInventoryFromStation({ itemId, cantidadBase, stationId, toLocationId, usuario = "", motivo = "" } = {}) {
+  const transfer = createInventoryTransfer({
+    itemId,
+    cantidadBase,
+    fromLocationId: stationId,
+    toLocationId,
+    motivo: motivo || "Devolución de mesa",
+    usuario,
+  });
+  if (transfer.transferId) {
+    const record = dbTable("transferenciasInventario").find((row) => row.transferId === transfer.transferId);
+    if (record) {
+      record.destinationType = "station_return";
+      record.stationId = stationId;
+      stampRecord(record, "updated");
+    }
+    logAudit("station_inventory_returned", {
+      entity: "transferenciasInventario",
+      entityId: transfer.transferId,
+      newData: { itemId, cantidadBase, stationId },
+      note: `Devolución de mesa ${stationId}: ${cantidadBase} de ${itemId}.`,
+      success: true,
+    });
+  }
+  return transfer;
+}
+
+function renderStationDeliveries() {
+  const el = byId("station-delivery-list");
+  if (!el) return;
+  const rows = dbTable("transferenciasInventario")
+    .filter((row) => row.destinationType === "station" || row.destinationType === "station_return")
+    .slice()
+    .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")))
+    .slice(0, 30);
+  el.innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          const pending = row.destinationType === "station" && row.estado === "Pendiente de recepción";
+          return `<div class="list-item"><span>${item?.nombre || row.itemId} · ${row.destinationType === "station_return" ? "Devolución" : "Entrega"} ${row.stationName || row.stationId || ""}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidadBase} · ${row.estado}${pending ? ` <button type="button" class="secondary-btn compact confirm-station-delivery" data-transfer-id="${row.transferId}">Confirmar recepción</button>` : ""}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay entregas ni devoluciones de mesa registradas.</p>';
+}
+
+// ===========================================================================
+// Salidas internas normalizadas (julio 2026, seccion 14-17): colaboradora,
+// area general, activo/equipo, mantenimiento u otro. Conectadas al motor
+// puro DalfiClosingMath.preflightInternalInventoryIssue. Nunca vende, nunca
+// genera egreso nuevo (el egreso ya ocurrio al comprar), nunca CxC.
+// ===========================================================================
+
+// Confirmacion de recepcion para una entrega a colaboradora bajo su
+// responsabilidad (seccion 12-A): idempotente, solo actua sobre una entrega
+// real todavia "Registrada" (nunca sobre consumo inmediato, que no exige
+// recepcion).
+function confirmCollaboratorDeliveryReceipt(deliveryId, { receivedBy = "" } = {}) {
+  const record = dbTable("entregasColaboradoras").find((row) => row.deliveryId === deliveryId && row.caseType === "transferencia_custodia");
+  if (!record || record.status !== "Registrada") return null;
+  record.status = "Recibida";
+  record.receivedBy = receivedBy;
+  record.receivedAt = new Date().toISOString();
+  stampRecord(record, "updated");
+  logAudit("collaborator_inventory_received", {
+    entity: "entregasColaboradoras",
+    entityId: deliveryId,
+    newData: { receivedBy },
+    note: `Entrega ${deliveryId} confirmada por ${receivedBy || "colaboradora"}.`,
+    success: true,
+  });
+  return record;
+}
+
+function renderInternalIssues() {
+  const el = byId("internal-issue-list");
+  if (!el) return;
+  const deliveries = dbTable("entregasColaboradoras").map((row) => ({ ...row, kind: "Colaboradora" }));
+  const general = dbTable("consumosGenerales").map((row) => ({ ...row, kind: "Área general/otro" }));
+  const assets = dbTable("consumosActivos").map((row) => ({ ...row, kind: "Activo" }));
+  const rows = [...deliveries, ...general, ...assets].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 30);
+  el.innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          const destino = row.collaboratorName || row.destinationName || row.assetCode || "";
+          const pending = row.kind === "Colaboradora" && row.caseType === "transferencia_custodia" && row.status === "Registrada";
+          return `<div class="list-item"><span>${item?.nombre || row.itemId} · ${row.kind}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidad} · ${destino}${pending ? ` <button type="button" class="secondary-btn compact confirm-collaborator-delivery" data-delivery-id="${row.deliveryId}">Confirmar recepción</button>` : ""}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay salidas internas registradas.</p>';
+}
+
+// ===========================================================================
+// Consumo del Almacen de la Academia (julio 2026, seccion 10-11). Conectado
+// al motor puro DalfiClosingMath.preflightAcademyInventoryConsumption.
+// Nunca se mezcla con el consumo del salon: usa exclusivamente la
+// existencia del Almacen de la Academia.
+// ===========================================================================
+
+const ACADEMY_ACTIVITY_LABELS = {
+  clase: "Clase",
+  practica: "Práctica",
+  taller: "Taller",
+  demostracion: "Demostración",
+  evaluacion: "Evaluación",
+  administrativo: "Uso administrativo",
+  otro: "Otro",
+};
+
+function renderAcademyConsumptions() {
+  const el = byId("academy-consumption-list");
+  if (!el) return;
+  const rows = dbTable("consumosAcademia").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 30);
+  el.innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          return `<div class="list-item"><span>${item?.nombre || row.itemId} · ${ACADEMY_ACTIVITY_LABELS[row.activityType] || row.activityType}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidad} · ${row.courseName || ""} ${row.instructorName ? `(${row.instructorName})` : ""}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay consumos de Academia registrados.</p>';
+}
+
+// ===========================================================================
+// Auditoria completa de mesas (julio 2026, seccion 18-27): conecta los
+// motores puros ya existentes (calculateStationInventoryAuditLine,
+// aggregateExpectedServiceConsumptionByStation, classifyInventoryVarianceLine,
+// canTransitionInventoryAuditStatus, buildInventoryAuditAdjustmentPlan,
+// buildInventoryAuditReversalPlan) a un panel operativo persistido en
+// dbTable("auditoriasMesa"). Estados: Abierta -> En revisión -> Justificada
+// -> Confirmada -> Revertida. Nunca crea sanciones, egresos ni CxC.
+// ===========================================================================
+
+function facturaDetalleLinesInRange(start, end) {
+  return dbTable("facturaDetalle").filter((detail) => {
+    const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
+    return invoice && normalize(invoice.estado) !== "anulada" && inRangeDate(invoice.fechaHora, start, end);
+  });
+}
+
+function recipesByServiceForAudit() {
+  const map = {};
+  dbTable("fichasTecnicas").forEach((row) => {
+    const key = row.servicioNombre;
+    if (!map[key]) map[key] = [];
+    map[key].push(row);
+  });
+  return map;
+}
+
+// Existencia de UNA mesa antes de la fecha de corte (EXCLUSIVA): misma
+// funcion pura que toda la existencia del sistema, nunca un campo aparte.
+function stationBalanceAsOf(stationId, itemId, cutoffDate) {
+  const movements = dbTable("inventarioMovimientos").filter((row) => dateOnly(row.fecha) < cutoffDate);
+  return DalfiClosingMath.calculateInventoryByLocation({ movements, itemId, locationId: stationId }).quantity;
+}
+
+// Entregas ("transferencia_entrada") y devoluciones ("transferencia_salida")
+// de la mesa dentro del periodo (la mesa se trata como una ubicacion mas,
+// ver deliverInventoryToStation/returnInventoryFromStation).
+function stationMovementSumInRange(stationId, itemId, start, end, tipos) {
+  return dbTable("inventarioMovimientos")
+    .filter(
+      (row) =>
+        row.locationId === stationId &&
+        row.itemId === itemId &&
+        tipos.includes(row.tipo) &&
+        inRangeDate(row.fecha, start, end) &&
+        normalize(row.estado || "Confirmado") !== "revertido",
+    )
+    .reduce((sum, row) => sum + (Number(row.cantidadBase) || 0), 0);
+}
+
+function overlappingStationAudit(stationId, periodStart, periodEnd) {
+  return dbTable("auditoriasMesa").find(
+    (row) => row.stationId === stationId && row.status !== "Revertida" && periodStart <= row.periodEnd && periodEnd >= row.periodStart,
+  );
+}
+
+// Abre una auditoria de mesa: NUNCA modifica inventario, solo calcula
+// saldo inicial, entregas, devoluciones y consumo esperado del periodo
+// (seccion 19-20). El conteo fisico y el consumo declarado se agregan
+// despues via submitStationAuditCounts.
+function openStationAudit({ stationId, stationName, periodStart, periodEnd }) {
+  if (!stationId) return { audit: null, error: "Selecciona una mesa." };
+  if (!periodStart || !periodEnd || periodStart > periodEnd) return { audit: null, error: "Selecciona un período válido." };
+  if (overlappingStationAudit(stationId, periodStart, periodEnd)) {
+    return { audit: null, error: "Ya existe una auditoría activa para esta mesa en un período que se solapa." };
+  }
+
+  const linesInRange = facturaDetalleLinesInRange(periodStart, periodEnd).filter((detail) => detail.stationId === stationId);
+  const collaboratorIds = [...new Set(linesInRange.map((detail) => detail.colaboradorID).filter(Boolean))];
+  const collaboratorNames = [...new Set(linesInRange.map((detail) => detail.colaboradorNombre).filter(Boolean))];
+
+  const expected = DalfiClosingMath.aggregateExpectedServiceConsumptionByStation({
+    serviceLines: linesInRange.map((detail) => ({ detalleID: detail.detalleID, stationId: detail.stationId, servicio: detail.servicio, cantidad: detail.cantidad })),
+    recipesByService: recipesByServiceForAudit(),
+  });
+  const stationBucket = expected.stations.find((bucket) => bucket.stationId === stationId);
+  const expectedItems = stationBucket ? stationBucket.items : [];
+
+  const itemIds = new Set(expectedItems.map((entry) => entry.itemId));
+  dbTable("inventarioMovimientos").forEach((row) => {
+    if (row.locationId === stationId) itemIds.add(row.itemId);
+  });
+
+  const openingBalances = {};
+  const deliveries = {};
+  const returns = {};
+  itemIds.forEach((itemId) => {
+    openingBalances[itemId] = stationBalanceAsOf(stationId, itemId, periodStart);
+    deliveries[itemId] = stationMovementSumInRange(stationId, itemId, periodStart, periodEnd, ["transferencia_entrada"]);
+    returns[itemId] = stationMovementSumInRange(stationId, itemId, periodStart, periodEnd, ["transferencia_salida"]);
+  });
+
+  const auditId = nextDbId("auditoriasMesa", "stationAuditId", "AUD");
+  const audit = stampRecord({
+    stationAuditId: auditId,
+    stationId,
+    stationName: stationName || "",
+    collaboratorIds,
+    collaboratorNames,
+    periodStart,
+    periodEnd,
+    openingBalances,
+    deliveries,
+    returns,
+    expectedConsumption: expectedItems,
+    servicesWithoutStation: expected.withoutStation,
+    observedConsumption: {},
+    declaredActualConsumption: {},
+    physicalCounts: {},
+    varianceLines: [],
+    totalVarianceCost: 0,
+    explanations: {},
+    reviewer: "",
+    approvedBy: "",
+    approvedAt: "",
+    adjustmentMovementIds: [],
+    reversalMovementIds: [],
+    status: "Abierta",
+  });
+  dbTable("auditoriasMesa").push(audit);
+  logAudit("station_inventory_audit_opened", {
+    entity: "auditoriasMesa",
+    entityId: auditId,
+    newData: { stationId, periodStart, periodEnd },
+    note: `Auditoría de mesa ${stationName || stationId} abierta para ${periodStart} a ${periodEnd}.`,
+    success: true,
+  });
+  return { audit, error: "" };
+}
+
+// Tolerancia configurable (seccion 23): reutiliza inventoryConfig() como
+// singleton de configuracion del modulo, igual que modoConsumoInventario.
+function stationAuditTolerancePercent() {
+  const config = inventoryConfig();
+  return Number(config.toleranciaAuditoriaMesa) || 0;
+}
+
+function computeStationAuditVarianceLines(audit) {
+  const itemIds = Object.keys(audit.openingBalances || {});
+  const tolerance = stationAuditTolerancePercent();
+  return itemIds.map((itemId) => {
+    const expectedEntry = (audit.expectedConsumption || []).find((entry) => entry.itemId === itemId);
+    const expectedQty = expectedEntry ? expectedEntry.quantity : 0;
+    const item = dbTable("inventario").find((row) => row.itemID === itemId);
+    const unitCost = Number(item?.costoPromedio) || Number(item?.costo) || 0;
+    const line = DalfiClosingMath.calculateStationInventoryAuditLine({
+      openingBalance: audit.openingBalances[itemId] || 0,
+      deliveries: audit.deliveries[itemId] || 0,
+      returns: audit.returns[itemId] || 0,
+      physicalCount: (audit.physicalCounts || {})[itemId] || 0,
+      expectedConsumption: expectedQty,
+      unitCost,
+    });
+    const classification = DalfiClosingMath.classifyInventoryVarianceLine({
+      varianceQuantity: line.varianceQuantity,
+      variancePercent: line.variancePercent,
+      expectedConsumption: expectedQty,
+      tolerancePercent: tolerance,
+      expectedKnown: true,
+    });
+    return {
+      itemId,
+      itemNombre: item?.nombre || itemId,
+      ...line,
+      classification,
+      declaredActual: (audit.declaredActualConsumption || {})[itemId] ?? null,
+      explanation: (audit.explanations || {})[itemId] || "",
+    };
+  });
+}
+
+// Abierta -> En revision: registra conteo fisico y consumo declarado, y
+// calcula la variacion de CADA articulo (seccion 20-23). Nunca modifica
+// inventario.
+function submitStationAuditCounts(auditId, { physicalCounts = {}, declaredActualConsumption = {} } = {}) {
+  const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "En revisión")) {
+    return { ok: false, error: `No se puede pasar a revisión desde el estado "${audit.status}".` };
+  }
+  audit.physicalCounts = physicalCounts;
+  audit.declaredActualConsumption = declaredActualConsumption;
+  audit.varianceLines = computeStationAuditVarianceLines(audit);
+  audit.observedConsumption = Object.fromEntries(audit.varianceLines.map((line) => [line.itemId, line.observedConsumption]));
+  audit.totalVarianceCost = DalfiClosingMath.roundMoney(audit.varianceLines.reduce((sum, line) => sum + line.varianceCost, 0));
+  audit.status = "En revisión";
+  stampRecord(audit, "updated");
+  logAudit("station_inventory_audited", {
+    entity: "auditoriasMesa",
+    entityId: auditId,
+    newData: { totalVarianceCost: audit.totalVarianceCost },
+    note: `Conteo físico registrado para la auditoría ${auditId}.`,
+    success: true,
+  });
+  return { ok: true, audit };
+}
+
+// En revision -> Justificada: exige explicacion para CADA variacion fuera
+// de tolerancia (seccion 24). Nunca crea descuento, CxC ni sancion.
+function justifyStationAudit(auditId, { explanations = {}, reviewer = "" } = {}) {
+  const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Justificada")) {
+    return { ok: false, error: `No se puede justificar desde el estado "${audit.status}".` };
+  }
+  const unexplained = (audit.varianceLines || []).find(
+    (line) => line.classification !== "within_tolerance" && !explanations[line.itemId] && !audit.explanations?.[line.itemId],
+  );
+  if (unexplained) return { ok: false, error: `Falta justificar la variación de "${unexplained.itemNombre}".` };
+  audit.explanations = { ...(audit.explanations || {}), ...explanations };
+  audit.reviewer = reviewer;
+  audit.status = "Justificada";
+  stampRecord(audit, "updated");
+  logAudit("station_inventory_variance_justified", {
+    entity: "auditoriasMesa",
+    entityId: auditId,
+    newData: { reviewer },
+    note: `Auditoría ${auditId} justificada por ${reviewer || "responsable"}.`,
+    success: true,
+  });
+  return { ok: true, audit };
+}
+
+// Justificada -> Confirmada: crea ajustes SOLO para lineas con variacion
+// real, sourceKey estable (idempotente por construccion vía
+// buildInventoryAuditAdjustmentPlan). Nunca crea egreso ni CxC.
+function confirmStationAudit(auditId, { approvedBy = "" } = {}) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para confirmar auditorías de mesa." };
+  const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Confirmada")) {
+    return { ok: false, error: `No se puede confirmar desde el estado "${audit.status}".` };
+  }
+  const plan = DalfiClosingMath.buildInventoryAuditAdjustmentPlan({
+    auditId,
+    varianceLines: (audit.varianceLines || []).map((line) => ({
+      itemId: line.itemId,
+      locationId: audit.stationId,
+      varianceQuantity: line.varianceQuantity,
+      unitCost: Number(dbTable("inventario").find((row) => row.itemID === line.itemId)?.costoPromedio) || 0,
+    })),
+    existingSourceKeys: activeInventorySourceKeys(),
+  });
+  const adjustmentMovementIds = [];
+  plan.movementPlan.forEach((planned) => {
+    const result = createInventoryMovement({
+      itemId: planned.itemId,
+      tipo: planned.tipo,
+      cantidadBase: planned.quantity,
+      costoUnitario: planned.unitCost,
+      locationId: planned.locationId,
+      origen: "Ajuste de auditoría de mesa",
+      sourceId: auditId,
+      sourceKey: planned.sourceKey,
+      motivo: `Ajuste por auditoría de mesa ${auditId}`,
+      usuario: approvedBy,
+    });
+    if (result.movement) adjustmentMovementIds.push(result.movement.movementId);
+  });
+  audit.adjustmentMovementIds = adjustmentMovementIds;
+  audit.approvedBy = approvedBy;
+  audit.approvedAt = new Date().toISOString();
+  audit.status = "Confirmada";
+  stampRecord(audit, "updated");
+  logAudit("station_inventory_variance_confirmed", {
+    entity: "auditoriasMesa",
+    entityId: auditId,
+    newData: { approvedBy, ajustes: adjustmentMovementIds.length },
+    note: `Auditoría ${auditId} confirmada por ${approvedBy || "responsable"}.`,
+    success: true,
+  });
+  return { ok: true, audit };
+}
+
+// Confirmada -> Revertida: exige permiso elevado y motivo, revierte los
+// ajustes UNA sola vez (sourceKey reversion:<ajuste>, ver
+// buildInventoryAuditReversalPlan). Nunca borra la auditoria original.
+function revertStationAudit(auditId, { reason = "", actor = "" } = {}) {
+  if (!canReopenClosings()) return { ok: false, error: "No autorizado para revertir auditorías de mesa." };
+  if (!reason) return { ok: false, error: "La reversión requiere un motivo." };
+  const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Revertida")) {
+    return { ok: false, error: `No se puede revertir desde el estado "${audit.status}".` };
+  }
+  const appliedAdjustments = (audit.adjustmentMovementIds || [])
+    .map((movementId) => dbTable("inventarioMovimientos").find((row) => row.movementId === movementId))
+    .filter(Boolean)
+    .map((movement) => ({
+      itemId: movement.itemId,
+      locationId: movement.locationId,
+      quantity: movement.cantidadBase,
+      unitCost: movement.costoUnitario,
+      tipo: movement.tipo,
+      sourceKey: movement.sourceKey,
+    }));
+  const plan = DalfiClosingMath.buildInventoryAuditReversalPlan({ auditId, appliedAdjustments, existingSourceKeys: activeInventorySourceKeys() });
+  const reversalMovementIds = [];
+  plan.movementPlan.forEach((planned) => {
+    const result = createInventoryMovement({
+      itemId: planned.itemId,
+      tipo: planned.tipo,
+      cantidadBase: planned.quantity,
+      costoUnitario: planned.unitCost,
+      locationId: planned.locationId,
+      origen: "Reversión de auditoría de mesa",
+      sourceId: auditId,
+      sourceKey: planned.sourceKey,
+      motivo: reason,
+      usuario: actor,
+    });
+    if (result.movement) reversalMovementIds.push(result.movement.movementId);
+  });
+  audit.reversalMovementIds = reversalMovementIds;
+  audit.status = "Revertida";
+  audit.reversalReason = reason;
+  stampRecord(audit, "updated");
+  logAudit("station_inventory_audit_reverted", {
+    entity: "auditoriasMesa",
+    entityId: auditId,
+    newData: { reason, reversiones: reversalMovementIds.length },
+    note: `Auditoría ${auditId} revertida: ${reason}.`,
+    success: true,
+  });
+  return { ok: true, audit };
+}
+
+function renderStationAudits() {
+  const el = byId("station-audit-list");
+  if (!el) return;
+  const rows = dbTable("auditoriasMesa").slice().sort((a, b) => String(b.periodStart || "").localeCompare(String(a.periodStart || "")));
+  el.innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const actions = [];
+          if (row.status === "Abierta") actions.push(`<button type="button" class="secondary-btn compact station-audit-count" data-audit-id="${row.stationAuditId}">Registrar conteo</button>`);
+          if (row.status === "En revisión") actions.push(`<button type="button" class="secondary-btn compact station-audit-justify" data-audit-id="${row.stationAuditId}">Justificar</button>`);
+          if (row.status === "Justificada") actions.push(`<button type="button" class="secondary-btn compact station-audit-confirm" data-audit-id="${row.stationAuditId}">Confirmar</button>`);
+          if (row.status === "Confirmada") actions.push(`<button type="button" class="secondary-btn compact danger station-audit-revert" data-audit-id="${row.stationAuditId}">Revertir</button>`);
+          return `<div class="list-item"><span>${row.stationName || row.stationId} · ${row.periodStart} a ${row.periodEnd}</span><span>${row.status} · Variación ${money.format(row.totalVarianceCost || 0)} ${actions.join(" ")}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay auditorías de mesa registradas.</p>';
+}
+
+// ===========================================================================
+// Alertas de inventario (julio 2026, seccion 31). Cada alerta enlaza al
+// registro relacionado (linkTarget = tab a abrir). Subconjunto real y
+// verificable con los datos que este modulo ya persiste: no se fabrican
+// alertas para datos que el sistema todavia no rastrea (lotes con
+// vencimiento real, minimo por mesa, consumo anormal de activos, auditoria
+// de Academia) — ver limitaciones documentadas en el informe final.
+// ===========================================================================
+
+function computeInventoryAlerts() {
+  const alerts = [];
+  dbTable("almacenes")
+    .filter((row) => row.activa !== false && ["estanteria", "almacen_salon", "academia"].includes(row.tipo))
+    .forEach((warehouse) => {
+      const min = Number(warehouse.stockMinimo) || 0;
+      if (warehouse.tipo !== "academia") return; // el minimo por ubicacion solo existe hoy para Academia (ver seccion 29)
+      if (min <= 0) return;
+      dbTable("inventario").forEach((item) => {
+        const stock = itemStockAt(item.itemID, warehouse.locationId);
+        if (stock < min) {
+          alerts.push({
+            type: "academy_low_stock",
+            severity: "warning",
+            message: `${item.nombre} bajo mínimo en ${warehouse.nombre}: ${stock} (mínimo ${min}).`,
+            linkTarget: "inventory",
+          });
+        }
+      });
+    });
+  dbTable("inventario").forEach((item) => {
+    const min = Number(item.existenciaMinima) || 0;
+    if (min <= 0) return;
+    ["estanteria", "almacen_salon"].forEach((tipo) => {
+      const warehouse = dbTable("almacenes").find((row) => row.tipo === tipo && row.activa !== false);
+      if (!warehouse) return;
+      const stock = itemStockAt(item.itemID, warehouse.locationId);
+      if (stock < min) {
+        alerts.push({
+          type: tipo === "estanteria" ? "shelf_low_stock" : "salon_low_stock",
+          severity: stock <= 0 ? "danger" : "warning",
+          message: `${item.nombre} bajo mínimo en ${warehouse.nombre}: ${stock} (mínimo ${min}).`,
+          linkTarget: "inventory",
+        });
+      }
+    });
+  });
+  dbTable("transferenciasInventario")
+    .filter((row) => row.destinationType === "station" && row.estado === "Pendiente de recepción")
+    .forEach((row) => {
+      const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+      alerts.push({
+        type: "station_delivery_pending",
+        severity: "info",
+        message: `Entrega pendiente de recepción en ${row.stationName || row.stationId}: ${item?.nombre || row.itemId}.`,
+        linkTarget: "inventory",
+        recordId: row.transferId,
+      });
+    });
+  dbTable("auditoriasAcademia")
+    .filter((row) => row.status === "Abierta" || row.status === "En revisión")
+    .forEach((row) => {
+      alerts.push({
+        type: "academy_audit_pending",
+        severity: "info",
+        message: `Auditoría de Academia pendiente (${row.status}): ${row.periodStart} a ${row.periodEnd}.`,
+        linkTarget: "inventory",
+        recordId: row.academyAuditId,
+      });
+    });
+  dbTable("auditoriasMesa")
+    .filter((row) => row.status === "Abierta" || row.status === "En revisión")
+    .forEach((row) => {
+      alerts.push({
+        type: "station_audit_pending",
+        severity: "info",
+        message: `Auditoría de mesa pendiente (${row.status}): ${row.stationName || row.stationId}.`,
+        linkTarget: "inventory",
+        recordId: row.stationAuditId,
+      });
+    });
+  dbTable("auditoriasMesa")
+    .filter((row) => row.status === "En revisión")
+    .forEach((row) => {
+      const unjustified = (row.varianceLines || []).filter((line) => line.classification !== "within_tolerance" && !row.explanations?.[line.itemId]);
+      unjustified.forEach((line) => {
+        alerts.push({
+          type: "station_variance_unjustified",
+          severity: "warning",
+          message: `Variación sin justificar en ${row.stationName || row.stationId}: ${line.itemNombre} (${line.classification}).`,
+          linkTarget: "inventory",
+          recordId: row.stationAuditId,
+        });
+      });
+    });
+  // Compatibilidad historica: salida interna sin responsable identificado
+  // (nunca deberia ocurrir en registros nuevos, el preflight ya lo bloquea).
+  [...dbTable("entregasColaboradoras"), ...dbTable("consumosGenerales"), ...dbTable("consumosActivos")].forEach((row) => {
+    const responsible = row.responsibleIssuer || row.responsable || row.responsibleUser;
+    if (!responsible) {
+      alerts.push({
+        type: "internal_issue_missing_responsible",
+        severity: "danger",
+        message: `Salida interna sin responsable identificado (registro histórico): ${row.itemId}.`,
+        linkTarget: "inventory",
+      });
+    }
+  });
+  return alerts;
+}
+
+function renderInventoryAlerts() {
+  const el = byId("inventory-alert-list");
+  if (!el) return;
+  const alerts = computeInventoryAlerts();
+  el.innerHTML = alerts.length
+    ? alerts.map((alert) => `<div class="list-item"><span class="${alert.severity}">${alert.message}</span></div>`).join("")
+    : '<p class="empty">No hay alertas de inventario pendientes.</p>';
+}
+
+// ===========================================================================
+// Auditoria del Almacen de la Academia (julio 2026, seccion 28): version
+// simplificada de la auditoria de mesa (una sola ubicacion, sin dimension
+// por colaboradora), reutilizando LOS MISMOS motores puros
+// (calculateStationInventoryAuditLine, classifyInventoryVarianceLine,
+// canTransitionInventoryAuditStatus, buildInventoryAuditAdjustmentPlan,
+// buildInventoryAuditReversalPlan). "Consumo esperado" = lo ya registrado
+// en consumosAcademia (no existe ficha tecnica por clase); "observado" se
+// deriva de saldo inicial + compras/transferencias recibidas - devoluciones
+// - conteo fisico (misma formula, seccion 21).
+// ===========================================================================
+
+function academyInboundSumInRange(academyLocationId, itemId, start, end) {
+  return dbTable("inventarioMovimientos")
+    .filter(
+      (row) =>
+        row.locationId === academyLocationId &&
+        row.itemId === itemId &&
+        ["compra", "transferencia_entrada", "devolucion_academia"].includes(row.tipo) &&
+        inRangeDate(row.fecha, start, end) &&
+        normalize(row.estado || "Confirmado") !== "revertido",
+    )
+    .reduce((sum, row) => sum + (Number(row.cantidadBase) || 0), 0);
+}
+
+function academyOutboundTransferSumInRange(academyLocationId, itemId, start, end) {
+  return dbTable("inventarioMovimientos")
+    .filter(
+      (row) =>
+        row.locationId === academyLocationId &&
+        row.itemId === itemId &&
+        row.tipo === "transferencia_salida" &&
+        inRangeDate(row.fecha, start, end) &&
+        normalize(row.estado || "Confirmado") !== "revertido",
+    )
+    .reduce((sum, row) => sum + (Number(row.cantidadBase) || 0), 0);
+}
+
+function academyRecordedConsumptionInRange(itemId, start, end) {
+  return dbTable("consumosAcademia")
+    .filter((row) => row.itemId === itemId && inRangeDate(row.fecha, start, end))
+    .reduce((sum, row) => sum + (Number(row.cantidad) || 0), 0);
+}
+
+function overlappingAcademyAudit(periodStart, periodEnd) {
+  return dbTable("auditoriasAcademia").find(
+    (row) => row.status !== "Revertida" && periodStart <= row.periodEnd && periodEnd >= row.periodStart,
+  );
+}
+
+function openAcademyAudit({ periodStart, periodEnd }) {
+  if (!periodStart || !periodEnd || periodStart > periodEnd) return { audit: null, error: "Selecciona un período válido." };
+  if (overlappingAcademyAudit(periodStart, periodEnd)) {
+    return { audit: null, error: "Ya existe una auditoría activa de Academia en un período que se solapa." };
+  }
+  const academyWarehouse = defaultAcademyWarehouse();
+  const itemIds = new Set();
+  dbTable("inventarioMovimientos").forEach((row) => {
+    if (row.locationId === academyWarehouse.locationId) itemIds.add(row.itemId);
+  });
+  const openingBalances = {};
+  const inbound = {};
+  const outbound = {};
+  const expectedConsumption = {};
+  itemIds.forEach((itemId) => {
+    openingBalances[itemId] = stationBalanceAsOf(academyWarehouse.locationId, itemId, periodStart);
+    inbound[itemId] = academyInboundSumInRange(academyWarehouse.locationId, itemId, periodStart, periodEnd);
+    outbound[itemId] = academyOutboundTransferSumInRange(academyWarehouse.locationId, itemId, periodStart, periodEnd);
+    expectedConsumption[itemId] = academyRecordedConsumptionInRange(itemId, periodStart, periodEnd);
+  });
+  const auditId = nextDbId("auditoriasAcademia", "academyAuditId", "AUA");
+  const audit = stampRecord({
+    academyAuditId: auditId,
+    academyLocationId: academyWarehouse.locationId,
+    periodStart,
+    periodEnd,
+    openingBalances,
+    inbound,
+    outbound,
+    expectedConsumption,
+    physicalCounts: {},
+    varianceLines: [],
+    totalVarianceCost: 0,
+    explanations: {},
+    reviewer: "",
+    approvedBy: "",
+    approvedAt: "",
+    adjustmentMovementIds: [],
+    reversalMovementIds: [],
+    status: "Abierta",
+  });
+  dbTable("auditoriasAcademia").push(audit);
+  logAudit("academy_inventory_audit_opened", {
+    entity: "auditoriasAcademia",
+    entityId: auditId,
+    newData: { periodStart, periodEnd },
+    note: `Auditoría de Academia abierta para ${periodStart} a ${periodEnd}.`,
+    success: true,
+  });
+  return { audit, error: "" };
+}
+
+function computeAcademyAuditVarianceLines(audit) {
+  const tolerance = stationAuditTolerancePercent();
+  return Object.keys(audit.openingBalances || {}).map((itemId) => {
+    const item = dbTable("inventario").find((row) => row.itemID === itemId);
+    const unitCost = Number(item?.costoPromedio) || Number(item?.costo) || 0;
+    const expectedQty = (audit.expectedConsumption || {})[itemId] || 0;
+    const line = DalfiClosingMath.calculateStationInventoryAuditLine({
+      openingBalance: audit.openingBalances[itemId] || 0,
+      deliveries: audit.inbound[itemId] || 0,
+      returns: audit.outbound[itemId] || 0,
+      physicalCount: (audit.physicalCounts || {})[itemId] || 0,
+      expectedConsumption: expectedQty,
+      unitCost,
+    });
+    const classification = DalfiClosingMath.classifyInventoryVarianceLine({
+      varianceQuantity: line.varianceQuantity,
+      variancePercent: line.variancePercent,
+      expectedConsumption: expectedQty,
+      tolerancePercent: tolerance,
+      expectedKnown: true,
+    });
+    return { itemId, itemNombre: item?.nombre || itemId, ...line, classification, explanation: (audit.explanations || {})[itemId] || "" };
+  });
+}
+
+function submitAcademyAuditCounts(auditId, { physicalCounts = {} } = {}) {
+  const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "En revisión")) {
+    return { ok: false, error: `No se puede pasar a revisión desde el estado "${audit.status}".` };
+  }
+  audit.physicalCounts = physicalCounts;
+  audit.varianceLines = computeAcademyAuditVarianceLines(audit);
+  audit.totalVarianceCost = DalfiClosingMath.roundMoney(audit.varianceLines.reduce((sum, line) => sum + line.varianceCost, 0));
+  audit.status = "En revisión";
+  stampRecord(audit, "updated");
+  logAudit("station_inventory_audited", {
+    entity: "auditoriasAcademia",
+    entityId: auditId,
+    newData: { totalVarianceCost: audit.totalVarianceCost },
+    note: `Conteo físico registrado para la auditoría de Academia ${auditId}.`,
+    success: true,
+  });
+  return { ok: true, audit };
+}
+
+function justifyAcademyAudit(auditId, { explanations = {}, reviewer = "" } = {}) {
+  const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Justificada")) {
+    return { ok: false, error: `No se puede justificar desde el estado "${audit.status}".` };
+  }
+  const unexplained = (audit.varianceLines || []).find(
+    (line) => line.classification !== "within_tolerance" && !explanations[line.itemId] && !audit.explanations?.[line.itemId],
+  );
+  if (unexplained) return { ok: false, error: `Falta justificar la variación de "${unexplained.itemNombre}".` };
+  audit.explanations = { ...(audit.explanations || {}), ...explanations };
+  audit.reviewer = reviewer;
+  audit.status = "Justificada";
+  stampRecord(audit, "updated");
+  return { ok: true, audit };
+}
+
+function confirmAcademyAudit(auditId, { approvedBy = "" } = {}) {
+  if (!canManageInvoices()) return { ok: false, error: "No autorizado para confirmar auditorías de Academia." };
+  const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Confirmada")) {
+    return { ok: false, error: `No se puede confirmar desde el estado "${audit.status}".` };
+  }
+  const plan = DalfiClosingMath.buildInventoryAuditAdjustmentPlan({
+    auditId,
+    varianceLines: (audit.varianceLines || []).map((line) => ({
+      itemId: line.itemId,
+      locationId: audit.academyLocationId,
+      varianceQuantity: line.varianceQuantity,
+      unitCost: Number(dbTable("inventario").find((row) => row.itemID === line.itemId)?.costoPromedio) || 0,
+    })),
+    existingSourceKeys: activeInventorySourceKeys(),
+  });
+  const adjustmentMovementIds = [];
+  plan.movementPlan.forEach((planned) => {
+    const result = createInventoryMovement({
+      itemId: planned.itemId,
+      tipo: planned.tipo,
+      cantidadBase: planned.quantity,
+      costoUnitario: planned.unitCost,
+      locationId: planned.locationId,
+      origen: "Ajuste de auditoría de Academia",
+      sourceId: auditId,
+      sourceKey: planned.sourceKey,
+      motivo: `Ajuste por auditoría de Academia ${auditId}`,
+      usuario: approvedBy,
+    });
+    if (result.movement) adjustmentMovementIds.push(result.movement.movementId);
+  });
+  audit.adjustmentMovementIds = adjustmentMovementIds;
+  audit.approvedBy = approvedBy;
+  audit.approvedAt = new Date().toISOString();
+  audit.status = "Confirmada";
+  stampRecord(audit, "updated");
+  logAudit("academy_inventory_audit_confirmed", {
+    entity: "auditoriasAcademia",
+    entityId: auditId,
+    newData: { approvedBy, ajustes: adjustmentMovementIds.length },
+    note: `Auditoría de Academia ${auditId} confirmada por ${approvedBy || "responsable"}.`,
+    success: true,
+  });
+  return { ok: true, audit };
+}
+
+function revertAcademyAudit(auditId, { reason = "", actor = "" } = {}) {
+  if (!canReopenClosings()) return { ok: false, error: "No autorizado para revertir auditorías de Academia." };
+  if (!reason) return { ok: false, error: "La reversión requiere un motivo." };
+  const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
+  if (!audit) return { ok: false, error: "Auditoría no encontrada." };
+  if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Revertida")) {
+    return { ok: false, error: `No se puede revertir desde el estado "${audit.status}".` };
+  }
+  const appliedAdjustments = (audit.adjustmentMovementIds || [])
+    .map((movementId) => dbTable("inventarioMovimientos").find((row) => row.movementId === movementId))
+    .filter(Boolean)
+    .map((movement) => ({
+      itemId: movement.itemId,
+      locationId: movement.locationId,
+      quantity: movement.cantidadBase,
+      unitCost: movement.costoUnitario,
+      tipo: movement.tipo,
+      sourceKey: movement.sourceKey,
+    }));
+  const plan = DalfiClosingMath.buildInventoryAuditReversalPlan({ auditId, appliedAdjustments, existingSourceKeys: activeInventorySourceKeys() });
+  const reversalMovementIds = [];
+  plan.movementPlan.forEach((planned) => {
+    const result = createInventoryMovement({
+      itemId: planned.itemId,
+      tipo: planned.tipo,
+      cantidadBase: planned.quantity,
+      costoUnitario: planned.unitCost,
+      locationId: planned.locationId,
+      origen: "Reversión de auditoría de Academia",
+      sourceId: auditId,
+      sourceKey: planned.sourceKey,
+      motivo: reason,
+      usuario: actor,
+    });
+    if (result.movement) reversalMovementIds.push(result.movement.movementId);
+  });
+  audit.reversalMovementIds = reversalMovementIds;
+  audit.status = "Revertida";
+  audit.reversalReason = reason;
+  stampRecord(audit, "updated");
+  return { ok: true, audit };
+}
+
+function renderAcademyAudits() {
+  const el = byId("academy-audit-list");
+  if (!el) return;
+  const rows = dbTable("auditoriasAcademia").slice().sort((a, b) => String(b.periodStart || "").localeCompare(String(a.periodStart || "")));
+  el.innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const actions = [];
+          if (row.status === "Abierta") actions.push(`<button type="button" class="secondary-btn compact academy-audit-count" data-audit-id="${row.academyAuditId}">Registrar conteo</button>`);
+          if (row.status === "En revisión") actions.push(`<button type="button" class="secondary-btn compact academy-audit-justify" data-audit-id="${row.academyAuditId}">Justificar</button>`);
+          if (row.status === "Justificada") actions.push(`<button type="button" class="secondary-btn compact academy-audit-confirm" data-audit-id="${row.academyAuditId}">Confirmar</button>`);
+          if (row.status === "Confirmada") actions.push(`<button type="button" class="secondary-btn compact danger academy-audit-revert" data-audit-id="${row.academyAuditId}">Revertir</button>`);
+          return `<div class="list-item"><span>Almacén de la Academia · ${row.periodStart} a ${row.periodEnd}</span><span>${row.status} · Variación ${money.format(row.totalVarianceCost || 0)} ${actions.join(" ")}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay auditorías de Academia registradas.</p>';
 }
 
 function renderAssetCustodies() {
@@ -5832,6 +6806,16 @@ function renderPhysicalCounts() {
 // Nunca admite servicios, colaboradoras de servicio ni propinas.
 // ===========================================================================
 
+// Opciones de ubicacion de venta para UNA linea: solo activas con
+// permiteVenta=true (seccion 4), nunca la estanteria/salon "porque siempre
+// fueron las unicas". Sin respaldo automatico: si no hay ninguna, la linea
+// queda sin opciones y el preflight bloquea al confirmar.
+function retailLineLocationOptions(selectedLocationId = "") {
+  return saleEligibleLocations()
+    .map((location) => `<option value="${location.locationId}"${location.locationId === selectedLocationId ? " selected" : ""}>${escapeHtml(location.nombre)}</option>`)
+    .join("");
+}
+
 function addRetailSaleLine() {
   const lineId = `retail-line-${++retailSaleLineCounter}`;
   const line = document.createElement("article");
@@ -5848,6 +6832,13 @@ function addRetailSaleLine() {
         <input class="retail-line-item" list="inventory-item-list" placeholder="Buscar artículo" required />
       </label>
       <label>
+        Ubicación de salida
+        <select class="retail-line-location" required>
+          <option value="">Selecciona ubicación...</option>
+          ${retailLineLocationOptions()}
+        </select>
+      </label>
+      <label>
         Cantidad
         <input class="retail-line-quantity" type="number" min="0.0001" step="0.0001" value="1" required />
       </label>
@@ -5860,7 +6851,7 @@ function addRetailSaleLine() {
         <input class="retail-line-discount" type="number" min="0" step="0.01" value="0" />
       </label>
       <label>
-        Existencia en estantería
+        Existencia en la ubicación
         <output class="retail-line-stock">0</output>
       </label>
       <label>
@@ -5881,6 +6872,7 @@ function getRetailSaleLines() {
       element: line,
       item,
       itemId: item?.itemID || "",
+      locationId: line.querySelector(".retail-line-location")?.value || "",
       quantity: Number(line.querySelector(".retail-line-quantity").value) || 0,
       unitPrice: Number(line.querySelector(".retail-line-price").value) || 0,
       discount: Number(line.querySelector(".retail-line-discount").value) || 0,
@@ -5888,15 +6880,16 @@ function getRetailSaleLines() {
   });
 }
 
-// Inventario disponible en la Estanteria de venta para cada articulo de las
-// lineas actuales (fuente unica para el preflight puro y para la vista
-// previa de existencia por linea).
-function retailShelfInventorySnapshot(lines) {
-  const shelf = defaultShelfWarehouse();
+// Inventario disponible en CADA ubicacion seleccionada por linea (julio
+// 2026): clave "itemId:locationId", nunca una unica estanteria global. Una
+// venta multilinea puede usar distintas ubicaciones por linea (seccion 4).
+function retailLineInventorySnapshot(lines) {
   const snapshot = {};
   lines.forEach((line) => {
-    if (!line.itemId || snapshot[line.itemId] !== undefined) return;
-    snapshot[line.itemId] = shelf ? itemStockAt(line.itemId, shelf.locationId) : 0;
+    if (!line.itemId || !line.locationId) return;
+    const key = `${line.itemId}:${line.locationId}`;
+    if (snapshot[key] !== undefined) return;
+    snapshot[key] = itemStockAt(line.itemId, line.locationId);
   });
   return snapshot;
 }
@@ -5919,18 +6912,18 @@ function retailSalePreflightItemsInput() {
 function runRetailSalePreflight(lines) {
   const validLines = lines.filter((line) => line.itemId && line.quantity > 0);
   return DalfiClosingMath.preflightRetailProductSale({
-    lines: validLines.map((line) => ({ itemId: line.itemId, quantity: line.quantity, unitPrice: line.unitPrice, discount: line.discount })),
+    lines: validLines.map((line) => ({ itemId: line.itemId, locationId: line.locationId, quantity: line.quantity, unitPrice: line.unitPrice, discount: line.discount })),
     items: retailSalePreflightItemsInput(),
-    shelfInventory: retailShelfInventorySnapshot(validLines),
+    locations: saleEligibleLocations(),
+    inventoryByLocation: retailLineInventorySnapshot(validLines),
     referenceDate: today,
   });
 }
 
 function updateRetailSaleTotals() {
   const lines = getRetailSaleLines();
-  const shelf = defaultShelfWarehouse();
   lines.forEach((line) => {
-    const available = line.item && shelf ? itemStockAt(line.itemId, shelf.locationId) : 0;
+    const available = line.item && line.locationId ? itemStockAt(line.itemId, line.locationId) : 0;
     line.element.querySelector(".retail-line-stock").textContent = String(available);
     const grossAmount = Math.max(0, line.quantity * line.unitPrice - line.discount);
     line.element.querySelector(".retail-line-subtotal").value = money.format(grossAmount);
@@ -7008,12 +8001,111 @@ function renderRetailSalesReport(start, end) {
     { label: "Margen bruto de productos", value: money.format(totalMargin) },
   ]);
   renderReportTable(
-    ["Fecha", "Artículo", "Cantidad", "Base", "Impuesto", "Total"],
+    ["Fecha", "Artículo", "Ubicación", "Cantidad", "Base", "Impuesto", "Total"],
     rows.map(
       (row) =>
-        `<tr><td>${dateOnly(row.fecha)}</td><td>${row.itemNombre}</td><td>${row.cantidad}</td><td class="amount">${money.format(Number(row.baseAmount) || 0)}</td><td class="amount">${money.format(Number(row.taxAmount) || 0)}</td><td class="amount">${money.format(Number(row.total) || 0)}</td></tr>`,
+        `<tr><td>${dateOnly(row.fecha)}</td><td>${row.itemNombre}</td><td>${row.locationName || row.locationId || "-"}</td><td>${row.cantidad}</td><td class="amount">${money.format(Number(row.baseAmount) || 0)}</td><td class="amount">${money.format(Number(row.taxAmount) || 0)}</td><td class="amount">${money.format(Number(row.total) || 0)}</td></tr>`,
     ),
     "No hay ventas directas en este período.",
+  );
+}
+
+// Auditorías de mesa y sus variaciones (seccion 30, items 13-14): consolida
+// las auditorias registradas en el rango, con el costo total de variacion
+// y cuantas lineas quedaron fuera de tolerancia.
+function renderStationAuditsReport(start, end) {
+  const rows = dbTable("auditoriasMesa").filter((row) => inRangeDate(row.periodStart, start, end) || inRangeDate(row.periodEnd, start, end));
+  const totalVariance = rows.reduce((sum, row) => sum + (Number(row.totalVarianceCost) || 0), 0);
+  const outOfTolerance = rows.reduce((sum, row) => sum + (row.varianceLines || []).filter((line) => line.classification !== "within_tolerance").length, 0);
+  reportCards([
+    { label: "Auditorías en el período", value: String(rows.length) },
+    { label: "Costo de variación", value: money.format(totalVariance) },
+    { label: "Líneas fuera de tolerancia", value: String(outOfTolerance) },
+  ]);
+  renderReportTable(
+    ["Mesa", "Período", "Estado", "Costo de variación", "Colaboradoras"],
+    rows.map(
+      (row) =>
+        `<tr><td>${row.stationName || row.stationId}</td><td>${row.periodStart} a ${row.periodEnd}</td><td>${row.status}</td><td class="amount">${money.format(Number(row.totalVarianceCost) || 0)}</td><td>${(row.collaboratorNames || []).join(", ") || "-"}</td></tr>`,
+    ),
+    "No hay auditorías de mesa en este período.",
+  );
+}
+
+// Consumo de la Academia (seccion 30, item 10): nunca mezclado con el
+// consumo del salon.
+function renderAcademyConsumptionReport(start, end) {
+  const rows = dbTable("consumosAcademia").filter((row) => inRangeDate(row.fecha, start, end));
+  const totalCost = rows.reduce((sum, row) => sum + (Number(row.totalCost) || 0), 0);
+  reportCards([
+    { label: "Consumos de Academia", value: String(rows.length) },
+    { label: "Costo total", value: money.format(totalCost) },
+  ]);
+  renderReportTable(
+    ["Fecha", "Artículo", "Actividad", "Curso/clase", "Instructora", "Cantidad", "Costo"],
+    rows.map(
+      (row) =>
+        `<tr><td>${dateOnly(row.fecha)}</td><td>${dbTable("inventario").find((item) => item.itemID === row.itemId)?.nombre || row.itemId}</td><td>${ACADEMY_ACTIVITY_LABELS[row.activityType] || row.activityType}</td><td>${row.courseName || "-"}</td><td>${row.instructorName || "-"}</td><td>${row.cantidad}</td><td class="amount">${money.format(Number(row.totalCost) || 0)}</td></tr>`,
+    ),
+    "No hay consumo de Academia en este período.",
+  );
+}
+
+// Existencia y necesidad de reposicion del Almacen de la Academia (seccion
+// 29-30, items 11-12): orden sugerido nunca crea compra automatica.
+function renderAcademyInventoryReport() {
+  const academyWarehouse = dbTable("almacenes").find((row) => row.tipo === "academia");
+  if (!academyWarehouse) {
+    reportCards([{ label: "Almacén de la Academia", value: "No creado" }]);
+    renderReportTable(["Artículo"], [], "El Almacén de la Academia todavía no existe.");
+    return;
+  }
+  const rows = dbTable("inventario")
+    .map((item) => ({ item, stock: itemStockAt(item.itemID, academyWarehouse.locationId) }))
+    .filter(({ stock }) => stock !== 0 || Number(academyWarehouse.stockMinimo) > 0);
+  const belowMin = rows.filter(({ stock }) => Number(academyWarehouse.stockMinimo) > 0 && stock < Number(academyWarehouse.stockMinimo));
+  reportCards([
+    { label: "Artículos con existencia", value: String(rows.length) },
+    { label: "Bajo mínimo de Academia", value: String(belowMin.length) },
+  ]);
+  renderReportTable(
+    ["Artículo", "Existencia", "Mínimo", "Objetivo", "Sugerencia"],
+    rows.map(({ item, stock }) => {
+      const min = Number(academyWarehouse.stockMinimo) || 0;
+      const target = Number(academyWarehouse.stockObjetivo) || 0;
+      const needsReplenishment = min > 0 && stock < min;
+      return `<tr><td>${item.nombre}</td><td class="${needsReplenishment ? "danger" : ""}">${stock}</td><td>${min}</td><td>${target}</td><td>${needsReplenishment ? `Reponer ${DalfiClosingMath.roundMoney(Math.max(target, min) - stock)}` : "-"}</td></tr>`;
+    }),
+    "No hay existencia registrada en el Almacén de la Academia.",
+  );
+}
+
+// Consolida entregas a colaboradoras, consumo general del centro y consumo
+// de activos (seccion 30, items 6-9): nunca mezcla con ventas ni con
+// consumo de servicios facturados.
+function renderInternalIssuesReport(start, end) {
+  const deliveries = dbTable("entregasColaboradoras")
+    .filter((row) => inRangeDate(row.fecha, start, end))
+    .map((row) => ({ fecha: row.fecha, itemId: row.itemId, destino: `Colaboradora: ${row.collaboratorName}`, cantidad: row.cantidad, costo: 0 }));
+  const general = dbTable("consumosGenerales")
+    .filter((row) => inRangeDate(row.fecha, start, end))
+    .map((row) => ({ fecha: row.fecha, itemId: row.itemId, destino: `${row.destinationType === "general_area" ? "Área general" : row.destinationType}: ${row.destinationName}`, cantidad: row.cantidad, costo: Number(row.totalCost) || 0 }));
+  const assets = dbTable("consumosActivos")
+    .filter((row) => inRangeDate(row.fecha, start, end))
+    .map((row) => ({ fecha: row.fecha, itemId: row.itemId, destino: `Activo: ${row.assetCode}`, cantidad: row.cantidad, costo: Number(row.totalCost) || 0 }));
+  const rows = [...deliveries, ...general, ...assets].sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  const totalCost = rows.reduce((sum, row) => sum + row.costo, 0);
+  reportCards([
+    { label: "Salidas internas", value: String(rows.length) },
+    { label: "Costo total", value: money.format(totalCost) },
+  ]);
+  renderReportTable(
+    ["Fecha", "Artículo", "Destino", "Cantidad", "Costo"],
+    rows.map(
+      (row) =>
+        `<tr><td>${dateOnly(row.fecha)}</td><td>${dbTable("inventario").find((item) => item.itemID === row.itemId)?.nombre || row.itemId}</td><td>${row.destino}</td><td>${row.cantidad}</td><td class="amount">${money.format(row.costo)}</td></tr>`,
+    ),
+    "No hay salidas internas en este período.",
   );
 }
 
@@ -7124,6 +8216,10 @@ function renderReports() {
     "service-direct-margin": "Costo y margen directo por servicio",
     "pending-consumption": "Consumo pendiente de confirmación",
     "fixed-assets": "Reporte de activos fijos",
+    "station-audits": "Auditorías de mesa y variaciones",
+    "academy-consumption": "Consumo de Academia",
+    "academy-inventory": "Existencia y reposición de Academia",
+    "internal-issues": "Salidas internas (colaboradoras, área general, activos)",
   };
   byId("report-title").textContent = `${titles[type]} · ${start} a ${end}`;
   if (!reportGenerated) {
@@ -7153,6 +8249,10 @@ function renderReports() {
   if (type === "service-direct-margin") return renderServiceDirectMarginReport(start, end);
   if (type === "pending-consumption") return renderPendingConsumptionReport();
   if (type === "fixed-assets") return renderFixedAssetsReport();
+  if (type === "station-audits") return renderStationAuditsReport(start, end);
+  if (type === "academy-consumption") return renderAcademyConsumptionReport(start, end);
+  if (type === "academy-inventory") return renderAcademyInventoryReport();
+  if (type === "internal-issues") return renderInternalIssuesReport(start, end);
   return renderExecutiveReport(start, end);
 }
 
@@ -7346,10 +8446,16 @@ function renderAll() {
   safeRender("cxp suplidores", renderSupplierPayables);
   safeRender("transferencias de inventario", renderTransfers);
   safeRender("mesas", renderStations);
+  safeRender("entregas de mesa", renderStationDeliveries);
   safeRender("fichas tecnicas", renderRecipes);
   safeRender("perdidas de inventario", renderInventoryLosses);
   safeRender("conteos fisicos", renderPhysicalCounts);
   safeRender("ventas directas", renderRetailSales);
+  safeRender("salidas internas", renderInternalIssues);
+  safeRender("consumo de academia", renderAcademyConsumptions);
+  safeRender("auditorias de mesa", renderStationAudits);
+  safeRender("auditorias de academia", renderAcademyAudits);
+  safeRender("alertas de inventario", renderInventoryAlerts);
   safeRender("activos fijos", renderFixedAssets);
   safeRender("custodia de activos", renderAssetCustodies);
   safeRender("eventos de activos", renderAssetEvents);
@@ -10617,6 +11723,7 @@ function wireForms() {
       permiteVenta: byId("warehouse-allows-sale").checked,
       permiteConsumo: byId("warehouse-allows-consumption").checked,
       permiteCustodia: byId("warehouse-allows-custody").checked,
+      permiteTransferencia: byId("warehouse-allows-transfer").checked,
       observaciones: byId("warehouse-note").value.trim(),
     };
     if (isNew) {
@@ -10791,7 +11898,10 @@ function wireForms() {
     byId("purchase-submit").disabled = true;
     try {
       const config = inventoryConfig();
-      const destinationWarehouse = config.usarAlmacenProvisiones
+      const buyDirectToAcademy = Boolean(byId("purchase-to-academy")?.checked);
+      const destinationWarehouse = buyDirectToAcademy
+        ? defaultAcademyWarehouse()
+        : config.usarAlmacenProvisiones
         ? dbTable("almacenes").find((w) => w.tipo === "provisiones" && w.activa !== false) || defaultSalonWarehouse()
         : defaultSalonWarehouse();
       const purchaseId = nextDbId("comprasInventario", "purchaseId", "COMP");
@@ -10856,6 +11966,15 @@ function wireForms() {
         note: `Compra ${purchaseId} confirmada: entrada de ${data.baseQuantity} ${data.item.unidadBase || data.item.unidad || ""} a ${destinationWarehouse.nombre}.`,
         success: true,
       });
+      if (buyDirectToAcademy) {
+        logAudit("academy_inventory_received", {
+          entity: "comprasInventario",
+          entityId: purchaseId,
+          newData: { itemId: data.item.itemID, cantidadBase: data.baseQuantity },
+          note: `Compra directa al Almacén de la Academia: ${data.baseQuantity} de ${data.item.nombre}.`,
+          success: true,
+        });
+      }
       if (mode === "contado") {
         const expenseId = nextDbId("egresos", "egresoID", "EGR");
         dbTable("egresos").push(stampRecord({
@@ -11036,6 +12155,23 @@ function wireForms() {
       alert("No se pudo completar la transferencia.");
       return;
     }
+    if (to.tipo === "academia") {
+      logAudit("academy_inventory_received", {
+        entity: "transferenciasInventario",
+        entityId: transferResult.transferId,
+        newData: { itemId: item.itemID, cantidadBase: quantity, fromLocationId: from.locationId },
+        note: `Transferencia al Almacén de la Academia: ${quantity} de ${item.nombre} desde ${from.nombre}.`,
+        success: true,
+      });
+    } else if (from.tipo === "academia") {
+      logAudit("academy_inventory_returned", {
+        entity: "transferenciasInventario",
+        entityId: transferResult.transferId,
+        newData: { itemId: item.itemID, cantidadBase: quantity, toLocationId: to.locationId },
+        note: `Devolución del Almacén de la Academia: ${quantity} de ${item.nombre} hacia ${to.nombre}.`,
+        success: true,
+      });
+    }
     event.target.reset();
     saveState();
     renderAll();
@@ -11058,6 +12194,560 @@ function wireForms() {
     event.target.reset();
     saveState();
     renderAll();
+  });
+
+  byId("station-delivery-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede entregar inventario a una mesa.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("station-delivery-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      return;
+    }
+    const fromLocation = findWarehouseByName(byId("station-delivery-from").value.trim());
+    if (!fromLocation) {
+      alert("Selecciona una ubicación de origen válida.");
+      return;
+    }
+    const station = findStationByName(byId("station-delivery-station").value.trim());
+    if (!station || !station.stationId) {
+      alert("Selecciona una mesa válida (no Área general).");
+      return;
+    }
+    const quantity = Number(byId("station-delivery-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      return;
+    }
+    const available = itemStockAt(item.itemID, fromLocation.locationId);
+    if (quantity > available) {
+      alert(`Existencia insuficiente en ${fromLocation.nombre}. Disponible: ${available}.`);
+      return;
+    }
+    const collaboratorName = byId("station-delivery-collaborator").value.trim();
+    const result = deliverInventoryToStation({
+      itemId: item.itemID,
+      cantidadBase: quantity,
+      fromLocationId: fromLocation.locationId,
+      stationId: station.stationId,
+      stationName: station.nombre,
+      collaboratorName,
+      usuario: currentUserEmail(),
+    });
+    if (!result.transferId) {
+      alert(result.outMove?.result?.validationErrors.join(" ") || "No se pudo registrar la entrega a mesa.");
+      return;
+    }
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("station-delivery-list").addEventListener("click", (event) => {
+    const button = event.target.closest(".confirm-station-delivery");
+    if (!button) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede confirmar recepciones de mesa.");
+      return;
+    }
+    const receivedBy = prompt("Nombre de quien recibe en la mesa:") || "";
+    const record = confirmStationDeliveryReceipt(button.dataset.transferId, { receivedBy });
+    if (!record) {
+      alert("Esta entrega ya fue confirmada o no existe.");
+      return;
+    }
+    saveState();
+    renderAll();
+  });
+
+  byId("internal-issue-destination-type").addEventListener("change", () => {
+    const value = byId("internal-issue-destination-type").value;
+    byId("internal-issue-collaborator-fields").classList.toggle("hidden", value !== "collaborator");
+    byId("internal-issue-general-fields").classList.toggle("hidden", value !== "general_area");
+    byId("internal-issue-asset-fields").classList.toggle("hidden", value !== "asset");
+  });
+
+  byId("internal-issue-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar salidas internas de inventario.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("internal-issue-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      return;
+    }
+    const sourceLocation = findWarehouseByName(byId("internal-issue-from").value.trim());
+    if (!sourceLocation) {
+      alert("Selecciona una ubicación de origen válida.");
+      return;
+    }
+    const quantity = Number(byId("internal-issue-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      return;
+    }
+    const destinationType = byId("internal-issue-destination-type").value;
+    const responsibleName = byId("internal-issue-responsible").value.trim();
+    if (!responsibleName) {
+      alert("Indica un responsable.");
+      return;
+    }
+    const reason = byId("internal-issue-reason").value.trim();
+    if (!reason) {
+      alert("Indica el motivo.");
+      return;
+    }
+
+    let destinationId = "";
+    let destinationName = "";
+    let collaboratorCase = "";
+    if (destinationType === "collaborator") {
+      destinationName = byId("internal-issue-collaborator").value.trim();
+      if (!destinationName) {
+        alert("Indica la colaboradora que recibe.");
+        return;
+      }
+      destinationId = findStaffByName(destinationName)?.colaboradorID || "";
+      collaboratorCase = byId("internal-issue-collaborator-case").value;
+    } else if (destinationType === "general_area") {
+      destinationName = byId("internal-issue-area").value.trim();
+      if (!destinationName) {
+        alert("Indica el área de destino.");
+        return;
+      }
+    } else if (destinationType === "asset") {
+      destinationName = byId("internal-issue-asset").value.trim();
+      const asset = dbTable("activosFijos").find((row) => normalize(row.nombre) === normalize(destinationName));
+      if (!asset) {
+        alert("Selecciona un activo existente.");
+        return;
+      }
+      destinationId = asset.activoID;
+    } else {
+      destinationName = destinationType === "maintenance" ? "Mantenimiento" : "Otro";
+    }
+
+    const unitCost = Number(item.costoPromedio) || Number(item.costo) || 0;
+    const preflight = DalfiClosingMath.preflightInternalInventoryIssue({
+      lines: [{ itemId: item.itemID, quantity, historicalUnitCost: unitCost }],
+      sourceLocation,
+      destinationType,
+      destinationId,
+      destinationName,
+      responsiblePersonId: responsibleName,
+      responsiblePersonName: responsibleName,
+      inventory: { [item.itemID]: itemStockAt(item.itemID, sourceLocation.locationId) },
+      existingSourceKeys: activeInventorySourceKeys(),
+      referenceDate: today,
+    });
+    if (!preflight.allowed) {
+      alert(`No se puede registrar la salida interna: ${preflight.blockingErrors.join(" ")}`);
+      return;
+    }
+
+    const isCustodyTransfer = destinationType === "collaborator" && collaboratorCase === "custody";
+    const movementTipo = isCustodyTransfer ? "entrega_custodia" : "consumo_interno";
+    const deliveryId = destinationType === "collaborator" ? nextDbId("entregasColaboradoras", "deliveryId", "DLV") : "";
+    const assetConsumptionId = destinationType === "asset" ? nextDbId("consumosActivos", "assetConsumptionId", "ACN") : "";
+    const internalConsumptionId = !deliveryId && !assetConsumptionId ? nextDbId("consumosGenerales", "internalConsumptionId", "GEN") : "";
+    const recordId = deliveryId || assetConsumptionId || internalConsumptionId;
+    const sourceKey = `salida_interna:${recordId}`;
+
+    const movementResult = createInventoryMovement({
+      itemId: item.itemID,
+      tipo: movementTipo,
+      cantidadBase: quantity,
+      costoUnitario: unitCost,
+      locationId: sourceLocation.locationId,
+      origen: "Salida interna",
+      sourceId: recordId,
+      sourceKey,
+      motivo: reason,
+      usuario: currentUserEmail(),
+    });
+    if (!movementResult.movement) {
+      alert(movementResult.result.validationErrors.join(" ") || "No se pudo registrar la salida interna.");
+      return;
+    }
+
+    if (destinationType === "collaborator") {
+      dbTable("entregasColaboradoras").push(stampRecord({
+        deliveryId,
+        itemId: item.itemID,
+        locationFromId: sourceLocation.locationId,
+        collaboratorId: destinationId,
+        collaboratorName: destinationName,
+        destinationType: "collaborator",
+        caseType: isCustodyTransfer ? "transferencia_custodia" : "consumo_inmediato",
+        cantidad: quantity,
+        fecha: today,
+        responsibleIssuer: responsibleName,
+        receivedBy: "",
+        receivedAt: "",
+        purpose: reason,
+        sourceKey,
+        movementId: movementResult.movement.movementId,
+        status: "Registrada",
+      }));
+      logAudit("collaborator_inventory_delivered", {
+        entity: "entregasColaboradoras",
+        entityId: deliveryId,
+        newData: { itemId: item.itemID, cantidad: quantity, collaboratorName: destinationName, caseType: isCustodyTransfer ? "transferencia_custodia" : "consumo_inmediato" },
+        note: `Entrega a ${destinationName}: ${quantity} de ${item.nombre}.`,
+        success: true,
+      });
+    } else if (destinationType === "asset") {
+      dbTable("consumosActivos").push(stampRecord({
+        assetConsumptionId,
+        assetId: destinationId,
+        assetCode: destinationId,
+        itemId: item.itemID,
+        locationFromId: sourceLocation.locationId,
+        cantidad: quantity,
+        fecha: today,
+        reason,
+        maintenanceEventId: "",
+        historicalUnitCost: unitCost,
+        totalCost: DalfiClosingMath.roundMoney(unitCost * quantity),
+        responsibleUser: responsibleName,
+        movementId: movementResult.movement.movementId,
+        sourceKey,
+      }));
+      logAudit("asset_inventory_consumed", {
+        entity: "consumosActivos",
+        entityId: assetConsumptionId,
+        newData: { assetId: destinationId, itemId: item.itemID, cantidad: quantity },
+        note: `Consumo de ${quantity} ${item.nombre} para el activo ${destinationName}.`,
+        success: true,
+      });
+    } else {
+      dbTable("consumosGenerales").push(stampRecord({
+        internalConsumptionId,
+        itemId: item.itemID,
+        locationFromId: sourceLocation.locationId,
+        destinationType,
+        destinationName,
+        cantidad: quantity,
+        fecha: today,
+        responsable: responsibleName,
+        motivo: reason,
+        historicalUnitCost: unitCost,
+        totalCost: DalfiClosingMath.roundMoney(unitCost * quantity),
+        movementId: movementResult.movement.movementId,
+        sourceKey,
+      }));
+      logAudit("internal_inventory_consumed", {
+        entity: "consumosGenerales",
+        entityId: internalConsumptionId,
+        newData: { itemId: item.itemID, cantidad: quantity, destinationType, destinationName },
+        note: `Consumo interno (${destinationType}) de ${quantity} ${item.nombre}: ${destinationName}.`,
+        success: true,
+      });
+    }
+
+    event.target.reset();
+    byId("internal-issue-destination-type").dispatchEvent(new Event("change"));
+    saveState();
+    renderAll();
+  });
+
+  byId("internal-issue-list").addEventListener("click", (event) => {
+    const button = event.target.closest(".confirm-collaborator-delivery");
+    if (!button) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede confirmar recepciones de colaboradora.");
+      return;
+    }
+    const receivedBy = prompt("Nombre de quien confirma la recepción:") || "";
+    const record = confirmCollaboratorDeliveryReceipt(button.dataset.deliveryId, { receivedBy });
+    if (!record) {
+      alert("Esta entrega ya fue confirmada o no existe.");
+      return;
+    }
+    saveState();
+    renderAll();
+  });
+
+  byId("academy-consumption-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar consumo de la Academia.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("academy-consumption-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      return;
+    }
+    const quantity = Number(byId("academy-consumption-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      return;
+    }
+    const responsibleName = byId("academy-consumption-responsible").value.trim();
+    if (!responsibleName) {
+      alert("Indica un responsable.");
+      return;
+    }
+    const academyWarehouse = defaultAcademyWarehouse();
+    const unitCost = Number(item.costoPromedio) || Number(item.costo) || 0;
+    const consumptionId = nextDbId("consumosAcademia", "academyConsumptionId", "ACD");
+    const sourceKey = `academia:${consumptionId}`;
+    const preflight = DalfiClosingMath.preflightAcademyInventoryConsumption({
+      lines: [{ itemId: item.itemID, quantity, historicalUnitCost: unitCost, activityType: byId("academy-consumption-activity").value }],
+      academyInventory: { [item.itemID]: itemStockAt(item.itemID, academyWarehouse.locationId) },
+      existingSourceKeys: activeInventorySourceKeys(),
+      sourceKey,
+      referenceDate: today,
+    });
+    if (!preflight.allowed) {
+      alert(`No se puede registrar el consumo de Academia: ${preflight.blockingErrors.join(" ")}`);
+      return;
+    }
+    const movementResult = createInventoryMovement({
+      itemId: item.itemID,
+      tipo: "consumo_academia",
+      cantidadBase: quantity,
+      costoUnitario: unitCost,
+      locationId: academyWarehouse.locationId,
+      origen: "Consumo de Academia",
+      sourceId: consumptionId,
+      sourceKey,
+      motivo: byId("academy-consumption-activity").value,
+      usuario: currentUserEmail(),
+    });
+    if (!movementResult.movement) {
+      alert(movementResult.result.validationErrors.join(" ") || "No se pudo registrar el consumo de Academia.");
+      return;
+    }
+    dbTable("consumosAcademia").push(stampRecord({
+      academyConsumptionId: consumptionId,
+      academyLocationId: academyWarehouse.locationId,
+      itemId: item.itemID,
+      cantidad: quantity,
+      unidad: item.unidad || item.unidadBase || "",
+      cantidadBase: quantity,
+      fecha: today,
+      activityType: byId("academy-consumption-activity").value,
+      courseId: "",
+      classId: "",
+      courseName: byId("academy-consumption-course").value.trim(),
+      instructorId: "",
+      instructorName: byId("academy-consumption-instructor").value.trim(),
+      groupReference: byId("academy-consumption-group").value.trim(),
+      participantCount: Number(byId("academy-consumption-participants").value) || 0,
+      responsibleUserId: responsibleName,
+      reason: byId("academy-consumption-activity").value,
+      historicalUnitCost: unitCost,
+      totalCost: DalfiClosingMath.roundMoney(unitCost * quantity),
+      movementId: movementResult.movement.movementId,
+      sourceKey,
+      status: "Confirmado",
+    }));
+    logAudit("academy_inventory_consumed", {
+      entity: "consumosAcademia",
+      entityId: consumptionId,
+      newData: { itemId: item.itemID, cantidad: quantity, activityType: byId("academy-consumption-activity").value },
+      note: `Consumo de Academia: ${quantity} de ${item.nombre}.`,
+      success: true,
+    });
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("station-audit-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede abrir auditorías de mesa.");
+      return;
+    }
+    const station = findStationByName(byId("station-audit-station").value.trim());
+    if (!station || !station.stationId) {
+      alert("Selecciona una mesa válida (no Área general).");
+      return;
+    }
+    const periodStart = byId("station-audit-start").value;
+    const periodEnd = byId("station-audit-end").value;
+    const result = openStationAudit({ stationId: station.stationId, stationName: station.nombre, periodStart, periodEnd });
+    if (!result.audit) {
+      alert(result.error);
+      return;
+    }
+    // openStationAudit() ya registra station_inventory_audit_opened UNA
+    // vez (evitar registrarlo de nuevo aqui duplicaria el evento tecnico
+    // por el mismo submit).
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("station-audit-list").addEventListener("click", (event) => {
+    const auditId = event.target.dataset.auditId;
+    if (!auditId) return;
+    if (event.target.classList.contains("station-audit-count")) {
+      const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+      if (!audit) return;
+      const itemIds = Object.keys(audit.openingBalances || {});
+      if (!itemIds.length) {
+        alert("No hay artículos para auditar en esta mesa en este período.");
+        return;
+      }
+      const physicalCounts = {};
+      const declaredActualConsumption = {};
+      for (const itemId of itemIds) {
+        const item = dbTable("inventario").find((row) => row.itemID === itemId);
+        const physical = prompt(`Conteo físico de "${item?.nombre || itemId}" en ${audit.stationName || audit.stationId}:`, "0");
+        if (physical === null) return;
+        physicalCounts[itemId] = Number(physical) || 0;
+        const declared = prompt(`Consumo real declarado de "${item?.nombre || itemId}" (opcional, deja en blanco para omitir):`, "");
+        if (declared !== null && declared.trim() !== "") declaredActualConsumption[itemId] = Number(declared) || 0;
+      }
+      const result = submitStationAuditCounts(auditId, { physicalCounts, declaredActualConsumption });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("station-audit-justify")) {
+      const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
+      if (!audit) return;
+      const explanations = {};
+      (audit.varianceLines || []).forEach((line) => {
+        if (line.classification === "within_tolerance" || audit.explanations?.[line.itemId]) return;
+        const explanation = prompt(`Explica la variación de "${line.itemNombre}" (${line.classification}):`);
+        if (explanation) explanations[line.itemId] = explanation;
+      });
+      const result = justifyStationAudit(auditId, { explanations, reviewer: currentUserEmail() });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("station-audit-confirm")) {
+      const result = confirmStationAudit(auditId, { approvedBy: currentUserEmail() });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("station-audit-revert")) {
+      const reason = prompt("Motivo de la reversión de esta auditoría de mesa:");
+      if (!reason) {
+        alert("La reversión requiere un motivo.");
+        return;
+      }
+      const result = revertStationAudit(auditId, { reason, actor: currentUserEmail() });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+    }
+  });
+
+  byId("academy-audit-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede abrir auditorías de Academia.");
+      return;
+    }
+    const periodStart = byId("academy-audit-start").value;
+    const periodEnd = byId("academy-audit-end").value;
+    const result = openAcademyAudit({ periodStart, periodEnd });
+    if (!result.audit) {
+      alert(result.error);
+      return;
+    }
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("academy-audit-list").addEventListener("click", (event) => {
+    const auditId = event.target.dataset.auditId;
+    if (!auditId) return;
+    if (event.target.classList.contains("academy-audit-count")) {
+      const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
+      if (!audit) return;
+      const itemIds = Object.keys(audit.openingBalances || {});
+      if (!itemIds.length) {
+        alert("No hay artículos para auditar en la Academia en este período.");
+        return;
+      }
+      const physicalCounts = {};
+      for (const itemId of itemIds) {
+        const item = dbTable("inventario").find((row) => row.itemID === itemId);
+        const physical = prompt(`Conteo físico de "${item?.nombre || itemId}" en el Almacén de la Academia:`, "0");
+        if (physical === null) return;
+        physicalCounts[itemId] = Number(physical) || 0;
+      }
+      const result = submitAcademyAuditCounts(auditId, { physicalCounts });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("academy-audit-justify")) {
+      const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
+      if (!audit) return;
+      const explanations = {};
+      (audit.varianceLines || []).forEach((line) => {
+        if (line.classification === "within_tolerance" || audit.explanations?.[line.itemId]) return;
+        const explanation = prompt(`Explica la variación de "${line.itemNombre}" (${line.classification}):`);
+        if (explanation) explanations[line.itemId] = explanation;
+      });
+      const result = justifyAcademyAudit(auditId, { explanations, reviewer: currentUserEmail() });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("academy-audit-confirm")) {
+      const result = confirmAcademyAudit(auditId, { approvedBy: currentUserEmail() });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+      return;
+    }
+    if (event.target.classList.contains("academy-audit-revert")) {
+      const reason = prompt("Motivo de la reversión de esta auditoría de Academia:");
+      if (!reason) {
+        alert("La reversión requiere un motivo.");
+        return;
+      }
+      const result = revertAcademyAudit(auditId, { reason, actor: currentUserEmail() });
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
+      saveState();
+      renderAll();
+    }
   });
 
   byId("recipe-form").addEventListener("submit", (event) => {
@@ -11379,8 +13069,9 @@ function wireForms() {
       byId("retail-sale-client-search").focus();
       return;
     }
-    if (!defaultShelfWarehouse()) {
-      alert("No hay ninguna Estantería de venta configurada. Crea una en Base de datos → Almacenes antes de vender productos.");
+    const missingLocation = lines.find((line) => !line.locationId);
+    if (missingLocation) {
+      alert("Selecciona la ubicación de salida de cada producto (estantería, almacén del salón u otra ubicación autorizada).");
       return;
     }
     const preflight = runRetailSalePreflight(lines);
@@ -11396,27 +13087,37 @@ function wireForms() {
     retailSaleSubmitInFlight = true;
     byId("retail-sale-submit").disabled = true;
     try {
-      const shelf = defaultShelfWarehouse();
       if (clientName) ensureClient(clientName);
       const clientRecord = clientName ? findClientByName(clientName) : null;
       const retailSaleId = nextDbId("ventasDirectas", "retailSaleId", "VTA");
       const movements = [];
       let stockFailed = "";
+      // Cada linea descuenta EXCLUSIVAMENTE su propia ubicacion seleccionada
+      // (nunca la estanteria por defecto, nunca un respaldo automatico):
+      // un solo movimiento de salida por linea, jamas dos ubicaciones para
+      // el mismo producto (seccion 6).
       preflight.normalizedLines.forEach((normalized) => {
         if (stockFailed) return;
+        logAudit("retail_sale_location_selected", {
+          entity: "ventasDirectas",
+          entityId: retailSaleId,
+          newData: { itemId: normalized.itemId, locationId: normalized.selectedLocationId, locationName: normalized.selectedLocationName },
+          note: `Ubicación seleccionada para ${normalized.descripcion}: ${normalized.selectedLocationName || normalized.selectedLocationId}.`,
+          success: true,
+        });
         const movementResult = createInventoryMovement({
           itemId: normalized.itemId,
           tipo: "venta",
           cantidadBase: normalized.cantidad,
           costoUnitario: normalized.historicalUnitCost,
-          locationId: shelf.locationId,
+          locationId: normalized.selectedLocationId,
           origen: "Venta de producto",
           sourceId: retailSaleId,
-          sourceKey: `venta:${retailSaleId}:${normalized.itemId}`,
-          motivo: "Venta de producto (estantería)",
+          sourceKey: `venta:${retailSaleId}:${normalized.itemId}:${normalized.selectedLocationId}`,
+          motivo: `Venta de producto (${normalized.selectedLocationName || normalized.selectedLocationId})`,
         });
         if (!movementResult.movement) {
-          stockFailed = movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de estantería.";
+          stockFailed = movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de la ubicación seleccionada.";
           return;
         }
         movements.push(movementResult.movement);
@@ -11447,12 +13148,13 @@ function wireForms() {
           costoTotalHistorico: normalized.totalHistoricalCost,
           margenBruto: normalized.grossMargin,
           margenBrutoPorcentaje: normalized.grossMarginPercentage,
-          locationId: shelf.locationId,
+          locationId: normalized.selectedLocationId,
+          locationName: normalized.selectedLocationName,
           clienteID: clientRecord?.clienteID || "",
           clienteNombre: clientName || "",
           fecha: today,
           estado: "Confirmada",
-          sourceKey: `venta:${retailSaleId}:${normalized.itemId}`,
+          sourceKey: `venta:${retailSaleId}:${normalized.itemId}:${normalized.selectedLocationId}`,
         }));
       });
       logAudit("retail_product_sold", {

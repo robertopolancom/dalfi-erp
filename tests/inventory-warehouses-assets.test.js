@@ -131,10 +131,12 @@ test("12-13. activar/desactivar provisiones no borra histórico (solo cambia el 
   assert.match(source, /config\.usarAlmacenProvisiones = byId\("use-provisions-warehouse"\)\.checked;/);
 });
 
-test("14-15. destino de compra depende de la configuración: provisiones cuando está activo, salón cuando está inactivo", () => {
-  assert.match(purchaseSubmit, /const destinationWarehouse = config\.usarAlmacenProvisiones/);
+test("14-15. destino de compra depende de la configuración: provisiones cuando está activo, salón cuando está inactivo (a menos que se marque explícitamente 'comprar directo para Academia')", () => {
+  assert.match(purchaseSubmit, /config\.usarAlmacenProvisiones/);
   assert.match(purchaseSubmit, /\? dbTable\("almacenes"\)\.find\(\(w\) => w\.tipo === "provisiones" && w\.activa !== false\) \|\| defaultSalonWarehouse\(\)/);
   assert.match(purchaseSubmit, /: defaultSalonWarehouse\(\);/);
+  assert.match(purchaseSubmit, /const buyDirectToAcademy = Boolean\(byId\("purchase-to-academy"\)\?\.checked\);/);
+  assert.match(purchaseSubmit, /const destinationWarehouse = buyDirectToAcademy\s*\n\s*\? defaultAcademyWarehouse\(\)/);
 });
 
 test("16. existencia global = suma de todas las ubicaciones (verificado con la funcion pura real)", () => {
@@ -461,24 +463,40 @@ test("123. el conteo físico se aplica una sola vez por confirmación (no hay un
   assert.doesNotMatch(countSubmit, /for \(|\.forEach\(/);
 });
 
-test("125-127. venta de productos reduce EXCLUSIVAMENTE la estantería: defaultShelfWarehouse() ya no cae de respaldo al almacén del salón (defecto real corregido)", () => {
+test("125-127. venta de productos ya no esta atada a una unica estanteria: cada linea exige su propia ubicacion seleccionada (defaultShelfWarehouse() sigue existiendo para compatibilidad, pero el submit ya no la exige)", () => {
   const source = extractFunction("defaultShelfWarehouse");
   assert.match(source, /row\.tipo === "estanteria" && row\.activa !== false/);
   assert.doesNotMatch(source, /defaultSalonWarehouse\(\)/);
-  assert.match(retailSaleSubmit, /if \(!defaultShelfWarehouse\(\)\) \{/);
+  assert.match(retailSaleSubmit, /const missingLocation = lines\.find\(\(line\) => !line\.locationId\);/);
 });
 
-test("128. estantería bajo mínimo / sin configurar: el preflight puro (preflightRetailProductSale) bloquea la venta y explica la falta (nunca vende sin estantería ni existencia suficiente)", () => {
+test("128. ubicacion seleccionada bajo minimo / sin existencia suficiente: el preflight puro (preflightRetailProductSale) bloquea la venta y explica la falta por ubicacion (nunca vende sin existencia suficiente en la ubicacion elegida)", () => {
   const source = extractFunction("preflightRetailProductSale", closingMathJs);
   assert.match(source, /Existencia insuficiente/);
   assert.match(retailSaleSubmit, /if \(!preflight\.allowed\) \{/);
 });
 
-test("venta de productos exige permiso, guardia de doble-submit, y bloquea si no hay estantería o existencia suficiente (nunca descuenta otra ubicación)", () => {
+test("venta de productos exige permiso, guardia de doble-submit, ubicacion seleccionada por linea, y bloquea si no hay existencia suficiente (nunca descuenta otra ubicación distinta a la elegida)", () => {
   assert.match(retailSaleSubmit, /canManageInvoices\(\)/);
   assert.match(appJs, /let retailSaleSubmitInFlight = false;/);
   assert.match(retailSaleSubmit, /if \(!preflight\.allowed\) \{/);
+  assert.match(retailSaleSubmit, /missingLocation/);
   assert.doesNotMatch(retailSaleSubmit, /defaultSalonWarehouse\(\)/);
+});
+
+test("129-130. cada linea de venta selecciona su propia ubicacion (nunca una unica estanteria global): saleEligibleLocations() filtra activas con permiteVenta=true, sin hardcodear tipo alguno", () => {
+  const source = extractFunction("saleEligibleLocations");
+  assert.match(source, /permiteVenta === true/);
+  assert.match(source, /activa !== false/);
+  assert.doesNotMatch(source, /tipo === "estanteria"/);
+});
+
+test("131. venta multilinea puede usar distintas ubicaciones por linea: el sourceKey de cada movimiento incluye la ubicacion seleccionada (nunca colisiona entre dos ubicaciones del mismo articulo)", () => {
+  assert.match(retailSaleSubmit, /sourceKey: `venta:\$\{retailSaleId\}:\$\{normalized\.itemId\}:\$\{normalized\.selectedLocationId\}`/);
+});
+
+test("132. reversion de venta restaura la ubicacion original: reverseInvoiceInventoryEffects (probado en la seccion D) usa el locationId del movimiento original, nunca un valor fijo", () => {
+  assert.doesNotMatch(extractFunction("reverseRetailSale"), /shelf\.locationId|defaultShelfWarehouse\(\)/);
 });
 
 test("169-171. venta de productos reutiliza el MISMO motor de pagos/CxC que Facturación (addConfirmedPayment/addReceivable), nunca duplica la creación de ingresos a mano por línea", () => {
