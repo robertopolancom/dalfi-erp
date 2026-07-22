@@ -334,6 +334,23 @@ test("D-disponible. deriveLotStatus: vigente con existencia es Disponible", () =
   assert.equal(deriveLotStatus({ manualStatus: "", availableQuantity: 5, expirationBucket: "vigente" }), "Disponible");
 });
 
+// Regresion (seccion 9): "Proximo a vencer" es SOLO una alerta, nunca debe
+// bloquear FEFO -de hecho es justo lo que FEFO deberia preferir asignar
+// primero, antes de que venza-. Unicamente Vencido/Agotado/Cuarentena/
+// Retirado/Revertido bloquean venta, consumo o transferencia.
+test("D-fefo-proximo-disponible. isLotAvailableForFEFO: 'Proximo a vencer' SI esta disponible para FEFO (solo alerta, no bloqueo)", () => {
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Próximo a vencer"), true);
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Disponible"), true);
+});
+
+test("D-fefo-vencido-bloqueado. isLotAvailableForFEFO: Vencido, Agotado y los estados manuales SI bloquean FEFO", () => {
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Vencido"), false);
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Agotado"), false);
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Cuarentena"), false);
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Retirado"), false);
+  assert.equal(DalfiClosingMath.isLotAvailableForFEFO("Revertido"), false);
+});
+
 test("E-multi-item. allocateFEFOAcrossItems reparte cada articulo por su propio FEFO", () => {
   const result = allocateFEFOAcrossItems({
     requirements: [{ itemId: "A", quantity: 5 }, { itemId: "B", quantity: 3 }],

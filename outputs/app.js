@@ -6672,10 +6672,12 @@ function allInventoryLotsDerived() {
   return dbTable("lotesInventario").map((lot) => lotWithDerivedFields(lot));
 }
 
-// Lotes utilizables por FEFO de UN articulo en UNA ubicacion: solo estado
-// derivado "Disponible" y existencia > 0 (vencidos, cuarentena, retirados y
-// agotados quedan excluidos por construccion, nunca por un filtro aparte
-// que se pueda olvidar en un call site nuevo).
+// Lotes utilizables por FEFO de UN articulo en UNA ubicacion: cualquier
+// estado derivado no bloqueado (isLotAvailableForFEFO) y existencia > 0.
+// "Proximo a vencer" SI cuenta como disponible (es la alerta que FEFO debe
+// preferir asignar primero); solo vencidos, agotados, cuarentena y
+// retirados quedan excluidos, por construccion, nunca por un filtro aparte
+// que se pueda olvidar en un call site nuevo.
 function lotsAvailableForFEFO(itemId, locationId) {
   return dbTable("lotesInventario")
     .filter((lot) => lot.itemId === itemId)
@@ -6685,7 +6687,7 @@ function lotsAvailableForFEFO(itemId, locationId) {
       const status = DalfiClosingMath.deriveLotStatus({ manualStatus: lot.status || "", availableQuantity: quantityAtLocation, expirationBucket: expiration.bucket });
       return { lotId: lot.lotId, quantity: DalfiClosingMath.roundMoney(quantityAtLocation), fechaVencimiento: lot.expirationDate || "", fechaEntrada: lot.receivedDate || "", status };
     })
-    .filter((lot) => lot.status === "Disponible" && lot.quantity > 0);
+    .filter((lot) => DalfiClosingMath.isLotAvailableForFEFO(lot.status) && lot.quantity > 0);
 }
 
 function lotsMapForItems(itemIds, locationId) {

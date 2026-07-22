@@ -2331,6 +2331,17 @@
     return "Disponible";
   }
 
+  // Un lote es apto para FEFO (seccion 9) si no esta bloqueado: SOLO
+  // Vencido, Agotado y los estados manuales (Cuarentena/Retirado/Revertido)
+  // bloquean venta/consumo/transferencia. "Proximo a vencer" es unicamente
+  // una alerta (secciones 8/9/31): FEFO debe poder asignar esos lotes -de
+  // hecho son los que FEFO deberia preferir primero por vencer antes-, nunca
+  // excluirlos como si ya hubieran vencido.
+  const BLOCKED_LOT_STATUSES_FOR_FEFO = new Set(["Vencido", "Agotado", "Cuarentena", "Retirado", "Revertido"]);
+  function isLotAvailableForFEFO(status) {
+    return !BLOCKED_LOT_STATUSES_FOR_FEFO.has(status);
+  }
+
   // FEFO para VARIOS articulos a la vez (seccion 11): envoltorio delgado de
   // allocateFEFO reutilizado por consumo de servicio, transferencias y
   // salidas internas cuando necesitan resolver el plan de lotes de mas de
@@ -2452,6 +2463,7 @@
     daysBetweenIsoDates,
     classifyLotExpiration,
     deriveLotStatus,
+    isLotAvailableForFEFO,
     allocateFEFOAcrossItems,
     evaluateAssetConsumptionRule,
   };
