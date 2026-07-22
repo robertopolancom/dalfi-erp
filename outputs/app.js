@@ -5120,12 +5120,25 @@ function defaultSalonWarehouse() {
   return warehouse;
 }
 
-// Configuracion singleton del modulo de inventario (hoy solo
-// usarAlmacenProvisiones, pensada para crecer sin migracion).
+// Configuracion singleton del modulo de inventario, pensada para crecer sin
+// migracion (todo vive dentro de erp_records.data, nunca en una tabla
+// nueva de Supabase). modoConsumoInventario reemplaza al booleano ambiguo
+// consumirInventarioEnFacturacion: "required" (bloquea si falta material),
+// "audit_only" (guarda la factura y deja el consumo pendiente de
+// confirmar) o "disabled" (no descuenta nada). Una base existente sin este
+// campo se migra en memoria SOLO al leerla (nunca se reescribe erp_records
+// masivamente / no es backfill): el booleano viejo decide el valor inicial
+// una sola vez, luego el campo nuevo manda.
 function inventoryConfig() {
   const table = dbTable("configuracionInventario");
-  if (table.length) return table[0];
-  const config = stampRecord({ configId: "INVCFG-1", usarAlmacenProvisiones: false });
+  if (table.length) {
+    const config = table[0];
+    if (!config.modoConsumoInventario) {
+      config.modoConsumoInventario = config.consumirInventarioEnFacturacion ? "required" : "disabled";
+    }
+    return config;
+  }
+  const config = stampRecord({ configId: "INVCFG-1", usarAlmacenProvisiones: false, modoConsumoInventario: "disabled" });
   table.push(config);
   return config;
 }
@@ -5300,19 +5313,36 @@ function recipeLinesForService(serviceName) {
   return dbTable("fichasTecnicas").filter((row) => normalize(row.servicioNombre) === normalize(serviceName));
 }
 
-// Consumo automatico de inventario al crear una factura, segun ficha
-// tecnica de cada servicio. Apagado por defecto (inventoryConfig().
-// consumirInventarioEnFacturacion); nunca consume desde estanteria, nunca
-// consume activos/implementos (solo articulos con puedeConsumirse), nunca
-// aplica dos veces (sourceKey = factura+detalle+articulo), y una salida que
-// dejaria existencia negativa en un articulo controlado simplemente se
-// omite (se audita, no rompe la factura ni fuerza negativo en silencio).
-function consumeInventoryForInvoice(invoiceId, detailRecords) {
-  const config = inventoryConfig();
-  if (!config.consumirInventarioEnFacturacion) return;
-  if (!Array.isArray(detailRecords) || !detailRecords.length) return;
-  const warehouse = defaultSalonWarehouse();
-  detailRecords.forEach((detail) => {
+// Costo directo y margen directo de UNA linea de servicio, CONGELADOS al
+// momento de facturar (usa el costo promedio actual del articulo en ese
+// instante, nunca se recalcula despues aunque el costo promedio cambie).
+// Solo materiales consumibles de la ficha tecnica: nunca mano de obra,
+// comision, propina, TSS ni gastos generales.
+function computeServiceDirectCostAndMargin(serviceName, netSubtotal, quantity) {
+  const recipeLines = recipeLinesForService(serviceName).map((line) => {
+    const item = dbTable("inventario").find((i) => i.itemID === line.itemId);
+    return { ...line, reutilizable: item?.reutilizable, activoFijo: item?.activoFijo, puedeConsumirse: item?.puedeConsumirse };
+  });
+  const unitCostByItemId = {};
+  recipeLines.forEach((line) => {
+    const item = dbTable("inventario").find((i) => i.itemID === line.itemId);
+    unitCostByItemId[line.itemId] = Number(item?.costoPromedio) || Number(item?.costo) || 0;
+  });
+  const directCostPerUnit = DalfiClosingMath.calculateServiceDirectCost({ recipeLines, unitCostByItemId });
+  const directCost = Math.round(directCostPerUnit * Math.max(1, Number(quantity) || 1) * 100) / 100;
+  const margin = DalfiClosingMath.calculateDirectMargin({ netPrice: Number(netSubtotal) || 0, directCost });
+  return { directCost, marginAmount: margin.marginAmount, marginPercent: margin.marginPercent };
+}
+
+// Construye, para las lineas de UNA factura en curso (todavia no
+// persistida), las lineas requeridas por ficha tecnica junto con el
+// articulo real y la cantidad base a consumir. Funcion de lectura pura
+// sobre la base actual (no persiste, no crea movimientos): la usan tanto
+// la prevalidacion (antes de guardar) como el consumo real (despues de
+// guardar), para no tener dos formulas distintas para lo mismo.
+function requiredConsumptionLinesForInvoice(detailRecords) {
+  const lines = [];
+  (Array.isArray(detailRecords) ? detailRecords : []).forEach((detail) => {
     const recipeLines = recipeLinesForService(detail.servicio);
     recipeLines.forEach((recipeLine) => {
       const item = dbTable("inventario").find((row) => row.itemID === recipeLine.itemId);
@@ -5322,29 +5352,171 @@ function consumeInventoryForInvoice(invoiceId, detailRecords) {
         factor: 1,
       });
       if (conversion.validationErrors.length || conversion.baseQuantity <= 0) return;
-      const sourceKey = `consumo:${invoiceId}:${detail.detalleID}:${item.itemID}`;
-      const result = createInventoryMovement({
-        itemId: item.itemID,
-        tipo: "consumo_servicio",
-        cantidadBase: conversion.baseQuantity,
-        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
-        locationId: warehouse.locationId,
-        origen: "Consumo por servicio",
-        sourceId: invoiceId,
-        sourceKey,
-        motivo: `Consumo estimado: ${detail.servicio}`,
-        allowNegativeStock: item.controlaExistencia === false,
-      });
-      if (!result.movement) return;
-      logAudit("service_inventory_consumed", {
-        entity: "inventarioMovimientos",
-        entityId: result.movement.movementId,
-        newData: { invoiceId, itemId: item.itemID, cantidadBase: conversion.baseQuantity, detalleID: detail.detalleID },
-        note: `Consumo de ${conversion.baseQuantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}).`,
-        success: true,
-      });
+      lines.push({ detail, item, baseQuantity: conversion.baseQuantity });
     });
   });
+  return lines;
+}
+
+// Prevalidacion pura (DalfiClosingMath.preflightServiceInventoryConsumption)
+// para las lineas de una factura EN CURSO, todavia sin invoiceId ni
+// detalleID: se usa ANTES de persistir nada, para que "required" pueda
+// bloquear sin dejar una factura a medio guardar.
+function buildServiceConsumptionPreflight(lines, mode) {
+  const warehouse = defaultSalonWarehouse();
+  const items = dbTable("inventario");
+  const serviceRecipes = dbTable("fichasTecnicas").map((recipe) => {
+    const item = items.find((i) => i.itemID === recipe.itemId);
+    return { ...recipe, reutilizable: item?.reutilizable, activoFijo: item?.activoFijo, puedeConsumirse: item?.puedeConsumirse };
+  });
+  const warehouseInventory = {};
+  items.forEach((item) => {
+    warehouseInventory[item.itemID] = { quantity: itemStockAt(item.itemID, warehouse.locationId), unitCost: Number(item.costoPromedio) || Number(item.costo) || 0 };
+  });
+  return DalfiClosingMath.preflightServiceInventoryConsumption({
+    invoiceLines: (lines || []).map((line) => ({ servicio: line.service, cantidad: line.qty })),
+    serviceRecipes,
+    warehouseInventory,
+    mode,
+    allowNegativeStockFor: (itemId) => items.find((i) => i.itemID === itemId)?.controlaExistencia === false,
+  });
+}
+
+// Consumo automatico de inventario al crear una factura, segun ficha
+// tecnica de cada servicio y el modo configurado
+// (inventoryConfig().modoConsumoInventario): nunca consume desde
+// estanteria, nunca consume activos/implementos (solo articulos con
+// puedeConsumirse), nunca aplica dos veces (sourceKey =
+// factura+detalle+articulo). Devuelve SIEMPRE un resultado estructurado
+// (nunca lanza, nunca oculta un error en un catch vacio): app.js decide
+// que mostrar segun status/errors.
+//   - "required": ya se prevalido antes de guardar la factura (ver
+//     buildServiceConsumptionPreflight), asi que aqui solo ejecuta el plan.
+//   - "audit_only": NO descuenta nada todavia; crea un registro visible de
+//     consumo pendiente (consumosPendientes) para confirmar despues.
+//   - "disabled"/sin lineas requeridas: no toca inventario.
+function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled") {
+  const result = { success: true, status: "not_applicable", errors: [], warnings: [], consumptionsCreated: [], pendingConsumptionId: "" };
+  if (mode === "disabled") return result;
+  const requiredLines = requiredConsumptionLinesForInvoice(detailRecords);
+  if (!requiredLines.length) return result;
+
+  if (mode === "audit_only") {
+    const pendingId = nextDbId("consumosPendientes", "pendingId", "CPD");
+    dbTable("consumosPendientes").push(stampRecord({
+      pendingId,
+      invoiceId,
+      estado: "Pendiente",
+      items: requiredLines.map((line) => ({
+        detalleID: line.detail.detalleID,
+        servicio: line.detail.servicio,
+        itemId: line.item.itemID,
+        itemNombre: line.item.nombre,
+        cantidadBase: line.baseQuantity,
+        costoUnitario: Number(line.item.costoPromedio) || Number(line.item.costo) || 0,
+      })),
+      fecha: today,
+    }));
+    result.status = "pending";
+    result.pendingConsumptionId = pendingId;
+    result.warnings.push("Consumo automático en modo auditoría: revisa y confirma el consumo pendiente en Reportes → Consumo pendiente.");
+    logAudit("service_inventory_pending", {
+      entity: "consumosPendientes",
+      entityId: pendingId,
+      newData: { invoiceId, items: requiredLines.length },
+      note: `Consumo de inventario de la factura ${invoiceId} quedó pendiente de confirmación (modo auditoría, ${requiredLines.length} artículo(s)).`,
+      success: true,
+    });
+    return result;
+  }
+
+  const warehouse = defaultSalonWarehouse();
+  requiredLines.forEach(({ detail, item, baseQuantity }) => {
+    const sourceKey = `consumo:${invoiceId}:${detail.detalleID}:${item.itemID}`;
+    const movementResult = createInventoryMovement({
+      itemId: item.itemID,
+      tipo: "consumo_servicio",
+      cantidadBase: baseQuantity,
+      costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+      locationId: warehouse.locationId,
+      origen: "Consumo por servicio",
+      sourceId: invoiceId,
+      sourceKey,
+      motivo: `Consumo estimado: ${detail.servicio}`,
+      allowNegativeStock: item.controlaExistencia === false,
+    });
+    if (!movementResult.movement) {
+      result.errors.push(`No se pudo consumir ${item.nombre} para "${detail.servicio}": ${movementResult.result.validationErrors.join(" ")}`);
+      logAudit("service_inventory_failed", {
+        entity: "inventarioMovimientos",
+        entityId: sourceKey,
+        newData: { invoiceId, itemId: item.itemID, detalleID: detail.detalleID, errors: movementResult.result.validationErrors },
+        note: `Consumo de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}) falló: ${movementResult.result.validationErrors.join(" ")}`,
+        success: false,
+      });
+      return;
+    }
+    result.consumptionsCreated.push(movementResult.movement.movementId);
+    logAudit("service_inventory_consumed", {
+      entity: "inventarioMovimientos",
+      entityId: movementResult.movement.movementId,
+      newData: { invoiceId, itemId: item.itemID, cantidadBase: baseQuantity, detalleID: detail.detalleID },
+      note: `Consumo de ${baseQuantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}).`,
+      success: true,
+    });
+  });
+
+  result.success = result.errors.length === 0;
+  result.status = result.errors.length ? (result.consumptionsCreated.length ? "partial_failure" : "failed") : "consumed";
+  return result;
+}
+
+// Confirma un consumo pendiente (modo audit_only) creando ahora los
+// movimientos reales: mismo sourceKey que usaria el consumo directo
+// (consumo:<factura>:<detalle>:<articulo>), asi que si el consumo directo
+// alguna vez corriera para la misma factura no se duplicaria. Nunca borra
+// el registro pendiente: lo marca Confirmado (o "Con errores" si algo no
+// se pudo aplicar, nunca lo oculta).
+function confirmPendingServiceConsumption(pendingId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede confirmar un consumo pendiente.");
+    return null;
+  }
+  const pending = dbTable("consumosPendientes").find((row) => row.pendingId === pendingId);
+  if (!pending || pending.estado !== "Pendiente") return null;
+  const warehouse = defaultSalonWarehouse();
+  const created = [];
+  const errors = [];
+  (pending.items || []).forEach((line) => {
+    const sourceKey = `consumo:${pending.invoiceId}:${line.detalleID}:${line.itemId}`;
+    const movementResult = createInventoryMovement({
+      itemId: line.itemId,
+      tipo: "consumo_servicio",
+      cantidadBase: line.cantidadBase,
+      costoUnitario: line.costoUnitario,
+      locationId: warehouse.locationId,
+      origen: "Consumo por servicio (confirmado)",
+      sourceId: pending.invoiceId,
+      sourceKey,
+      motivo: `Consumo confirmado: ${line.servicio}`,
+    });
+    if (!movementResult.movement) {
+      errors.push(`${line.itemNombre || line.itemId}: ${movementResult.result.validationErrors.join(" ")}`);
+      return;
+    }
+    created.push(movementResult.movement.movementId);
+  });
+  pending.estado = errors.length ? "Con errores" : "Confirmado";
+  pending.confirmadoPor = currentUserEmail();
+  pending.confirmadoEn = dateTimeForOperationalDate(today);
+  logAudit("service_inventory_consumed", {
+    entity: "consumosPendientes",
+    entityId: pendingId,
+    newData: { invoiceId: pending.invoiceId, created, errors },
+    note: `Consumo pendiente ${pendingId} confirmado (${created.length} movimiento(s)${errors.length ? `, ${errors.length} error(es)` : ""}).`,
+    success: errors.length === 0,
+  });
+  return { created, errors };
 }
 
 // Abre el panel "Pagar a suplidor" para una CxP especifica.
@@ -5521,15 +5693,55 @@ function renderRecipes() {
         .join("")
     : '<p class="empty">No hay fichas técnicas registradas.</p>';
   const config = inventoryConfig();
-  if (byId("enable-inventory-consumption")) byId("enable-inventory-consumption").checked = Boolean(config.consumirInventarioEnFacturacion);
+  if (byId("inventory-consumption-mode")) byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
+  renderPendingConsumptions();
 }
 
-// Estanteria de venta activa, o el almacen del salon como respaldo cuando
-// todavia no se configuro ninguna estanteria (nunca bloquea la venta por
-// falta de configuracion, pero nunca inventa una ubicacion nueva sin que
-// quede clara cual se uso).
+// Consumo automatico pendiente de confirmar (modo audit_only): nunca
+// oculto, con boton de confirmacion directo aqui ademas del reporte.
+function renderPendingConsumptions() {
+  const el = byId("pending-consumption-list");
+  if (!el) return;
+  const rows = dbTable("consumosPendientes").filter((row) => row.estado === "Pendiente");
+  el.innerHTML = rows.length
+    ? rows
+        .map(
+          (row) =>
+            `<div class="list-item" data-pending-id="${row.pendingId}"><span>Factura ${row.invoiceId} · ${(row.items || []).length} artículo(s)</span><span>${dateOnly(row.fecha) || ""} <button type="button" class="confirm-pending-consumption" data-pending-id="${row.pendingId}">Confirmar consumo</button></span></div>`,
+        )
+        .join("")
+    : '<p class="empty">No hay consumo pendiente de confirmación.</p>';
+}
+
+// Estanteria de venta activa configurada explicitamente por administracion.
+// A diferencia de defaultSalonWarehouse(), esta funcion NUNCA autocrea ni
+// cae de respaldo a otra ubicacion (almacen del salon, provisiones, mesa o
+// custodia): una venta directa solo puede salir de una Estanteria de venta
+// real. Devuelve undefined cuando todavia no existe ninguna.
 function defaultShelfWarehouse() {
-  return dbTable("almacenes").find((row) => row.tipo === "estanteria" && row.activa !== false) || defaultSalonWarehouse();
+  return dbTable("almacenes").find((row) => row.tipo === "estanteria" && row.activa !== false);
+}
+
+// Valida que exista una estanteria de venta con existencia suficiente ANTES
+// de vender. Nunca descuenta del almacen del salon, de provisiones, de una
+// mesa ni de una custodia: si falta la estanteria o la cantidad, bloquea y
+// explica que hace falta (nunca crea la transferencia de reposicion sola:
+// administracion debe confirmarla primero).
+function requireShelfWarehouseForSale(itemId, quantity) {
+  const shelf = defaultShelfWarehouse();
+  if (!shelf) {
+    return { ok: false, shelf: null, available: 0, error: "No hay ninguna Estantería de venta configurada. Crea una en Base de datos → Almacenes antes de vender productos." };
+  }
+  const available = itemStockAt(itemId, shelf.locationId);
+  if (quantity > available) {
+    return {
+      ok: false,
+      shelf,
+      available,
+      error: `Existencia insuficiente en ${shelf.nombre}. Disponible: ${available}. Transfiere del almacén del salón a la estantería antes de vender.`,
+    };
+  }
+  return { ok: true, shelf, available, error: "" };
 }
 
 const INVENTORY_LOSS_TYPES = { dano: "Daño", perdida: "Pérdida", vencimiento: "Vencimiento" };
@@ -6352,10 +6564,154 @@ function renderClientsReport(start, end) {
   renderReportTable(["Cliente", "Facturas", "Facturado"], rows.map(([client, row]) => `<tr><td>${client}</td><td>${row.count}</td><td class="amount">${money.format(row.amount)}</td></tr>`));
 }
 
+// Existencia SIEMPRE derivada de inventarioMovimientos (itemStockAt), nunca
+// de un campo editable (row.existencia/row.costo quedaron obsoletos desde
+// que el modulo de almacenes deriva todo de los movimientos).
 function renderInventoryReport() {
   const rows = dbTable("inventario");
-  reportCards([{ label: "Items", value: String(rows.length) }, { label: "Valor costo", value: money.format(rows.reduce((sum, row) => sum + (Number(row.costo) || 0) * (Number(row.existencia) || 0), 0)) }]);
-  renderReportTable(["SKU", "Producto", "Tipo", "Existencia", "Mínimo", "Valor costo"], rows.map((row) => `<tr><td>${row.sku}</td><td>${row.nombre}</td><td>${row.tipo}</td><td>${Number(row.existencia) || 0}</td><td>${Number(row.existenciaMinima) || 0}</td><td class="amount">${money.format((Number(row.costo) || 0) * (Number(row.existencia) || 0))}</td></tr>`));
+  const totalValue = rows.reduce((sum, row) => sum + itemStockAt(row.itemID) * (Number(row.costoPromedio) || Number(row.costo) || 0), 0);
+  reportCards([{ label: "Artículos", value: String(rows.length) }, { label: "Valor de costo (global)", value: money.format(totalValue) }]);
+  renderReportTable(
+    ["SKU", "Producto", "Tipo", "Existencia global", "Mínimo", "Valor costo"],
+    rows.map((row) => {
+      const stock = itemStockAt(row.itemID);
+      const unitCost = Number(row.costoPromedio) || Number(row.costo) || 0;
+      const min = Number(row.existenciaMinima) || 0;
+      const lowClass = stock <= 0 ? "danger" : min > 0 && stock < min ? "warning" : "";
+      return `<tr><td>${row.sku || "-"}</td><td>${row.nombre}</td><td>${row.tipo || "-"}</td><td class="${lowClass}">${stock}</td><td>${min}</td><td class="amount">${money.format(stock * unitCost)}</td></tr>`;
+    }),
+    "No hay artículos registrados.",
+  );
+}
+
+// Existencia por ubicación (almacén del salón, provisiones, estantería,
+// mesas, custodia): mismo dato derivado (itemStockAt) que usa el resto del
+// modulo, nunca un campo aparte que se pueda desincronizar.
+function renderInventoryByLocationReport() {
+  const items = dbTable("inventario");
+  const warehouses = dbTable("almacenes");
+  const rows = [];
+  items.forEach((item) => {
+    warehouses.forEach((warehouse) => {
+      const qty = itemStockAt(item.itemID, warehouse.locationId);
+      if (qty === 0) return;
+      rows.push({ item, warehouse, qty });
+    });
+  });
+  reportCards([
+    { label: "Ubicaciones con existencia", value: String(new Set(rows.map((r) => r.warehouse.locationId)).size) },
+    { label: "Renglones", value: String(rows.length) },
+  ]);
+  renderReportTable(
+    ["Ubicación", "Tipo", "Artículo", "Existencia"],
+    rows.map((r) => `<tr><td>${r.warehouse.nombre}</td><td>${r.warehouse.tipo}</td><td>${r.item.nombre}</td><td>${r.qty}</td></tr>`),
+    "No hay existencia registrada en ninguna ubicación.",
+  );
+}
+
+// Bajo mínimo y agotados, usando existencia global derivada (nunca un
+// campo de stock aparte).
+function renderLowStockReport() {
+  const rows = dbTable("inventario")
+    .map((row) => ({ row, stock: itemStockAt(row.itemID), min: Number(row.existenciaMinima) || 0 }))
+    .filter(({ stock, min }) => min > 0 && stock < min);
+  const outOfStock = rows.filter(({ stock }) => stock <= 0).length;
+  reportCards([{ label: "Bajo mínimo", value: String(rows.length) }, { label: "Agotados", value: String(outOfStock) }]);
+  renderReportTable(
+    ["Artículo", "Existencia", "Mínimo", "Faltante"],
+    rows.map(({ row, stock, min }) => `<tr><td>${row.nombre}</td><td class="${stock <= 0 ? "danger" : "warning"}">${stock}</td><td>${min}</td><td>${Math.max(0, min - stock)}</td></tr>`),
+    "Ningún artículo está bajo su existencia mínima.",
+  );
+}
+
+// Ventas de productos e impuesto cobrado, con margen bruto usando el costo
+// historico congelado en cada venta (nunca el costo promedio actual).
+function renderRetailSalesReport(start, end) {
+  const rows = dbTable("ventasDirectas").filter((row) => inRangeDate(row.fecha, start, end));
+  const totalSales = rows.reduce((sum, row) => sum + (Number(row.total) || 0), 0);
+  const totalTax = rows.reduce((sum, row) => sum + (Number(row.taxAmount) || 0), 0);
+  const totalMargin = rows.reduce((sum, row) => {
+    const qty = Math.max(1, Number(row.cantidad) || 1);
+    const margin = DalfiClosingMath.calculateProductMargin({
+      netUnitPrice: (Number(row.baseAmount) || 0) / qty,
+      historicalUnitCost: Number(row.costoUnitario) || 0,
+      quantity: Number(row.cantidad) || 0,
+    });
+    return sum + margin.marginAmount;
+  }, 0);
+  reportCards([
+    { label: "Ventas de productos", value: money.format(totalSales) },
+    { label: "Impuesto cobrado", value: money.format(totalTax) },
+    { label: "Margen bruto de productos", value: money.format(totalMargin) },
+  ]);
+  renderReportTable(
+    ["Fecha", "Artículo", "Cantidad", "Base", "Impuesto", "Total"],
+    rows.map(
+      (row) =>
+        `<tr><td>${dateOnly(row.fecha)}</td><td>${row.itemNombre}</td><td>${row.cantidad}</td><td class="amount">${money.format(Number(row.baseAmount) || 0)}</td><td class="amount">${money.format(Number(row.taxAmount) || 0)}</td><td class="amount">${money.format(Number(row.total) || 0)}</td></tr>`,
+    ),
+    "No hay ventas directas en este período.",
+  );
+}
+
+// Costo directo y margen directo por servicio facturado: solo materiales
+// consumibles de la ficha tecnica (nunca mano de obra, comisión, propina,
+// TSS ni gastos generales).
+function renderServiceDirectMarginReport(start, end) {
+  const details = dbTable("facturaDetalle").filter((row) => {
+    const invoice = dbTable("facturas").find((inv) => inv.facturaID === row.facturaID);
+    return invoice && inRangeDate(invoice.fechaHora, start, end);
+  });
+  // Usa el costo/margen CONGELADO en el detalle de factura cuando existe
+  // (facturas creadas despues de esta fase): nunca recalcula un historico
+  // ya facturado con el costo promedio actual. Solo recalcula "al vuelo"
+  // para compatibilidad con facturas anteriores que no tienen estos campos.
+  const rows = details.map((detail) => {
+    if (detail.costoDirectoEstimado !== undefined && detail.margenDirectoEstimado !== undefined) {
+      return {
+        detail,
+        directCost: Number(detail.costoDirectoEstimado) || 0,
+        margin: { marginAmount: Number(detail.margenDirectoEstimado) || 0, marginPercent: Number(detail.margenDirectoPorcentaje) || 0 },
+      };
+    }
+    const recipeLines = recipeLinesForService(detail.servicio).map((line) => {
+      const item = dbTable("inventario").find((i) => i.itemID === line.itemId);
+      return { ...line, reutilizable: item?.reutilizable, activoFijo: item?.activoFijo, puedeConsumirse: item?.puedeConsumirse };
+    });
+    const unitCostByItemId = {};
+    recipeLines.forEach((line) => {
+      const item = dbTable("inventario").find((i) => i.itemID === line.itemId);
+      unitCostByItemId[line.itemId] = Number(item?.costoPromedio) || Number(item?.costo) || 0;
+    });
+    const directCost = DalfiClosingMath.calculateServiceDirectCost({ recipeLines, unitCostByItemId }) * (Number(detail.cantidad) || 1);
+    const margin = DalfiClosingMath.calculateDirectMargin({ netPrice: Number(detail.subtotal) || 0, directCost });
+    return { detail, directCost, margin };
+  });
+  reportCards([
+    { label: "Costo directo total", value: money.format(rows.reduce((sum, r) => sum + r.directCost, 0)) },
+    { label: "Margen directo total", value: money.format(rows.reduce((sum, r) => sum + r.margin.marginAmount, 0)) },
+  ]);
+  renderReportTable(
+    ["Servicio", "Colaboradora", "Precio neto", "Costo directo", "Margen directo", "Margen %"],
+    rows.map(
+      ({ detail, directCost, margin }) =>
+        `<tr><td>${detail.servicio}</td><td>${detail.colaboradorNombre || "-"}</td><td class="amount">${money.format(Number(detail.subtotal) || 0)}</td><td class="amount">${money.format(directCost)}</td><td class="amount">${money.format(margin.marginAmount)}</td><td>${margin.marginPercent.toFixed(1)}%</td></tr>`,
+    ),
+    "No hay servicios facturados con ficha técnica en este período.",
+  );
+}
+
+// Consumo automatico pendiente de confirmar (modo audit_only): nunca oculto,
+// visible aqui para conciliacion administrativa.
+function renderPendingConsumptionReport() {
+  const rows = dbTable("consumosPendientes");
+  const open = rows.filter((row) => row.estado === "Pendiente");
+  reportCards([{ label: "Consumo pendiente", value: String(open.length) }, { label: "Total registros", value: String(rows.length) }]);
+  renderReportTable(
+    ["Factura", "Artículos", "Estado", "Fecha"],
+    rows.map((row) => `<tr><td>${row.invoiceId}</td><td>${(row.items || []).length}</td><td>${row.estado}</td><td>${dateOnly(row.fecha)}</td></tr>`),
+    "No hay registros de consumo pendiente.",
+  );
 }
 
 function renderFixedAssetsReport() {
@@ -6399,6 +6755,11 @@ function renderReports() {
     services: "Servicios más vendidos",
     clients: "Clientes frecuentes",
     inventory: "Reporte de inventario",
+    "inventory-by-location": "Existencia por ubicación",
+    "inventory-low-stock": "Bajo mínimo y agotados",
+    "retail-sales": "Ventas de productos e impuestos",
+    "service-direct-margin": "Costo y margen directo por servicio",
+    "pending-consumption": "Consumo pendiente de confirmación",
     "fixed-assets": "Reporte de activos fijos",
   };
   byId("report-title").textContent = `${titles[type]} · ${start} a ${end}`;
@@ -6423,6 +6784,11 @@ function renderReports() {
   if (type === "services") return renderServicesReport(start, end);
   if (type === "clients") return renderClientsReport(start, end);
   if (type === "inventory") return renderInventoryReport();
+  if (type === "inventory-by-location") return renderInventoryByLocationReport();
+  if (type === "inventory-low-stock") return renderLowStockReport();
+  if (type === "retail-sales") return renderRetailSalesReport(start, end);
+  if (type === "service-direct-margin") return renderServiceDirectMarginReport(start, end);
+  if (type === "pending-consumption") return renderPendingConsumptionReport();
   if (type === "fixed-assets") return renderFixedAssetsReport();
   return renderExecutiveReport(start, end);
 }
@@ -8714,6 +9080,18 @@ function wireForms() {
     const totals = invoiceTotalsFromLines(lines, generalExtra, generalDiscountPercent);
     const { servicesTotal, extrasTotal, discountTotal: discount, grandTotal: total } = totals;
     const totalWithTip = total + tip;
+    // Prevalidacion de consumo de inventario ANTES de cualquier mutacion:
+    // en modo "required" un faltante bloquea aqui mismo (la factura nunca
+    // llega a persistirse a medias). En "audit_only"/"disabled" nunca
+    // bloquea; solo se usa mas abajo para saber que crear. No aplica a
+    // ediciones (saveEditedInvoice tiene su propio flujo, ver seccion de
+    // edicion de factura e inventario).
+    const consumptionMode = inventoryConfig().modoConsumoInventario || "disabled";
+    const consumptionPreflight = editId ? null : buildServiceConsumptionPreflight(lines, consumptionMode);
+    if (!editId && consumptionMode === "required" && !consumptionPreflight.allowed) {
+      alert(`No se puede guardar la factura: ${consumptionPreflight.blockingErrors.join(" ")}`);
+      return;
+    }
     // A partir de aqui empiezan las mutaciones reales (crear/editar la
     // factura, aplicar pagos, generar CxC y propinas): se marca
     // invoiceSubmitInFlight para que un doble clic/doble submit mientras
@@ -8756,6 +9134,11 @@ function wireForms() {
       const staffRecord = ensureStaffRecord(line.staff);
       const detailId = nextDbId("facturaDetalle", "detalleID", "DET");
       const allocation = allocations[index] || {};
+      const netSubtotal = allocation.commissionableSubtotal ?? line.subtotal;
+      // Costo/margen directo CONGELADOS aqui: usan el costo promedio del
+      // articulo en este instante, nunca se recalculan despues aunque el
+      // costo promedio del articulo cambie mas adelante.
+      const directCostMargin = computeServiceDirectCostAndMargin(line.service, netSubtotal, line.qty);
       const detail = {
         detalleID: detailId,
         facturaID: invoiceId,
@@ -8771,8 +9154,11 @@ function wireForms() {
         deduccionConcepto_50: line.discountNote,
         deduccionGeneralMonto: allocation.generalDiscountShare || 0,
         subtotalAntesDescuentoGeneral: allocation.lineNetBeforeGeneral || line.subtotal,
-        subtotal: allocation.commissionableSubtotal ?? line.subtotal,
-        montoComisionable: allocation.commissionableSubtotal ?? line.subtotal,
+        subtotal: netSubtotal,
+        montoComisionable: netSubtotal,
+        costoDirectoEstimado: directCostMargin.directCost,
+        margenDirectoEstimado: directCostMargin.marginAmount,
+        margenDirectoPorcentaje: directCostMargin.marginPercent,
       };
       detailRecords.push(detail);
       dbTable("facturaDetalle").push(stampRecord(detail));
@@ -9010,15 +9396,21 @@ function wireForms() {
       note: `Factura ${invoiceId} creada. Deuda anterior del cliente: ${money.format(priorDebtBeforePayment)}. Total general cobrado hoy: ${money.format(priorDebtBeforePayment + totalWithTip)}.`,
       success: true,
     });
-    // Consumo automatico de inventario por ficha tecnica: apagado por
-    // defecto (inventoryConfig().consumirInventarioEnFacturacion) para no
-    // sorprender a un salon que todavia no configuro fichas tecnicas.
-    // Envuelto en try/catch: un problema de inventario NUNCA debe impedir
-    // que la factura (ya creada arriba) se guarde correctamente.
-    try {
-      consumeInventoryForInvoice(invoiceId, detailRecords);
-    } catch (error) {
-      console.error("No se pudo aplicar el consumo de inventario de la factura.", error);
+    // Consumo automatico de inventario por ficha tecnica, segun el modo
+    // configurado (disabled por defecto para no sorprender a un salon que
+    // todavia no configuro fichas tecnicas). Ya no hay try/catch: el
+    // resultado es SIEMPRE estructurado (nunca lanza) y sus errores se
+    // muestran, nunca se ocultan en console.error. En "required" ya se
+    // prevalido antes de crear la factura (ver consumptionPreflight
+    // arriba), asi que aqui normalmente no hay faltantes.
+    const consumptionResult = consumeInventoryForInvoice(invoiceId, detailRecords, consumptionMode);
+    invoiceRecord.inventoryConsumptionStatus =
+      consumptionResult.status === "consumed" ? "Consumido"
+      : consumptionResult.status === "pending" ? "Pendiente"
+      : consumptionResult.status === "failed" || consumptionResult.status === "partial_failure" ? "Fallido"
+      : "No aplica";
+    if (consumptionResult.errors.length) {
+      alert(`La factura ${invoiceId} se guardó, pero hubo un problema con el consumo automático de inventario:\n${consumptionResult.errors.join("\n")}`);
     }
     refreshPendingClosingsForDate(invoiceDate);
     state = stateFromDatabase(database);
@@ -10328,21 +10720,41 @@ function wireForms() {
     renderAll();
   });
 
-  byId("enable-inventory-consumption").addEventListener("change", () => {
+  byId("inventory-consumption-mode").addEventListener("change", () => {
+    const config = inventoryConfig();
     if (!canManageInvoices()) {
-      alert("Solo administración o propietario puede activar el consumo automático de inventario.");
-      byId("enable-inventory-consumption").checked = !byId("enable-inventory-consumption").checked;
+      alert("Solo administración o propietario puede cambiar el modo de consumo automático de inventario.");
+      byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
       return;
     }
-    const config = inventoryConfig();
-    config.consumirInventarioEnFacturacion = byId("enable-inventory-consumption").checked;
+    const previousMode = config.modoConsumoInventario;
+    config.modoConsumoInventario = byId("inventory-consumption-mode").value;
+    // Se conserva el booleano viejo en sincronia (solo para compatibilidad
+    // de lectura hacia atras, ver inventoryConfig()); el modo nuevo es
+    // siempre la fuente de verdad a partir de aqui.
+    config.consumirInventarioEnFacturacion = config.modoConsumoInventario === "required";
     stampRecord(config, "updated");
-    logAudit("warehouse_configuration_changed", {
+    logAudit("inventory_consumption_mode_changed", {
       entity: "configuracionInventario",
       entityId: config.configId,
-      newData: { consumirInventarioEnFacturacion: config.consumirInventarioEnFacturacion },
+      oldData: { modoConsumoInventario: previousMode },
+      newData: { modoConsumoInventario: config.modoConsumoInventario },
+      note: `Modo de consumo automático de inventario cambiado a "${config.modoConsumoInventario}".`,
       success: true,
     });
+    saveState();
+    renderAll();
+  });
+
+  byId("pending-consumption-list")?.addEventListener("click", (event) => {
+    const button = event.target.closest(".confirm-pending-consumption");
+    if (!button) return;
+    const result = confirmPendingServiceConsumption(button.dataset.pendingId);
+    if (!result) return;
+    if (result.errors.length) {
+      alert(`Consumo confirmado con errores:\n${result.errors.join("\n")}`);
+    }
+    state = stateFromDatabase(database);
     saveState();
     renderAll();
   });
@@ -10514,12 +10926,12 @@ function wireForms() {
       byId("retail-sale-account").focus();
       return;
     }
-    const shelf = defaultShelfWarehouse();
-    const available = itemStockAt(item.itemID, shelf.locationId);
-    if (quantity > available) {
-      alert(`No hay suficiente existencia en ${shelf.nombre}. Disponible: ${available} ${item.unidadBase || item.unidad || ""}.`);
+    const shelfCheck = requireShelfWarehouseForSale(item.itemID, quantity);
+    if (!shelfCheck.ok) {
+      alert(shelfCheck.error);
       return;
     }
+    const shelf = shelfCheck.shelf;
     const split = DalfiClosingMath.splitInvoiceLineTax({
       amount: quantity * price,
       taxable: Boolean(item.taxable),

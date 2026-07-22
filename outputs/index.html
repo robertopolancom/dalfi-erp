@@ -1081,7 +1081,12 @@
               </div>
               <button class="primary-btn" type="submit">Agregar a la ficha técnica</button>
               <label class="panel-note">
-                <input id="enable-inventory-consumption" type="checkbox" /> Activar consumo automático de inventario al facturar (usa las fichas técnicas de arriba)
+                Modo de consumo automático al facturar (usa las fichas técnicas de arriba)
+                <select id="inventory-consumption-mode">
+                  <option value="disabled">Desactivado: no descuenta nada</option>
+                  <option value="audit_only">Auditoría: guarda la factura y deja el consumo pendiente de confirmar</option>
+                  <option value="required">Obligatorio: bloquea la factura si falta material</option>
+                </select>
               </label>
             </form>
             <section class="panel">
@@ -1089,6 +1094,13 @@
                 <h3>Fichas técnicas registradas</h3>
               </div>
               <div class="simple-list" id="recipe-list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Consumo pendiente de confirmación</h3>
+                <p class="panel-note">Solo aparece aquí cuando el modo de consumo es "Auditoría". Nunca se oculta: revisa y confirma para descontar el inventario real.</p>
+              </div>
+              <div class="simple-list" id="pending-consumption-list"></div>
             </section>
 
             <form class="panel form-panel" id="inventory-loss-form">
@@ -1192,7 +1204,7 @@
                 <input id="retail-sale-account" list="accounts-list" required />
               </label>
               <button class="primary-btn" id="retail-sale-submit" type="submit">Confirmar venta</button>
-              <p class="panel-note">Descuenta de Estantería de venta (o del almacén del salón si no hay estantería configurada). Crea un solo ingreso; el impuesto se calcula según la configuración fiscal del artículo.</p>
+              <p class="panel-note">Descuenta EXCLUSIVAMENTE de Estantería de venta: nunca del almacén del salón, de provisiones, de una mesa ni de una custodia. Si falta la estantería o la cantidad, la venta se bloquea (transfiere primero desde el almacén del salón). Crea un solo ingreso; el impuesto se calcula según la configuración fiscal del artículo.</p>
             </form>
             <section class="panel">
               <div class="panel-head">
@@ -2110,6 +2122,11 @@
                     <option value="services">Servicios más vendidos</option>
                     <option value="clients">Clientes frecuentes</option>
                     <option value="inventory">Inventario</option>
+                    <option value="inventory-by-location">Existencia por ubicación</option>
+                    <option value="inventory-low-stock">Bajo mínimo y agotados</option>
+                    <option value="retail-sales">Ventas de productos e impuestos</option>
+                    <option value="service-direct-margin">Costo y margen directo por servicio</option>
+                    <option value="pending-consumption">Consumo pendiente de confirmación</option>
                     <option value="fixed-assets">Activos fijos</option>
                   </select>
                 </label>

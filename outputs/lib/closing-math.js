@@ -1127,6 +1127,375 @@
     return { baseAmount: roundMoney(total), taxAmount: roundMoney(taxAmount), totalAmount: roundMoney(total + taxAmount) };
   }
 
+  // ===========================================================================
+  // Auditoria de mesas, factura mixta y costos de inventario (julio 2026).
+  // Todo lo de abajo son funciones puras: no leen DOM, no persisten, no
+  // crean auditoria ni movimientos reales. app.js decide que hacer con el
+  // resultado (bloquear, avisar o aplicar).
+  // ===========================================================================
+
+  // Prevalida el consumo de inventario por servicio de una factura ANTES de
+  // guardar nada. Nunca lee el DOM ni escribe: solo dice que se necesita,
+  // que hay disponible, que falta y si la operacion queda permitida segun
+  // el modo. En "required" un faltante bloquea (allowed=false); en
+  // "audit_only" nunca bloquea (los faltantes quedan como warnings, para
+  // conciliar despues); en "disabled" no se calcula nada.
+  function preflightServiceInventoryConsumption({
+    invoiceLines = [],
+    serviceRecipes = [],
+    warehouseInventory = {},
+    mode = "disabled",
+    allowNegativeStockFor = () => false,
+  } = {}) {
+    if (mode === "disabled") {
+      return {
+        requiredItems: [],
+        availableItems: [],
+        shortages: [],
+        invalidRecipes: [],
+        estimatedCost: 0,
+        movementPlan: [],
+        blockingErrors: [],
+        warnings: [],
+        allowed: true,
+        mode,
+      };
+    }
+
+    const invalidRecipes = [];
+    const needByItem = new Map();
+    (Array.isArray(invoiceLines) ? invoiceLines : []).forEach((line) => {
+      const serviceName = String(line?.servicio ?? line?.service ?? "").trim();
+      const qty = Math.max(0, sanitizeAmount(line?.cantidad ?? line?.qty ?? 1));
+      if (!serviceName || qty <= 0) return;
+      const recipeLines = (Array.isArray(serviceRecipes) ? serviceRecipes : []).filter(
+        (recipe) => String(recipe?.servicioNombre ?? "").trim().toLowerCase() === serviceName.toLowerCase(),
+      );
+      recipeLines.forEach((recipe) => {
+        if (!recipe?.itemId || recipe.reutilizable || recipe.activoFijo || recipe.puedeConsumirse === false) {
+          invalidRecipes.push({ servicio: serviceName, itemId: recipe?.itemId || "", reason: !recipe?.itemId ? "sin_articulo" : "no_consumible" });
+          return;
+        }
+        const perUnit = Math.max(0, sanitizeAmount(recipe.cantidadEstimada));
+        if (perUnit <= 0) return;
+        const neededQty = roundMoney(perUnit * qty);
+        const existing = needByItem.get(recipe.itemId) || { itemId: recipe.itemId, quantity: 0, detalleIDs: [] };
+        existing.quantity = roundMoney(existing.quantity + neededQty);
+        existing.detalleIDs.push(line.detalleID || "");
+        needByItem.set(recipe.itemId, existing);
+      });
+    });
+
+    const requiredItems = [];
+    const availableItems = [];
+    const shortages = [];
+    const movementPlan = [];
+    let estimatedCost = 0;
+
+    needByItem.forEach((need) => {
+      requiredItems.push({ itemId: need.itemId, quantity: need.quantity, detalleIDs: need.detalleIDs });
+      const inv = warehouseInventory[need.itemId] || { quantity: 0, unitCost: 0 };
+      const available = Math.max(0, sanitizeAmount(inv.quantity));
+      const unitCost = Math.max(0, sanitizeAmount(inv.unitCost));
+      availableItems.push({ itemId: need.itemId, quantity: available });
+      estimatedCost = roundMoney(estimatedCost + need.quantity * unitCost);
+      const negativeAllowed = Boolean(allowNegativeStockFor(need.itemId));
+      const wouldGoNegative = roundMoney(available - need.quantity) < 0;
+      if (wouldGoNegative && !negativeAllowed) {
+        shortages.push({ itemId: need.itemId, needed: need.quantity, available, shortfall: roundMoney(need.quantity - available) });
+      } else {
+        movementPlan.push({ itemId: need.itemId, quantityBase: need.quantity, unitCost, allowNegativeStock: negativeAllowed, detalleIDs: need.detalleIDs });
+      }
+    });
+
+    const blockingErrors = [];
+    const warnings = [];
+    const shortageMessage = (s) => `Existencia insuficiente de ${s.itemId}: faltan ${s.shortfall} unidad(es) base.`;
+    const invalidMessage = (r) => `Ficha técnica inválida para "${r.servicio}" (${r.reason === "sin_articulo" ? "artículo no encontrado" : "artículo no consumible"}).`;
+    if (mode === "required") {
+      shortages.forEach((s) => blockingErrors.push(shortageMessage(s)));
+      invalidRecipes.forEach((r) => blockingErrors.push(invalidMessage(r)));
+    } else {
+      shortages.forEach((s) => warnings.push(shortageMessage(s)));
+      invalidRecipes.forEach((r) => warnings.push(invalidMessage(r)));
+    }
+
+    const allowed = mode === "required" ? blockingErrors.length === 0 : true;
+    return {
+      requiredItems,
+      availableItems,
+      shortages,
+      invalidRecipes,
+      estimatedCost: roundMoney(estimatedCost),
+      movementPlan,
+      blockingErrors,
+      warnings,
+      allowed,
+      mode,
+    };
+  }
+
+  // Reversion idempotente de los efectos de inventario de una factura
+  // (consumo de servicio o venta directa). Nunca borra el movimiento
+  // original ni toca pagos/CxC/propina/nomina: solo calcula los
+  // movimientos compensatorios pendientes de persistir (createInventoryMovement
+  // en app.js aplica cada uno). Bloquea una segunda reversion del mismo
+  // movimiento original via el sourceKey `reversion:<original>`.
+  function reverseInvoiceInventoryEffects({ invoiceId = "", inventoryMovements = [], reason = "", actor = "" } = {}) {
+    const blockingErrors = [];
+    if (!invoiceId) blockingErrors.push("Falta invoiceId.");
+    if (!reason) blockingErrors.push("Falta el motivo de la reversión.");
+    if (blockingErrors.length) return { reversalMovements: [], alreadyReversed: [], blockingErrors, allowed: false };
+
+    const allMovements = Array.isArray(inventoryMovements) ? inventoryMovements : [];
+    const existingSourceKeys = new Set(allMovements.map((m) => m.sourceKey).filter(Boolean));
+    const originals = allMovements.filter(
+      (m) => m.sourceId === invoiceId
+        && String(m.estado || "Confirmado").toLowerCase() !== "revertido"
+        && (m.tipo === "consumo_servicio" || m.tipo === "venta"),
+    );
+
+    const reversalMovements = [];
+    const alreadyReversed = [];
+    originals.forEach((original) => {
+      const originalKey = original.sourceKey || `${invoiceId}:${original.movementId}`;
+      const reversalKey = `reversion:${originalKey}`;
+      if (existingSourceKeys.has(reversalKey)) {
+        alreadyReversed.push({ movementId: original.movementId, itemId: original.itemId });
+        return;
+      }
+      reversalMovements.push({
+        itemId: original.itemId,
+        tipo: "reversion",
+        cantidadBase: original.cantidadBase,
+        costoUnitario: original.costoUnitario,
+        locationId: original.locationId,
+        lotId: original.lotId || "",
+        origen: `Reversión de ${original.tipo === "venta" ? "venta directa" : "consumo por servicio"}`,
+        sourceId: invoiceId,
+        sourceKey: reversalKey,
+        motivo: reason,
+        usuario: actor,
+        originalMovementId: original.movementId,
+        auditEvent: original.tipo === "venta" ? "retail_product_sale_reversed" : "service_inventory_reversed",
+      });
+    });
+
+    return { reversalMovements, alreadyReversed, blockingErrors: [], allowed: true };
+  }
+
+  // Diferencial de inventario entre dos snapshots de una factura (antes y
+  // despues de editarla). Identifica solo lo que cambio: nunca repite todos
+  // los consumos/salidas ni recalcula costos historicos ya aplicados.
+  // Bloquea la edicion (allowed=false) cuando una linea disminuye pero no
+  // se puede ubicar el movimiento original que habria que revertir.
+  function calculateInvoiceInventoryDelta({ previousSnapshot = {}, nextSnapshot = {}, existingInventoryMovements = [] } = {}) {
+    const validationErrors = [];
+    const productReturns = [];
+    const productAdditionalOutputs = [];
+    const serviceConsumptionReturns = [];
+    const serviceAdditionalConsumption = [];
+    const movements = Array.isArray(existingInventoryMovements) ? existingInventoryMovements : [];
+
+    const prevProducts = new Map((previousSnapshot.productLines || []).map((l) => [l.detalleID || l.itemId, l]));
+    const nextProducts = new Map((nextSnapshot.productLines || []).map((l) => [l.detalleID || l.itemId, l]));
+    const productKeys = new Set([...prevProducts.keys(), ...nextProducts.keys()]);
+    productKeys.forEach((key) => {
+      const prev = prevProducts.get(key);
+      const next = nextProducts.get(key);
+      const prevQty = Math.max(0, sanitizeAmount(prev?.quantity));
+      const nextQty = Math.max(0, sanitizeAmount(next?.quantity));
+      if (nextQty < prevQty) {
+        const decrease = roundMoney(prevQty - nextQty);
+        const hasMovement = !prev?.sourceKey || movements.some((m) => m.sourceKey === prev.sourceKey);
+        if (prev?.sourceKey && !hasMovement) {
+          validationErrors.push(`No se encontró el movimiento original de ${prev.itemId} para revertir la disminución.`);
+          return;
+        }
+        productReturns.push({ itemId: prev.itemId, quantity: decrease, locationId: prev.locationId, lotId: prev.lotId, sourceKey: prev.sourceKey });
+      } else if (nextQty > prevQty) {
+        productAdditionalOutputs.push({ itemId: (next || prev).itemId, quantity: roundMoney(nextQty - prevQty), locationId: next?.locationId || prev?.locationId });
+      }
+    });
+
+    const prevServices = new Map((previousSnapshot.serviceLines || []).map((l) => [l.detalleID, l]));
+    const nextServices = new Map((nextSnapshot.serviceLines || []).map((l) => [l.detalleID, l]));
+    const serviceKeys = new Set([...prevServices.keys(), ...nextServices.keys()]);
+    serviceKeys.forEach((key) => {
+      const prev = prevServices.get(key);
+      const next = nextServices.get(key);
+      const prevQty = Math.max(0, sanitizeAmount(prev?.cantidad));
+      const nextQty = Math.max(0, sanitizeAmount(next?.cantidad));
+      if (prev && !next) {
+        serviceConsumptionReturns.push({ detalleID: key, servicio: prev.servicio, quantity: prevQty });
+      } else if (prev && next && nextQty < prevQty) {
+        serviceConsumptionReturns.push({ detalleID: key, servicio: prev.servicio, quantity: roundMoney(prevQty - nextQty) });
+      } else if (!prev && next) {
+        serviceAdditionalConsumption.push({ detalleID: key, servicio: next.servicio, quantity: nextQty });
+      } else if (prev && next && nextQty > prevQty) {
+        serviceAdditionalConsumption.push({ detalleID: key, servicio: next.servicio, quantity: roundMoney(nextQty - prevQty) });
+      }
+    });
+
+    return {
+      productReturns,
+      productAdditionalOutputs,
+      serviceConsumptionReturns,
+      serviceAdditionalConsumption,
+      validationErrors,
+      allowed: validationErrors.length === 0,
+    };
+  }
+
+  // Concilia UN articulo en UNA mesa/periodo: saldo inicial + entregas -
+  // devoluciones - saldo fisico = consumo observado. Compara contra el
+  // consumo esperado (fichas tecnicas de los servicios realizados) y
+  // devuelve la variacion en cantidad, porcentaje y costo. Funcion pura:
+  // no decide el estado de la auditoria (eso es responsabilidad de
+  // app.js/la interfaz), solo calcula.
+  function calculateStationInventoryAuditLine({
+    openingBalance = 0,
+    deliveries = 0,
+    returns = 0,
+    physicalCount = 0,
+    expectedConsumption = 0,
+    unitCost = 0,
+  } = {}) {
+    const opening = sanitizeAmount(openingBalance);
+    const delivered = sanitizeAmount(deliveries);
+    const returned = sanitizeAmount(returns);
+    const physical = sanitizeAmount(physicalCount);
+    const expected = sanitizeAmount(expectedConsumption);
+    const observedConsumption = roundMoney(opening + delivered - returned - physical);
+    const varianceQuantity = roundMoney(observedConsumption - expected);
+    const variancePercent = expected !== 0 ? roundMoney((varianceQuantity / Math.abs(expected)) * 100) : (varianceQuantity !== 0 ? 100 : 0);
+    const varianceCost = roundMoney(varianceQuantity * Math.max(0, sanitizeAmount(unitCost)));
+    return {
+      openingBalance: opening,
+      deliveries: delivered,
+      returns: returned,
+      physicalCount: physical,
+      observedConsumption,
+      expectedConsumption: expected,
+      varianceQuantity,
+      variancePercent,
+      varianceCost,
+    };
+  }
+
+  // Agrega el consumo esperado por mesa a partir de las lineas de servicio
+  // de facturas del periodo (usa la ficha tecnica vigente de cada
+  // servicio). Una linea sin mesa asignada NUNCA se asigna silenciosamente
+  // a otra mesa: se reporta aparte para conciliacion administrativa. Una
+  // mesa compartida por varias colaboradoras simplemente acumula todas sus
+  // lineas en el mismo bucket (la variacion se explica despues por
+  // colaboradora usando las lineas originales, no aqui).
+  function aggregateExpectedServiceConsumptionByStation({ serviceLines = [], recipesByService = {} } = {}) {
+    const byStation = new Map();
+    const withoutStation = [];
+    (Array.isArray(serviceLines) ? serviceLines : []).forEach((line) => {
+      const stationId = line?.stationId || line?.mesaId || "";
+      const recipeLines = recipesByService[line?.servicio] || [];
+      const qty = Math.max(0, sanitizeAmount(line?.cantidad));
+      if (!stationId) {
+        withoutStation.push({ detalleID: line?.detalleID, servicio: line?.servicio, cantidad: qty });
+        return;
+      }
+      const bucket = byStation.get(stationId) || { stationId, items: new Map() };
+      recipeLines.forEach((recipe) => {
+        if (recipe.reutilizable || recipe.activoFijo || recipe.puedeConsumirse === false || !recipe.itemId) return;
+        const needed = roundMoney(Math.max(0, sanitizeAmount(recipe.cantidadEstimada)) * qty);
+        const current = bucket.items.get(recipe.itemId) || 0;
+        bucket.items.set(recipe.itemId, roundMoney(current + needed));
+      });
+      byStation.set(stationId, bucket);
+    });
+    const stations = [...byStation.values()].map((bucket) => ({
+      stationId: bucket.stationId,
+      items: [...bucket.items.entries()].map(([itemId, quantity]) => ({ itemId, quantity })),
+    }));
+    return { stations, withoutStation };
+  }
+
+  // Costo directo esperado de UN servicio segun su ficha tecnica: solo
+  // materiales consumibles (el llamador ya excluye activos/herramientas
+  // reutilizables al construir recipeLines; esta funcion tambien los
+  // filtra por seguridad).
+  function calculateServiceDirectCost({ recipeLines = [], unitCostByItemId = {} } = {}) {
+    const cost = (Array.isArray(recipeLines) ? recipeLines : []).reduce((sum, line) => {
+      if (line.reutilizable || line.activoFijo || line.puedeConsumirse === false) return sum;
+      const qty = Math.max(0, sanitizeAmount(line.cantidadEstimada));
+      const unitCost = Math.max(0, sanitizeAmount(unitCostByItemId[line.itemId]));
+      return sum + qty * unitCost;
+    }, 0);
+    return roundMoney(cost);
+  }
+
+  // Margen directo = precio neto del servicio - costo directo de
+  // materiales consumibles. Nunca incluye mano de obra, comision, propina,
+  // TSS, alquiler, electricidad, depreciacion ni gastos generales.
+  function calculateDirectMargin({ netPrice = 0, directCost = 0 } = {}) {
+    const price = sanitizeAmount(netPrice);
+    const cost = sanitizeAmount(directCost);
+    const marginAmount = roundMoney(price - cost);
+    const marginPercent = price > 0 ? roundMoney((marginAmount / price) * 100) : 0;
+    return { marginAmount, marginPercent };
+  }
+
+  // Margen bruto de UN producto vendido: precio neto de impuesto - costo
+  // historico congelado al momento de la venta (nunca el costo promedio
+  // actual, para no reescribir ventas pasadas).
+  function calculateProductMargin({ netUnitPrice = 0, historicalUnitCost = 0, quantity = 1 } = {}) {
+    const price = sanitizeAmount(netUnitPrice);
+    const cost = sanitizeAmount(historicalUnitCost);
+    const qty = Math.max(0, sanitizeAmount(quantity));
+    const marginAmount = roundMoney((price - cost) * qty);
+    const marginPercent = price > 0 ? roundMoney(((price - cost) / price) * 100) : 0;
+    return { marginAmount, marginPercent };
+  }
+
+  // Resumen fiscal de una factura mixta (servicios + productos), linea por
+  // linea via splitInvoiceLineTax (nunca una tasa global hardcodeada). La
+  // propina y la deuda anterior son informativas: se suman DESPUES de la
+  // base+impuesto y nunca alteran la base imponible ni el total legal de
+  // la factura.
+  function summarizeMixedInvoiceLines({ lines = [], tip = 0, priorDebt = 0 } = {}) {
+    const summary = {
+      servicesExempt: 0,
+      servicesTaxed: 0,
+      productsExempt: 0,
+      productsTaxed: 0,
+      taxableBase: 0,
+      taxAmount: 0,
+      discountTotal: 0,
+      tip: roundMoney(sanitizeAmount(tip)),
+      invoiceTotal: 0,
+      priorDebt: roundMoney(sanitizeAmount(priorDebt)),
+      grandTotalDueToday: 0,
+    };
+    (Array.isArray(lines) ? lines : []).forEach((line) => {
+      const amount = Math.max(0, sanitizeAmount(line.subtotal) - sanitizeAmount(line.discount));
+      const split = splitInvoiceLineTax({
+        amount,
+        taxable: Boolean(line.taxable),
+        taxRate: Number(line.taxRate) || 0,
+        priceIncludesTax: Boolean(line.priceIncludesTax),
+      });
+      summary.discountTotal = roundMoney(summary.discountTotal + sanitizeAmount(line.discount));
+      summary.taxableBase = roundMoney(summary.taxableBase + split.baseAmount);
+      summary.taxAmount = roundMoney(summary.taxAmount + split.taxAmount);
+      summary.invoiceTotal = roundMoney(summary.invoiceTotal + split.totalAmount);
+      const isProduct = line.lineType === "producto";
+      if (isProduct && line.taxable) summary.productsTaxed = roundMoney(summary.productsTaxed + split.totalAmount);
+      else if (isProduct) summary.productsExempt = roundMoney(summary.productsExempt + split.totalAmount);
+      else if (line.taxable) summary.servicesTaxed = roundMoney(summary.servicesTaxed + split.totalAmount);
+      else summary.servicesExempt = roundMoney(summary.servicesExempt + split.totalAmount);
+    });
+    summary.invoiceTotal = roundMoney(summary.invoiceTotal + summary.tip);
+    summary.grandTotalDueToday = roundMoney(summary.invoiceTotal + summary.priorDebt);
+    return summary;
+  }
+
   return {
     localDateStringInZone,
     nowPartsInZone,
@@ -1179,5 +1548,14 @@
     compareLotsFEFO,
     allocateFEFO,
     splitInvoiceLineTax,
+    preflightServiceInventoryConsumption,
+    reverseInvoiceInventoryEffects,
+    calculateInvoiceInventoryDelta,
+    calculateStationInventoryAuditLine,
+    aggregateExpectedServiceConsumptionByStation,
+    calculateServiceDirectCost,
+    calculateDirectMargin,
+    calculateProductMargin,
+    summarizeMixedInvoiceLines,
   };
 });

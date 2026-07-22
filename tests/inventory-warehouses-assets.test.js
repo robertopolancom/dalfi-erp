@@ -103,13 +103,13 @@ test("6. infinito rechazado en la conversion", () => {
   assert.ok(result.validationErrors.length > 0);
 });
 
-test("7. articulo inactivo (estado distinto de Activo) no deberia consumirse: consumeInventoryForInvoice respeta puedeConsumirse", () => {
-  const source = extractFunction("consumeInventoryForInvoice");
+test("7. articulo inactivo (estado distinto de Activo) no deberia consumirse: requiredConsumptionLinesForInvoice (usada por preflight y por consumeInventoryForInvoice) respeta puedeConsumirse", () => {
+  const source = extractFunction("requiredConsumptionLinesForInvoice");
   assert.match(source, /item\.puedeConsumirse === false/);
 });
 
-test("8-9-10. consumible diferenciado de activo/implemento: ni consumeInventoryForInvoice ni las fichas tecnicas aceptan reutilizables/activos fijos", () => {
-  const consumeSource = extractFunction("consumeInventoryForInvoice");
+test("8-9-10. consumible diferenciado de activo/implemento: ni requiredConsumptionLinesForInvoice ni las fichas tecnicas aceptan reutilizables/activos fijos", () => {
+  const consumeSource = extractFunction("requiredConsumptionLinesForInvoice");
   assert.match(consumeSource, /item\.reutilizable \|\| item\.activoFijo/);
   assert.match(recipeSubmit, /if \(item\.reutilizable \|\| item\.activoFijo\) \{/);
 });
@@ -269,8 +269,8 @@ test("64. un activo general (sin custodio asignado) es válido: asset-custody-fo
   assert.doesNotMatch(custodySubmit, /if \(!activePrevious\)/);
 });
 
-test("66. un activo nunca se carga a un servicio: no existe ninguna referencia a activosFijos dentro de consumeInventoryForInvoice ni de fichasTecnicas", () => {
-  const source = extractFunction("consumeInventoryForInvoice");
+test("66. un activo nunca se carga a un servicio: no existe ninguna referencia a activosFijos dentro de requiredConsumptionLinesForInvoice ni de fichasTecnicas", () => {
+  const source = extractFunction("requiredConsumptionLinesForInvoice");
   assert.doesNotMatch(source, /activosFijos/);
 });
 
@@ -365,25 +365,59 @@ test("recipeLinesForService() busca por nombre de servicio normalizado (compatib
 // K. Facturacion y consumo
 // ===========================================================================
 
-test("93-96. la factura consume materiales SOLO si el consumo automático está activado (apagado por defecto, para no sorprender con datos sin fichas técnicas configuradas)", () => {
+test("93-96. la factura consume materiales SOLO segun el modo configurado (inventoryConfig().modoConsumoInventario, no un booleano ambiguo); disabled por defecto para no sorprender con datos sin fichas técnicas configuradas", () => {
   const source = extractFunction("consumeInventoryForInvoice");
-  assert.match(source, /if \(!config\.consumirInventarioEnFacturacion\) return;/);
+  assert.match(source, /if \(mode === "disabled"\) return result;/);
+  const configSource = extractFunction("inventoryConfig");
+  assert.match(configSource, /modoConsumoInventario: "disabled"/);
 });
 
-test("97-98. doble submit / recarga no duplica: cada consumo usa un sourceKey estable factura+detalle+articulo", () => {
+test("modo required/audit_only/disabled es un enum explicito, nunca un booleano: los tres valores literales existen en el modulo", () => {
+  assert.match(appJs, /consumptionMode === "required"/);
+  assert.match(appJs, /mode === "audit_only"/);
+  assert.match(appJs, /mode === "disabled"/);
+});
+
+test("97-98. doble submit / recarga no duplica: cada consumo (directo o confirmado desde pendiente) usa el mismo sourceKey estable factura+detalle+articulo", () => {
   const source = extractFunction("consumeInventoryForInvoice");
   assert.match(source, /const sourceKey = `consumo:\$\{invoiceId\}:\$\{detail\.detalleID\}:\$\{item\.itemID\}`;/);
+  const confirmSource = extractFunction("confirmPendingServiceConsumption");
+  assert.match(confirmSource, /const sourceKey = `consumo:\$\{pending\.invoiceId\}:\$\{line\.detalleID\}:\$\{line\.itemId\}`;/);
 });
 
-test("102. factura sin receta configurada no falla (recipeLines vacio simplemente no genera movimientos)", () => {
-  const source = extractFunction("consumeInventoryForInvoice");
+test("102. factura sin receta configurada no falla (requiredLines vacio simplemente no genera movimientos, sin lanzar)", () => {
+  const source = extractFunction("requiredConsumptionLinesForInvoice");
   assert.match(source, /recipeLines\.forEach\(\(recipeLine\) => \{/);
   assert.doesNotMatch(source, /throw new Error/);
+  assert.doesNotMatch(extractFunction("consumeInventoryForInvoice"), /throw new Error/);
 });
 
-test("el consumo de inventario esta envuelto en try/catch dentro del submit de #invoice-form: un problema de inventario nunca debe impedir que la factura se guarde", () => {
+test("el resultado de consumo automatico ya no se silencia: no hay try/catch alrededor de consumeInventoryForInvoice, el resultado estructurado se usa y los errores se muestran (no solo console.error)", () => {
   const invoiceSubmit = extractStatementBlock('let invoiceSubmitInFlight = false;', 'byId("invoice-form").addEventListener("submit"');
-  assert.match(invoiceSubmit, /try \{\s*consumeInventoryForInvoice\(invoiceId, detailRecords\);\s*\} catch \(error\) \{/);
+  assert.doesNotMatch(invoiceSubmit, /try \{\s*consumeInventoryForInvoice/);
+  assert.match(invoiceSubmit, /const consumptionResult = consumeInventoryForInvoice\(invoiceId, detailRecords, consumptionMode\);/);
+  assert.match(invoiceSubmit, /invoiceRecord\.inventoryConsumptionStatus =/);
+  assert.match(invoiceSubmit, /if \(consumptionResult\.errors\.length\) \{/);
+});
+
+test("modo required bloquea ANTES de crear la factura (buildServiceConsumptionPreflight corre antes del push a facturas), no persiste nada parcial", () => {
+  const invoiceSubmit = extractStatementBlock('let invoiceSubmitInFlight = false;', 'byId("invoice-form").addEventListener("submit"');
+  const preflightIdx = invoiceSubmit.indexOf("buildServiceConsumptionPreflight(lines, consumptionMode)");
+  const invoicePushIdx = invoiceSubmit.indexOf('dbTable("facturas").push(invoiceRecord)');
+  assert.ok(preflightIdx !== -1 && invoicePushIdx !== -1 && preflightIdx < invoicePushIdx, "la prevalidacion debe ocurrir antes de persistir la factura");
+  assert.match(invoiceSubmit, /if \(!editId && consumptionMode === "required" && !consumptionPreflight\.allowed\) \{/);
+});
+
+test("audit_only nunca bloquea el guardado, pero deja el consumo Pendiente y lo audita como service_inventory_pending", () => {
+  const source = extractFunction("consumeInventoryForInvoice");
+  assert.match(source, /if \(mode === "audit_only"\) \{/);
+  assert.match(source, /logAudit\("service_inventory_pending"/);
+  assert.match(source, /estado: "Pendiente",/);
+});
+
+test("un consumo fallido en modo required se audita como service_inventory_failed, nunca se oculta", () => {
+  const source = extractFunction("consumeInventoryForInvoice");
+  assert.match(source, /logAudit\("service_inventory_failed"/);
 });
 
 // ===========================================================================
@@ -426,20 +460,26 @@ test("123. el conteo físico se aplica una sola vez por confirmación (no hay un
   assert.doesNotMatch(countSubmit, /for \(|\.forEach\(/);
 });
 
-test("125-127. venta directa reduce estantería, no reduce directamente el almacén general (usa defaultShelfWarehouse, con respaldo documentado al almacén del salón)", () => {
+test("125-127. venta directa reduce EXCLUSIVAMENTE la estantería: defaultShelfWarehouse() ya no cae de respaldo al almacén del salón (defecto real corregido)", () => {
   const source = extractFunction("defaultShelfWarehouse");
   assert.match(source, /row\.tipo === "estanteria" && row\.activa !== false/);
-  assert.match(retailSaleSubmit, /const shelf = defaultShelfWarehouse\(\);/);
+  assert.doesNotMatch(source, /defaultSalonWarehouse\(\)/);
+  assert.match(retailSaleSubmit, /const shelfCheck = requireShelfWarehouseForSale\(item\.itemID, quantity\);/);
 });
 
-test("128. estantería bajo mínimo: el mismo dato de existencia por ubicación permite calcular la alerta (no hay un campo stock aparte que se desincronice)", () => {
-  assert.match(retailSaleSubmit, /const available = itemStockAt\(item\.itemID, shelf\.locationId\);/);
+test("128. estantería bajo mínimo / sin configurar: requireShelfWarehouseForSale bloquea la venta y explica la falta (nunca vende sin estantería)", () => {
+  const source = extractFunction("requireShelfWarehouseForSale");
+  assert.match(source, /if \(!shelf\)/);
+  assert.match(source, /No hay ninguna Estantería de venta configurada/);
+  assert.match(source, /quantity > available/);
+  assert.match(retailSaleSubmit, /if \(!shelfCheck\.ok\) \{/);
 });
 
-test("venta directa exige permiso, guardia de doble-submit, y bloquea si no hay existencia suficiente", () => {
+test("venta directa exige permiso, guardia de doble-submit, y bloquea si no hay estantería o existencia suficiente (nunca descuenta otra ubicación)", () => {
   assert.match(retailSaleSubmit, /canManageInvoices\(\)/);
   assert.match(appJs, /let retailSaleSubmitInFlight = false;/);
-  assert.match(retailSaleSubmit, /if \(quantity > available\) \{/);
+  assert.match(retailSaleSubmit, /if \(!shelfCheck\.ok\) \{/);
+  assert.doesNotMatch(retailSaleSubmit, /defaultSalonWarehouse\(\)/);
 });
 
 test("169-171. venta genera un ingreso, una salida de inventario, nunca dos ingresos", () => {
@@ -593,4 +633,55 @@ test("todos los eventos de auditoria requeridos existen con el nombre EXACTO esp
   ].forEach((eventName) => {
     assert.match(appJs, new RegExp(`logAudit\\("${eventName}"`), `falta logAudit("${eventName}"`);
   });
+});
+
+// ===========================================================================
+// Q. Auditoria de mesas, factura mixta y costos de inventario (fase julio
+// 2026, ver 4019441 -> siguiente commit): consumo estructurado, costo/margen
+// directo congelado y reportes operativos nuevos.
+// ===========================================================================
+
+test("nuevos eventos de auditoria del consumo estructurado existen (pendiente/fallido), ademas del ya existente service_inventory_consumed", () => {
+  ["service_inventory_pending", "service_inventory_failed", "inventory_consumption_mode_changed"].forEach((eventName) => {
+    assert.match(appJs, new RegExp(`logAudit\\("${eventName}"`), `falta logAudit("${eventName}"`);
+  });
+});
+
+test("costo/margen directo por servicio se congela en el detalle de factura al crearla (usa el costo promedio de ESE momento, vía computeServiceDirectCostAndMargin)", () => {
+  const source = extractFunction("computeServiceDirectCostAndMargin");
+  assert.match(source, /DalfiClosingMath\.calculateServiceDirectCost/);
+  assert.match(source, /DalfiClosingMath\.calculateDirectMargin/);
+  const invoiceSubmit = extractStatementBlock('let invoiceSubmitInFlight = false;', 'byId("invoice-form").addEventListener("submit"');
+  assert.match(invoiceSubmit, /const directCostMargin = computeServiceDirectCostAndMargin\(line\.service, netSubtotal, line\.qty\);/);
+  assert.match(invoiceSubmit, /costoDirectoEstimado: directCostMargin\.directCost,/);
+  assert.match(invoiceSubmit, /margenDirectoEstimado: directCostMargin\.marginAmount,/);
+});
+
+test("confirmPendingServiceConsumption exige permiso, nunca borra el registro pendiente (lo marca Confirmado/Con errores) y reutiliza el MISMO sourceKey que el consumo directo (nunca duplica)", () => {
+  const source = extractFunction("confirmPendingServiceConsumption");
+  assert.match(source, /canManageInvoices\(\)/);
+  assert.doesNotMatch(source, /dbTable\("consumosPendientes"\)\.splice/);
+  assert.match(source, /pending\.estado = errors\.length \? "Con errores" : "Confirmado";/);
+});
+
+test("panel de reportes: los nuevos tipos de reporte de inventario estan conectados al selector y al dispatcher renderReports", () => {
+  ["inventory-by-location", "inventory-low-stock", "retail-sales", "service-direct-margin", "pending-consumption"].forEach((type) => {
+    assert.match(appJs, new RegExp(`if \\(type === "${type}"\\) return render`));
+    assert.match(indexHtml, new RegExp(`<option value="${type}">`));
+  });
+});
+
+test("renderInventoryReport ya no usa row.existencia/row.costo obsoletos: usa itemStockAt (existencia SIEMPRE derivada)", () => {
+  const source = extractFunction("renderInventoryReport");
+  assert.doesNotMatch(source, /row\.existencia\b/);
+  assert.match(source, /itemStockAt\(row\.itemID\)/);
+});
+
+test("renderServiceDirectMarginReport respeta el costo/margen ya congelado en el detalle (no lo recalcula) cuando existe, y solo recalcula para compatibilidad con facturas anteriores sin esos campos", () => {
+  const source = extractFunction("renderServiceDirectMarginReport");
+  assert.match(source, /detail\.costoDirectoEstimado !== undefined && detail\.margenDirectoEstimado !== undefined/);
+});
+
+test("dependencia pendiente documentada: reverseInvoiceInventoryEffects (motor puro en closing-math.js) todavia NO tiene un boton de anulacion en app.js — evita una anulación financiera parcial/insegura, tal como pide el enunciado", () => {
+  assert.doesNotMatch(appJs, /reverseInvoiceInventoryEffects/);
 });
