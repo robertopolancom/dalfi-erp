@@ -5085,6 +5085,284 @@ function startExpenseEdit(expenseId) {
   revealFormAtTop(byId("expense-form"), { focusSelector: "#expense-source" });
 }
 
+// ===========================================================================
+// Inventario: almacenes, movimientos, transferencias, compras/CxP a
+// suplidores, mesas y custodia de activos (julio 2026). La existencia NUNCA
+// se lee de un campo editable: siempre se deriva sumando
+// inventarioMovimientos via DalfiClosingMath.calculateInventoryByLocation.
+// ===========================================================================
+
+// Almacen operativo por defecto ("Almacen de insumos del salon"): se
+// autocrea una sola vez si todavia no existe ningun almacen de ese tipo
+// (primer uso del modulo), nunca se duplica en usos posteriores.
+function defaultSalonWarehouse() {
+  const existing = dbTable("almacenes").find((row) => row.tipo === "almacen_salon");
+  if (existing) return existing;
+  const warehouse = stampRecord({
+    locationId: nextDbId("almacenes", "locationId", "ALM"),
+    nombre: "Almacén de insumos del salón",
+    tipo: "almacen_salon",
+    activa: true,
+    controlaExistencia: true,
+    permiteVenta: false,
+    permiteConsumo: true,
+    permiteCustodia: false,
+    observaciones: "Creado automáticamente como almacén operativo principal.",
+  });
+  dbTable("almacenes").push(warehouse);
+  logAudit("warehouse_created", {
+    entity: "almacenes",
+    entityId: warehouse.locationId,
+    newData: { nombre: warehouse.nombre, tipo: warehouse.tipo },
+    note: "Almacén del salón creado automáticamente (primer uso del módulo de inventario).",
+    success: true,
+  });
+  return warehouse;
+}
+
+// Configuracion singleton del modulo de inventario (hoy solo
+// usarAlmacenProvisiones, pensada para crecer sin migracion).
+function inventoryConfig() {
+  const table = dbTable("configuracionInventario");
+  if (table.length) return table[0];
+  const config = stampRecord({ configId: "INVCFG-1", usarAlmacenProvisiones: false });
+  table.push(config);
+  return config;
+}
+
+function activeInventorySourceKeys() {
+  return dbTable("inventarioMovimientos").map((row) => row.sourceKey).filter(Boolean);
+}
+
+// Existencia de un articulo en una ubicacion especifica (o global si se
+// omite locationId), SIEMPRE derivada de inventarioMovimientos.
+function itemStockAt(itemId, locationId = "") {
+  return DalfiClosingMath.calculateInventoryByLocation({ movements: dbTable("inventarioMovimientos"), itemId, locationId }).quantity;
+}
+
+// Crea y persiste UN movimiento de inventario, validado por la funcion pura
+// applyInventoryMovement (rechaza NaN/infinito/cantidad<=0, bloquea
+// existencia negativa salvo autorizacion explicita, bloquea sourceKey
+// duplicado). Devuelve el movimiento creado o null si fue rechazado.
+function createInventoryMovement({
+  itemId,
+  tipo,
+  cantidadBase,
+  costoUnitario = 0,
+  locationId = "",
+  lotId = "",
+  origen = "",
+  sourceId = "",
+  sourceKey = "",
+  motivo = "",
+  usuario = "",
+  allowNegativeStock = false,
+  transferId = "",
+} = {}) {
+  const stockBefore = itemStockAt(itemId, locationId);
+  const result = DalfiClosingMath.applyInventoryMovement({
+    currentStock: stockBefore,
+    movementType: tipo,
+    quantity: cantidadBase,
+    allowNegativeStock,
+    existingSourceKeys: activeInventorySourceKeys(),
+    sourceKey,
+  });
+  if (!result.movementAllowed) return { movement: null, result };
+  const movement = stampRecord({
+    movementId: nextDbId("inventarioMovimientos", "movementId", "MOV"),
+    itemId,
+    tipo,
+    cantidadBase: result.normalizedQuantity,
+    direction: result.direction,
+    costoUnitario: Math.max(0, Number(costoUnitario) || 0),
+    costoTotal: Math.round(result.normalizedQuantity * (Math.max(0, Number(costoUnitario) || 0)) * 100) / 100,
+    locationId,
+    lotId,
+    existenciaAnterior: result.stockBefore,
+    existenciaPosterior: result.stockAfter,
+    fecha: dateTimeForOperationalDate(today),
+    origen,
+    sourceId,
+    sourceKey,
+    transferId,
+    usuario,
+    motivo,
+    estado: "Confirmado",
+  });
+  dbTable("inventarioMovimientos").push(movement);
+  logAudit("inventory_movement_created", {
+    entity: "inventarioMovimientos",
+    entityId: movement.movementId,
+    newData: { itemId, tipo, cantidadBase: result.normalizedQuantity, locationId, existenciaPosterior: result.stockAfter },
+    note: `Movimiento ${movement.movementId} (${tipo}) de ${result.normalizedQuantity} para ${itemId} en ${locationId || "sin ubicación"}.`,
+    success: true,
+  });
+  if (result.stockAfter < 0) {
+    logAudit("inventory_negative_override", {
+      entity: "inventarioMovimientos",
+      entityId: movement.movementId,
+      newData: { itemId, locationId, existenciaPosterior: result.stockAfter },
+      note: `Existencia negativa autorizada explícitamente para ${itemId} en ${locationId || "sin ubicación"}: ${result.stockAfter}.`,
+      success: true,
+    });
+  }
+  return { movement, result };
+}
+
+// Transferencia = DOS movimientos vinculados por el mismo transferId (uno
+// "transferencia_salida" en origen, uno "transferencia_entrada" en
+// destino): la existencia GLOBAL del articulo nunca cambia, solo se mueve
+// entre ubicaciones.
+function createInventoryTransfer({ itemId, cantidadBase, fromLocationId, toLocationId, motivo = "", usuario = "", sourceId = "" } = {}) {
+  const transferId = nextDbId("transferenciasInventario", "transferId", "TRI");
+  const outSourceKey = `${transferId}:out`;
+  const outMove = createInventoryMovement({
+    itemId,
+    tipo: "transferencia_salida",
+    cantidadBase,
+    locationId: fromLocationId,
+    origen: "Transferencia",
+    sourceId: sourceId || transferId,
+    sourceKey: outSourceKey,
+    motivo,
+    usuario,
+    transferId,
+  });
+  if (!outMove.movement) return { transferId: "", outMove, inMove: null };
+  const inSourceKey = `${transferId}:in`;
+  const inMove = createInventoryMovement({
+    itemId,
+    tipo: "transferencia_entrada",
+    cantidadBase,
+    locationId: toLocationId,
+    origen: "Transferencia",
+    sourceId: sourceId || transferId,
+    sourceKey: inSourceKey,
+    motivo,
+    usuario,
+    transferId,
+  });
+  dbTable("transferenciasInventario").push(stampRecord({
+    transferId,
+    itemId,
+    cantidadBase: outMove.result.normalizedQuantity,
+    fromLocationId,
+    toLocationId,
+    fecha: dateTimeForOperationalDate(today),
+    responsableEntrega: usuario,
+    motivo,
+    estado: "Recibida",
+    sourceKey: transferId,
+  }));
+  logAudit("inventory_transfer_created", {
+    entity: "transferenciasInventario",
+    entityId: transferId,
+    newData: { itemId, cantidadBase: outMove.result.normalizedQuantity, fromLocationId, toLocationId },
+    note: `Transferencia ${transferId}: ${outMove.result.normalizedQuantity} de ${fromLocationId} a ${toLocationId}.`,
+    success: true,
+  });
+  return { transferId, outMove, inMove };
+}
+
+function findWarehouseByName(name) {
+  return dbTable("almacenes").find((row) => normalize(row.nombre) === normalize(name));
+}
+
+function findInventoryItemByName(name) {
+  return dbTable("inventario").find((row) => normalize(row.nombre) === normalize(name) || normalize(row.sku) === normalize(name));
+}
+
+// Calcula el desglose de una compra en curso (formulario #purchase-form)
+// SIN escribir nada: usado tanto por la previsualizacion en vivo como por
+// el submit real (nunca dos formulas distintas).
+function purchasePreviewData() {
+  const item = findInventoryItemByName(byId("purchase-item")?.value.trim() || "");
+  const quantity = Number(byId("purchase-quantity")?.value) || 0;
+  const unitCost = Number(byId("purchase-unit-cost")?.value) || 0;
+  const tax = Number(byId("purchase-tax")?.value) || 0;
+  const otherCosts = Number(byId("purchase-other-costs")?.value) || 0;
+  const factor = Number(item?.factorConversion) || 1;
+  const conversion = DalfiClosingMath.convertToBaseQuantity({ quantity, factor });
+  const subtotal = quantity * unitCost;
+  const total = subtotal + tax + otherCosts;
+  const landedCostPerBaseUnit = conversion.baseQuantity > 0 ? total / conversion.baseQuantity : 0;
+  return { item, quantity, unitCost, tax, otherCosts, subtotal, total, baseQuantity: conversion.baseQuantity, landedCostPerBaseUnit, conversionErrors: conversion.validationErrors };
+}
+
+function updatePurchaseTotalPreview() {
+  const data = purchasePreviewData();
+  byId("purchase-total-preview").textContent = `Total: ${money.format(data.total)}${data.item ? ` · costo puesto en almacén ${money.format(data.landedCostPerBaseUnit)} por ${data.item.unidadBase || data.item.unidad || "unidad"}` : ""}`;
+}
+
+// Fichas tecnicas (recetas) del servicio dado, nombre normalizado.
+function recipeLinesForService(serviceName) {
+  return dbTable("fichasTecnicas").filter((row) => normalize(row.servicioNombre) === normalize(serviceName));
+}
+
+// Consumo automatico de inventario al crear una factura, segun ficha
+// tecnica de cada servicio. Apagado por defecto (inventoryConfig().
+// consumirInventarioEnFacturacion); nunca consume desde estanteria, nunca
+// consume activos/implementos (solo articulos con puedeConsumirse), nunca
+// aplica dos veces (sourceKey = factura+detalle+articulo), y una salida que
+// dejaria existencia negativa en un articulo controlado simplemente se
+// omite (se audita, no rompe la factura ni fuerza negativo en silencio).
+function consumeInventoryForInvoice(invoiceId, detailRecords) {
+  const config = inventoryConfig();
+  if (!config.consumirInventarioEnFacturacion) return;
+  if (!Array.isArray(detailRecords) || !detailRecords.length) return;
+  const warehouse = defaultSalonWarehouse();
+  detailRecords.forEach((detail) => {
+    const recipeLines = recipeLinesForService(detail.servicio);
+    recipeLines.forEach((recipeLine) => {
+      const item = dbTable("inventario").find((row) => row.itemID === recipeLine.itemId);
+      if (!item || item.puedeConsumirse === false || item.reutilizable || item.activoFijo) return;
+      const conversion = DalfiClosingMath.convertToBaseQuantity({
+        quantity: (Number(recipeLine.cantidadEstimada) || 0) * (Number(detail.cantidad) || 1),
+        factor: 1,
+      });
+      if (conversion.validationErrors.length || conversion.baseQuantity <= 0) return;
+      const sourceKey = `consumo:${invoiceId}:${detail.detalleID}:${item.itemID}`;
+      const result = createInventoryMovement({
+        itemId: item.itemID,
+        tipo: "consumo_servicio",
+        cantidadBase: conversion.baseQuantity,
+        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+        locationId: warehouse.locationId,
+        origen: "Consumo por servicio",
+        sourceId: invoiceId,
+        sourceKey,
+        motivo: `Consumo estimado: ${detail.servicio}`,
+        allowNegativeStock: item.controlaExistencia === false,
+      });
+      if (!result.movement) return;
+      logAudit("service_inventory_consumed", {
+        entity: "inventarioMovimientos",
+        entityId: result.movement.movementId,
+        newData: { invoiceId, itemId: item.itemID, cantidadBase: conversion.baseQuantity, detalleID: detail.detalleID },
+        note: `Consumo de ${conversion.baseQuantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}).`,
+        success: true,
+      });
+    });
+  });
+}
+
+// Abre el panel "Pagar a suplidor" para una CxP especifica.
+function openSupplierPayForm(payableId) {
+  if (!canManageInvoices()) {
+    alert("Solo administración o propietario puede pagar a suplidores.");
+    return;
+  }
+  const payable = dbTable("cuentasPagar").find((row) => row.cxPID === payableId);
+  if (!payable) return;
+  byId("supplier-pay-id").value = payableId;
+  byId("supplier-pay-summary").textContent = `${payable.acreedorNombre} · ${payable.concepto} · Pendiente ${money.format(Number(payable.balancePendiente) || 0)}`;
+  byId("supplier-pay-amount").value = Number(payable.balancePendiente) || 0;
+  const form = byId("supplier-pay-form");
+  form.classList.remove("hidden");
+  revealFormAtTop(form, { focusSelector: "#supplier-pay-amount" });
+}
+
 function renderInventory() {
   const query = byId("inventory-search").value;
   const rows = dbTable("inventario").filter((item) => matches(item, query, ["sku", "nombre", "categoria", "tipo", "proveedor", "estado"]));
@@ -5092,7 +5370,7 @@ function renderInventory() {
   if (!rows.length) return renderEmpty(target, 7, "No hay inventario registrado.");
   target.innerHTML = rows
     .map((item) => {
-      const stock = Number(item.existencia) || 0;
+      const stock = item.controlaExistencia === false ? Number(item.existencia) || 0 : itemStockAt(item.itemID);
       const min = Number(item.existenciaMinima) || 0;
       const low = min > 0 && stock <= min;
       return `
@@ -5100,14 +5378,230 @@ function renderInventory() {
           <td>${item.sku || item.itemID}</td>
           <td>${item.nombre}</td>
           <td>${item.tipo || "-"}</td>
-          <td class="amount ${low ? "danger" : ""}">${stock} ${item.unidad || ""}</td>
+          <td class="amount ${low ? "danger" : ""}">${stock} ${item.unidadBase || item.unidad || ""}</td>
           <td>${min}</td>
-          <td class="amount">${money.format(Number(item.costo) || 0)}</td>
+          <td class="amount">${money.format(Number(item.costoPromedio) || Number(item.costo) || 0)}</td>
           <td>${low ? "Bajo mínimo" : item.estado || "Activo"}</td>
         </tr>
       `;
     })
     .join("");
+  byId("inventory-item-list").innerHTML = dbTable("inventario").map((item) => `<option value="${escapeHtml(item.nombre)}"></option>`).join("");
+}
+
+function renderWarehouses() {
+  const rows = dbTable("almacenes");
+  byId("warehouse-list").innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `
+            <article class="list-item">
+              <div>
+                <strong>${row.nombre}</strong>
+                <span>${row.tipo} · ${row.activa === false ? "Inactiva" : "Activa"} · Existencia ${row.controlaExistencia === false ? "no controlada" : "controlada"}</span>
+              </div>
+              <div class="row-actions">
+                <button class="secondary-btn compact toggle-warehouse-status" data-id="${row.locationId}" type="button">${row.activa === false ? "Activar" : "Desactivar"}</button>
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : '<p class="empty">No hay almacenes registrados.</p>';
+  byId("warehouse-list-options").innerHTML = rows.map((row) => `<option value="${escapeHtml(row.nombre)}"></option>`).join("");
+  const config = inventoryConfig();
+  if (byId("use-provisions-warehouse")) byId("use-provisions-warehouse").checked = Boolean(config.usarAlmacenProvisiones);
+}
+
+function renderSuppliers() {
+  const query = byId("supplier-search")?.value || "";
+  const rows = dbTable("suplidores").filter((row) => matches(row, query, ["nombre", "nombreCompleto", "empresa", "rnc", "telefono"]));
+  byId("supplier-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const name = row.nombre || row.nombreCompleto || row.empresa || row.suplidorNombre;
+          return `
+            <article class="list-item">
+              <div>
+                <strong>${name}</strong>
+                <span>${row.telefono || "Sin teléfono"} · Crédito ${Number(row.diasCredito) || 0} días · ${row.estado === "Inactivo" ? "Inactivo" : "Activo"}</span>
+              </div>
+              <div class="row-actions">
+                <button class="secondary-btn compact toggle-supplier-status" data-id="${row.suplidorID}" type="button">${row.estado === "Inactivo" ? "Activar" : "Desactivar"}</button>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : '<p class="empty">No hay suplidores registrados.</p>';
+}
+
+function renderPurchases() {
+  const rows = dbTable("comprasInventario").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  const target = byId("purchase-table");
+  if (!target) return;
+  if (!rows.length) return renderEmpty(target, 6, "No hay compras registradas.");
+  target.innerHTML = rows
+    .map(
+      (row) => `
+        <tr>
+          <td>${dateOnly(row.fecha) || ""}</td>
+          <td>${row.supplierNombre}</td>
+          <td>${row.itemNombre}</td>
+          <td>${row.cantidadCompra} ${row.unidadCompra || ""}</td>
+          <td class="amount">${money.format(Number(row.total) || 0)}</td>
+          <td>${row.modalidad === "credito" ? "Crédito" : "Contado"}</td>
+        </tr>
+      `,
+    )
+    .join("");
+}
+
+function renderSupplierPayables() {
+  const rows = dbTable("cuentasPagar").filter((row) => row.acreedorTipo === "Suplidor" && Number(row.balancePendiente) > 0);
+  byId("supplier-payable-list").innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `
+            <article class="list-item">
+              <div>
+                <strong>${row.acreedorNombre} · ${row.concepto}</strong>
+                <span>Pendiente ${money.format(Number(row.balancePendiente) || 0)}</span>
+              </div>
+              <button class="secondary-btn compact pay-supplier-payable" data-id="${row.cxPID}" type="button">Pagar</button>
+            </article>
+          `,
+        )
+        .join("")
+    : '<p class="empty">No hay cuentas por pagar a suplidores.</p>';
+}
+
+function renderTransfers() {
+  const rows = dbTable("transferenciasInventario").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || ""))).slice(0, 30);
+  byId("transfer-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          const from = dbTable("almacenes").find((w) => w.locationId === row.fromLocationId);
+          const to = dbTable("almacenes").find((w) => w.locationId === row.toLocationId);
+          return `<div class="list-item"><span>${item?.nombre || row.itemId} · ${dateOnly(row.fecha) || ""}</span><span>${from?.nombre || row.fromLocationId} → ${to?.nombre || row.toLocationId} · ${row.cantidadBase}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay transferencias registradas.</p>';
+}
+
+function renderStations() {
+  const rows = dbTable("mesas");
+  byId("station-list").innerHTML = rows.length
+    ? rows.map((row) => `<div class="list-item"><span>${row.nombre}</span><span>${row.colaboradoraPrincipal || "Sin asignar"} · ${row.estado || "Disponible"}</span></div>`).join("")
+    : '<p class="empty">No hay mesas registradas.</p>';
+}
+
+function renderAssetCustodies() {
+  const rows = dbTable("custodiaActivos").slice().sort((a, b) => String(b.fechaEntrega || "").localeCompare(String(a.fechaEntrega || "")));
+  byId("asset-custody-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const asset = dbTable("activosFijos").find((a) => a.activoID === row.assetId);
+          return `<div class="list-item"><span>${asset?.nombre || row.assetId} · ${row.custodianId}</span><span>${dateOnly(row.fechaEntrega) || ""} · ${row.fechaDevolucion ? `Devuelto ${dateOnly(row.fechaDevolucion)}` : "Activa"}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay custodias registradas.</p>';
+  byId("asset-list-options").innerHTML = dbTable("activosFijos").map((a) => `<option value="${escapeHtml(a.nombre)}"></option>`).join("");
+}
+
+function renderRecipes() {
+  const rows = dbTable("fichasTecnicas");
+  byId("recipe-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          return `<div class="list-item"><span>${escapeHtml(row.servicioNombre)}</span><span>${item?.nombre || row.itemId} · ${row.cantidadEstimada} ${item?.unidadBase || item?.unidad || ""} · ${row.obligatorio === false ? "Opcional" : "Obligatorio"}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay fichas técnicas registradas.</p>';
+  const config = inventoryConfig();
+  if (byId("enable-inventory-consumption")) byId("enable-inventory-consumption").checked = Boolean(config.consumirInventarioEnFacturacion);
+}
+
+// Estanteria de venta activa, o el almacen del salon como respaldo cuando
+// todavia no se configuro ninguna estanteria (nunca bloquea la venta por
+// falta de configuracion, pero nunca inventa una ubicacion nueva sin que
+// quede clara cual se uso).
+function defaultShelfWarehouse() {
+  return dbTable("almacenes").find((row) => row.tipo === "estanteria" && row.activa !== false) || defaultSalonWarehouse();
+}
+
+const INVENTORY_LOSS_TYPES = { dano: "Daño", perdida: "Pérdida", vencimiento: "Vencimiento" };
+
+function renderInventoryLosses() {
+  const rows = dbTable("inventarioMovimientos")
+    .filter((row) => ["dano", "perdida", "vencimiento"].includes(row.tipo))
+    .sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")))
+    .slice(0, 30);
+  byId("inventory-loss-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          return `<div class="list-item"><span>${item?.nombre || row.itemId} · ${INVENTORY_LOSS_TYPES[row.tipo] || row.tipo}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidadBase} · ${money.format((Number(row.cantidadBase) || 0) * (Number(row.costoUnitario) || 0))}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay pérdidas ni daños registrados.</p>';
+}
+
+function updatePhysicalCountPreview() {
+  const item = findInventoryItemByName(byId("count-item")?.value.trim() || "");
+  const location = findWarehouseByName(byId("count-location")?.value.trim() || "");
+  const systemStock = item && location ? itemStockAt(item.itemID, location.locationId) : 0;
+  byId("count-system-stock").textContent = String(systemStock);
+  const physical = Number(byId("count-physical")?.value) || 0;
+  const difference = physical - systemStock;
+  byId("count-difference-preview").textContent = `Diferencia: ${difference > 0 ? "+" : ""}${difference}`;
+}
+
+function renderPhysicalCounts() {
+  const rows = dbTable("conteosFisicos").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  byId("physical-count-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const item = dbTable("inventario").find((i) => i.itemID === row.itemId);
+          return `<div class="list-item"><span>${item?.nombre || row.itemId}</span><span>${dateOnly(row.fecha) || ""} · Sistema ${row.existenciaSistema} · Físico ${row.existenciaFisica} · Dif. ${row.diferencia > 0 ? "+" : ""}${row.diferencia}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay conteos físicos confirmados.</p>';
+}
+
+function updateRetailSaleTotalPreview() {
+  const item = findInventoryItemByName(byId("retail-sale-item")?.value.trim() || "");
+  const quantity = Number(byId("retail-sale-quantity")?.value) || 0;
+  const price = Number(byId("retail-sale-price")?.value) || 0;
+  const amount = quantity * price;
+  const split = DalfiClosingMath.splitInvoiceLineTax({
+    amount,
+    taxable: Boolean(item?.taxable),
+    taxRate: Number(item?.taxRate) || 0,
+    priceIncludesTax: Boolean(item?.priceIncludesTax),
+  });
+  byId("retail-sale-total-preview").textContent = `Total: ${money.format(split.totalAmount)}${item?.taxable ? ` (incluye impuesto ${money.format(split.taxAmount)})` : ""}`;
+}
+
+function renderRetailSales() {
+  const rows = dbTable("ventasDirectas").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  byId("retail-sale-list").innerHTML = rows.length
+    ? rows.map((row) => `<div class="list-item"><span>${row.itemNombre}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidad} · ${money.format(Number(row.total) || 0)}</span></div>`).join("")
+    : '<p class="empty">No hay ventas directas registradas.</p>';
+}
+
+function renderAssetEvents() {
+  const rows = dbTable("assetEvents").slice().sort((a, b) => String(b.fecha || "").localeCompare(String(a.fecha || "")));
+  byId("asset-event-list").innerHTML = rows.length
+    ? rows
+        .map((row) => {
+          const asset = dbTable("activosFijos").find((a) => a.activoID === row.assetId);
+          return `<div class="list-item"><span>${asset?.nombre || row.assetId} · ${row.tipo}</span><span>${dateOnly(row.fecha) || ""}${Number(row.costo) > 0 ? ` · ${money.format(Number(row.costo))}` : ""}</span></div>`;
+        })
+        .join("")
+    : '<p class="empty">No hay eventos de mantenimiento registrados.</p>';
 }
 
 function monthsBetween(startDate, endDate) {
@@ -6117,7 +6611,19 @@ function renderAll() {
   safeRender("egresos", renderExpenses);
   safeRender("cuentas balance", renderAccountsView);
   safeRender("inventario", renderInventory);
+  safeRender("almacenes", renderWarehouses);
+  safeRender("suplidores", renderSuppliers);
+  safeRender("compras de inventario", renderPurchases);
+  safeRender("cxp suplidores", renderSupplierPayables);
+  safeRender("transferencias de inventario", renderTransfers);
+  safeRender("mesas", renderStations);
+  safeRender("fichas tecnicas", renderRecipes);
+  safeRender("perdidas de inventario", renderInventoryLosses);
+  safeRender("conteos fisicos", renderPhysicalCounts);
+  safeRender("ventas directas", renderRetailSales);
   safeRender("activos fijos", renderFixedAssets);
+  safeRender("custodia de activos", renderAssetCustodies);
+  safeRender("eventos de activos", renderAssetEvents);
   safeRender("reportes", renderReports);
   safeRender("base de datos", renderSettings);
 }
@@ -8504,6 +9010,16 @@ function wireForms() {
       note: `Factura ${invoiceId} creada. Deuda anterior del cliente: ${money.format(priorDebtBeforePayment)}. Total general cobrado hoy: ${money.format(priorDebtBeforePayment + totalWithTip)}.`,
       success: true,
     });
+    // Consumo automatico de inventario por ficha tecnica: apagado por
+    // defecto (inventoryConfig().consumirInventarioEnFacturacion) para no
+    // sorprender a un salon que todavia no configuro fichas tecnicas.
+    // Envuelto en try/catch: un problema de inventario NUNCA debe impedir
+    // que la factura (ya creada arriba) se guarde correctamente.
+    try {
+      consumeInventoryForInvoice(invoiceId, detailRecords);
+    } catch (error) {
+      console.error("No se pudo aplicar el consumo de inventario de la factura.", error);
+    }
     refreshPendingClosingsForDate(invoiceDate);
     state = stateFromDatabase(database);
     activeReservationInvoiceId = "";
@@ -9155,13 +9671,37 @@ function wireForms() {
 
   byId("inventory-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede crear o editar artículos de inventario.");
+      return;
+    }
     const sku = byId("inventory-sku").value.trim();
     const name = byId("inventory-name").value.trim();
+    const messageEl = byId("inventory-form-message");
+    if (messageEl) messageEl.textContent = "";
     if (!sku || !name) return;
     const editId = byId("inventory-edit-id").value;
-    let item = dbTable("inventario").find((row) => row.itemID === editId || normalize(row.sku) === normalize(sku));
-    const previousStock = Number(item?.existencia) || 0;
-    const stock = Number(byId("inventory-stock").value) || 0;
+    const existingBySku = dbTable("inventario").find((row) => normalize(row.sku) === normalize(sku));
+    // Antes: un SKU duplicado en un registro NUEVO (editId vacio) se
+    // trataba silenciosamente como edicion del articulo existente,
+    // sobrescribiendo sus datos sin avisar. Ahora se rechaza explicitamente.
+    if (existingBySku && existingBySku.itemID !== editId) {
+      if (messageEl) messageEl.textContent = `El SKU "${sku}" ya pertenece a "${existingBySku.nombre}". Usa un SKU distinto o edita ese artículo.`;
+      else alert(`El SKU "${sku}" ya pertenece a "${existingBySku.nombre}". Usa un SKU distinto o edita ese artículo.`);
+      byId("inventory-sku").focus();
+      return;
+    }
+    const conversion = DalfiClosingMath.convertToBaseQuantity({
+      quantity: 1,
+      factor: Number(byId("inventory-conversion-factor").value) || 1,
+    });
+    if (conversion.validationErrors.length) {
+      if (messageEl) messageEl.textContent = conversion.validationErrors.join(" ");
+      byId("inventory-conversion-factor").focus();
+      return;
+    }
+    let item = dbTable("inventario").find((row) => row.itemID === editId);
+    const isNew = !item;
     const payload = {
       sku,
       nombre: name,
@@ -9169,48 +9709,72 @@ function wireForms() {
       tipo: byId("inventory-type").value,
       costo: Number(byId("inventory-cost").value) || 0,
       precioVenta: Number(byId("inventory-sale-price").value) || 0,
-      existencia: stock,
       existenciaMinima: Number(byId("inventory-min-stock").value) || 0,
-      unidad: byId("inventory-unit").value.trim(),
+      unidad: byId("inventory-unit-base").value.trim() || byId("inventory-unit").value.trim(),
+      unidadBase: byId("inventory-unit-base").value.trim(),
+      unidadCompra: byId("inventory-unit-purchase").value.trim(),
+      factorConversion: Number(byId("inventory-conversion-factor").value) || 1,
       proveedor: byId("inventory-supplier").value.trim(),
       fechaEntrada: byId("inventory-entry-date").value || today,
+      controlaExistencia: byId("inventory-controls-stock").checked,
+      controlaVencimiento: byId("inventory-controls-expiration").checked,
+      controlaLote: byId("inventory-controls-lot").checked,
+      puedeVenderse: byId("inventory-can-sell").checked,
+      puedeConsumirse: byId("inventory-can-consume").checked,
+      reutilizable: byId("inventory-reusable").checked,
+      taxCategory: byId("inventory-tax-category").value,
+      taxable: byId("inventory-tax-category").value === "Gravado" || byId("inventory-tax-category").value === "Tasa reducida",
+      taxRate: Number(byId("inventory-tax-rate").value) || 0,
+      priceIncludesTax: byId("inventory-price-includes-tax").checked,
       estado: "Activo",
       observaciones: byId("inventory-note").value.trim(),
       actualizadoEn: new Date().toISOString(),
     };
-    if (!item) {
-      item = { itemID: nextDbId("inventario", "itemID", "INV"), ...payload };
-      dbTable("inventario").push(stampRecord(item));
+    if (isNew) {
+      item = stampRecord({ itemID: nextDbId("inventario", "itemID", "INV"), costoPromedio: payload.costo, ...payload });
+      dbTable("inventario").push(item);
+      logAudit("inventory_item_created", { entity: "inventario", entityId: item.itemID, newData: { sku, nombre: name, tipo: payload.tipo }, success: true });
+      const initialStock = Number(byId("inventory-stock").value) || 0;
+      if (initialStock > 0 && payload.controlaExistencia) {
+        const warehouse = defaultSalonWarehouse();
+        createInventoryMovement({
+          itemId: item.itemID,
+          tipo: "entrada",
+          cantidadBase: initialStock,
+          costoUnitario: payload.costo,
+          locationId: warehouse.locationId,
+          origen: "Registro inicial",
+          sourceId: item.itemID,
+          sourceKey: `inicial:${item.itemID}`,
+          motivo: "Existencia inicial al crear el artículo",
+        });
+      }
     } else {
+      const oldData = { ...item };
       Object.assign(item, payload);
-    }
-    const delta = stock - previousStock;
-    if (delta !== 0) {
-      dbTable("inventarioMovimientos").push(stampRecord({
-        movimientoID: nextDbId("inventarioMovimientos", "movimientoID", "MOV"),
-        itemID: item.itemID,
-        fechaHora: new Date().toISOString(),
-        tipo: delta > 0 ? "Entrada/Ajuste" : "Salida/Ajuste",
-        cantidad: delta,
-        costoUnitario: payload.costo,
-        referencia: "Inventario",
-        motivo: editId ? "Ajuste manual" : "Registro inicial",
-        existenciaDespues: stock,
-        observaciones: payload.observaciones,
-      }));
+      stampRecord(item, "updated");
+      logAudit("inventory_item_updated", { entity: "inventario", entityId: item.itemID, oldData: { costo: oldData.costo, taxCategory: oldData.taxCategory }, newData: { costo: payload.costo, taxCategory: payload.taxCategory }, success: true });
     }
     event.target.reset();
     byId("inventory-entry-date").value = today;
+    byId("inventory-conversion-factor").value = 1;
+    byId("inventory-controls-stock").checked = true;
+    byId("inventory-can-consume").checked = true;
     saveState();
     renderAll();
   });
 
   byId("asset-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede crear o editar activos fijos.");
+      return;
+    }
     const name = byId("asset-name").value.trim();
     if (!name) return;
     const editId = byId("asset-edit-id").value;
     let asset = dbTable("activosFijos").find((row) => row.activoID === editId || normalize(row.nombre) === normalize(name));
+    const isNew = !asset;
     const payload = {
       nombre: name,
       categoria: byId("asset-category").value.trim(),
@@ -9229,11 +9793,930 @@ function wireForms() {
     const depreciation = assetDepreciation(payload);
     payload.depreciacionAcumulada = depreciation.accumulated;
     payload.valorLibros = depreciation.book;
-    if (!asset) dbTable("activosFijos").push(stampRecord({ activoID: nextDbId("activosFijos", "activoID", "ACT"), ...payload }));
-    else Object.assign(asset, payload);
+    if (isNew) {
+      asset = stampRecord({ activoID: nextDbId("activosFijos", "activoID", "ACT"), ...payload });
+      dbTable("activosFijos").push(asset);
+      logAudit("asset_created", { entity: "activosFijos", entityId: asset.activoID, newData: { nombre: name, categoria: payload.categoria, valorAdquisicion: payload.valorAdquisicion }, success: true });
+    } else {
+      Object.assign(asset, payload);
+      stampRecord(asset, "updated");
+    }
     event.target.reset();
     byId("asset-acquired-date").value = today;
     byId("asset-life").value = 60;
+    saveState();
+    renderAll();
+  });
+
+  byId("warehouse-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede crear almacenes o ubicaciones.");
+      return;
+    }
+    const name = byId("warehouse-name").value.trim();
+    if (!name) return;
+    const editId = byId("warehouse-edit-id").value;
+    let warehouse = dbTable("almacenes").find((row) => row.locationId === editId);
+    const isNew = !warehouse;
+    const payload = {
+      nombre: name,
+      tipo: byId("warehouse-type").value,
+      activa: true,
+      controlaExistencia: byId("warehouse-controls-stock").checked,
+      permiteVenta: byId("warehouse-allows-sale").checked,
+      permiteConsumo: byId("warehouse-allows-consumption").checked,
+      permiteCustodia: byId("warehouse-allows-custody").checked,
+      observaciones: byId("warehouse-note").value.trim(),
+    };
+    if (isNew) {
+      warehouse = stampRecord({ locationId: nextDbId("almacenes", "locationId", "ALM"), ...payload });
+      dbTable("almacenes").push(warehouse);
+      logAudit("warehouse_created", { entity: "almacenes", entityId: warehouse.locationId, newData: payload, success: true });
+    } else {
+      Object.assign(warehouse, payload);
+      stampRecord(warehouse, "updated");
+      logAudit("warehouse_configuration_changed", { entity: "almacenes", entityId: warehouse.locationId, newData: payload, success: true });
+    }
+    event.target.reset();
+    byId("warehouse-controls-stock").checked = true;
+    byId("warehouse-allows-consumption").checked = true;
+    saveState();
+    renderAll();
+  });
+
+  byId("warehouse-list").addEventListener("click", (event) => {
+    const button = event.target.closest(".toggle-warehouse-status");
+    if (!button) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede activar o desactivar almacenes.");
+      return;
+    }
+    const warehouse = dbTable("almacenes").find((row) => row.locationId === button.dataset.id);
+    if (!warehouse) return;
+    // Activar/desactivar NUNCA borra los movimientos historicos de ese
+    // almacen: solo cambia si sigue disponible para nuevas operaciones.
+    warehouse.activa = warehouse.activa === false;
+    stampRecord(warehouse, "updated");
+    logAudit("warehouse_configuration_changed", {
+      entity: "almacenes",
+      entityId: warehouse.locationId,
+      newData: { activa: warehouse.activa },
+      note: `Almacén ${warehouse.nombre} ${warehouse.activa ? "activado" : "desactivado"} (histórico conservado).`,
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
+  byId("use-provisions-warehouse").addEventListener("change", () => {
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede activar el Almacén de provisiones.");
+      byId("use-provisions-warehouse").checked = !byId("use-provisions-warehouse").checked;
+      return;
+    }
+    const config = inventoryConfig();
+    config.usarAlmacenProvisiones = byId("use-provisions-warehouse").checked;
+    stampRecord(config, "updated");
+    logAudit("warehouse_configuration_changed", {
+      entity: "configuracionInventario",
+      entityId: config.configId,
+      newData: { usarAlmacenProvisiones: config.usarAlmacenProvisiones },
+      note: "Cambio de configuración: no borra movimientos históricos.",
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
+  byId("supplier-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede crear o editar suplidores.");
+      return;
+    }
+    const name = byId("supplier-name").value.trim();
+    if (!name) return;
+    const editId = byId("supplier-edit-id").value;
+    let supplier = dbTable("suplidores").find((row) => row.suplidorID === editId);
+    const isNew = !supplier;
+    const payload = {
+      nombre: name,
+      rnc: byId("supplier-tax-id").value.trim(),
+      telefono: byId("supplier-phone").value.trim(),
+      correo: byId("supplier-email").value.trim(),
+      direccion: byId("supplier-address").value.trim(),
+      contacto: byId("supplier-contact").value.trim(),
+      diasCredito: Number(byId("supplier-credit-days").value) || 0,
+      plazoEntregaDias: Number(byId("supplier-lead-time").value) || 0,
+      condicionesPago: byId("supplier-payment-terms").value.trim(),
+      observaciones: byId("supplier-note").value.trim(),
+      estado: "Activo",
+    };
+    if (isNew) {
+      supplier = stampRecord({ suplidorID: nextDbId("suplidores", "suplidorID", "SUP"), ...payload });
+      dbTable("suplidores").push(supplier);
+    } else {
+      Object.assign(supplier, payload);
+      stampRecord(supplier, "updated");
+    }
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("supplier-list").addEventListener("click", (event) => {
+    const button = event.target.closest(".toggle-supplier-status");
+    if (!button) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede desactivar suplidores.");
+      return;
+    }
+    const supplier = dbTable("suplidores").find((row) => row.suplidorID === button.dataset.id);
+    if (!supplier) return;
+    // Nunca se borra un suplidor con historial: solo se desactiva.
+    supplier.estado = supplier.estado === "Inactivo" ? "Activo" : "Inactivo";
+    stampRecord(supplier, "updated");
+    saveState();
+    renderAll();
+  });
+
+  ["purchase-item", "purchase-quantity", "purchase-unit-cost", "purchase-tax", "purchase-other-costs"].forEach((id) => {
+    byId(id).addEventListener("input", updatePurchaseTotalPreview);
+  });
+
+  let purchaseSubmitInFlight = false;
+  byId("purchase-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (purchaseSubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar compras de inventario.");
+      return;
+    }
+    const supplierName = byId("purchase-supplier").value.trim();
+    const supplier = findSupplierByName(supplierName);
+    if (!supplier) {
+      alert("Selecciona un suplidor existente (registrado arriba en Suplidores).");
+      byId("purchase-supplier").focus();
+      return;
+    }
+    const data = purchasePreviewData();
+    if (!data.item) {
+      alert("Selecciona un artículo existente del inventario.");
+      byId("purchase-item").focus();
+      return;
+    }
+    if (data.conversionErrors.length) {
+      alert(data.conversionErrors.join(" "));
+      return;
+    }
+    if (!(data.quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      byId("purchase-quantity").focus();
+      return;
+    }
+    if (!(data.unitCost >= 0)) {
+      alert("Indica un costo unitario válido.");
+      byId("purchase-unit-cost").focus();
+      return;
+    }
+    const mode = byId("purchase-mode").value;
+    const purchaseDate = byId("purchase-date").value || today;
+    let account = null;
+    const accountName = byId("purchase-account").value.trim();
+    if (mode === "contado") {
+      account = findAccountByName(accountName);
+      if (!account) {
+        alert("Selecciona una cuenta válida para la compra al contado.");
+        byId("purchase-account").focus();
+        return;
+      }
+      const available = accountAvailableBalance(accountName);
+      if (data.total > available) {
+        alert(`El total supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
+        return;
+      }
+    }
+    purchaseSubmitInFlight = true;
+    byId("purchase-submit").disabled = true;
+    try {
+      const config = inventoryConfig();
+      const destinationWarehouse = config.usarAlmacenProvisiones
+        ? dbTable("almacenes").find((w) => w.tipo === "provisiones" && w.activa !== false) || defaultSalonWarehouse()
+        : defaultSalonWarehouse();
+      const purchaseId = nextDbId("comprasInventario", "purchaseId", "COMP");
+      const costPerBaseUnit = data.baseQuantity > 0 ? data.total / data.baseQuantity : 0;
+      const previousGlobalStock = itemStockAt(data.item.itemID);
+      const movementResult = createInventoryMovement({
+        itemId: data.item.itemID,
+        tipo: "compra",
+        cantidadBase: data.baseQuantity,
+        costoUnitario: costPerBaseUnit,
+        locationId: destinationWarehouse.locationId,
+        origen: "Compra",
+        sourceId: purchaseId,
+        sourceKey: `compra:${purchaseId}`,
+        motivo: `Compra a ${supplierName}`,
+      });
+      if (!movementResult.movement) {
+        alert(movementResult.result.validationErrors.join(" ") || "No se pudo registrar la entrada de inventario.");
+        return;
+      }
+      // Costo promedio ponderado: usa la existencia GLOBAL previa a esta
+      // entrada (capturada antes de crear el movimiento), nunca recalcula
+      // compras anteriores.
+      const averaged = DalfiClosingMath.calculateWeightedAverageCost({
+        previousStock: previousGlobalStock,
+        previousAverageCost: Number(data.item.costoPromedio) || Number(data.item.costo) || 0,
+        incomingQuantity: data.baseQuantity,
+        incomingCost: costPerBaseUnit,
+      });
+      data.item.costoPromedio = averaged.newAverageCost;
+      data.item.costo = averaged.newAverageCost;
+      stampRecord(data.item, "updated");
+      dbTable("comprasInventario").push(stampRecord({
+        purchaseId,
+        supplierId: supplier.suplidorID,
+        supplierNombre: supplierName,
+        itemId: data.item.itemID,
+        itemNombre: data.item.nombre,
+        numeroFactura: byId("purchase-invoice-number").value.trim(),
+        fecha: purchaseDate,
+        cantidadCompra: data.quantity,
+        unidadCompra: data.item.unidadCompra || data.item.unidad || "",
+        cantidadBase: data.baseQuantity,
+        costoUnitario: data.unitCost,
+        impuesto: data.tax,
+        otrosGastos: data.otherCosts,
+        total: data.total,
+        modalidad: mode,
+        locationId: destinationWarehouse.locationId,
+        estado: "Confirmada",
+      }));
+      logAudit("inventory_purchase_created", {
+        entity: "comprasInventario",
+        entityId: purchaseId,
+        newData: { supplierId: supplier.suplidorID, itemId: data.item.itemID, cantidadBase: data.baseQuantity, total: data.total, modalidad: mode },
+        success: true,
+      });
+      logAudit("inventory_purchase_confirmed", {
+        entity: "comprasInventario",
+        entityId: purchaseId,
+        newData: { locationId: destinationWarehouse.locationId, costoPromedioNuevo: averaged.newAverageCost },
+        note: `Compra ${purchaseId} confirmada: entrada de ${data.baseQuantity} ${data.item.unidadBase || data.item.unidad || ""} a ${destinationWarehouse.nombre}.`,
+        success: true,
+      });
+      if (mode === "contado") {
+        const expenseId = nextDbId("egresos", "egresoID", "EGR");
+        dbTable("egresos").push(stampRecord({
+          egresoID: expenseId,
+          fechaHora: `${purchaseDate}T12:00:00`,
+          tipoEgreso: "compra_inventario",
+          cuentaOrigenID: account.cuentaID || "",
+          cuentaOrigen: accountName,
+          cuentaDestinoID: "",
+          cuentaDestino: "",
+          concepto: `Compra de inventario: ${data.item.nombre} a ${supplierName}`,
+          monto: data.total,
+          estado: "Registrado",
+          observaciones: `Compra ${purchaseId}`,
+        }));
+        refreshPendingClosingsForDate(purchaseDate);
+      } else {
+        const payableId = nextDbId("cuentasPagar", "cxPID", "CXP");
+        dbTable("cuentasPagar").push(stampRecord({
+          cxPID: payableId,
+          fechaOrigen: dateTimeForOperationalDate(purchaseDate),
+          tipoCxP: "Compra de inventario",
+          acreedorTipo: "Suplidor",
+          acreedorID: supplier.suplidorID,
+          acreedorNombre: supplierName,
+          purchaseId,
+          montoOriginal: data.total,
+          montoPagado: 0,
+          balancePendiente: data.total,
+          estado: "Pendiente",
+          concepto: `Compra ${purchaseId}: ${data.item.nombre}`,
+          fechaVencimiento: DalfiClosingMath.addDaysToIsoDate(purchaseDate, Number(supplier.diasCredito) || 0),
+        }));
+        logAudit("supplier_payable_created", {
+          entity: "cuentasPagar",
+          entityId: payableId,
+          newData: { acreedorID: supplier.suplidorID, monto: data.total, purchaseId },
+          note: `CxP ${payableId} creada por la compra ${purchaseId}.`,
+          success: true,
+        });
+      }
+      event.target.reset();
+      byId("purchase-date").value = today;
+      updatePurchaseTotalPreview();
+      saveState();
+      renderAll();
+    } finally {
+      purchaseSubmitInFlight = false;
+      byId("purchase-submit").disabled = false;
+    }
+  });
+
+  byId("supplier-payable-list").addEventListener("click", (event) => {
+    const button = event.target.closest(".pay-supplier-payable");
+    if (!button) return;
+    openSupplierPayForm(button.dataset.id);
+  });
+
+  byId("cancel-supplier-pay").addEventListener("click", (event) => {
+    event.preventDefault();
+    byId("supplier-pay-form").classList.add("hidden");
+  });
+
+  let supplierPaySubmitInFlight = false;
+  byId("supplier-pay-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (supplierPaySubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede pagar a suplidores.");
+      return;
+    }
+    const payableId = byId("supplier-pay-id").value;
+    const payable = dbTable("cuentasPagar").find((row) => row.cxPID === payableId);
+    if (!payable) {
+      alert("Esta cuenta por pagar ya no existe.");
+      byId("supplier-pay-form").classList.add("hidden");
+      return;
+    }
+    const amount = Number(byId("supplier-pay-amount").value) || 0;
+    if (!(amount > 0)) {
+      alert("Indica un monto mayor que cero.");
+      return;
+    }
+    const pending = Number(payable.balancePendiente) || 0;
+    if (amount > pending + 0.01) {
+      alert(`El monto no puede superar el saldo pendiente (${money.format(pending)}).`);
+      return;
+    }
+    const accountName = byId("supplier-pay-account").value.trim();
+    const account = findAccountByName(accountName);
+    if (!account) {
+      alert("Selecciona una cuenta válida.");
+      byId("supplier-pay-account").focus();
+      return;
+    }
+    const available = accountAvailableBalance(accountName);
+    if (amount > available) {
+      alert(`El monto supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
+      return;
+    }
+    supplierPaySubmitInFlight = true;
+    try {
+      const expenseId = nextDbId("egresos", "egresoID", "EGR");
+      dbTable("egresos").push(stampRecord({
+        egresoID: expenseId,
+        fechaHora: `${today}T12:00:00`,
+        tipoEgreso: "pago_suplidor",
+        cuentaOrigenID: account.cuentaID || "",
+        cuentaOrigen: accountName,
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `Pago a suplidor: ${payable.acreedorNombre} (${payable.concepto})`,
+        monto: amount,
+        estado: "Registrado",
+        observaciones: `CxP ${payableId}`,
+      }));
+      payable.montoPagado = (Number(payable.montoPagado) || 0) + amount;
+      payable.balancePendiente = Math.max(0, pending - amount);
+      payable.estado = payable.balancePendiente <= 0 ? "Pagada" : "Parcial";
+      stampRecord(payable, "updated");
+      refreshPendingClosingsForDate(today);
+      logAudit("supplier_payment_created", {
+        entity: "cuentasPagar",
+        entityId: payableId,
+        newData: { monto: amount, cuenta: accountName, saldoRestante: payable.balancePendiente },
+        note: `Pago de ${money.format(amount)} a ${payable.acreedorNombre}.`,
+        success: true,
+      });
+      byId("supplier-pay-form").classList.add("hidden");
+      saveState();
+      renderAll();
+    } finally {
+      supplierPaySubmitInFlight = false;
+    }
+  });
+
+  byId("transfer-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede transferir inventario entre ubicaciones.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("transfer-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      byId("transfer-item").focus();
+      return;
+    }
+    const from = findWarehouseByName(byId("transfer-from").value.trim());
+    const to = findWarehouseByName(byId("transfer-to").value.trim());
+    if (!from || !to) {
+      alert("Selecciona un origen y un destino válidos (almacenes registrados arriba).");
+      return;
+    }
+    if (from.locationId === to.locationId) {
+      alert("El origen y el destino deben ser distintos.");
+      return;
+    }
+    const quantity = Number(byId("transfer-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      byId("transfer-quantity").focus();
+      return;
+    }
+    const available = itemStockAt(item.itemID, from.locationId);
+    if (quantity > available) {
+      alert(`No hay suficiente existencia en ${from.nombre}. Disponible: ${available} ${item.unidadBase || item.unidad || ""}.`);
+      return;
+    }
+    const transferResult = createInventoryTransfer({
+      itemId: item.itemID,
+      cantidadBase: quantity,
+      fromLocationId: from.locationId,
+      toLocationId: to.locationId,
+      motivo: byId("transfer-reason").value.trim(),
+    });
+    if (!transferResult.transferId) {
+      alert("No se pudo completar la transferencia.");
+      return;
+    }
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("station-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede crear mesas o estaciones.");
+      return;
+    }
+    const name = byId("station-name").value.trim();
+    if (!name) return;
+    dbTable("mesas").push(stampRecord({
+      stationId: nextDbId("mesas", "stationId", "MSA"),
+      nombre: name,
+      colaboradoraPrincipal: byId("station-staff").value.trim(),
+      estado: "Disponible",
+    }));
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("recipe-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede modificar fichas técnicas.");
+      return;
+    }
+    const serviceName = byId("recipe-service").value.trim();
+    const item = findInventoryItemByName(byId("recipe-item").value.trim());
+    if (!serviceName) {
+      alert("Indica el servicio.");
+      byId("recipe-service").focus();
+      return;
+    }
+    if (!item) {
+      alert("Selecciona un artículo existente del inventario.");
+      byId("recipe-item").focus();
+      return;
+    }
+    // Los activos fijos y los implementos reutilizables nunca son consumo
+    // de una ficha tecnica (no se "gastan" por servicio).
+    if (item.reutilizable || item.activoFijo) {
+      alert("Los implementos reutilizables y los activos fijos no se agregan a una ficha técnica (no se consumen por servicio).");
+      return;
+    }
+    const quantity = Number(byId("recipe-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad estimada mayor que cero.");
+      byId("recipe-quantity").focus();
+      return;
+    }
+    const existing = dbTable("fichasTecnicas").find(
+      (row) => normalize(row.servicioNombre) === normalize(serviceName) && row.itemId === item.itemID,
+    );
+    const payload = {
+      servicioNombre: serviceName,
+      itemId: item.itemID,
+      cantidadEstimada: quantity,
+      unidad: item.unidadBase || item.unidad || "",
+      obligatorio: byId("recipe-required").checked,
+    };
+    if (existing) {
+      Object.assign(existing, payload);
+      stampRecord(existing, "updated");
+    } else {
+      dbTable("fichasTecnicas").push(stampRecord({ recipeId: nextDbId("fichasTecnicas", "recipeId", "REC"), ...payload }));
+    }
+    logAudit("service_recipe_updated", {
+      entity: "fichasTecnicas",
+      entityId: item.itemID,
+      newData: payload,
+      note: `Ficha técnica de "${serviceName}" actualizada: ${quantity} ${payload.unidad} de ${item.nombre}.`,
+      success: true,
+    });
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("enable-inventory-consumption").addEventListener("change", () => {
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede activar el consumo automático de inventario.");
+      byId("enable-inventory-consumption").checked = !byId("enable-inventory-consumption").checked;
+      return;
+    }
+    const config = inventoryConfig();
+    config.consumirInventarioEnFacturacion = byId("enable-inventory-consumption").checked;
+    stampRecord(config, "updated");
+    logAudit("warehouse_configuration_changed", {
+      entity: "configuracionInventario",
+      entityId: config.configId,
+      newData: { consumirInventarioEnFacturacion: config.consumirInventarioEnFacturacion },
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
+  byId("inventory-loss-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar pérdidas, daños o vencimientos.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("loss-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      byId("loss-item").focus();
+      return;
+    }
+    const location = findWarehouseByName(byId("loss-location").value.trim());
+    if (!location) {
+      alert("Selecciona una ubicación válida.");
+      byId("loss-location").focus();
+      return;
+    }
+    const quantity = Number(byId("loss-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      byId("loss-quantity").focus();
+      return;
+    }
+    const reason = byId("loss-reason").value.trim();
+    if (!reason) {
+      alert("Indica el motivo.");
+      byId("loss-reason").focus();
+      return;
+    }
+    const type = byId("loss-type").value;
+    const sourceId = nextDbId("inventarioMovimientos", "movementId", "MOV");
+    const result = createInventoryMovement({
+      itemId: item.itemID,
+      tipo: type,
+      cantidadBase: quantity,
+      costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+      locationId: location.locationId,
+      origen: "Pérdida/Daño/Vencimiento",
+      sourceId,
+      sourceKey: `perdida:${sourceId}`,
+      motivo: reason,
+    });
+    if (!result.movement) {
+      alert(result.result.validationErrors.join(" ") || "No se pudo registrar la pérdida.");
+      return;
+    }
+    logAudit("inventory_loss_recorded", {
+      entity: "inventarioMovimientos",
+      entityId: result.movement.movementId,
+      newData: { itemId: item.itemID, tipo: type, cantidadBase: quantity, motivo: reason },
+      note: `${INVENTORY_LOSS_TYPES[type] || type} de ${quantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre}: ${reason}.`,
+      success: true,
+    });
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  ["count-item", "count-location", "count-physical"].forEach((id) => {
+    byId(id).addEventListener("input", updatePhysicalCountPreview);
+  });
+
+  byId("physical-count-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede confirmar conteos físicos.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("count-item").value.trim());
+    const location = findWarehouseByName(byId("count-location").value.trim());
+    if (!item || !location) {
+      alert("Selecciona un artículo y una ubicación válidos.");
+      return;
+    }
+    const systemStock = itemStockAt(item.itemID, location.locationId);
+    const physicalStock = Number(byId("count-physical").value) || 0;
+    const difference = Math.round((physicalStock - systemStock) * 10000) / 10000;
+    const note = byId("count-note").value.trim();
+    if (difference !== 0 && !note) {
+      alert("Indica una observación cuando exista diferencia entre el conteo físico y el sistema.");
+      byId("count-note").focus();
+      return;
+    }
+    const countId = nextDbId("conteosFisicos", "countId", "CNT");
+    if (difference !== 0) {
+      const result = createInventoryMovement({
+        itemId: item.itemID,
+        tipo: difference > 0 ? "ajuste_positivo" : "ajuste_negativo",
+        cantidadBase: Math.abs(difference),
+        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+        locationId: location.locationId,
+        origen: "Conteo físico",
+        sourceId: countId,
+        sourceKey: `conteo:${countId}`,
+        motivo: note || "Ajuste por conteo físico",
+      });
+      if (!result.movement) {
+        alert(result.result.validationErrors.join(" ") || "No se pudo aplicar el ajuste del conteo.");
+        return;
+      }
+    }
+    dbTable("conteosFisicos").push(stampRecord({
+      countId,
+      itemId: item.itemID,
+      locationId: location.locationId,
+      fecha: today,
+      existenciaSistema: systemStock,
+      existenciaFisica: physicalStock,
+      diferencia: difference,
+      observaciones: note,
+      estado: "Confirmado",
+      sourceKey: countId,
+    }));
+    logAudit("inventory_physical_count_confirmed", {
+      entity: "conteosFisicos",
+      entityId: countId,
+      newData: { itemId: item.itemID, locationId: location.locationId, diferencia: difference },
+      note: `Conteo físico de ${item.nombre} en ${location.nombre}: sistema ${systemStock}, físico ${physicalStock}, diferencia ${difference}.`,
+      success: true,
+    });
+    event.target.reset();
+    updatePhysicalCountPreview();
+    saveState();
+    renderAll();
+  });
+
+  ["retail-sale-item", "retail-sale-quantity", "retail-sale-price"].forEach((id) => {
+    byId(id).addEventListener("input", updateRetailSaleTotalPreview);
+  });
+
+  let retailSaleSubmitInFlight = false;
+  byId("retail-sale-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (retailSaleSubmitInFlight) return;
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar ventas directas de productos.");
+      return;
+    }
+    const item = findInventoryItemByName(byId("retail-sale-item").value.trim());
+    if (!item) {
+      alert("Selecciona un artículo existente.");
+      byId("retail-sale-item").focus();
+      return;
+    }
+    if (item.puedeVenderse === false) {
+      alert("Este artículo no está marcado como disponible para venta.");
+      return;
+    }
+    const quantity = Number(byId("retail-sale-quantity").value) || 0;
+    if (!(quantity > 0)) {
+      alert("Indica una cantidad mayor que cero.");
+      byId("retail-sale-quantity").focus();
+      return;
+    }
+    const price = Number(byId("retail-sale-price").value) || 0;
+    if (!(price >= 0)) {
+      alert("Indica un precio unitario válido.");
+      return;
+    }
+    const accountName = byId("retail-sale-account").value.trim();
+    const account = findAccountByName(accountName);
+    if (!account) {
+      alert("Selecciona una cuenta válida para recibir el pago.");
+      byId("retail-sale-account").focus();
+      return;
+    }
+    const shelf = defaultShelfWarehouse();
+    const available = itemStockAt(item.itemID, shelf.locationId);
+    if (quantity > available) {
+      alert(`No hay suficiente existencia en ${shelf.nombre}. Disponible: ${available} ${item.unidadBase || item.unidad || ""}.`);
+      return;
+    }
+    const split = DalfiClosingMath.splitInvoiceLineTax({
+      amount: quantity * price,
+      taxable: Boolean(item.taxable),
+      taxRate: Number(item.taxRate) || 0,
+      priceIncludesTax: Boolean(item.priceIncludesTax),
+    });
+    retailSaleSubmitInFlight = true;
+    byId("retail-sale-submit").disabled = true;
+    try {
+      const saleId = nextDbId("ventasDirectas", "saleId", "VTA");
+      const movementResult = createInventoryMovement({
+        itemId: item.itemID,
+        tipo: "venta",
+        cantidadBase: quantity,
+        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+        locationId: shelf.locationId,
+        origen: "Venta directa",
+        sourceId: saleId,
+        sourceKey: `venta:${saleId}`,
+        motivo: "Venta directa de producto",
+      });
+      if (!movementResult.movement) {
+        alert(movementResult.result.validationErrors.join(" ") || "No se pudo descontar la existencia de estantería.");
+        return;
+      }
+      dbTable("ventasDirectas").push(stampRecord({
+        saleId,
+        itemId: item.itemID,
+        itemNombre: item.nombre,
+        cantidad: quantity,
+        precioUnitario: price,
+        baseAmount: split.baseAmount,
+        taxAmount: split.taxAmount,
+        total: split.totalAmount,
+        costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
+        locationId: shelf.locationId,
+        fecha: today,
+      }));
+      const incomeId = nextDbId("ingresos", "ingresoID", "ING");
+      dbTable("ingresos").push(stampRecord({
+        ingresoID: incomeId,
+        fechaHora: dateTimeForOperationalDate(today),
+        fechaEntradaCaja: today,
+        tipoIngreso: "Venta de producto",
+        facturaID: "",
+        clienteID: "",
+        clienteNombre: "",
+        metodoPago: "efectivo",
+        cuentaDestinoID: account.cuentaID || "",
+        cuentaDestino: accountName,
+        montoBruto: split.totalAmount,
+        retencion: 0,
+        montoNeto: split.totalAmount,
+        estado: "Confirmado",
+        observaciones: `Venta directa ${saleId}: ${item.nombre}`,
+      }));
+      refreshPendingClosingsForDate(today);
+      logAudit("retail_product_sold", {
+        entity: "ventasDirectas",
+        entityId: saleId,
+        newData: { itemId: item.itemID, cantidad: quantity, total: split.totalAmount, taxAmount: split.taxAmount },
+        note: `Venta directa de ${quantity} ${item.nombre} por ${money.format(split.totalAmount)}.`,
+        success: true,
+      });
+      event.target.reset();
+      updateRetailSaleTotalPreview();
+      saveState();
+      renderAll();
+    } finally {
+      retailSaleSubmitInFlight = false;
+      byId("retail-sale-submit").disabled = false;
+    }
+  });
+
+  byId("asset-custody-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede asignar custodia de activos.");
+      return;
+    }
+    const asset = dbTable("activosFijos").find((row) => normalize(row.nombre) === normalize(byId("asset-custody-asset").value.trim()));
+    if (!asset) {
+      alert("Selecciona un activo existente.");
+      byId("asset-custody-asset").focus();
+      return;
+    }
+    const holder = byId("asset-custody-holder").value.trim();
+    if (!holder) return;
+    // Cerrar cualquier custodia activa anterior de este activo (nunca se
+    // sobrescribe: queda en el historial con su propia fecha de devolucion).
+    const activePrevious = dbTable("custodiaActivos").find((row) => row.assetId === asset.activoID && !row.fechaDevolucion);
+    if (activePrevious) {
+      activePrevious.fechaDevolucion = today;
+      activePrevious.condicionDevolucion = "Reasignado a nuevo custodio";
+      stampRecord(activePrevious, "updated");
+    }
+    const custodyId = nextDbId("custodiaActivos", "custodyId", "CUS");
+    dbTable("custodiaActivos").push(stampRecord({
+      custodyId,
+      assetId: asset.activoID,
+      custodianId: holder,
+      fechaEntrega: today,
+      condicionEntrega: byId("asset-custody-condition").value.trim(),
+      fechaDevolucion: "",
+      condicionDevolucion: "",
+      sourceKey: custodyId,
+    }));
+    asset.responsable = holder;
+    stampRecord(asset, "updated");
+    logAudit("asset_custody_assigned", {
+      entity: "custodiaActivos",
+      entityId: custodyId,
+      newData: { assetId: asset.activoID, custodianId: holder },
+      note: `Activo ${asset.nombre} asignado en custodia a ${holder}.`,
+      success: true,
+    });
+    event.target.reset();
+    saveState();
+    renderAll();
+  });
+
+  byId("asset-event-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageInvoices()) {
+      alert("Solo administración o propietario puede registrar mantenimiento, daño o pérdida de activos.");
+      return;
+    }
+    const asset = dbTable("activosFijos").find((row) => normalize(row.nombre) === normalize(byId("asset-event-asset").value.trim()));
+    if (!asset) {
+      alert("Selecciona un activo existente.");
+      byId("asset-event-asset").focus();
+      return;
+    }
+    const type = byId("asset-event-type").value;
+    const cost = Number(byId("asset-event-cost").value) || 0;
+    const accountName = byId("asset-event-account").value.trim();
+    let expenseId = "";
+    if (cost > 0) {
+      const account = findAccountByName(accountName);
+      if (!account) {
+        alert("Indica una cuenta válida para el costo real de este evento.");
+        byId("asset-event-account").focus();
+        return;
+      }
+      const available = accountAvailableBalance(accountName);
+      if (cost > available) {
+        alert(`El costo supera el disponible en ${accountName}. Disponible: ${money.format(available)}.`);
+        return;
+      }
+      expenseId = nextDbId("egresos", "egresoID", "EGR");
+      dbTable("egresos").push(stampRecord({
+        egresoID: expenseId,
+        fechaHora: `${today}T12:00:00`,
+        tipoEgreso: "mantenimiento_activo",
+        cuentaOrigenID: account.cuentaID || "",
+        cuentaOrigen: accountName,
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `${type}: ${asset.nombre}`,
+        monto: cost,
+        estado: "Registrado",
+        observaciones: byId("asset-event-note").value.trim(),
+      }));
+      refreshPendingClosingsForDate(today);
+    }
+    const eventId = nextDbId("assetEvents", "assetEventId", "AEV");
+    dbTable("assetEvents").push(stampRecord({
+      assetEventId: eventId,
+      assetId: asset.activoID,
+      tipo: type,
+      fecha: today,
+      costo: cost,
+      egresoID: expenseId,
+      motivo: byId("asset-event-note").value.trim(),
+      sourceKey: eventId,
+    }));
+    const isMaintenance = type === "Mantenimiento preventivo" || type === "Reparación";
+    if (!isMaintenance) {
+      asset.estado = type === "Retiro" ? "Retirado" : "En reparación";
+      stampRecord(asset, "updated");
+      logAudit("asset_condition_changed", {
+        entity: "assetEvents",
+        entityId: eventId,
+        newData: { assetId: asset.activoID, tipo: type, costo: cost },
+        note: `${type} registrado para ${asset.nombre}.`,
+        success: true,
+      });
+    } else {
+      logAudit("asset_maintenance_recorded", {
+        entity: "assetEvents",
+        entityId: eventId,
+        newData: { assetId: asset.activoID, tipo: type, costo: cost, egresoID: expenseId },
+        note: `${type} registrado para ${asset.nombre}${cost > 0 ? ` (egreso ${expenseId})` : " (sin costo real)"}.`,
+        success: true,
+      });
+    }
+    event.target.reset();
     saveState();
     renderAll();
   });

@@ -947,6 +947,186 @@
     };
   }
 
+  // ===========================================================================
+  // Inventario: articulos, almacenes/ubicaciones, movimientos, costo
+  // promedio, lotes/FEFO e impuestos por linea (julio 2026). Funciones
+  // puras: no leen el DOM, no persisten, no crean auditoria. app.js las usa
+  // para calcular/validar antes de escribir; la escritura real
+  // (dbTable/stampRecord) siempre ocurre en app.js, nunca aqui.
+  // ===========================================================================
+
+  // Conversion segura unidad de compra -> unidad base. Nunca acepta un
+  // factor <= 0 (dividir/multiplicar por eso rompe la existencia).
+  function convertToBaseQuantity({ quantity = 0, factor = 1 } = {}) {
+    const rawQuantity = Number(quantity);
+    const rawFactor = Number(factor);
+    const errors = [];
+    if (!Number.isFinite(rawQuantity)) errors.push("La cantidad debe ser un numero finito.");
+    if (!Number.isFinite(rawFactor) || rawFactor <= 0) errors.push("El factor de conversion debe ser un numero finito mayor que cero.");
+    if (errors.length) return { baseQuantity: 0, validationErrors: errors };
+    return { baseQuantity: roundMoney(rawQuantity * rawFactor), validationErrors: [] };
+  }
+
+  // Existencia de un articulo (global, por ubicacion, y/o por lote) a partir
+  // de la lista de movimientos: NUNCA de un campo "stock" editable a mano.
+  // Una transferencia se modela como DOS movimientos vinculados por
+  // transferId (uno "out" en el origen, uno "in" en el destino), asi que
+  // sumar TODAS las ubicaciones de un articulo siempre da su existencia
+  // global real, sin necesitar logica especial para transferencias.
+  function calculateInventoryByLocation({ movements = [], itemId = "", locationId = "", lotId = "" } = {}) {
+    const filtered = (Array.isArray(movements) ? movements : []).filter((movement) => {
+      if (!movement) return false;
+      if (itemId && movement.itemId !== itemId) return false;
+      if (locationId && movement.locationId !== locationId) return false;
+      if (lotId && movement.lotId !== lotId) return false;
+      if (String(movement.estado || "Confirmado").toLowerCase() === "revertido") return false;
+      return true;
+    });
+    const quantity = filtered.reduce((sum, movement) => {
+      const qty = Math.abs(sanitizeAmount(movement.cantidadBase ?? movement.quantity));
+      return sum + (movement.direction === "out" ? -qty : qty);
+    }, 0);
+    return { itemId, locationId, lotId, quantity: roundMoney(quantity), movementCount: filtered.length };
+  }
+
+  const INVENTORY_OUTBOUND_TYPES = new Set([
+    "salida",
+    "consumo_servicio",
+    "venta",
+    "perdida",
+    "dano",
+    "vencimiento",
+    "ajuste_negativo",
+    "transferencia_salida",
+    "entrega_mesa",
+    "entrega_custodia",
+    "devolucion_suplidor",
+  ]);
+  const INVENTORY_INBOUND_TYPES = new Set([
+    "entrada",
+    "compra",
+    "ajuste_positivo",
+    "transferencia_entrada",
+    "devolucion_cliente",
+    "devolucion_mesa",
+    "retorno_custodia",
+    "reversion",
+  ]);
+
+  // Valida y calcula el efecto de UN movimiento de inventario, sin aplicarlo
+  // (app.js decide si persistirlo). Nunca permite existencia negativa salvo
+  // allowNegativeStock explicito; nunca aplica un sourceKey ya usado.
+  function applyInventoryMovement({
+    currentStock = 0,
+    movementType = "",
+    quantity = 0,
+    allowNegativeStock = false,
+    existingSourceKeys = [],
+    sourceKey = "",
+  } = {}) {
+    const errors = [];
+    const stockBefore = sanitizeAmount(currentStock);
+    const rawQuantity = Number(quantity);
+    if (!Number.isFinite(rawQuantity)) errors.push("La cantidad debe ser un numero finito.");
+    else if (rawQuantity === 0) errors.push("La cantidad debe ser distinta de cero.");
+    const normalizedQuantity = Number.isFinite(rawQuantity) ? Math.abs(sanitizeAmount(rawQuantity)) : 0;
+    const direction = INVENTORY_OUTBOUND_TYPES.has(movementType) ? "out" : INVENTORY_INBOUND_TYPES.has(movementType) ? "in" : null;
+    if (!direction) errors.push(`Tipo de movimiento desconocido: ${movementType || "(vacio)"}.`);
+    const duplicate = Boolean(sourceKey) && (Array.isArray(existingSourceKeys) ? existingSourceKeys : []).includes(sourceKey);
+    if (duplicate) errors.push("Este movimiento ya fue aplicado antes (sourceKey duplicado).");
+    let stockAfter = stockBefore;
+    let movementAllowed = errors.length === 0;
+    if (movementAllowed) {
+      stockAfter = direction === "out" ? stockBefore - normalizedQuantity : stockBefore + normalizedQuantity;
+      if (stockAfter < 0 && !allowNegativeStock) {
+        errors.push("La salida dejaria existencia negativa y no esta autorizada para este articulo/ubicacion.");
+        movementAllowed = false;
+        stockAfter = stockBefore;
+      }
+    }
+    return {
+      normalizedQuantity,
+      stockBefore: roundMoney(stockBefore),
+      stockAfter: roundMoney(stockAfter),
+      direction: direction || "unknown",
+      validationErrors: errors,
+      duplicate,
+      movementAllowed,
+    };
+  }
+
+  // Costo promedio ponderado: nunca cambia movimientos anteriores, solo
+  // calcula el nuevo promedio para la PROXIMA entrada. Existencia <= 0
+  // reinicia el promedio al costo de la entrada actual (nunca divide por
+  // cero).
+  function calculateWeightedAverageCost({ previousStock = 0, previousAverageCost = 0, incomingQuantity = 0, incomingCost = 0 } = {}) {
+    const stock = Math.max(0, sanitizeAmount(previousStock));
+    const avgCost = Math.max(0, sanitizeAmount(previousAverageCost));
+    const qty = Math.max(0, sanitizeAmount(incomingQuantity));
+    const cost = Math.max(0, sanitizeAmount(incomingCost));
+    const newStock = roundMoney(stock + qty);
+    if (newStock <= 0) return { newAverageCost: 0, newStock: 0 };
+    const newAverageCost = (stock * avgCost + qty * cost) / newStock;
+    return { newAverageCost: roundMoney(newAverageCost), newStock };
+  }
+
+  // FEFO ("first expired, first out"): lotes sin fecha de vencimiento van al
+  // final (nunca se priorizan sobre un lote con fecha real). Desempate por
+  // fecha de entrada y luego por lotId estable.
+  function compareLotsFEFO(a, b) {
+    const expA = a?.fechaVencimiento || "9999-12-31";
+    const expB = b?.fechaVencimiento || "9999-12-31";
+    const expCompare = String(expA).localeCompare(String(expB));
+    if (expCompare !== 0) return expCompare;
+    const entryCompare = String(a?.fechaEntrada || "").localeCompare(String(b?.fechaEntrada || ""));
+    if (entryCompare !== 0) return entryCompare;
+    return String(a?.lotId || "").localeCompare(String(b?.lotId || ""));
+  }
+
+  // Reparte una cantidad necesaria entre lotes disponibles en orden FEFO,
+  // EXCLUYENDO lotes ya vencidos a la fecha de referencia (nunca mezcla
+  // vencidos con disponibles). No muta la lista recibida.
+  function allocateFEFO({ lots = [], quantityNeeded = 0, referenceDate = "" } = {}) {
+    const needed = Math.max(0, sanitizeAmount(quantityNeeded));
+    const available = (Array.isArray(lots) ? lots : [])
+      .map((lot) => ({
+        lotId: lot?.lotId || "",
+        quantity: Math.max(0, sanitizeAmount(lot?.quantity)),
+        fechaVencimiento: lot?.fechaVencimiento || "",
+        fechaEntrada: lot?.fechaEntrada || "",
+      }))
+      .filter((lot) => lot.quantity > 0)
+      .filter((lot) => !referenceDate || !lot.fechaVencimiento || lot.fechaVencimiento >= referenceDate)
+      .sort(compareLotsFEFO);
+    let remaining = needed;
+    const allocations = [];
+    available.forEach((lot) => {
+      if (remaining <= 0) return;
+      const take = Math.min(remaining, lot.quantity);
+      if (take <= 0) return;
+      allocations.push({ lotId: lot.lotId, quantityTaken: roundMoney(take) });
+      remaining = Math.max(0, remaining - take);
+    });
+    return { allocations, totalAllocated: roundMoney(needed - remaining), unallocated: roundMoney(remaining) };
+  }
+
+  // Divide un monto en base + impuesto para UNA linea (servicio o
+  // articulo). Nunca hardcodea una tasa: siempre recibe taxRate desde la
+  // configuracion vigente del articulo/servicio. No exenta ni grava nada
+  // por si misma.
+  function splitInvoiceLineTax({ amount = 0, taxable = false, taxRate = 0, priceIncludesTax = false } = {}) {
+    const total = Math.max(0, sanitizeAmount(amount));
+    const rate = Math.max(0, sanitizeAmount(taxRate));
+    if (!taxable || rate <= 0) return { baseAmount: roundMoney(total), taxAmount: 0, totalAmount: roundMoney(total) };
+    if (priceIncludesTax) {
+      const baseAmount = total / (1 + rate / 100);
+      const taxAmount = total - baseAmount;
+      return { baseAmount: roundMoney(baseAmount), taxAmount: roundMoney(taxAmount), totalAmount: roundMoney(total) };
+    }
+    const taxAmount = total * (rate / 100);
+    return { baseAmount: roundMoney(total), taxAmount: roundMoney(taxAmount), totalAmount: roundMoney(total + taxAmount) };
+  }
+
   return {
     localDateStringInZone,
     nowPartsInZone,
@@ -992,5 +1172,12 @@
     compareCollaboratorReceivablesFIFO,
     applyCollaboratorReceivablesFIFO,
     calculatePayrollSettlement,
+    convertToBaseQuantity,
+    calculateInventoryByLocation,
+    applyInventoryMovement,
+    calculateWeightedAverageCost,
+    compareLotsFEFO,
+    allocateFEFO,
+    splitInvoiceLineTax,
   };
 });

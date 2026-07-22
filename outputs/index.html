@@ -693,7 +693,7 @@
               </div>
               <div class="form-row">
                 <label>
-                  Existencia actual
+                  Existencia inicial (solo al crear)
                   <input id="inventory-stock" type="number" min="0" step="0.01" value="0" />
                 </label>
                 <label>
@@ -701,9 +701,10 @@
                   <input id="inventory-min-stock" type="number" min="0" step="0.01" value="0" />
                 </label>
               </div>
+              <p class="panel-note">La existencia actual NUNCA se edita aquí directamente: se calcula sumando los movimientos (entradas, salidas, transferencias, ajustes) del artículo. La existencia inicial solo aplica al crear un artículo nuevo.</p>
               <div class="form-row">
                 <label>
-                  Proveedor
+                  Proveedor principal
                   <input id="inventory-supplier" list="advance-people-list" />
                 </label>
                 <label>
@@ -711,11 +712,54 @@
                   <input id="inventory-entry-date" type="date" />
                 </label>
               </div>
+              <div class="form-row">
+                <label>
+                  Unidad base
+                  <input id="inventory-unit-base" placeholder="ml, g, unidad..." />
+                </label>
+                <label>
+                  Unidad de compra
+                  <input id="inventory-unit-purchase" placeholder="caja, frasco, litro..." />
+                </label>
+              </div>
+              <label>
+                Factor de conversión (1 unidad de compra = ? unidad base)
+                <input id="inventory-conversion-factor" type="number" min="0.0001" step="0.0001" value="1" />
+              </label>
+              <div class="form-row">
+                <label><input id="inventory-controls-stock" type="checkbox" checked /> Controla existencia</label>
+                <label><input id="inventory-controls-expiration" type="checkbox" /> Controla vencimiento</label>
+              </div>
+              <div class="form-row">
+                <label><input id="inventory-controls-lot" type="checkbox" /> Controla lote</label>
+                <label><input id="inventory-can-sell" type="checkbox" /> Puede venderse</label>
+              </div>
+              <div class="form-row">
+                <label><input id="inventory-can-consume" type="checkbox" checked /> Puede consumirse en servicios</label>
+                <label><input id="inventory-reusable" type="checkbox" /> Reutilizable (implemento)</label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Categoría fiscal
+                  <select id="inventory-tax-category">
+                    <option value="Exento">Exento</option>
+                    <option value="Gravado">Gravado</option>
+                    <option value="Tasa reducida">Tasa reducida</option>
+                    <option value="Otro">Otro tratamiento autorizado</option>
+                  </select>
+                </label>
+                <label>
+                  Tasa aplicable %
+                  <input id="inventory-tax-rate" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <label><input id="inventory-price-includes-tax" type="checkbox" /> El precio de venta ya incluye el impuesto</label>
               <label>
                 Observaciones
                 <textarea id="inventory-note" rows="3"></textarea>
               </label>
-              <button class="primary-btn" type="submit">Guardar inventario</button>
+              <button class="primary-btn" id="inventory-submit" type="submit">Guardar inventario</button>
+              <p class="form-message" id="inventory-form-message"></p>
             </form>
             <section class="panel">
               <div class="panel-head">
@@ -738,6 +782,423 @@
                   <tbody id="inventory-table"></tbody>
                 </table>
               </div>
+            </section>
+
+            <form class="panel form-panel" id="warehouse-form">
+              <div class="panel-head">
+                <h3>Almacenes y ubicaciones</h3>
+              </div>
+              <input id="warehouse-edit-id" type="hidden" />
+              <label>
+                Nombre
+                <input id="warehouse-name" required />
+              </label>
+              <label>
+                Tipo
+                <select id="warehouse-type">
+                  <option value="almacen_salon">Almacén de insumos del salón</option>
+                  <option value="provisiones">Almacén de provisiones</option>
+                  <option value="estanteria">Estantería de venta</option>
+                  <option value="mesa">Mesa o estación</option>
+                  <option value="custodia">Custodia directa de colaboradora</option>
+                  <option value="uso_general">Área de uso general</option>
+                  <option value="esterilizacion">Esterilización</option>
+                  <option value="mantenimiento">Taller o mantenimiento</option>
+                  <option value="danados">Artículos dañados</option>
+                  <option value="cuarentena">Cuarentena</option>
+                  <option value="sucursal_futura">Ubicación futura de otra sucursal</option>
+                </select>
+              </label>
+              <div class="form-row">
+                <label><input id="warehouse-controls-stock" type="checkbox" checked /> Controla existencia</label>
+                <label><input id="warehouse-allows-sale" type="checkbox" /> Permite venta</label>
+              </div>
+              <div class="form-row">
+                <label><input id="warehouse-allows-consumption" type="checkbox" checked /> Permite consumo</label>
+                <label><input id="warehouse-allows-custody" type="checkbox" /> Permite custodia</label>
+              </div>
+              <label>
+                Observación
+                <input id="warehouse-note" />
+              </label>
+              <button class="primary-btn" type="submit">Guardar almacén/ubicación</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Almacenes registrados</h3>
+              </div>
+              <div class="simple-list" id="warehouse-list"></div>
+              <label class="panel-note">
+                <input id="use-provisions-warehouse" type="checkbox" /> Usar Almacén de provisiones como paso intermedio de las compras (Compra → Provisiones → Almacén del salón). Desactivar no borra movimientos históricos.
+              </label>
+            </section>
+
+            <form class="panel form-panel" id="supplier-form">
+              <div class="panel-head">
+                <h3>Suplidores</h3>
+              </div>
+              <input id="supplier-edit-id" type="hidden" />
+              <label>
+                Nombre o razón social
+                <input id="supplier-name" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  RNC / identificación
+                  <input id="supplier-tax-id" />
+                </label>
+                <label>
+                  Teléfono
+                  <input id="supplier-phone" />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Correo
+                  <input id="supplier-email" type="email" />
+                </label>
+                <label>
+                  Contacto
+                  <input id="supplier-contact" />
+                </label>
+              </div>
+              <label>
+                Dirección
+                <input id="supplier-address" />
+              </label>
+              <div class="form-row">
+                <label>
+                  Días de crédito
+                  <input id="supplier-credit-days" type="number" min="0" step="1" value="0" />
+                </label>
+                <label>
+                  Plazo de entrega (días)
+                  <input id="supplier-lead-time" type="number" min="0" step="1" value="0" />
+                </label>
+              </div>
+              <label>
+                Condiciones de pago
+                <input id="supplier-payment-terms" />
+              </label>
+              <label>
+                Observación
+                <textarea id="supplier-note" rows="2"></textarea>
+              </label>
+              <button class="primary-btn" type="submit">Guardar suplidor</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Suplidores registrados</h3>
+                <input class="inline-search" id="supplier-search" placeholder="Buscar suplidor" />
+              </div>
+              <div class="simple-list" id="supplier-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="purchase-form">
+              <div class="panel-head">
+                <h3>Compra de inventario</h3>
+              </div>
+              <label>
+                Suplidor
+                <input id="purchase-supplier" list="advance-people-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Número de factura
+                  <input id="purchase-invoice-number" />
+                </label>
+                <label>
+                  Fecha
+                  <input id="purchase-date" type="date" required />
+                </label>
+              </div>
+              <label>
+                Artículo
+                <input id="purchase-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Cantidad (unidad de compra)
+                  <input id="purchase-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+                <label>
+                  Costo unitario antes de impuesto
+                  <input id="purchase-unit-cost" type="number" min="0" step="0.01" required />
+                </label>
+              </div>
+              <div class="form-row">
+                <label>
+                  Impuesto facturado
+                  <input id="purchase-tax" type="number" min="0" step="0.01" value="0" />
+                </label>
+                <label>
+                  Otros gastos (transporte, etc.)
+                  <input id="purchase-other-costs" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <output id="purchase-total-preview">Total: RD$0.00</output>
+              <div class="form-row">
+                <label>
+                  Modalidad
+                  <select id="purchase-mode">
+                    <option value="contado">Contado</option>
+                    <option value="credito">Crédito</option>
+                  </select>
+                </label>
+                <label>
+                  Cuenta (solo contado)
+                  <input id="purchase-account" list="accounts-list" />
+                </label>
+              </div>
+              <button class="primary-btn" id="purchase-submit" type="submit">Confirmar compra</button>
+              <p class="panel-note">El destino de la compra depende de la configuración de Almacén de provisiones (arriba). Crea la entrada de inventario una sola vez y actualiza el costo promedio.</p>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Compras registradas</h3>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Fecha</th>
+                      <th>Suplidor</th>
+                      <th>Artículo</th>
+                      <th>Cantidad</th>
+                      <th>Total</th>
+                      <th>Modalidad</th>
+                    </tr>
+                  </thead>
+                  <tbody id="purchase-table"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Cuentas por pagar a suplidores</h3>
+              </div>
+              <div class="simple-list" id="supplier-payable-list"></div>
+            </section>
+
+            <form class="panel form-panel hidden" id="supplier-pay-form">
+              <div class="panel-head">
+                <h3>Pagar a suplidor</h3>
+              </div>
+              <input id="supplier-pay-id" type="hidden" />
+              <p class="panel-note" id="supplier-pay-summary"></p>
+              <label>
+                Monto a pagar
+                <input id="supplier-pay-amount" type="number" min="0" step="0.01" required />
+              </label>
+              <label>
+                Cuenta que paga
+                <input id="supplier-pay-account" list="accounts-list" required />
+              </label>
+              <div class="row-actions">
+                <button class="primary-btn" type="submit">Confirmar pago</button>
+                <button class="secondary-btn" id="cancel-supplier-pay" type="button">Cancelar</button>
+              </div>
+            </form>
+
+            <form class="panel form-panel" id="transfer-form">
+              <div class="panel-head">
+                <h3>Transferir inventario entre ubicaciones</h3>
+              </div>
+              <label>
+                Artículo
+                <input id="transfer-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Origen
+                  <input id="transfer-from" list="warehouse-list-options" required />
+                </label>
+                <label>
+                  Destino
+                  <input id="transfer-to" list="warehouse-list-options" required />
+                </label>
+              </div>
+              <label>
+                Cantidad (unidad base)
+                <input id="transfer-quantity" type="number" min="0.0001" step="0.0001" required />
+              </label>
+              <label>
+                Motivo
+                <input id="transfer-reason" />
+              </label>
+              <button class="primary-btn" type="submit">Transferir</button>
+              <datalist id="warehouse-list-options"></datalist>
+              <datalist id="inventory-item-list"></datalist>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Transferencias recientes</h3>
+              </div>
+              <div class="simple-list" id="transfer-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="station-form">
+              <div class="panel-head">
+                <h3>Mesas y estaciones</h3>
+              </div>
+              <label>
+                Nombre o número
+                <input id="station-name" required />
+              </label>
+              <label>
+                Colaboradora principal (opcional)
+                <input id="station-staff" list="staff-list" />
+              </label>
+              <button class="primary-btn" type="submit">Guardar mesa</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Mesas registradas</h3>
+              </div>
+              <div class="simple-list" id="station-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="recipe-form">
+              <div class="panel-head">
+                <h3>Ficha técnica de servicios</h3>
+                <p class="panel-note">Cuánto material consume normalmente un servicio. El consumo automático en Facturación está desactivado hasta que se active abajo.</p>
+              </div>
+              <label>
+                Servicio
+                <input id="recipe-service" list="services-list" required />
+              </label>
+              <label>
+                Artículo consumible
+                <input id="recipe-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Cantidad estimada (unidad base del artículo)
+                  <input id="recipe-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+                <label><input id="recipe-required" type="checkbox" checked /> Obligatorio</label>
+              </div>
+              <button class="primary-btn" type="submit">Agregar a la ficha técnica</button>
+              <label class="panel-note">
+                <input id="enable-inventory-consumption" type="checkbox" /> Activar consumo automático de inventario al facturar (usa las fichas técnicas de arriba)
+              </label>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Fichas técnicas registradas</h3>
+              </div>
+              <div class="simple-list" id="recipe-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="inventory-loss-form">
+              <div class="panel-head">
+                <h3>Pérdida, daño o vencimiento</h3>
+              </div>
+              <label>
+                Artículo
+                <input id="loss-item" list="inventory-item-list" required />
+              </label>
+              <label>
+                Ubicación
+                <input id="loss-location" list="warehouse-list-options" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Tipo
+                  <select id="loss-type">
+                    <option value="dano">Daño</option>
+                    <option value="perdida">Pérdida</option>
+                    <option value="vencimiento">Vencimiento</option>
+                  </select>
+                </label>
+                <label>
+                  Cantidad
+                  <input id="loss-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+              </div>
+              <label>
+                Motivo
+                <input id="loss-reason" required />
+              </label>
+              <button class="primary-btn" type="submit">Registrar</button>
+              <p class="panel-note">Reduce la existencia y conserva el costo para reportes. No crea ningún egreso nuevo.</p>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Pérdidas y daños registrados</h3>
+              </div>
+              <div class="simple-list" id="inventory-loss-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="physical-count-form">
+              <div class="panel-head">
+                <h3>Conteo físico</h3>
+              </div>
+              <label>
+                Artículo
+                <input id="count-item" list="inventory-item-list" required />
+              </label>
+              <label>
+                Ubicación
+                <input id="count-location" list="warehouse-list-options" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Existencia del sistema
+                  <output id="count-system-stock">0</output>
+                </label>
+                <label>
+                  Conteo físico
+                  <input id="count-physical" type="number" min="0" step="0.0001" required />
+                </label>
+              </div>
+              <output id="count-difference-preview">Diferencia: 0</output>
+              <label>
+                Observación
+                <input id="count-note" />
+              </label>
+              <button class="primary-btn" type="submit">Confirmar conteo</button>
+              <p class="panel-note">Crea un solo ajuste (positivo o negativo) por la diferencia. Requiere motivo cuando hay diferencia.</p>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Conteos físicos confirmados</h3>
+              </div>
+              <div class="simple-list" id="physical-count-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="retail-sale-form">
+              <div class="panel-head">
+                <h3>Venta directa de producto (estantería)</h3>
+              </div>
+              <label>
+                Artículo
+                <input id="retail-sale-item" list="inventory-item-list" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Cantidad
+                  <input id="retail-sale-quantity" type="number" min="0.0001" step="0.0001" required />
+                </label>
+                <label>
+                  Precio unitario
+                  <input id="retail-sale-price" type="number" min="0" step="0.01" required />
+                </label>
+              </div>
+              <output id="retail-sale-total-preview">Total: RD$0.00</output>
+              <label>
+                Cuenta que recibe el pago
+                <input id="retail-sale-account" list="accounts-list" required />
+              </label>
+              <button class="primary-btn" id="retail-sale-submit" type="submit">Confirmar venta</button>
+              <p class="panel-note">Descuenta de Estantería de venta (o del almacén del salón si no hay estantería configurada). Crea un solo ingreso; el impuesto se calcula según la configuración fiscal del artículo.</p>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Ventas directas</h3>
+              </div>
+              <div class="simple-list" id="retail-sale-list"></div>
             </section>
           </div>
         </section>
@@ -827,6 +1288,74 @@
                   <tbody id="asset-table"></tbody>
                 </table>
               </div>
+            </section>
+
+            <form class="panel form-panel" id="asset-custody-form">
+              <div class="panel-head">
+                <h3>Custodia de activos</h3>
+              </div>
+              <label>
+                Activo
+                <input id="asset-custody-asset" list="asset-list-options" required />
+                <datalist id="asset-list-options"></datalist>
+              </label>
+              <label>
+                Custodio (colaboradora, mesa o área)
+                <input id="asset-custody-holder" list="staff-list" required />
+              </label>
+              <label>
+                Condición de entrega
+                <input id="asset-custody-condition" placeholder="Buen estado, con accesorios..." />
+              </label>
+              <button class="primary-btn" type="submit">Asignar custodia</button>
+              <p class="panel-note">Una custodia activa se cierra automáticamente al asignar una nueva para el mismo activo (no se sobrescribe el custodio anterior, queda en el historial).</p>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Custodias</h3>
+              </div>
+              <div class="simple-list" id="asset-custody-list"></div>
+            </section>
+
+            <form class="panel form-panel" id="asset-event-form">
+              <div class="panel-head">
+                <h3>Mantenimiento, daño o pérdida de activo</h3>
+              </div>
+              <label>
+                Activo
+                <input id="asset-event-asset" list="asset-list-options" required />
+              </label>
+              <div class="form-row">
+                <label>
+                  Tipo
+                  <select id="asset-event-type">
+                    <option value="Mantenimiento preventivo">Mantenimiento preventivo</option>
+                    <option value="Reparación">Reparación</option>
+                    <option value="Daño">Daño</option>
+                    <option value="Pérdida">Pérdida</option>
+                    <option value="Retiro">Retiro</option>
+                  </select>
+                </label>
+                <label>
+                  Costo (opcional, si hubo pago real)
+                  <input id="asset-event-cost" type="number" min="0" step="0.01" value="0" />
+                </label>
+              </div>
+              <label>
+                Cuenta que paga (solo si hubo costo real)
+                <input id="asset-event-account" list="accounts-list" />
+              </label>
+              <label>
+                Motivo / nota
+                <input id="asset-event-note" />
+              </label>
+              <button class="primary-btn" type="submit">Registrar evento</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Historial de mantenimiento/daño/pérdida</h3>
+              </div>
+              <div class="simple-list" id="asset-event-list"></div>
             </section>
           </div>
         </section>
@@ -2181,7 +2710,7 @@
 
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="lib/closing-math.js?v=20260721-nomina-quincenal"></script>
-    <script src="app.js?v=20260721-auditoria-integrada"></script>
+    <script src="lib/closing-math.js?v=20260722-inventario-almacenes"></script>
+    <script src="app.js?v=20260722-inventario-almacenes"></script>
   </body>
 </html>
