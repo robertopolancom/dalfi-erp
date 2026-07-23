@@ -185,10 +185,13 @@ test("la idempotencia de 'cierre existente no se recrea' / 'cierre confirmado no
 
 // --- 20: configuracion cron centralizada ---
 
-test("la expresion cron propuesta vive UNICAMENTE en workers/closing-cron/wrangler.toml (comentada, no activada), no hardcodeada en worker.js", () => {
+test("la expresion cron activa vive UNICAMENTE en workers/closing-cron/wrangler.toml, no hardcodeada en worker.js", () => {
   assert.ok(!/\d+ \d+ \* \* \*/.test(workerSource), "worker.js no debe contener una expresion cron: la programacion es responsabilidad de wrangler.toml");
-  assert.match(wranglerToml, /# crons = \["59 3 \* \* \*"\]/, "la propuesta debe estar presente pero comentada (no activada)");
-  assert.ok(!/^\s*crons\s*=/m.test(wranglerToml), "crons no debe estar activo (sin comentar) en este cambio");
+  assert.match(wranglerToml, /^\[triggers\]\s*\ncrons = \["59 3 \* \* \*"\]/m, "el Cron Trigger debe estar activo (sin comentar) con exactamente 59 3 * * * (23:59 hora de Santo Domingo, UTC-4 estable, sin horario de verano)");
+});
+
+test("APP_BASE_URL en wrangler.toml apunta al dominio productivo real de Cloudflare Pages, no a un placeholder", () => {
+  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/dalfi-erp\.pages\.dev"/);
 });
 
 // --- 25: README sin secretos ---
