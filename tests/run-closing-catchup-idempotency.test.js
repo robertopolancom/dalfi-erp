@@ -62,19 +62,23 @@ function baseData() {
 // y responde a las mismas rutas que loadDocument()/saveDocument()/
 // insertAuditLog() usan de verdad, para poder invocar onRequestPost() dos
 // veces seguidas y que la segunda vea lo que la primera "persistio".
-function makeFakeSupabase(initialData) {
-  const state = { document: { data: initialData } };
+function makeFakeSupabase(initialData, { conflictOnSave = false } = {}) {
+  const state = { document: { data: initialData }, updatedAt: "2026-07-24T12:00:00.000Z" };
   const requests = [];
   const fetchMock = async (url, init) => {
     const urlStr = String(url);
     requests.push({ url: urlStr, method: init?.method || "GET" });
     if (urlStr.includes("/rest/v1/erp_records") && (!init || init.method === undefined || init.method === "GET")) {
-      return new Response(JSON.stringify([{ data: state.document }]), { status: 200 });
+      return new Response(JSON.stringify([{ data: state.document, updated_at: state.updatedAt }]), { status: 200 });
     }
-    if (urlStr.includes("/rest/v1/erp_records") && init?.method === "POST") {
+    if (urlStr.includes("/rest/v1/rpc/save_erp_record_if_current") && init?.method === "POST") {
       const body = JSON.parse(init.body);
-      state.document = body.data;
-      return new Response(null, { status: 201 });
+      if (conflictOnSave || body.p_expected_updated_at !== state.updatedAt) {
+        return new Response(JSON.stringify([{ saved: false, conflict: true, new_updated_at: "2026-07-24T12:00:01.000Z" }]), { status: 200 });
+      }
+      state.document = body.p_data;
+      state.updatedAt = "2026-07-24T12:00:01.000Z";
+      return new Response(JSON.stringify([{ saved: true, conflict: false, new_updated_at: state.updatedAt }]), { status: 200 });
     }
     if (urlStr.includes("/rest/v1/erp_audit_log")) {
       return new Response(null, { status: 201 });
@@ -194,9 +198,27 @@ test("run-closing-catchup: ejecutar dos veces seguidas NUNCA duplica cierres (id
     assert.equal(body2.normalized, 0, "segunda ejecucion: nada legado que normalizar de nuevo");
     assert.equal(state.document.data.cierres.length, cierresAfterRun1, "el numero total de cierres no cambio entre la 1ra y la 2da ejecucion");
 
-    const wroteToErpRecords = requests.some((r) => r.url.includes("/rest/v1/erp_records") && r.method === "POST");
+    const wroteToErpRecords = requests.some((r) => r.url.includes("/rest/v1/rpc/save_erp_record_if_current") && r.method === "POST");
     assert.equal(wroteToErpRecords, false, "si no hay nada que crear/normalizar, la 2da ejecucion NUNCA debe hacer POST a erp_records (evita el riesgo de pisar cambios concurrentes de un usuario real sin necesidad)");
   });
+});
+
+test("run-closing-catchup: si otra sesion guardo primero devuelve 409 y NUNCA sobrescribe el documento remoto", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  const today = rdToday();
+  const day1 = addDaysStr(today, -1);
+  const data = baseData();
+  data.ingresos.push({ fechaHora: `${day1}T10:00:00`, estado: "Confirmado", cuentaDestinoID: "CTA-1", montoNeto: 200, metodoPago: "efectivo" });
+  const { fetchMock, state } = makeFakeSupabase(data, { conflictOnSave: true });
+
+  await withFakeFetch(fetchMock, async () => {
+    const response = await onRequestPost({ request: postRequest(FAKE_SECRET), env: BASE_ENV });
+    const body = await response.json();
+    assert.equal(response.status, 409);
+    assert.match(body.error, /Conflicto de concurrencia/);
+  });
+
+  assert.equal(state.document.data.cierres.length, 0, "el documento remoto queda intacto cuando updated_at ya cambio");
 });
 
 test("run-closing-catchup: un cierre ya existente para esa fecha (creado por un usuario real) NUNCA se recrea", async () => {

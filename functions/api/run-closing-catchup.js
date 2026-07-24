@@ -319,31 +319,42 @@ function stamp(record) {
 }
 
 async function loadDocument(supabaseUrl, serviceRoleKey) {
-  const response = await fetch(`${supabaseUrl}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data`, {
+  const response = await fetch(`${supabaseUrl}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data,updated_at`, {
     headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
   });
   if (!response.ok) throw new Error(`No se pudo leer erp_records (HTTP ${response.status}).`);
   const rows = await response.json().catch(() => []);
   const document = rows?.[0]?.data;
   if (!document?.data) throw new Error("erp_records no tiene un documento 'app/database' valido.");
-  return document;
+  return { document, updatedAt: rows?.[0]?.updated_at || null };
 }
 
-async function saveDocument(supabaseUrl, serviceRoleKey, document) {
-  const response = await fetch(`${supabaseUrl}/rest/v1/erp_records?on_conflict=table_name,record_key`, {
+async function saveDocument(supabaseUrl, serviceRoleKey, document, expectedUpdatedAt) {
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/save_erp_record_if_current`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: serviceRoleKey,
       Authorization: `Bearer ${serviceRoleKey}`,
-      Prefer: "resolution=merge-duplicates,return=minimal",
     },
-    body: JSON.stringify({ table_name: "app", record_key: "database", data: document }),
+    body: JSON.stringify({
+      p_table_name: "app",
+      p_record_key: "database",
+      p_data: document,
+      p_expected_updated_at: expectedUpdatedAt,
+    }),
   });
   if (!response.ok) {
     const body = await response.text().catch(() => "");
     throw new Error(`No se pudo guardar erp_records (HTTP ${response.status}): ${body}`);
   }
+  const result = (await response.json().catch(() => []))?.[0];
+  if (!result?.saved) {
+    const error = new Error("Conflicto de concurrencia: otra sesion actualizo erp_records antes que el Cron. No se sobrescribio ningun dato.");
+    error.status = 409;
+    throw error;
+  }
+  return result.new_updated_at || null;
 }
 
 export async function onRequestPost({ request, env }) {
@@ -357,8 +368,11 @@ export async function onRequestPost({ request, env }) {
   if (!supabaseUrl || !serviceRoleKey) return json({ error: "Faltan variables privadas de Supabase en Cloudflare Pages." }, 500);
 
   let document;
+  let documentUpdatedAt;
   try {
-    document = await loadDocument(supabaseUrl, serviceRoleKey);
+    const loaded = await loadDocument(supabaseUrl, serviceRoleKey);
+    document = loaded.document;
+    documentUpdatedAt = loaded.updatedAt;
   } catch (error) {
     return json({ error: error.message }, 500);
   }
@@ -460,9 +474,9 @@ export async function onRequestPost({ request, env }) {
 
   if (created > 0 || normalized > 0) {
     try {
-      await saveDocument(supabaseUrl, serviceRoleKey, document);
+      await saveDocument(supabaseUrl, serviceRoleKey, document, documentUpdatedAt);
     } catch (error) {
-      return json({ error: error.message }, 500);
+      return json({ error: error.message }, error.status || 500);
     }
   }
 

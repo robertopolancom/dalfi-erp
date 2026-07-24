@@ -143,6 +143,7 @@ let remoteSaveTimer = null;
 let remoteSaveInFlight = false;
 let remoteRefreshTimer = null;
 let isLoadingRemote = false;
+let remoteConflictDetected = false;
 // Ultimo updated_at conocido de erp_records: permite que el poll periodico
 // pregunte solo por esta columna (unos bytes) antes de traer el documento
 // jsonb completo, en vez de descargarlo entero cada 30s aunque nadie haya
@@ -300,11 +301,13 @@ async function loadRemoteDatabase() {
   try {
     const { data, error } = await supabaseClient
       .from("erp_records")
-      .select("data")
+      .select("data, updated_at")
       .eq("table_name", remoteTableName)
       .eq("record_key", remoteRecordKey)
       .maybeSingle();
     if (error) throw error;
+    lastKnownRemoteUpdatedAt = data?.updated_at || null;
+    remoteConflictDetected = false;
     return data?.data || null;
   } finally {
     isLoadingRemote = false;
@@ -349,6 +352,7 @@ async function refreshRemoteDatabase({ force = false } = {}) {
     if (!row?.data) return false;
     database = row.data;
     lastKnownRemoteUpdatedAt = row.updated_at || lastKnownRemoteUpdatedAt;
+    remoteConflictDetected = false;
     ensureDatabaseShape();
     state = stateFromDatabase(database);
     localStorage.setItem(dbStorageKey, JSON.stringify(database));
@@ -392,7 +396,7 @@ function stopRemoteRefreshLoop() {
 }
 
 function scheduleRemoteSave() {
-  if (!isSupabaseReady() || isLoadingRemote || !database) return;
+  if (!isSupabaseReady() || isLoadingRemote || !database || remoteConflictDetected) return;
   window.clearTimeout(remoteSaveTimer);
   remoteSaveTimer = window.setTimeout(saveRemoteDatabase, 700);
 }
@@ -402,25 +406,33 @@ async function saveRemoteDatabase() {
   remoteSaveInFlight = true;
   updateSyncStatus("Guardando en Supabase...", "online");
   try {
-    const payload = {
-      table_name: remoteTableName,
-      record_key: remoteRecordKey,
-      data: database,
-    };
-    const { data: row, error } = await supabaseClient
-      .from("erp_records")
-      .upsert(payload, { onConflict: "table_name,record_key" })
-      .select("updated_at")
-      .maybeSingle();
+    const { data: rows, error } = await supabaseClient.rpc("save_erp_record_if_current", {
+      p_table_name: remoteTableName,
+      p_record_key: remoteRecordKey,
+      p_data: database,
+      p_expected_updated_at: lastKnownRemoteUpdatedAt,
+    });
     if (error) throw error;
+    const result = Array.isArray(rows) ? rows[0] : rows;
+    if (!result?.saved) {
+      remoteConflictDetected = true;
+      updateSyncStatus("Conflicto de sincronización: otra sesión guardó primero. Recarga para proteger los datos.", "error");
+      if (typeof window.alert === "function") {
+        window.alert("Otra sesión modificó la información antes de este guardado. No se sobrescribió ningún dato remoto. Recarga la aplicación para revisar la versión más reciente.");
+      }
+      return false;
+    }
     // Guarda el updated_at que acaba de fijar nuestro propio guardado para
     // que el proximo poll de 30s no se confunda y vuelva a traer el
     // documento completo solo porque nosotros mismos lo cambiamos.
-    if (row?.updated_at) lastKnownRemoteUpdatedAt = row.updated_at;
+    if (result.new_updated_at) lastKnownRemoteUpdatedAt = result.new_updated_at;
+    remoteConflictDetected = false;
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
+    return true;
   } catch (error) {
     console.error("No se pudo guardar en Supabase.", error);
     updateSyncStatus("Error guardando Supabase", "error");
+    return false;
   } finally {
     remoteSaveInFlight = false;
   }
