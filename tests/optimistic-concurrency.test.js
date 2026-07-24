@@ -24,11 +24,13 @@ test("la función de guardado usa SECURITY INVOKER y permisos mínimos", () => {
   assert.match(migration, /grant execute on function public\.save_erp_record_if_current[\s\S]*to service_role/);
 });
 
-test("la SPA carga updated_at y guarda exclusivamente mediante el RPC condicional", () => {
-  assert.match(appJs, /\.select\("data, updated_at"\)/);
-  assert.match(appJs, /\.rpc\("save_erp_record_if_current"/);
-  assert.match(appJs, /p_expected_updated_at: lastKnownRemoteUpdatedAt/);
-  assert.doesNotMatch(appJs, /\.upsert\(payload, \{ onConflict: "table_name,record_key" \}\)/);
+test("la SPA carga y guarda exclusivamente mediante /api/database con la version esperada", () => {
+  assert.match(appJs, /fetch\("\/api\/database"/);
+  assert.match(appJs, /fetch\("\/api\/database\?metadata=1"/);
+  assert.match(appJs, /expectedUpdatedAt:\s*lastKnownRemoteUpdatedAt/);
+  assert.match(appJs, /Authorization:\s*`Bearer \$\{supabaseSession\.access_token\}`/);
+  assert.doesNotMatch(appJs, /\.from\("erp_records"\)/);
+  assert.doesNotMatch(appJs, /\.rpc\("save_erp_record_if_current"/);
 });
 
 test("un conflicto detiene nuevos autosaves y avisa sin sobrescribir", () => {

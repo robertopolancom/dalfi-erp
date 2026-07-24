@@ -61,8 +61,6 @@ const legacyStorageKey = "nailunit-erp-state";
 const supabaseConfig = window.DALFI_SUPABASE_CONFIG || {};
 const supabaseUrl = supabaseConfig.url || "";
 const supabasePublishableKey = supabaseConfig.publishableKey || "";
-const remoteTableName = "app";
-const remoteRecordKey = "database";
 
 const fallbackSeed = {
   clients: [
@@ -299,16 +297,14 @@ async function loadRemoteDatabase() {
   if (!isSupabaseReady()) return null;
   isLoadingRemote = true;
   try {
-    const { data, error } = await supabaseClient
-      .from("erp_records")
-      .select("data, updated_at")
-      .eq("table_name", remoteTableName)
-      .eq("record_key", remoteRecordKey)
-      .maybeSingle();
-    if (error) throw error;
-    lastKnownRemoteUpdatedAt = data?.updated_at || null;
+    const response = await fetch("/api/database", {
+      headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    lastKnownRemoteUpdatedAt = payload?.updatedAt || null;
     remoteConflictDetected = false;
-    return data?.data || null;
+    return payload?.data || null;
   } finally {
     isLoadingRemote = false;
   }
@@ -318,14 +314,12 @@ async function loadRemoteDatabase() {
 // que el poll periodico pueda detectar "nadie cambio nada" sin pagar el
 // costo de descargar el documento entero cada vez.
 async function fetchRemoteUpdatedAt() {
-  const { data, error } = await supabaseClient
-    .from("erp_records")
-    .select("updated_at")
-    .eq("table_name", remoteTableName)
-    .eq("record_key", remoteRecordKey)
-    .maybeSingle();
-  if (error) throw error;
-  return data?.updated_at || null;
+  const response = await fetch("/api/database?metadata=1", {
+    headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const payload = await response.json();
+  return payload?.updatedAt || null;
 }
 
 function isUserEditingForm() {
@@ -342,16 +336,14 @@ async function refreshRemoteDatabase({ force = false } = {}) {
       if (remoteUpdatedAt && remoteUpdatedAt === lastKnownRemoteUpdatedAt) return false;
     }
     isLoadingRemote = true;
-    const { data: row, error } = await supabaseClient
-      .from("erp_records")
-      .select("data, updated_at")
-      .eq("table_name", remoteTableName)
-      .eq("record_key", remoteRecordKey)
-      .maybeSingle();
-    if (error) throw error;
-    if (!row?.data) return false;
-    database = row.data;
-    lastKnownRemoteUpdatedAt = row.updated_at || lastKnownRemoteUpdatedAt;
+    const response = await fetch("/api/database", {
+      headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (!payload?.data) return false;
+    database = payload.data;
+    lastKnownRemoteUpdatedAt = payload.updatedAt || lastKnownRemoteUpdatedAt;
     remoteConflictDetected = false;
     ensureDatabaseShape();
     state = stateFromDatabase(database);
@@ -406,15 +398,19 @@ async function saveRemoteDatabase() {
   remoteSaveInFlight = true;
   updateSyncStatus("Guardando en Supabase...", "online");
   try {
-    const { data: rows, error } = await supabaseClient.rpc("save_erp_record_if_current", {
-      p_table_name: remoteTableName,
-      p_record_key: remoteRecordKey,
-      p_data: database,
-      p_expected_updated_at: lastKnownRemoteUpdatedAt,
+    const response = await fetch("/api/database", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${supabaseSession.access_token}`,
+      },
+      body: JSON.stringify({
+        data: database,
+        expectedUpdatedAt: lastKnownRemoteUpdatedAt,
+      }),
     });
-    if (error) throw error;
-    const result = Array.isArray(rows) ? rows[0] : rows;
-    if (!result?.saved) {
+    const result = await response.json().catch(() => ({}));
+    if (response.status === 409 || result?.conflict) {
       remoteConflictDetected = true;
       updateSyncStatus("Conflicto de sincronización: otra sesión guardó primero. Recarga para proteger los datos.", "error");
       if (typeof window.alert === "function") {
@@ -422,10 +418,11 @@ async function saveRemoteDatabase() {
       }
       return false;
     }
+    if (!response.ok || !result?.saved) throw new Error(result?.error || `HTTP ${response.status}`);
     // Guarda el updated_at que acaba de fijar nuestro propio guardado para
     // que el proximo poll de 30s no se confunda y vuelva a traer el
     // documento completo solo porque nosotros mismos lo cambiamos.
-    if (result.new_updated_at) lastKnownRemoteUpdatedAt = result.new_updated_at;
+    if (result.updatedAt) lastKnownRemoteUpdatedAt = result.updatedAt;
     remoteConflictDetected = false;
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
     return true;
