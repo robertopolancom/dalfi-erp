@@ -11,3 +11,5 @@ __pycache__/
 .wrangler/
 .dev.vars
 .dev.vars.*
+
+.claude/
