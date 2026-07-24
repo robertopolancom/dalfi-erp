@@ -2715,6 +2715,7 @@ function renderInvoices() {
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice" type="button">Ver</button>
+              <button class="secondary-btn compact export-invoice" type="button">Exportar</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice" type="button">Editar</button>' : ""}
             </div>
           </td>
@@ -2754,6 +2755,7 @@ function renderInvoiceAdmin() {
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice-admin" type="button">Ver</button>
+              <button class="secondary-btn compact export-invoice-admin" type="button">Exportar</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice-admin" type="button">Editar factura</button>' : ""}
             </div>
           </td>
@@ -2768,7 +2770,42 @@ function invoiceReportData(invoiceId) {
   const dbInvoice = dbTable("facturas").find((item) => item.facturaID === invoiceId);
   const details = dbTable("facturaDetalle").filter((item) => item.facturaID === invoiceId);
   const payments = dbTable("ingresos").filter((item) => item.facturaID === invoiceId);
-  return { invoice, dbInvoice, details, payments };
+  const invoicePayments = dbTable("pagosFactura").filter((item) => item.facturaID === invoiceId && normalize(item.estadoPago || "Confirmado") === "confirmado");
+  const receivables = dbTable("cuentasCobrar").filter((item) => item.facturaID === invoiceId && item.deudorTipo === "Cliente");
+  return { invoice, dbInvoice, details, payments, invoicePayments, receivables };
+}
+
+function invoicePaymentDisplayRows(invoiceId) {
+  const { invoice, payments, invoicePayments, receivables } = invoiceReportData(invoiceId);
+  const confirmedSource = invoicePayments.length ? invoicePayments : payments;
+  const confirmed = confirmedSource.map((payment) => ({
+    method: normalizePayment(payment.metodoPago),
+    label: payment.metodoPago || "Pago confirmado",
+    amount: Number(payment.montoBruto) || Number(payment.montoNetoConfirmado) || Number(payment.montoNeto) || 0,
+    account: payment.cuentaDestino || "",
+    status: "Confirmado",
+    pendingTransfer: false,
+    credit: false,
+  }));
+  const pending = receivables
+    .filter((cxc) => Number(cxc.balancePendiente) > 0)
+    .filter((cxc) => !cxc.esPropinaPendiente)
+    .map((cxc) => {
+      const pendingTransfer = normalize(`${cxc.tipoCxC || ""} ${cxc.concepto || ""}`).includes("transferencia pendiente");
+      return {
+        method: pendingTransfer ? "transferencia_pendiente" : "credito",
+        label: pendingTransfer ? "Transferencia pendiente por confirmar" : cxc.concepto || cxc.tipoCxC || "Crédito",
+        amount: Number(cxc.balancePendiente) || Number(cxc.montoOriginal) || 0,
+        account: cxc.cuentaDestino || "",
+        status: pendingTransfer ? "Pendiente de confirmación" : "Crédito pendiente",
+        pendingTransfer,
+        credit: !pendingTransfer,
+      };
+    });
+  if (confirmed.length || pending.length) return [...confirmed, ...pending];
+  return invoice?.payment
+    ? [{ method: normalizePayment(invoice.payment), label: invoice.payment, amount: 0, account: "", status: "Registrado", pendingTransfer: false, credit: false }]
+    : [];
 }
 
 // Reconstruye el desglose claro de una factura YA GUARDADA (nueva o vieja) a
@@ -2818,6 +2855,7 @@ function invoiceReportHtml(invoiceId) {
   const { invoice, dbInvoice } = invoiceReportData(invoiceId);
   if (!invoice && !dbInvoice) return "<p>Factura no encontrada.</p>";
   const { details, tips, payments, breakdown, lineExtras, generalExtra, lineDiscounts, generalDiscount } = invoiceBreakdownForStoredInvoice(invoiceId);
+  const paymentRows = invoicePaymentDisplayRows(invoiceId);
   const client = invoice?.client || dbInvoice?.clienteNombre || "";
   const date = invoice?.date || dateOnly(dbInvoice?.fechaHora);
   const note = invoice?.note || dbInvoice?.observaciones || "";
@@ -2858,11 +2896,20 @@ function invoiceReportHtml(invoiceId) {
       : []),
   ];
   const estaPagada = breakdown.estaPagada;
-  const paymentMethodLabel = { efectivo: "Efectivo", tarjeta: "Tarjeta", transferencia: "Transferencia", transferencia_confirmada: "Transferencia", balance: "Balance a favor", sobrante: "Sobrante" };
+  const paymentMethodLabel = {
+    efectivo: "Efectivo",
+    tarjeta: "Tarjeta",
+    transferencia: "Transferencia confirmada",
+    transferencia_confirmada: "Transferencia confirmada",
+    transferencia_pendiente: "Transferencia pendiente por confirmar",
+    credito: "Crédito",
+    balance: "Balance a favor",
+    sobrante: "Sobrante",
+  };
   return `
     <section class="invoice-report">
-      <h1>Dalfi Studio Nails</h1>
-      <p>SeBen ERP</p>
+      <h1>Dalfi Studio</h1>
+      <p>Powered By Seben ERP</p>
       <hr />
       <h2>Factura ${escapeHtml(invoiceId)}</h2>
       <p><strong>Fecha:</strong> ${escapeHtml(date || "")}</p>
@@ -2936,11 +2983,27 @@ function invoiceReportHtml(invoiceId) {
         ${!estaPagada ? `<p><strong>11. Pendiente:</strong> ${money.format(breakdown.montoPendiente)}</p>` : ""}
         ${breakdown.sobrepago > 0 ? `<p><strong>Sobrepago:</strong> ${money.format(breakdown.sobrepago)}</p>` : ""}
       </div>
+      <h3>12. Detalle de formas de pago</h3>
       ${
-        payments.length
-          ? `<h3>12. Desglose por método de pago</h3><ul>${payments
-              .map((payment) => `<li>${escapeHtml(paymentMethodLabel[payment.metodoPago] || payment.metodoPago || "")}: ${money.format(Number(payment.montoNeto) || Number(payment.montoBruto) || 0)}</li>`)
-              .join("")}</ul>`
+        paymentRows.length
+          ? `<table class="payment-detail">
+              <thead><tr><th>Forma</th><th>Estado</th><th>Monto</th></tr></thead>
+              <tbody>${paymentRows
+                .map(
+                  (payment) =>
+                    `<tr>
+                      <td>${escapeHtml(paymentMethodLabel[payment.method] || payment.label || "-")}${payment.account ? `<br><small>${escapeHtml(payment.account)}</small>` : ""}</td>
+                      <td>${escapeHtml(payment.status)}</td>
+                      <td>${payment.amount > 0 ? money.format(payment.amount) : "-"}</td>
+                    </tr>`,
+                )
+                .join("")}</tbody>
+            </table>`
+          : "<p>Sin formas de pago registradas.</p>"
+      }
+      ${
+        paymentRows.some((payment) => payment.pendingTransfer)
+          ? `<aside class="payment-warning"><strong>IMPORTANTE — TRANSFERENCIA PENDIENTE:</strong> este monto está sujeto a la confirmación de que la transferencia fue recibida. Si la transacción no se confirma, el saldo pasa a crédito del cliente y permanece pendiente de pago.</aside>`
           : ""
       }
       ${note ? `<p><strong>Nota:</strong> ${escapeHtml(note)}</p>` : ""}
@@ -2958,7 +3021,7 @@ function openInvoiceReport(invoiceId) {
         <meta charset="utf-8" />
         <title>Factura ${escapeHtml(invoiceId)}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 32px; color: #202225; }
+          body { font-family: Arial, sans-serif; margin: 24px; color: #202225; }
           h1, h2, h3, p { margin: 0 0 10px; }
           table { width: 100%; border-collapse: collapse; margin: 18px 0; }
           th, td { border-bottom: 1px solid #ddd; padding: 10px; text-align: left; }
@@ -2966,8 +3029,23 @@ function openInvoiceReport(invoiceId) {
           .invoice-report { max-width: 760px; margin: 0 auto; }
           .invoice-totals { margin-left: auto; max-width: 280px; }
           .report-actions { display: flex; gap: 10px; margin: 0 auto 18px; max-width: 760px; }
+          .payment-warning { border: 2px solid #202225; padding: 10px; margin: 14px 0; font-size: 13px; line-height: 1.35; }
           button { border: 1px solid #d8d3c8; background: #fff; border-radius: 8px; padding: 10px 14px; font-weight: 700; cursor: pointer; }
-          @media print { .report-actions { display: none; } body { margin: 18px; } }
+          @media print {
+            @page { size: 80mm auto; margin: 3mm; }
+            html, body { width: 74mm; margin: 0; padding: 0; }
+            body { font-size: 10px; line-height: 1.25; color: #000; }
+            .report-actions { display: none; }
+            .invoice-report { width: 74mm; max-width: none; margin: 0; }
+            h1 { font-size: 16px; text-align: center; }
+            h2 { font-size: 14px; }
+            h3 { font-size: 11px; margin-top: 8px; }
+            h1, h2, h3, p { margin-bottom: 4px; }
+            table { margin: 6px 0; table-layout: fixed; }
+            th, td { padding: 3px 2px; overflow-wrap: anywhere; vertical-align: top; }
+            .invoice-totals { max-width: none; margin: 5px 0; }
+            .payment-warning { border-width: 1px; padding: 5px; margin: 7px 0; font-size: 9px; }
+          }
         </style>
       </head>
       <body>
@@ -3160,9 +3238,9 @@ function downloadInvoiceImage(invoiceId) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#202225";
   ctx.font = "bold 34px Arial";
-  ctx.fillText("Dalfi Studio Nails", 40, 55);
+  ctx.fillText("Dalfi Studio", 40, 55);
   ctx.font = "18px Arial";
-  ctx.fillText("SeBen ERP", 40, 84);
+  ctx.fillText("Powered By Seben ERP", 40, 84);
   ctx.font = "bold 26px Arial";
   ctx.fillText(`Factura ${invoiceId}`, 40, 130);
   ctx.font = "18px Arial";
@@ -11818,6 +11896,7 @@ function wireForms() {
     if (!row) return;
     const invoiceId = row.dataset.invoiceId;
     if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
+    if (event.target.closest(".export-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
   });
   byId("open-client-receipt")?.addEventListener("click", openClientReceiptFromBilling);
@@ -11827,6 +11906,7 @@ function wireForms() {
     if (!row) return;
     const invoiceId = row.dataset.invoiceId;
     if (event.target.closest(".view-invoice-admin")) openInvoiceReport(invoiceId);
+    if (event.target.closest(".export-invoice-admin")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice-admin")) openAdminInvoiceEditor(invoiceId);
   });
   byId("admin-new-invoice").addEventListener("click", () => openAdminInvoiceEditor());
