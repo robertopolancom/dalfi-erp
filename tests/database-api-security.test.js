@@ -31,6 +31,7 @@ function profile(overrides = {}) {
     can_manage_billing: false,
     can_manage_inventory: false,
     can_manage_payroll: false,
+    can_manage_accounts: false,
     can_manage_reservations: true,
     can_reopen_closings: false,
     ...overrides,
@@ -221,6 +222,43 @@ test("nómina exige canManagePayroll y el permiso funciona sin canManageInvoices
     assert.ok(allowedFake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
   } finally {
     allowedFake.restore();
+  }
+});
+
+test("revisar cuentas no permite escribir; canManageAccounts sí autoriza sin canManageInvoices", async () => {
+  const { onRequestPut } = await import(apiUrl);
+  const current = baseDocument();
+  const proposed = structuredClone(current);
+  proposed.data.cuentas.push({ cuentaID: "CTA-1", nombreCuenta: "Caja operativa" });
+
+  let fake = fakeSupabase({
+    document: current,
+    profileRow: profile({ can_review_accounts: true, can_manage_accounts: false }),
+  });
+  try {
+    const denied = await onRequestPut({
+      request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
+      env: ENV,
+    });
+    assert.strictEqual(denied.status, 403);
+    assert.ok(!fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
+  } finally {
+    fake.restore();
+  }
+
+  fake = fakeSupabase({
+    document: current,
+    profileRow: profile({ can_review_accounts: false, can_manage_invoices: false, can_manage_accounts: true }),
+  });
+  try {
+    const allowed = await onRequestPut({
+      request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
+      env: ENV,
+    });
+    assert.strictEqual(allowed.status, 200);
+    assert.ok(fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
+  } finally {
+    fake.restore();
   }
 });
 

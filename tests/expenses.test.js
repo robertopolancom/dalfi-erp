@@ -140,6 +140,7 @@ function buildExpenseFormSandbox({ existingExpenses = [] } = {}) {
     money: new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP" }),
     DalfiClosingMath,
     supabaseSession: null,
+    canManageAccounts: () => true,
     byId: (id) => elements.get(id),
     alert: (message) => calls.alerts.push(message),
     console,

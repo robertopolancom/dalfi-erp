@@ -189,9 +189,9 @@ test("returnToClosingAfterExpense(): recalcula Monto inicial y regenera el cuadr
 
 // --- 22-24: permisos y bloqueo en cierre confirmado ---
 
-test("updateAddExpenseButtonState(): reutiliza canManageInvoices() (el permiso operativo mas cercano ya existente), no inventa uno nuevo", () => {
+test("updateAddExpenseButtonState(): exige el permiso específico canManageAccounts()", () => {
   const fnSource = extractFunctionSource("updateAddExpenseButtonState");
-  assert.match(fnSource, /const hasPermission = canManageInvoices\(\);/);
+  assert.match(fnSource, /const hasPermission = canManageAccounts\(\);/);
 });
 
 test("updateAddExpenseButtonState(): oculta y deshabilita el boton cuando el cierre YA esta confirmado, sin importar el permiso", () => {

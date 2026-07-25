@@ -1128,6 +1128,12 @@ function canManagePayroll() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManagePayroll);
 }
 
+function canManageAccounts() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageAccounts);
+}
+
 function canManageReservations() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1249,6 +1255,11 @@ function canEditInvoice(invoiceId) {
 
 function canEditRecordDate(date) {
   if (!canManageInvoices()) return false;
+  return isClosingOpenForEdits(closingForDate(date));
+}
+
+function canEditAccountRecordDate(date) {
+  if (!canManageAccounts()) return false;
   return isClosingOpenForEdits(closingForDate(date));
 }
 
@@ -4840,7 +4851,7 @@ function updateAddExpenseButtonState(closing) {
   const button = byId("cash-add-expense");
   const note = byId("cash-add-expense-closed-note");
   if (!button) return;
-  const hasPermission = canManageInvoices();
+  const hasPermission = canManageAccounts();
   const confirmed = Boolean(closing) && !isClosingPendingConfirmation(closing);
   const canAdd = hasPermission && !confirmed;
   button.classList.toggle("hidden", !canAdd);
@@ -4857,7 +4868,7 @@ function updateAddExpenseButtonState(closing) {
 let cashPendingExpenseReturn = null;
 
 function openAddExpenseFromClosing() {
-  if (!canManageInvoices()) return;
+  if (!canManageAccounts()) return;
   const closingId = byId("cash-edit-id").value;
   const closing = closingId ? dbTable("cierres").find((row) => row.cierreID === closingId) : null;
   if (closing && !isClosingPendingConfirmation(closing)) return; // cierre confirmado: no permitido
@@ -5081,7 +5092,7 @@ function renderExpenses() {
   target.innerHTML = rows
     .map(
       (row) => {
-        const editable = canEditRecordDate(row.date);
+        const editable = canEditAccountRecordDate(row.date);
         return `
         <tr data-expense-id="${escapeHtml(row.id)}">
           <td>${row.date}</td>
@@ -5223,7 +5234,7 @@ function voidReceivableReceipt(incomeId) {
 }
 
 function changeExpenseDate(expenseId) {
-  if (!canManageInvoices()) {
+  if (!canManageAccounts()) {
     alert("Solo administración o propietario puede cambiar fechas de egresos.");
     return;
   }
@@ -5247,7 +5258,7 @@ function changeExpenseDate(expenseId) {
 }
 
 function startExpenseEdit(expenseId) {
-  if (!canManageInvoices()) {
+  if (!canManageAccounts()) {
     alert("Solo administración o propietario puede editar egresos.");
     return;
   }
@@ -12245,6 +12256,10 @@ function wireForms() {
 
   byId("card-reconciliation-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageAccounts()) {
+      alert("Tu usuario no está autorizado para conciliar movimientos financieros.");
+      return;
+    }
     const closingId = byId("card-reconciliation-closing-id").value;
     const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
     if (!closing) {
@@ -12352,6 +12367,10 @@ function wireForms() {
     // Evita doble registro por doble clic o doble submit mientras el guardado
     // anterior todavia esta en curso.
     if (expenseSubmitInFlight) return;
+    if (!canManageAccounts()) {
+      alert("Tu usuario no está autorizado para crear ni editar egresos.");
+      return;
+    }
     const editId = byId("expense-edit-id").value;
     const type = byId("expense-type").value;
     const rawAmount = byId("expense-amount").value;
@@ -15550,6 +15569,10 @@ function wireForms() {
 
   byId("account-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageAccounts()) {
+      alert("Tu usuario no está autorizado para crear ni editar cuentas.");
+      return;
+    }
     const name = byId("account-name").value.trim();
     if (!name) return;
     const editId = byId("account-edit-id").value;
@@ -15584,6 +15607,10 @@ function wireForms() {
 
   byId("processor-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageAccounts()) {
+      alert("Tu usuario no está autorizado para administrar procesadores de pago.");
+      return;
+    }
     const name = byId("processor-name").value.trim();
     if (!name) return;
     const editId = byId("processor-edit-id").value;
