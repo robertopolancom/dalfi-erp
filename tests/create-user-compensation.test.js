@@ -163,3 +163,48 @@ test("create-user: cuando upsertErpProfile SI tiene exito, responde exito normal
     }
   );
 });
+
+test("create-user: una plantilla puede conceder permisos específicos a un operador sin conceder el legado", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  let profilePayload = null;
+  await withFakeFetch(
+    (url, options) => {
+      const identity = adminIdentityResponses(url);
+      if (identity) return identity;
+      if (url.includes("/auth/v1/admin/users") && options.method === "POST") {
+        return new Response(JSON.stringify({ id: "new-user-preset", email: "recepcion@dalfi.test" }), { status: 200 });
+      }
+      if (url.includes("/rest/v1/erp_user_profiles") && url.includes("on_conflict")) {
+        profilePayload = JSON.parse(options.body);
+        return new Response(null, { status: 201 });
+      }
+      if (url.includes("/rest/v1/erp_audit_log")) {
+        return new Response(null, { status: 201 });
+      }
+      throw new Error(`URL inesperada: ${url} (${options?.method || "GET"})`);
+    },
+    async () => {
+      const response = await onRequestPost({
+        request: postRequest({
+          email: "recepcion@dalfi.test",
+          role: "operador",
+          permissions: {
+            canManageReservations: true,
+            canManageBilling: true,
+            canSubmitRegisterCount: true,
+            canManageUsers: false,
+            canReopenClosings: false,
+          },
+        }),
+        env: BASE_ENV,
+      });
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(profilePayload.can_manage_reservations, true);
+      assert.strictEqual(profilePayload.can_manage_billing, true);
+      assert.strictEqual(profilePayload.can_submit_register_count, true);
+      assert.strictEqual(profilePayload.can_manage_users, false);
+      assert.strictEqual(profilePayload.can_reopen_closings, false);
+      assert.strictEqual(profilePayload.can_manage_invoices, false);
+    },
+  );
+});

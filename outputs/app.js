@@ -9832,6 +9832,62 @@ function wireUserAdmin() {
     ["canConfirmTreasuryClosings", "Confirmar cierre de tesorería"],
     ["canReopenClosings", "Reabrir cierres confirmados"],
   ];
+  const userPermissionPresets = {
+    reception: {
+      label: "Recepción",
+      enabled: ["canManageReservations", "canManageBilling", "canSubmitRegisterCount"],
+    },
+    billing: {
+      label: "Facturación",
+      enabled: ["canManageBilling"],
+    },
+    inventory: {
+      label: "Inventario",
+      enabled: ["canManageInventory"],
+    },
+    payroll: {
+      label: "Nómina",
+      enabled: ["canManagePayroll"],
+    },
+    accounting: {
+      label: "Contabilidad",
+      enabled: ["canReviewAccounts", "canReviewAudit", "canManageAccounts", "canConfirmTreasuryClosings"],
+    },
+    supervision: {
+      label: "Supervisión",
+      enabled: [
+        "canManageReservations",
+        "canManageBilling",
+        "canManageInventory",
+        "canManagePayroll",
+        "canManageAccounts",
+        "canManageConfiguration",
+        "canReviewAccounts",
+        "canReviewAudit",
+        "canSubmitRegisterCount",
+        "canConfirmRegisterClosings",
+        "canConfirmTreasuryClosings",
+      ],
+    },
+  };
+  const permissionsForPreset = (presetKey) => {
+    const preset = userPermissionPresets[presetKey];
+    if (!preset) return null;
+    const enabled = new Set(preset.enabled);
+    return Object.fromEntries(userPermissionOptions.map(([key]) => [key, enabled.has(key)]));
+  };
+  const matchingPresetKey = (permissions = {}) =>
+    Object.keys(userPermissionPresets).find((presetKey) => {
+      const presetPermissions = permissionsForPreset(presetKey);
+      return userPermissionOptions.every(([key]) => Boolean(permissions[key]) === presetPermissions[key]);
+    }) || "";
+  const presetOptionsHtml = (selectedKey = "") =>
+    [
+      `<option value="" ${selectedKey ? "" : "selected"}>Personalizado</option>`,
+      ...Object.entries(userPermissionPresets).map(
+        ([key, preset]) => `<option value="${key}" ${selectedKey === key ? "selected" : ""}>${preset.label}</option>`,
+      ),
+    ].join("");
 
   const authHeaders = () => ({
     "Content-Type": "application/json",
@@ -9872,6 +9928,7 @@ function wireUserAdmin() {
         const inactive = user.estado === "Inactivo";
         const pendingPassword = Boolean(user.passwordResetRequired);
         const permissions = user.permissions || {};
+        const selectedPreset = matchingPresetKey(permissions);
         const permissionControls = userPermissionOptions
           .map(
             ([key, label]) => `
@@ -9910,7 +9967,13 @@ function wireUserAdmin() {
             <td>
               <details class="user-permissions">
                 <summary>Configurar (${Object.values(permissions).filter(Boolean).length})</summary>
-                <div class="user-permission-grid">${permissionControls}</div>
+                <div class="user-permission-grid">
+                  <label>
+                    Perfil base
+                    <select class="user-permission-preset compact-input">${presetOptionsHtml(selectedPreset)}</select>
+                  </label>
+                  ${permissionControls}
+                </div>
               </details>
             </td>
             <td>
@@ -10009,6 +10072,8 @@ function wireUserAdmin() {
     const password = byId("new-user-password").value;
     const fullName = byId("new-user-name").value.trim();
     const role = byId("new-user-role").value;
+    const presetKey = byId("new-user-permission-preset").value;
+    const permissions = permissionsForPreset(presetKey);
     message.textContent = "Creando usuario...";
     message.className = "form-message";
     try {
@@ -10018,7 +10083,7 @@ function wireUserAdmin() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${supabaseSession.access_token}`,
         },
-        body: JSON.stringify({ email, password, fullName, role }),
+        body: JSON.stringify({ email, password, fullName, role, ...(permissions ? { permissions } : {}) }),
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "No se pudo crear el usuario.");
@@ -10059,6 +10124,22 @@ function wireUserAdmin() {
       alert(`No se pudo completar la accion: ${error.message}`);
     } finally {
       setRowBusy(row, false);
+    }
+  });
+  listTarget?.addEventListener("change", (event) => {
+    const row = event.target.closest("tr[data-user-id]");
+    if (!row) return;
+    if (event.target.matches(".user-permission-preset")) {
+      const permissions = permissionsForPreset(event.target.value);
+      if (!permissions) return;
+      row.querySelectorAll(".user-permission-input").forEach((input) => {
+        input.checked = Boolean(permissions[input.dataset.permission]);
+      });
+      return;
+    }
+    if (event.target.matches(".user-permission-input")) {
+      const preset = row.querySelector(".user-permission-preset");
+      if (preset) preset.value = "";
     }
   });
 

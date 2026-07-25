@@ -3075,6 +3075,19 @@
                   </select>
                 </label>
               </div>
+              <label>
+                Perfil de permisos
+                <select id="new-user-permission-preset">
+                  <option value="">Según el rol</option>
+                  <option value="reception">Recepción</option>
+                  <option value="billing">Facturación</option>
+                  <option value="inventory">Inventario</option>
+                  <option value="payroll">Nómina</option>
+                  <option value="accounting">Contabilidad</option>
+                  <option value="supervision">Supervisión</option>
+                </select>
+              </label>
+              <p class="panel-note">El perfil marca una base inicial. Después puedes personalizar cada permiso en la lista de usuarios.</p>
               <div class="form-actions">
                 <button class="primary-btn" type="submit">Crear usuario</button>
                 <button class="secondary-btn" id="open-supabase-users" type="button">Abrir usuarios en Supabase</button>
@@ -3185,6 +3198,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
-    <script src="app.js?v=20260724-user-permissions"></script>
+    <script src="app.js?v=20260724-permission-presets"></script>
   </body>
 </html>

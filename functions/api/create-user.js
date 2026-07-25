@@ -1,5 +1,11 @@
 import { insertAuditLog } from "./_lib/audit.js";
-import { requireErpPermission, upsertErpProfile, normalizeRole } from "./_lib/authz.js";
+import {
+  requireErpPermission,
+  upsertErpProfile,
+  normalizeRole,
+  sanitizePermissionOverrides,
+  PROFILE_PERMISSION_MAP,
+} from "./_lib/authz.js";
 
 const normalizeEmail = (value = "") => value.trim().toLowerCase();
 
@@ -40,9 +46,16 @@ export async function onRequestPost({ request, env }) {
   const password = String(payload.password || "") || generateTemporaryPassword();
   const fullName = String(payload.fullName || "").trim();
   const role = normalizeRole(payload.role);
+  const hasPermissions = Object.prototype.hasOwnProperty.call(payload, "permissions");
+  const permissionOverrides = hasPermissions ? sanitizePermissionOverrides(payload.permissions) : null;
+  const hasUnknownPermission = hasPermissions
+    && Object.keys(payload.permissions || {}).some((key) => !Object.prototype.hasOwnProperty.call(PROFILE_PERMISSION_MAP, key));
 
   if (!email) return json({ error: "El correo es obligatorio." }, 400);
   if (password.length < 6) return json({ error: "La contrasena debe tener al menos 6 caracteres." }, 400);
+  if (hasPermissions && (!permissionOverrides || Object.keys(permissionOverrides).length === 0 || hasUnknownPermission)) {
+    return json({ error: "La matriz de permisos no es valida." }, 400);
+  }
 
   const createResponse = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
     method: "POST",
@@ -94,6 +107,7 @@ export async function onRequestPost({ request, env }) {
     email: created.email || email,
     role,
     isActive: true,
+    permissionOverrides,
   });
 
   if (!profileResult.ok) {
@@ -133,7 +147,16 @@ export async function onRequestPost({ request, env }) {
     entityId: created.id || email,
     action: "create_user",
     oldData: null,
-    newData: { email: created.email || email, role, created_by: requesterEmail },
+    newData: {
+      email: created.email || email,
+      role,
+      permissions: profileResult.profile
+        ? Object.fromEntries(
+            Object.entries(PROFILE_PERMISSION_MAP).map(([camelKey, sqlColumn]) => [camelKey, Boolean(profileResult.profile[sqlColumn])]),
+          )
+        : null,
+      created_by: requesterEmail,
+    },
     userId: requesterId,
     userEmail: requesterEmail,
     userRole: requesterRole,
