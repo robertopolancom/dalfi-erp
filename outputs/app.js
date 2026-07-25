@@ -1555,6 +1555,33 @@ function resetReservationEditState(form = byId("reservation-form")) {
   if (statusField) statusField.value = "Programada";
 }
 
+function showReservationDetails(reservationId) {
+  const { record } = reservationRecordById(reservationId);
+  const dialog = byId("reservation-details-dialog");
+  const content = byId("reservation-details-content");
+  if (!record || !dialog || !content) return;
+  const detail = (label, value) => `
+    <div class="reservation-detail-row">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(value || "—")}</span>
+    </div>
+  `;
+  content.innerHTML = [
+    detail("Cliente", record.client || record.clienteNombre),
+    detail("Teléfono", record.phone || record.telefono),
+    detail("Correo", record.email || record.correo),
+    detail("Servicio", record.service || record.servicio),
+    detail("Técnico/a", record.staff || record.colaboradorNombre),
+    detail("Fecha", record.date || record.fecha),
+    detail("Hora", record.time || record.hora),
+    detail("Estado", reservationStatus(record)),
+    detail("Origen", record.source || record.canalOrigen),
+    detail("Observaciones", record.note || record.observaciones),
+    detail("Factura", record.invoiceId || record.facturaID),
+  ].join("");
+  dialog.showModal();
+}
+
 function startReservationEdit(reservationId) {
   const { record } = reservationRecordById(reservationId);
   const form = byId("reservation-form");
@@ -3508,6 +3535,7 @@ function renderAppointments(target, rows, emptyMessage) {
           <div class="row-actions">
             <span class="status-pill ${statusClass}">${escapeHtml(status)}</span>
             <span>${reservation.invoiceId ? `Factura ${reservation.invoiceId}` : reservation.date}</span>
+            <button class="secondary-btn compact view-reservation" data-reservation-id="${reservation.id}" type="button">Ver</button>
             <button class="secondary-btn compact edit-reservation" data-reservation-id="${reservation.id}" type="button">Editar</button>
             ${reservation.invoiceId ? "" : `<button class="secondary-btn compact invoice-reservation" data-reservation-id="${reservation.id}" type="button">Facturar</button>`}
           </div>
@@ -14451,6 +14479,11 @@ function wireForms() {
   });
 
   byId("reservation-list").addEventListener("click", (event) => {
+    const viewButton = event.target.closest(".view-reservation");
+    if (viewButton) {
+      showReservationDetails(viewButton.dataset.reservationId);
+      return;
+    }
     const editButton = event.target.closest(".edit-reservation");
     if (editButton) {
       startReservationEdit(editButton.dataset.reservationId);
@@ -14459,6 +14492,10 @@ function wireForms() {
     const button = event.target.closest(".invoice-reservation");
     if (!button) return;
     populateInvoiceFromReservation(button.dataset.reservationId);
+  });
+
+  byId("reservation-details-close").addEventListener("click", () => {
+    byId("reservation-details-dialog").close();
   });
 
   byId("reservation-form").addEventListener("submit", (event) => {

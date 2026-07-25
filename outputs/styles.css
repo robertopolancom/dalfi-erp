@@ -674,6 +674,29 @@ textarea:focus {
   margin: 0;
 }
 
+.reservation-details {
+  display: grid;
+  gap: 10px;
+}
+
+.reservation-detail-row {
+  display: grid;
+  gap: 3px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.reservation-detail-row:last-child {
+  border-bottom: 0;
+}
+
+.reservation-detail-row strong {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .quick-create {
   margin: 12px 18px 0;
   padding: 12px;
