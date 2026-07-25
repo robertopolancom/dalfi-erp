@@ -71,11 +71,17 @@ test("setClosingViewActions(): el boton #cash-open-closing dentro del formulario
   assert.match(fnSource, /byId\("cash-open-closing"\)\.classList\.toggle\("hidden", !\(closing && !pending && canReopen\)\);/);
 });
 
-test("regresion: canConfirmClosings() y canManageInvoices() siguen intactas y usadas donde corresponde (guardar/confirmar cierres no se toco por este fix)", () => {
+test("retiro legado: confirmar, someter, ver y reabrir cierres usan permisos específicos, sin canManageInvoices()", () => {
   assert.match(appJs, /function canConfirmClosings\(\) \{/);
-  assert.match(appJs, /function canManageInvoices\(\) \{/);
+  assert.match(appJs, /function canSubmitRegisterCount\(\) \{/);
+  assert.match(appJs, /function canViewClosings\(\) \{/);
+  assert.doesNotMatch(appJs, /function canManageInvoices\(\) \{/);
+  assert.doesNotMatch(appJs, /canManageInvoices\(\)/);
   const confirmFn = extractFunction("startClosingConfirmation");
   assert.match(confirmFn, /if \(!canConfirmClosings\(\)\) \{/);
+  assert.match(extractFunction("showNewCashClosing"), /if \(!canSubmitRegisterCount\(\)\) \{/);
+  assert.match(extractFunction("viewClosingInForm"), /if \(!canViewClosings\(\)\) \{/);
+  assert.match(extractFunction("voidClosing"), /if \(!canReopenClosings\(\)\) \{/);
 });
 
 test("functions/api/_lib/authz.js: can_reopen_closings sigue mapeando a canReopenClosings y por defecto solo para roles privilegiados (sin cambios de este fix, solo confirmando que la columna que ahora se usa en el frontend sigue siendo la correcta)", () => {

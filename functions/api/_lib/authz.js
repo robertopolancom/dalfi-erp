@@ -22,6 +22,37 @@ export const ALLOWED_ROLES = new Set([
   "asistenta_contable",
 ]);
 
+export const PROFILE_PERMISSION_MAP = Object.freeze({
+  canReviewAccounts: "can_review_accounts",
+  canReviewAudit: "can_review_audit",
+  canSubmitRegisterCount: "can_submit_register_count",
+  canConfirmRegisterClosings: "can_confirm_register_closings",
+  canConfirmTreasuryClosings: "can_confirm_treasury_closings",
+  canManageUsers: "can_manage_users",
+  canManageBilling: "can_manage_billing",
+  canManageInventory: "can_manage_inventory",
+  canManagePayroll: "can_manage_payroll",
+  canManageAccounts: "can_manage_accounts",
+  canManageConfiguration: "can_manage_configuration",
+  canManageReservations: "can_manage_reservations",
+  canReopenClosings: "can_reopen_closings",
+});
+
+export function permissionOverridesFromProfile(row = {}) {
+  return Object.fromEntries(
+    Object.entries(PROFILE_PERMISSION_MAP).map(([camelKey, sqlColumn]) => [camelKey, Boolean(row?.[sqlColumn])]),
+  );
+}
+
+export function sanitizePermissionOverrides(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const knownEntries = Object.entries(value).filter(([key]) => Object.prototype.hasOwnProperty.call(PROFILE_PERMISSION_MAP, key));
+  if (knownEntries.some(([, enabled]) => typeof enabled !== "boolean")) return null;
+  return Object.fromEntries(
+    knownEntries.map(([key, enabled]) => [key, enabled]),
+  );
+}
+
 export function normalizeRole(role) {
   const normalized = String(role || "")
     .trim()
@@ -134,15 +165,15 @@ export async function fetchErpProfile(env, userId) {
 }
 
 // Crea o actualiza (upsert) el perfil seguro de un usuario. Los permisos se
-// recalculan siempre a partir del rol (defaultPermissionsForRole); dos
-// permisos admiten un override explicito, can_review_accounts (para
-// preservar el flag "Revisar cuentas" que ya existia como caso especial en
-// user_metadata.canReviewAccounts) y can_review_audit (para que
-// asistente_contable/asistenta_contable puedan revisar auditoria SOLO
-// cuando un administrador lo marca explicitamente, ver seccion 6 de la
-// revision de seguridad). Ambos overrides solo pueden SUMAR el permiso
-// (OR), nunca quitarlo si el rol ya lo otorga por defecto.
-export async function upsertErpProfile(env, { userId, email, role, isActive = true, canReviewAccountsOverride, canReviewAuditOverride } = {}) {
+// parten de defaultPermissionsForRole(). La administracion puede enviar
+// permissionOverrides para asignar o retirar individualmente cada permiso
+// vigente; las claves desconocidas nunca llegan al payload SQL. Los dos
+// argumentos canReview* se conservan durante la transicion por compatibilidad
+// con llamadas anteriores y se aplican antes de los overrides explicitos.
+export async function upsertErpProfile(
+  env,
+  { userId, email, role, isActive = true, canReviewAccountsOverride, canReviewAuditOverride, permissionOverrides } = {},
+) {
   const supabaseUrl = env.SUPABASE_URL;
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceRoleKey || !userId) {
@@ -150,6 +181,7 @@ export async function upsertErpProfile(env, { userId, email, role, isActive = tr
   }
   const normalizedRole = normalizeRole(role);
   const defaults = defaultPermissionsForRole(normalizedRole);
+  const explicitPermissions = sanitizePermissionOverrides(permissionOverrides);
   const payload = {
     user_id: userId,
     email: normalizeEmail(email),
@@ -170,6 +202,11 @@ export async function upsertErpProfile(env, { userId, email, role, isActive = tr
     can_manage_reservations: defaults.can_manage_reservations,
     can_reopen_closings: defaults.can_reopen_closings,
   };
+  if (explicitPermissions) {
+    Object.entries(explicitPermissions).forEach(([camelKey, enabled]) => {
+      payload[PROFILE_PERMISSION_MAP[camelKey]] = enabled;
+    });
+  }
   try {
     const response = await fetch(`${supabaseUrl}/rest/v1/erp_user_profiles?on_conflict=user_id`, {
       method: "POST",

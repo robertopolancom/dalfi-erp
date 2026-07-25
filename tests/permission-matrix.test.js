@@ -111,7 +111,7 @@ test("outputs/app.js: erpProfile.permissions.* se lee con las MISMAS claves came
     assert.ok(!usedWithTypo, `posible typo: se encontro erpProfile.permissions?.${camelKey} seguido de mas caracteres`);
   }
   // Los tres permisos que si gatean UI hoy deben usar el nombre exacto.
-  assert.match(appJs, /erpProfile\.permissions\?\.canManageInvoices/);
+  assert.doesNotMatch(appJs, /function canManageInvoices\(\)/, "el permiso legado ya no debe autorizar acciones en la SPA");
   assert.match(appJs, /erpProfile\.permissions\?\.canManageBilling/);
   assert.match(appJs, /erpProfile\.permissions\?\.canManageInventory/);
   assert.match(appJs, /erpProfile\.permissions\?\.canManagePayroll/);

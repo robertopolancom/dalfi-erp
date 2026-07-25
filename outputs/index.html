@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ERP Centro de Uñas</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260724-user-permissions" />
   </head>
   <body>
     <div class="app-shell">
@@ -32,7 +32,7 @@
           <button class="nav-item" data-view="inventory" type="button">Inventario</button>
           <button class="nav-item" data-view="fixed-assets" type="button">Activos fijos</button>
           <button class="nav-item" data-view="reports" type="button">Reportes</button>
-          <button class="nav-item" data-view="users" type="button">Usuarios</button>
+          <button class="nav-item user-admin-only hidden" data-view="users" type="button">Usuarios</button>
           <button class="nav-item" data-view="settings" type="button">Base de datos</button>
         </nav>
       </aside>
@@ -3099,7 +3099,7 @@
                       <th>Estado</th>
                       <th>Clave</th>
                       <th>Contraseña temporal</th>
-                      <th>Cuentas</th>
+                      <th>Permisos específicos</th>
                       <th>Acciones</th>
                     </tr>
                   </thead>
@@ -3185,6 +3185,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
-    <script src="app.js?v=20260724-secure-persistence"></script>
+    <script src="app.js?v=20260724-user-permissions"></script>
   </body>
 </html>

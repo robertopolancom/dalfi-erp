@@ -40,7 +40,7 @@ function extractFunction(name) {
   return extracted.slice(match.index, end);
 }
 
-const permissionsSource = ["canManageInvoices", "canManageBilling", "canManageInventory", "canManagePayroll", "canManageAccounts", "canManageConfiguration", "canManageReservations", "canConfirmClosings", "canReviewAccountsUser"]
+const permissionsSource = ["canManageBilling", "canManageInventory", "canManagePayroll", "canManageAccounts", "canManageConfiguration", "canManageReservations", "canSubmitRegisterCount", "canViewClosings", "canConfirmClosings", "canReviewAccountsUser"]
   .map(extractFunction)
   .join("\n\n");
 
@@ -96,7 +96,6 @@ test("canManageInvoices/canConfirmClosings/canReviewAccountsUser: mientras /api/
     erpProfile: null,
     erpProfileLoaded: false, // todavia no se pidio /api/me
   });
-  assert.strictEqual(sandbox.canManageInvoices(), false);
   assert.strictEqual(sandbox.canManageBilling(), false);
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
@@ -113,7 +112,6 @@ test("canManageInvoices/canConfirmClosings/canReviewAccountsUser: si /api/me fal
     erpProfile: null,
     erpProfileLoaded: true, // se intento y fallo
   });
-  assert.strictEqual(sandbox.canManageInvoices(), false);
   assert.strictEqual(sandbox.canManageBilling(), false);
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
@@ -130,7 +128,6 @@ test("un operador (perfil cargado, sin permisos) no puede administrar facturas, 
     erpProfile: { role: "operador", isActive: true, permissions: noPermissions() },
     erpProfileLoaded: true,
   });
-  assert.strictEqual(sandbox.canManageInvoices(), false);
   assert.strictEqual(sandbox.canManageBilling(), false);
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
@@ -147,7 +144,6 @@ test("una administradora con permisos SI puede administrar facturas, confirmar c
     erpProfile: { role: "administradora", isActive: true, permissions: fullPermissions() },
     erpProfileLoaded: true,
   });
-  assert.strictEqual(sandbox.canManageInvoices(), true);
   assert.strictEqual(sandbox.canManageBilling(), true);
   assert.strictEqual(sandbox.canManageInventory(), true);
   assert.strictEqual(sandbox.canManagePayroll(), true);
@@ -164,7 +160,6 @@ test("un perfil inactivo (is_active=false) nunca autoriza, aunque los permisos v
     erpProfile: { role: "administradora", isActive: false, permissions: fullPermissions() },
     erpProfileLoaded: true,
   });
-  assert.strictEqual(sandbox.canManageInvoices(), false);
   assert.strictEqual(sandbox.canManageBilling(), false);
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
@@ -181,7 +176,6 @@ test("modo local sin Supabase configurado (sin cliente/sesion): conserva el comp
     erpProfile: null,
     erpProfileLoaded: false,
   });
-  assert.strictEqual(sandbox.canManageInvoices(), true);
   assert.strictEqual(sandbox.canManageBilling(), true);
   assert.strictEqual(sandbox.canManageInventory(), true);
   assert.strictEqual(sandbox.canManagePayroll(), true);
@@ -203,7 +197,6 @@ test("contador/contadora: puede revisar cuentas pero NO confirmar cierres ni adm
     erpProfileLoaded: true,
   });
   assert.strictEqual(sandbox.canReviewAccountsUser(), true);
-  assert.strictEqual(sandbox.canManageInvoices(), false);
   assert.strictEqual(sandbox.canManageBilling(), false);
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);

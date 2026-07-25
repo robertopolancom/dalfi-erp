@@ -48,7 +48,8 @@ test("outputs/app.js: la fila editable de cada usuario (.user-role-input) ofrece
   for (const value of optionValues) assert.ok(ALL_ROLES.includes(value), `opcion fuera del allowlist: ${value}`);
 });
 
-test("outputs/app.js: la fila editable de cada usuario tambien ofrece el checkbox 'Revisar auditoría' (can_review_audit explicito)", () => {
-  assert.match(appJs, /user-review-audit-input/);
-  assert.match(appJs, /canReviewAudit:\s*row\.querySelector\("\.user-review-audit-input"\)\.checked/);
+test("outputs/app.js: la matriz unificada ofrece Revisar auditoría y envía todos los permisos por data-permission", () => {
+  assert.match(appJs, /\["canReviewAudit", "Revisar auditoría"\]/);
+  assert.match(appJs, /class="user-permission-input"/);
+  assert.match(appJs, /\[input\.dataset\.permission, input\.checked\]/);
 });

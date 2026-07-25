@@ -507,11 +507,17 @@ function updatePrivilegeVisibility() {
       permissions.canManageAccounts ||
       permissions.canManageConfiguration ||
       permissions.canManageReservations ||
+      permissions.canReviewAccounts ||
+      permissions.canSubmitRegisterCount ||
       permissions.canConfirmRegisterClosings ||
       permissions.canConfirmTreasuryClosings ||
       permissions.canReopenClosings,
-    );
+  );
   document.querySelectorAll(".admin-only").forEach((item) => item.classList.toggle("hidden", !canManage));
+  const canAdminUsers = !supabaseClient || !supabaseSession || Boolean(permissions.canManageUsers);
+  document
+    .querySelectorAll(".user-admin-only")
+    .forEach((item) => item.classList.toggle("hidden", !canAdminUsers));
   document.querySelectorAll(".accounts-review-only").forEach((item) => item.classList.toggle("hidden", !canReviewAccountsUser()));
 }
 
@@ -1119,12 +1125,6 @@ function currentRoleKey() {
 // fallo (erpProfile === null), aplican minimo privilegio: false. La unica
 // excepcion es cuando no hay Supabase configurado en absoluto (modo local
 // sin autenticacion), que mantiene el comportamiento previo de la app.
-function canManageInvoices() {
-  if (!supabaseClient || !supabaseSession) return true;
-  if (!erpProfileLoaded || !erpProfile) return false;
-  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageInvoices);
-}
-
 function canManageBilling() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1161,6 +1161,28 @@ function canManageReservations() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageReservations);
 }
 
+function canSubmitRegisterCount() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canSubmitRegisterCount);
+}
+
+function canViewClosings() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  const permissions = erpProfile.permissions || {};
+  return Boolean(
+    erpProfile.isActive
+      && (
+        permissions.canReviewAccounts
+        || permissions.canSubmitRegisterCount
+        || permissions.canConfirmRegisterClosings
+        || permissions.canConfirmTreasuryClosings
+        || permissions.canReopenClosings
+      ),
+  );
+}
+
 function canConfirmClosings() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1172,10 +1194,8 @@ function canConfirmClosings() {
 // Reabrir un cierre YA confirmado (permite editar facturas/transacciones de
 // ese dia) es mas sensible que solo "administrar" cierres/facturas: existe
 // una columna de permiso dedicada (can_reopen_closings) desde la migracion
-// de erp_user_profiles, pensada exactamente para poder dar canManageInvoices
-// a alguien sin darle la capacidad de reabrir cierres historicos ya
-// confirmados. Antes esta funcion no existia y openClosingForEdit() usaba
-// canManageInvoices() en su lugar, dejando esa columna sin ningun efecto.
+// de erp_user_profiles. Ninguna accion de cierres depende ya del antiguo
+// permiso general can_manage_invoices.
 function canReopenClosings() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1186,8 +1206,8 @@ function canReopenClosings() {
 // (canReviewAccounts) ya viene resuelto por el servidor combinando rol +
 // flag explicito de Usuarios, asi que aqui no hace falta re-derivarlo.
 // Nunca habilita escritura: confirmar tesoreria, reabrir cierres, borrar
-// movimientos, etc. siguen exigiendo canManageInvoices()/canConfirmClosings()
-// por separado, en cada funcion de negocio, no solo aqui.
+// movimientos y confirmaciones siguen exigiendo sus permisos especificos
+// en cada funcion de negocio, no solo aqui.
 function canReviewAccountsUser() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -3235,8 +3255,8 @@ function openExpenseReport(expenseId) {
 }
 
 function openClosingReport(closingId) {
-  if (!canManageInvoices()) {
-    alert("Solo administradores y propietarios pueden ver el detalle de los cierres.");
+  if (!canViewClosings()) {
+    alert("Tu usuario no está autorizado para ver el detalle de los cierres.");
     return;
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
@@ -4491,8 +4511,8 @@ function renderCash() {
     }
     bindCashTableActions(target);
     renderEmpty(target, 11, "Cargando cierres...");
-    if (supabaseClient && supabaseSession && !canManageInvoices()) {
-      renderEmpty(target, 11, "Solo administradores y propietarios pueden ver los cierres.");
+    if (supabaseClient && supabaseSession && !canViewClosings()) {
+      renderEmpty(target, 11, "Tu usuario no está autorizado para ver los cierres.");
       return;
     }
     const created = ensureProvisionalClosings();
@@ -4732,8 +4752,8 @@ function confirmTreasuryRange(closingId) {
 }
 
 function voidClosing(closingId) {
-  if (!canManageInvoices()) {
-    alert("Solo administración o propietario puede anular cierres.");
+  if (!canReopenClosings()) {
+    alert("Tu usuario no está autorizado para quitar cierres confirmados.");
     return;
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
@@ -4763,8 +4783,8 @@ function confirmPreviousPendingClosings() {
 }
 
 function showNewCashClosing() {
-  if (!canManageInvoices()) {
-    alert("Solo administradores y propietarios pueden hacer cierres de caja.");
+  if (!canSubmitRegisterCount()) {
+    alert("Tu usuario no está autorizado para someter conteos de caja.");
     return;
   }
   const created = ensureProvisionalClosings();
@@ -5023,8 +5043,8 @@ function loadClosingIntoCashForm(closing, { readOnly = false, confirmAfterSave =
 }
 
 function viewClosingInForm(closingId) {
-  if (!canManageInvoices()) {
-    alert("Solo administradores y propietarios pueden ver los cierres.");
+  if (!canViewClosings()) {
+    alert("Tu usuario no está autorizado para ver los cierres.");
     return;
   }
   const closing = dbTable("cierres").find((row) => row.cierreID === closingId);
@@ -9797,6 +9817,21 @@ function wireUserAdmin() {
   const message = byId("user-create-message");
   const listMessage = byId("users-list-message");
   const listTarget = byId("users-list");
+  const userPermissionOptions = [
+    ["canManageUsers", "Administrar usuarios"],
+    ["canManageReservations", "Gestionar reservas"],
+    ["canManageBilling", "Facturación y cobros"],
+    ["canManageInventory", "Gestionar inventario"],
+    ["canManagePayroll", "Gestionar nómina"],
+    ["canManageAccounts", "Modificar cuentas"],
+    ["canManageConfiguration", "Configuración general"],
+    ["canReviewAccounts", "Revisar cuentas y cierres"],
+    ["canReviewAudit", "Revisar auditoría"],
+    ["canSubmitRegisterCount", "Someter conteo de caja"],
+    ["canConfirmRegisterClosings", "Confirmar cierre de caja"],
+    ["canConfirmTreasuryClosings", "Confirmar cierre de tesorería"],
+    ["canReopenClosings", "Reabrir cierres confirmados"],
+  ];
 
   const authHeaders = () => ({
     "Content-Type": "application/json",
@@ -9836,6 +9871,22 @@ function wireUserAdmin() {
       .map((user) => {
         const inactive = user.estado === "Inactivo";
         const pendingPassword = Boolean(user.passwordResetRequired);
+        const permissions = user.permissions || {};
+        const permissionControls = userPermissionOptions
+          .map(
+            ([key, label]) => `
+              <label>
+                <input
+                  type="checkbox"
+                  class="user-permission-input"
+                  data-permission="${key}"
+                  ${permissions[key] ? "checked" : ""}
+                />
+                ${label}
+              </label>
+            `,
+          )
+          .join("");
         return `
           <tr data-user-id="${escapeHtml(user.id)}">
             <td><input class="user-name-input compact-input" value="${escapeHtml(user.fullName || "")}" placeholder="Nombre" /></td>
@@ -9857,14 +9908,10 @@ function wireUserAdmin() {
             <td><span class="status-pill ${pendingPassword ? "warning" : "success"}">${pendingPassword ? "Debe cambiar" : "Definitiva"}</span></td>
             <td><input class="user-password-input compact-input" type="password" minlength="6" placeholder="Opcional" /></td>
             <td>
-              <label title="Ver Cuentas sin ser rol privilegiado ni contador/a">
-                <input type="checkbox" class="user-review-accounts-input" ${user.canReviewAccounts ? "checked" : ""} />
-                Revisar cuentas
-              </label>
-              <label title="Ver la bitácora de auditoría sin ser rol privilegiado ni contador/a (por ejemplo, asistente contable)">
-                <input type="checkbox" class="user-review-audit-input" ${user.canReviewAudit ? "checked" : ""} />
-                Revisar auditoría
-              </label>
+              <details class="user-permissions">
+                <summary>Configurar (${Object.values(permissions).filter(Boolean).length})</summary>
+                <div class="user-permission-grid">${permissionControls}</div>
+              </details>
             </td>
             <td>
               <div class="row-actions">
@@ -9881,14 +9928,16 @@ function wireUserAdmin() {
 
   const saveUserRow = async (row, estado = null) => {
     if (!isSupabaseReady()) return;
+    const permissions = Object.fromEntries(
+      Array.from(row.querySelectorAll(".user-permission-input")).map((input) => [input.dataset.permission, input.checked]),
+    );
     const payload = {
       id: row.dataset.userId,
       fullName: row.querySelector(".user-name-input").value.trim(),
       email: row.querySelector(".user-email-input").value.trim(),
       role: row.querySelector(".user-role-input").value,
       password: row.querySelector(".user-password-input").value,
-      canReviewAccounts: row.querySelector(".user-review-accounts-input").checked,
-      canReviewAudit: row.querySelector(".user-review-audit-input").checked,
+      permissions,
     };
     if (estado) payload.estado = estado;
 
@@ -15222,8 +15271,8 @@ function wireForms() {
   byId("cash-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     if (cashSubmitInFlight) return;
-    if (!canManageInvoices()) {
-      alert("Solo administradores y propietarios pueden guardar cierres de caja.");
+    if (!canSubmitRegisterCount()) {
+      alert("Tu usuario no está autorizado para guardar conteos de caja.");
       return;
     }
     const editId = byId("cash-edit-id").value;

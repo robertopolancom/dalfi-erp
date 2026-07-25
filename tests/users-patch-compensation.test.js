@@ -222,3 +222,83 @@ test("users PATCH: exito normal cuando perfil y Auth se actualizan sin errores (
     }
   );
 });
+
+test("users PATCH: un administrador no puede retirarse a si mismo canManageUsers", async () => {
+  const { onRequestPatch } = await import(moduleUrl);
+  let upsertCalled = false;
+  await withFakeFetch(
+    (url, options) => {
+      const identity = adminIdentity(url);
+      if (identity) return identity;
+      if (url === "https://fake.supabase.co/auth/v1/admin/users/admin-1" && !options?.method) {
+        return new Response(
+          JSON.stringify({ id: "admin-1", email: "admin@dalfi.test", user_metadata: { role: "administradora" } }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("on_conflict")) {
+        upsertCalled = true;
+        return new Response(null, { status: 201 });
+      }
+      throw new Error(`URL inesperada: ${url} (${options?.method || "GET"})`);
+    },
+    async () => {
+      const response = await onRequestPatch({
+        request: patchRequest({
+          id: "admin-1",
+          role: "administradora",
+          permissions: { canManageUsers: false },
+        }),
+        env: BASE_ENV,
+      });
+      assert.strictEqual(response.status, 400);
+      assert.strictEqual(upsertCalled, false);
+      assert.match((await response.json()).error, /No puedes/);
+    },
+  );
+});
+
+test("users PATCH: una matriz explicita puede retirar permisos del rol y conceder otros al usuario", async () => {
+  const { onRequestPatch } = await import(moduleUrl);
+  let profilePayload = null;
+  await withFakeFetch(
+    (url, options) => {
+      const identity = adminIdentity(url);
+      if (identity) return identity;
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && !options?.method) {
+        return targetAuthUser();
+      }
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+        return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test", user_metadata: {} }), { status: 200 });
+      }
+      if (url.includes("/rest/v1/erp_user_profiles") && url.includes(`user_id=eq.${TARGET_ID}`) && !options?.method) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (url.includes("/rest/v1/erp_user_profiles") && url.includes("on_conflict")) {
+        profilePayload = JSON.parse(options.body);
+        return new Response(null, { status: 201 });
+      }
+      if (url.includes("/rest/v1/erp_audit_log")) {
+        return new Response(null, { status: 201 });
+      }
+      throw new Error(`URL inesperada: ${url} (${options?.method || "GET"})`);
+    },
+    async () => {
+      const response = await onRequestPatch({
+        request: patchRequest({
+          id: TARGET_ID,
+          role: "operador",
+          permissions: {
+            canManageReservations: false,
+            canManagePayroll: true,
+          },
+        }),
+        env: BASE_ENV,
+      });
+      assert.strictEqual(response.status, 200);
+      assert.strictEqual(profilePayload.can_manage_reservations, false);
+      assert.strictEqual(profilePayload.can_manage_payroll, true);
+      assert.strictEqual(profilePayload.can_manage_invoices, false, "el legado no se concede por la matriz individual");
+    },
+  );
+});

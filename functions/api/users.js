@@ -1,5 +1,15 @@
 import { insertAuditLog } from "./_lib/audit.js";
-import { requireErpPermission, upsertErpProfile, deleteErpProfile, normalizeRole, fetchErpProfile } from "./_lib/authz.js";
+import {
+  requireErpPermission,
+  upsertErpProfile,
+  deleteErpProfile,
+  normalizeRole,
+  fetchErpProfile,
+  permissionOverridesFromProfile,
+  sanitizePermissionOverrides,
+  PROFILE_PERMISSION_MAP,
+  defaultPermissionsForRole,
+} from "./_lib/authz.js";
 
 const normalizeEmail = (value = "") => value.trim().toLowerCase();
 
@@ -36,6 +46,7 @@ function toPublicUser(user, profile) {
     role: profile?.role || user.user_metadata?.role || "operador",
     canReviewAccounts: profile ? Boolean(profile.can_review_accounts) : Boolean(user.user_metadata?.canReviewAccounts),
     canReviewAudit: Boolean(profile?.can_review_audit),
+    permissions: profile ? permissionOverridesFromProfile(profile) : {},
     estado: profile ? (profile.is_active ? "Activo" : "Inactivo") : isInactive(user) ? "Inactivo" : "Activo",
     passwordResetRequired: Boolean(user.user_metadata?.password_reset_required),
     hasSecureProfile: Boolean(profile),
@@ -117,6 +128,14 @@ export async function onRequestPatch({ request, env }) {
   const temporaryPassword = resetPassword ? generateTemporaryPassword() : password;
   const hasCanReviewAccounts = Object.prototype.hasOwnProperty.call(payload, "canReviewAccounts");
   const hasCanReviewAudit = Object.prototype.hasOwnProperty.call(payload, "canReviewAudit");
+  const hasPermissions = Object.prototype.hasOwnProperty.call(payload, "permissions");
+  const requestedPermissions = hasPermissions ? sanitizePermissionOverrides(payload.permissions) : null;
+
+  const hasUnknownPermission = hasPermissions
+    && Object.keys(payload.permissions || {}).some((key) => !Object.prototype.hasOwnProperty.call(PROFILE_PERMISSION_MAP, key));
+  if (hasPermissions && (!requestedPermissions || Object.keys(requestedPermissions).length === 0 || hasUnknownPermission)) {
+    return json({ error: "La matriz de permisos no es valida." }, 400);
+  }
 
   if (temporaryPassword && temporaryPassword.length < 6) {
     return json({ error: "La contrasena debe tener al menos 6 caracteres." }, 400);
@@ -132,6 +151,16 @@ export async function onRequestPatch({ request, env }) {
   // habia marcado explicitamente).
   const priorProfile = await fetchErpProfile(env, userId);
   const isActive = hasEstado ? estado !== "Inactivo" : priorProfile ? Boolean(priorProfile.is_active) : true;
+  const priorPermissions = priorProfile ? permissionOverridesFromProfile(priorProfile) : null;
+  const permissionOverrides = hasPermissions
+    ? { ...(priorPermissions || {}), ...requestedPermissions }
+    : priorPermissions;
+  const proposedCanManageUsers = Object.prototype.hasOwnProperty.call(permissionOverrides || {}, "canManageUsers")
+    ? permissionOverrides.canManageUsers
+    : defaultPermissionsForRole(role).can_manage_users;
+  if (userId === requesterId && (!isActive || !proposedCanManageUsers)) {
+    return json({ error: "No puedes inactivar tu propio usuario ni retirarte el permiso de administrar usuarios." }, 400);
+  }
   const canReviewAccountsOverride = hasCanReviewAccounts
     ? Boolean(payload.canReviewAccounts)
     : priorProfile
@@ -150,6 +179,7 @@ export async function onRequestPatch({ request, env }) {
     isActive,
     canReviewAccountsOverride,
     canReviewAuditOverride,
+    permissionOverrides,
   });
   if (!profileResult.ok) {
     // Se aborta ANTES de tocar Auth: asi nunca queda "Auth actualizado pero
@@ -219,6 +249,7 @@ export async function onRequestPatch({ request, env }) {
           isActive: priorProfile.is_active,
           canReviewAccountsOverride: priorProfile.can_review_accounts,
           canReviewAuditOverride: priorProfile.can_review_audit,
+          permissionOverrides: permissionOverridesFromProfile(priorProfile),
         })
       : await deleteErpProfile(env, userId);
     if (!compensation.ok) {
@@ -264,6 +295,21 @@ export async function onRequestPatch({ request, env }) {
       note: `Contrasena temporal generada por ${requesterEmail} para ${body.email || currentUser.email}.`,
     }).catch(() => null);
   }
+
+  await insertAuditLog(env, {
+    tableName: "usuarios",
+    entityId: userId,
+    action: "update_user_permissions",
+    oldData: priorProfile
+      ? { role: priorProfile.role, isActive: priorProfile.is_active, permissions: priorPermissions }
+      : null,
+    newData: { role, isActive, permissions: permissionOverridesFromProfile(profileResult.profile) },
+    userId: requesterId,
+    userEmail: requesterEmail,
+    userRole: requesterRole,
+    success: true,
+    note: `Perfil y permisos actualizados por ${requesterEmail}.`,
+  }).catch(() => null);
 
   return json({
     user: toPublicUser(body, profileResult.profile),

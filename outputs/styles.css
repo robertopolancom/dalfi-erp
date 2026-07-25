@@ -656,6 +656,30 @@ textarea:focus {
   pointer-events: none;
 }
 
+.user-permissions {
+  min-width: 230px;
+}
+
+.user-permissions summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.user-permission-grid {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  white-space: nowrap;
+}
+
+.user-permission-grid label {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 13px;
+}
+
 .app-dialog {
   border: none;
   border-radius: 14px;
