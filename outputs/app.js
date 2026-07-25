@@ -1110,6 +1110,12 @@ function canManageInvoices() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageInvoices);
 }
 
+function canManageBilling() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageBilling);
+}
+
 function canManageReservations() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1225,7 +1231,7 @@ function invoiceOperationalDate(invoiceId) {
 }
 
 function canEditInvoice(invoiceId) {
-  if (!canManageInvoices()) return false;
+  if (!canManageBilling()) return false;
   return isClosingOpenForEdits(closingForDate(invoiceOperationalDate(invoiceId)));
 }
 
@@ -1968,7 +1974,7 @@ function refreshPendingClosingsForDate(date) {
 }
 
 function moveInvoicesBetweenDates(sourceDate, targetDate) {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede mover fechas de facturas.");
     return 0;
   }
@@ -2028,7 +2034,7 @@ function closingAllowsDateChange(sourceDate, targetDate) {
 }
 
 function changeInvoiceDate(invoiceId) {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede cambiar fechas de facturas.");
     return;
   }
@@ -2047,7 +2053,7 @@ function changeInvoiceDate(invoiceId) {
 }
 
 function updateInvoiceDateFromAdmin(invoiceId, targetDate) {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede cambiar fechas de facturas.");
     return;
   }
@@ -2065,7 +2071,7 @@ function updateInvoiceDateFromAdmin(invoiceId, targetDate) {
 }
 
 function moveBuggedJuly9InvoicesToJuly8() {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede mover fechas de facturas.");
     return;
   }
@@ -2708,7 +2714,7 @@ function findClientBySearchTerm(term) {
 let clientPendingReceiptReturn = null;
 
 function openClientReceiptFromBilling() {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede registrar cobros de cuentas por cobrar.");
     return;
   }
@@ -2774,7 +2780,7 @@ function renderInvoices() {
 function renderInvoiceAdmin() {
   const target = byId("invoice-admin-table");
   if (!target) return;
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     return renderEmpty(target, 6, "Solo administración o propietario puede usar este módulo.");
   }
   const query = normalize(byId("invoice-admin-search")?.value || "");
@@ -3416,7 +3422,7 @@ function receivableReceiptRows(query = "") {
 }
 
 function canManageReceivableReceipt(income) {
-  if (!canManageInvoices() || !income) return false;
+  if (!canManageBilling() || !income) return false;
   return isClosingOpenForEdits(closingForDate(dateOnly(income.fechaHora)));
 }
 
@@ -3460,6 +3466,10 @@ function renderPendingTransfers() {
 // dos veces la misma transferencia si otra sesion ya la proceso mientras el
 // dialogo estaba abierto.
 function openTransferConfirmDialog(cxcId) {
+  if (!canManageBilling()) {
+    alert("Tu usuario no está autorizado para confirmar transferencias.");
+    return;
+  }
   const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === cxcId);
   const dialog = byId("transfer-confirm-dialog");
   if (!cxc || !dialog) return;
@@ -3479,6 +3489,7 @@ function openTransferConfirmDialog(cxcId) {
 }
 
 function confirmPendingTransfer(cxcId, depositDate) {
+  if (!canManageBilling()) throw new Error("Tu usuario no está autorizado para confirmar transferencias.");
   const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === cxcId);
   if (!cxc) throw new Error("Esta transferencia ya no existe.");
   if (!DalfiClosingMath.canConfirmTransfer(cxc)) throw new Error("Esta transferencia ya fue confirmada.");
@@ -3506,6 +3517,10 @@ function confirmPendingTransfer(cxcId, depositDate) {
 }
 
 function handlePendingTransferAction(button, action) {
+  if (!canManageBilling()) {
+    alert("Tu usuario no está autorizado para modificar transferencias pendientes.");
+    return;
+  }
   const cxc = dbTable("cuentasCobrar").find((item) => item.cxCID === button.dataset.cxcId);
   if (!cxc) return;
   if (action === "confirm") {
@@ -5077,7 +5092,7 @@ function renderExpenses() {
 }
 
 function changeIncomeDate(incomeId) {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede cambiar fechas de ingresos.");
     return;
   }
@@ -5101,7 +5116,7 @@ function changeIncomeDate(incomeId) {
 }
 
 function voidReceivableReceipt(incomeId) {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede anular recibos de cobros.");
     return;
   }
@@ -10478,7 +10493,7 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
     clienteNombre: invoice.clienteNombre,
     fechaOperacion: currentDate,
   };
-  const targetDate = canManageInvoices() ? (byId("invoice-date")?.value || currentDate || today) : currentDate;
+  const targetDate = canManageBilling() ? (byId("invoice-date")?.value || currentDate || today) : currentDate;
   if (targetDate !== currentDate) {
     if (!canEditRecordDate(currentDate) || !canEditRecordDate(targetDate)) {
       alert("No se puede cambiar la fecha. El cierre origen o destino está confirmado; administración debe abrirlo primero.");
@@ -10577,7 +10592,7 @@ function openBillingView() {
 }
 
 function openAdminInvoiceEditor(invoiceId = "") {
-  if (!canManageInvoices()) {
+  if (!canManageBilling()) {
     alert("Solo administración o propietario puede usar edición especial de facturas.");
     return;
   }
@@ -10605,6 +10620,10 @@ function openSettingsFormFromInvoice(formId) {
 }
 
 function populateInvoiceFromReservation(reservationId) {
+  if (!canManageBilling()) {
+    alert("Tu usuario no está autorizado para facturar reservas.");
+    return;
+  }
   const { record: reservation } = reservationRecordById(reservationId);
   if (!reservation) return;
   activeReservationInvoiceId = reservationId;
@@ -11534,12 +11553,16 @@ function wireForms() {
   byId("invoice-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (invoiceSubmitInFlight) return;
+    if (!canManageBilling()) {
+      alert("Tu usuario no está autorizado para crear ni editar facturas.");
+      return;
+    }
     const client = byId("invoice-client-search").value.trim();
     const lines = getInvoiceLines().filter((line) => line.service && line.staff && line.qty > 0);
     const editId = byId("invoice-edit-id").value;
     if (!client || !lines.length) return;
     const payments = getPaymentLines().filter((payment) => payment.amount > 0);
-    const invoiceDate = canManageInvoices() ? (byId("invoice-date")?.value || today) : today;
+    const invoiceDate = canManageBilling() ? (byId("invoice-date")?.value || today) : today;
     if (!editId && !isClosingOpenForEdits(closingForDate(invoiceDate))) {
       alert("No se puede crear factura en esa fecha porque el cierre está confirmado. Administración debe abrir el cierre antes de registrar o editar.");
       byId("invoice-date")?.focus();
@@ -11990,7 +12013,7 @@ function wireForms() {
   byId("payment-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (paymentSubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManageBilling()) {
       alert("Solo administración o propietario puede registrar cobros de cuentas por cobrar.");
       return;
     }

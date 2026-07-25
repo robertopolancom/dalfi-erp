@@ -456,9 +456,9 @@ test("62-63. voidReceivableReceipt sigue emitiendo logAudit('void_receivable_rec
 
 // --- 64-65: permisos ---
 
-test("64-65. voidReceivableReceipt sigue exigiendo canManageInvoices() (nunca user_metadata) antes de evaluar el bloqueo de reversion", () => {
+test("64-65. voidReceivableReceipt exige canManageBilling() antes de evaluar el bloqueo de reversion", () => {
   const fnSource = extractFunction("voidReceivableReceipt");
-  const permIdx = fnSource.indexOf("if (!canManageInvoices())");
+  const permIdx = fnSource.indexOf("if (!canManageBilling())");
   const blockIdx = fnSource.indexOf("const blockedReason =");
   assert.ok(permIdx >= 0 && permIdx < blockIdx);
 });

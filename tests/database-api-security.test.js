@@ -28,6 +28,7 @@ function profile(overrides = {}) {
     can_confirm_treasury_closings: false,
     can_manage_users: false,
     can_manage_invoices: false,
+    can_manage_billing: false,
     can_manage_reservations: true,
     can_reopen_closings: false,
     ...overrides,
@@ -113,12 +114,12 @@ test("GET rechaza perfil inactivo antes de leer el documento", async () => {
   }
 });
 
-test("operador activo guarda facturacion y el servidor genera auditoria minima", async () => {
+test("usuario con permiso de facturacion guarda y el servidor genera auditoria minima", async () => {
   const { onRequestPut } = await import(apiUrl);
   const current = baseDocument();
   const proposed = structuredClone(current);
   proposed.data.facturas.push({ facturaID: "F-1", total: 100 });
-  const fake = fakeSupabase({ document: current });
+  const fake = fakeSupabase({ document: current, profileRow: profile({ can_manage_billing: true }) });
   try {
     const response = await onRequestPut({
       request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
@@ -131,6 +132,24 @@ test("operador activo guarda facturacion y el servidor genera auditoria minima",
     const auditBody = JSON.parse(audit.body);
     assert.deepStrictEqual(auditBody.new_data, { domains: ["facturacion"], tables: ["facturas"], envelope: [] });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(auditBody.new_data, "data"), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("sin permiso de facturacion no se puede manipular facturas mediante una llamada directa", async () => {
+  const { onRequestPut } = await import(apiUrl);
+  const current = baseDocument();
+  const proposed = structuredClone(current);
+  proposed.data.facturas.push({ facturaID: "F-BLOCKED", total: 100 });
+  const fake = fakeSupabase({ document: current, profileRow: profile({ can_manage_billing: false }) });
+  try {
+    const response = await onRequestPut({
+      request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
+      env: ENV,
+    });
+    assert.strictEqual(response.status, 403);
+    assert.ok(!fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
   } finally {
     fake.restore();
   }
@@ -175,7 +194,7 @@ test("operador no puede cambiar nomina y nunca alcanza el RPC", async () => {
   const current = baseDocument();
   const proposed = structuredClone(current);
   proposed.data.nomina.push({ nominaID: "N-1", total: 50000 });
-  const fake = fakeSupabase({ document: current });
+  const fake = fakeSupabase({ document: current, profileRow: profile({ can_manage_billing: true }) });
   try {
     const response = await onRequestPut({
       request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
@@ -249,7 +268,7 @@ test("operador puede guardar efectos append-only de inventario ligados a una fac
   const proposed = structuredClone(current);
   proposed.data.facturas.push({ facturaID: "F-3" });
   proposed.data.inventarioMovimientos.push({ movementId: "M-1", sourceId: "F-3" });
-  const fake = fakeSupabase({ document: current });
+  const fake = fakeSupabase({ document: current, profileRow: profile({ can_manage_billing: true }) });
   try {
     const response = await onRequestPut({
       request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
@@ -284,7 +303,7 @@ test("operador no puede editar movimientos de inventario existentes aunque tambi
 
 test("administracion cambia inventario, pero no puede introducir tablas desconocidas", async () => {
   const { onRequestPut } = await import(apiUrl);
-  const admin = profile({ role: "administradora", can_manage_invoices: true });
+  const admin = profile({ role: "administradora", can_manage_invoices: true, can_manage_billing: true });
   const current = baseDocument();
   const inventoryChange = structuredClone(current);
   inventoryChange.data.inventario.push({ itemID: "I-1" });

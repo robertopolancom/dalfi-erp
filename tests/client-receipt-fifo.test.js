@@ -284,9 +284,9 @@ test("las funciones nuevas del cobro general existen: openClientReceiptFromBilli
   });
 });
 
-test("openClientReceiptFromBilling(): exige permiso via canManageInvoices() antes de abrir el formulario", () => {
+test("openClientReceiptFromBilling(): exige permiso via canManageBilling() antes de abrir el formulario", () => {
   const source = extractFunction("openClientReceiptFromBilling");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManageBilling\(\)/);
   assert.match(source, /alert\(/);
 });
 
@@ -356,9 +356,9 @@ function extractStatementBlock(startMarker, throughMarker, source = appJs) {
   return source.slice(startIdx, end);
 }
 
-test("el submit de #payment-form usa canManageInvoices() (erpProfile.permissions), nunca user_metadata", () => {
+test("el submit de #payment-form usa canManageBilling() (erpProfile.permissions), nunca user_metadata", () => {
   const source = extractPaymentSubmitHandler();
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManageBilling\(\)/);
   assert.doesNotMatch(source, /user_metadata/);
 });
 

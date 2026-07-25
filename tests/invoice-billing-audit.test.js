@@ -189,7 +189,7 @@ test("voidReceivableReceipt(): ahora registra una entrada explicita de auditoria
 
 test("voidReceivableReceipt(): sigue exigiendo permiso y exigiendo confirmacion explicita antes de reversar (sin cambios de comportamiento previo)", () => {
   const fnSource = extractFunction("voidReceivableReceipt");
-  assert.match(fnSource, /if \(!canManageInvoices\(\)\) \{/);
+  assert.match(fnSource, /if \(!canManageBilling\(\)\) \{/);
   assert.match(fnSource, /if \(!confirm\(`Anular el recibo \$\{incomeId\}/);
 });
 
@@ -234,8 +234,9 @@ test("computeInvoiceBreakdown(): nunca produce NaN, incluso con entradas invalid
   assert.strictEqual(breakdown.estaPagada, true);
 });
 
-test("permisos: la creacion/edicion de factura sigue exigiendo canManageInvoices() (nunca user_metadata) para la fecha administrativa", () => {
-  assert.match(submitHandler, /const invoiceDate = canManageInvoices\(\) \? \(byId\("invoice-date"\)\?\.value \|\| today\) : today;/);
+test("permisos: la creacion/edicion de factura exige canManageBilling() (nunca user_metadata)", () => {
+  assert.match(submitHandler, /if \(!canManageBilling\(\)\) \{/);
+  assert.match(submitHandler, /const invoiceDate = canManageBilling\(\) \? \(byId\("invoice-date"\)\?\.value \|\| today\) : today;/);
 });
 
 test("permisos: currentUserRole() documenta explicitamente que user_metadata.role es solo un respaldo VISUAL, nunca para autorizar", () => {

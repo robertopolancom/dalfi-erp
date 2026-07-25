@@ -41,6 +41,7 @@ test("defaultPermissionsForRole: operador no recibe NINGUN permiso administrativ
   const permissions = defaultPermissionsForRole("operador");
   assert.strictEqual(permissions.can_manage_users, false);
   assert.strictEqual(permissions.can_manage_invoices, false);
+  assert.strictEqual(permissions.can_manage_billing, false);
   assert.strictEqual(permissions.can_manage_reservations, true);
   assert.strictEqual(permissions.can_confirm_register_closings, false);
   assert.strictEqual(permissions.can_confirm_treasury_closings, false);
@@ -58,6 +59,7 @@ test("defaultPermissionsForRole: administradora/propietario reciben todos los pe
     const permissions = defaultPermissionsForRole(role);
     assert.strictEqual(permissions.can_manage_users, true, role);
     assert.strictEqual(permissions.can_manage_invoices, true, role);
+    assert.strictEqual(permissions.can_manage_billing, true, role);
     assert.strictEqual(permissions.can_manage_reservations, true, role);
     assert.strictEqual(permissions.can_confirm_register_closings, true, role);
     assert.strictEqual(permissions.can_confirm_treasury_closings, true, role);
@@ -75,6 +77,7 @@ test("defaultPermissionsForRole: contador/contadora revisan cuentas y auditoria 
     assert.strictEqual(permissions.can_review_audit, true, role);
     assert.strictEqual(permissions.can_manage_users, false, role);
     assert.strictEqual(permissions.can_manage_invoices, false, role);
+    assert.strictEqual(permissions.can_manage_billing, false, role);
     assert.strictEqual(permissions.can_manage_reservations, false, role);
     assert.strictEqual(permissions.can_confirm_register_closings, false, role);
     assert.strictEqual(permissions.can_confirm_treasury_closings, false, role);

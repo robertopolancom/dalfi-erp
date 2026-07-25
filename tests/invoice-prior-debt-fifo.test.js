@@ -400,7 +400,7 @@ test("mapReceivablesForAllocation (reutilizada aqui) usa defaults seguros: filas
   assert.match(source, /cxc\.esPropinaPendiente \? "tip" : "base"/);
 });
 
-test("el submit de #invoice-form sigue exigiendo permisos de administracion para elegir la fecha (canManageInvoices), sin tocar user_metadata", () => {
-  assert.match(submitHandler, /canManageInvoices\(\)/);
+test("el submit de #invoice-form exige el permiso especifico canManageBilling, sin tocar user_metadata", () => {
+  assert.match(submitHandler, /canManageBilling\(\)/);
   assert.doesNotMatch(submitHandler, /user_metadata/);
 });
