@@ -45,6 +45,7 @@ test("defaultPermissionsForRole: operador no recibe NINGUN permiso administrativ
   assert.strictEqual(permissions.can_manage_inventory, false);
   assert.strictEqual(permissions.can_manage_payroll, false);
   assert.strictEqual(permissions.can_manage_accounts, false);
+  assert.strictEqual(permissions.can_manage_configuration, false);
   assert.strictEqual(permissions.can_manage_reservations, true);
   assert.strictEqual(permissions.can_confirm_register_closings, false);
   assert.strictEqual(permissions.can_confirm_treasury_closings, false);
@@ -66,6 +67,7 @@ test("defaultPermissionsForRole: administradora/propietario reciben todos los pe
     assert.strictEqual(permissions.can_manage_inventory, true, role);
     assert.strictEqual(permissions.can_manage_payroll, true, role);
     assert.strictEqual(permissions.can_manage_accounts, true, role);
+    assert.strictEqual(permissions.can_manage_configuration, true, role);
     assert.strictEqual(permissions.can_manage_reservations, true, role);
     assert.strictEqual(permissions.can_confirm_register_closings, true, role);
     assert.strictEqual(permissions.can_confirm_treasury_closings, true, role);
@@ -87,6 +89,7 @@ test("defaultPermissionsForRole: contador/contadora revisan cuentas y auditoria 
     assert.strictEqual(permissions.can_manage_inventory, false, role);
     assert.strictEqual(permissions.can_manage_payroll, false, role);
     assert.strictEqual(permissions.can_manage_accounts, false, role);
+    assert.strictEqual(permissions.can_manage_configuration, false, role);
     assert.strictEqual(permissions.can_manage_reservations, false, role);
     assert.strictEqual(permissions.can_confirm_register_closings, false, role);
     assert.strictEqual(permissions.can_confirm_treasury_closings, false, role);

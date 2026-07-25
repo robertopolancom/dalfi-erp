@@ -495,7 +495,22 @@ function updateSyncStatus(message, mode = "") {
 // que tenga abierto voluntariamente en ese momento (updateAuthUi() completo
 // sí lo cerraría — ver el bloque "else if (connected)" mas abajo).
 function updatePrivilegeVisibility() {
-  const canManage = canManageInvoices();
+  const permissions = erpProfile?.isActive ? erpProfile.permissions || {} : {};
+  const canManage =
+    !supabaseClient ||
+    !supabaseSession ||
+    Boolean(
+      permissions.canManageUsers ||
+      permissions.canManageBilling ||
+      permissions.canManageInventory ||
+      permissions.canManagePayroll ||
+      permissions.canManageAccounts ||
+      permissions.canManageConfiguration ||
+      permissions.canManageReservations ||
+      permissions.canConfirmRegisterClosings ||
+      permissions.canConfirmTreasuryClosings ||
+      permissions.canReopenClosings,
+    );
   document.querySelectorAll(".admin-only").forEach((item) => item.classList.toggle("hidden", !canManage));
   document.querySelectorAll(".accounts-review-only").forEach((item) => item.classList.toggle("hidden", !canReviewAccountsUser()));
 }
@@ -1134,6 +1149,12 @@ function canManageAccounts() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageAccounts);
 }
 
+function canManageConfiguration() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageConfiguration);
+}
+
 function canManageReservations() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1254,7 +1275,7 @@ function canEditInvoice(invoiceId) {
 }
 
 function canEditRecordDate(date) {
-  if (!canManageInvoices()) return false;
+  if (!canManageBilling()) return false;
   return isClosingOpenForEdits(closingForDate(date));
 }
 
@@ -10069,6 +10090,13 @@ function closeDataForms() {
   document.querySelectorAll(".data-entry-form").forEach((form) => form.classList.remove("active"));
 }
 
+function canManageSettingsTable(table) {
+  if (table === "clientes") return canManageBilling();
+  if (["colaboradores", "umbralesComision", "configuracionTSS"].includes(table)) return canManagePayroll();
+  if (["cuentas", "procesadores"].includes(table)) return canManageAccounts();
+  return canManageConfiguration();
+}
+
 function fillDataForm(type, id) {
   if (type === "client") {
     const client = dbTable("clientes").find((row) => row.clienteID === id);
@@ -11328,6 +11356,10 @@ function updateExpenseBalancePreview() {
 function wireForms() {
   const saveClientCatalog = (event) => {
     event.preventDefault();
+    if (!canManageBilling()) {
+      alert("Tu usuario no está autorizado para crear ni editar clientes.");
+      return;
+    }
     const firstName = byId("client-first-name").value.trim();
     const lastName = byId("client-last-name").value.trim();
     const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
@@ -11563,6 +11595,10 @@ function wireForms() {
       return;
     }
     if (statusButton) {
+      if (!canManageSettingsTable(statusButton.dataset.table)) {
+        alert("Tu usuario no está autorizado para modificar este catálogo.");
+        return;
+      }
       const row = dbTable(statusButton.dataset.table).find((item) => item[statusButton.dataset.idField] === statusButton.dataset.id);
       if (!row) return;
       row.estado = row.estado === "Inactivo" ? "Activo" : "Inactivo";
@@ -15456,6 +15492,10 @@ function wireForms() {
 
   byId("service-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!canManageConfiguration()) {
+      alert("Tu usuario no está autorizado para crear ni editar servicios.");
+      return;
+    }
     const name = byId("service-name").value.trim();
     if (!name) return;
     const editId = byId("service-edit-id").value;

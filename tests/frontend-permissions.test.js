@@ -40,7 +40,7 @@ function extractFunction(name) {
   return extracted.slice(match.index, end);
 }
 
-const permissionsSource = ["canManageInvoices", "canManageBilling", "canManageInventory", "canManagePayroll", "canManageAccounts", "canManageReservations", "canConfirmClosings", "canReviewAccountsUser"]
+const permissionsSource = ["canManageInvoices", "canManageBilling", "canManageInventory", "canManagePayroll", "canManageAccounts", "canManageConfiguration", "canManageReservations", "canConfirmClosings", "canReviewAccountsUser"]
   .map(extractFunction)
   .join("\n\n");
 
@@ -64,6 +64,7 @@ function fullPermissions() {
     canManageInventory: true,
     canManagePayroll: true,
     canManageAccounts: true,
+    canManageConfiguration: true,
     canManageReservations: true,
     canReopenClosings: true,
   };
@@ -82,6 +83,7 @@ function noPermissions() {
     canManageInventory: false,
     canManagePayroll: false,
     canManageAccounts: false,
+    canManageConfiguration: false,
     canManageReservations: false,
     canReopenClosings: false,
   };
@@ -99,6 +101,7 @@ test("canManageInvoices/canConfirmClosings/canReviewAccountsUser: mientras /api/
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
   assert.strictEqual(sandbox.canManageAccounts(), false);
+  assert.strictEqual(sandbox.canManageConfiguration(), false);
   assert.strictEqual(sandbox.canConfirmClosings(), false);
   assert.strictEqual(sandbox.canReviewAccountsUser(), false);
 });
@@ -115,6 +118,7 @@ test("canManageInvoices/canConfirmClosings/canReviewAccountsUser: si /api/me fal
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
   assert.strictEqual(sandbox.canManageAccounts(), false);
+  assert.strictEqual(sandbox.canManageConfiguration(), false);
   assert.strictEqual(sandbox.canConfirmClosings(), false);
   assert.strictEqual(sandbox.canReviewAccountsUser(), false);
 });
@@ -131,6 +135,7 @@ test("un operador (perfil cargado, sin permisos) no puede administrar facturas, 
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
   assert.strictEqual(sandbox.canManageAccounts(), false);
+  assert.strictEqual(sandbox.canManageConfiguration(), false);
   assert.strictEqual(sandbox.canConfirmClosings(), false);
   assert.strictEqual(sandbox.canReviewAccountsUser(), false);
 });
@@ -147,6 +152,7 @@ test("una administradora con permisos SI puede administrar facturas, confirmar c
   assert.strictEqual(sandbox.canManageInventory(), true);
   assert.strictEqual(sandbox.canManagePayroll(), true);
   assert.strictEqual(sandbox.canManageAccounts(), true);
+  assert.strictEqual(sandbox.canManageConfiguration(), true);
   assert.strictEqual(sandbox.canConfirmClosings(), true);
   assert.strictEqual(sandbox.canReviewAccountsUser(), true);
 });
@@ -163,6 +169,7 @@ test("un perfil inactivo (is_active=false) nunca autoriza, aunque los permisos v
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
   assert.strictEqual(sandbox.canManageAccounts(), false);
+  assert.strictEqual(sandbox.canManageConfiguration(), false);
   assert.strictEqual(sandbox.canConfirmClosings(), false);
   assert.strictEqual(sandbox.canReviewAccountsUser(), false);
 });
@@ -179,6 +186,7 @@ test("modo local sin Supabase configurado (sin cliente/sesion): conserva el comp
   assert.strictEqual(sandbox.canManageInventory(), true);
   assert.strictEqual(sandbox.canManagePayroll(), true);
   assert.strictEqual(sandbox.canManageAccounts(), true);
+  assert.strictEqual(sandbox.canManageConfiguration(), true);
   assert.strictEqual(sandbox.canConfirmClosings(), true);
   assert.strictEqual(sandbox.canReviewAccountsUser(), true);
 });
@@ -200,5 +208,6 @@ test("contador/contadora: puede revisar cuentas pero NO confirmar cierres ni adm
   assert.strictEqual(sandbox.canManageInventory(), false);
   assert.strictEqual(sandbox.canManagePayroll(), false);
   assert.strictEqual(sandbox.canManageAccounts(), false);
+  assert.strictEqual(sandbox.canManageConfiguration(), false);
   assert.strictEqual(sandbox.canConfirmClosings(), false);
 });

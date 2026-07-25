@@ -198,8 +198,9 @@ export function authorizeDatabaseChanges(identity, changes) {
   if (changes.domains.includes("cuentas") && !permissions.canManageAccounts) {
     return { allowed: false, reason: "missing_accounts_permission", permissions: ["canManageAccounts"] };
   }
-  if (permissions.canManageInvoices) return { allowed: true };
-
+  if (changes.domains.includes("configuracion") && !permissions.canManageConfiguration) {
+    return { allowed: false, reason: "missing_configuration_permission", permissions: ["canManageConfiguration"] };
+  }
   const appendOnlyBillingTables = new Set([
     "facturas",
     "facturaDetalle",
@@ -226,6 +227,7 @@ export function authorizeDatabaseChanges(identity, changes) {
     if (domain === "inventario" && (inventoryIsInvoiceSideEffect || permissions.canManageInventory)) return false;
     if (domain === "nomina" && permissions.canManagePayroll) return false;
     if (domain === "cuentas" && permissions.canManageAccounts) return false;
+    if (domain === "configuracion" && permissions.canManageConfiguration) return false;
     if (domain === "cierres") return false;
     return true;
   });
