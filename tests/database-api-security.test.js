@@ -29,6 +29,7 @@ function profile(overrides = {}) {
     can_manage_users: false,
     can_manage_invoices: false,
     can_manage_billing: false,
+    can_manage_inventory: false,
     can_manage_reservations: true,
     can_reopen_closings: false,
     ...overrides,
@@ -301,9 +302,14 @@ test("operador no puede editar movimientos de inventario existentes aunque tambi
   }
 });
 
-test("administracion cambia inventario, pero no puede introducir tablas desconocidas", async () => {
+test("permiso especifico permite inventario sin canManageInvoices, pero nunca tablas desconocidas", async () => {
   const { onRequestPut } = await import(apiUrl);
-  const admin = profile({ role: "administradora", can_manage_invoices: true, can_manage_billing: true });
+  const admin = profile({
+    role: "operador",
+    can_manage_invoices: false,
+    can_manage_billing: false,
+    can_manage_inventory: true,
+  });
   const current = baseDocument();
   const inventoryChange = structuredClone(current);
   inventoryChange.data.inventario.push({ itemID: "I-1" });

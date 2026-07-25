@@ -88,7 +88,7 @@ const recipeSubmit = extractStatementBlock('byId("recipe-form").addEventListener
 // ===========================================================================
 
 test("1-2. crear articulo exige permiso; SKU duplicado en un registro NUEVO se rechaza (defecto real corregido: antes se trataba como edicion silenciosa)", () => {
-  assert.match(inventorySubmit, /canManageInvoices\(\)/);
+  assert.match(inventorySubmit, /canManageInventory\(\)/);
   assert.match(inventorySubmit, /if \(existingBySku && existingBySku\.itemID !== editId\) \{/);
 });
 
@@ -235,7 +235,7 @@ test("36. el formulario de transferencia valida existencia disponible en el orig
 });
 
 test("transferir exige permiso", () => {
-  assert.match(transferSubmit, /canManageInvoices\(\)/);
+  assert.match(transferSubmit, /canManageInventory\(\)/);
 });
 
 // ===========================================================================
@@ -248,8 +248,8 @@ test("54. implemento no se consume por servicio (ya cubierto en categoria A, se 
 
 test("57-58. crear activo exige permiso y asignar custodio también", () => {
   const assetSubmit = extractStatementBlock('byId("asset-form").addEventListener("submit"', "(event) => {", appJs);
-  assert.match(assetSubmit, /canManageInvoices\(\)/);
-  assert.match(custodySubmit, /canManageInvoices\(\)/);
+  assert.match(assetSubmit, /canManageInventory\(\)/);
+  assert.match(custodySubmit, /canManageInventory\(\)/);
 });
 
 test("59. impedir doble custodia: asignar una nueva custodia cierra automáticamente la anterior (nunca quedan dos activas a la vez)", () => {
@@ -314,7 +314,7 @@ test("75-76-77. pago parcial, total y sobrepago bloqueado en el pago a suplidor"
 });
 
 test("compra exige permiso y guardia de doble-submit", () => {
-  assert.match(purchaseSubmit, /canManageInvoices\(\)/);
+  assert.match(purchaseSubmit, /canManageInventory\(\)/);
   assert.match(appJs, /let purchaseSubmitInFlight = false;/);
   assert.match(purchaseSubmit, /if \(purchaseSubmitInFlight\) return;/);
 });
@@ -477,7 +477,7 @@ test("128. ubicacion seleccionada bajo minimo / sin existencia suficiente: el pr
 });
 
 test("venta de productos exige permiso, guardia de doble-submit, ubicacion seleccionada por linea, y bloquea si no hay existencia suficiente (nunca descuenta otra ubicación distinta a la elegida)", () => {
-  assert.match(retailSaleSubmit, /canManageInvoices\(\)/);
+  assert.match(retailSaleSubmit, /canManageInventory\(\)/);
   assert.match(appJs, /let retailSaleSubmitInFlight = false;/);
   assert.match(retailSaleSubmit, /if \(!preflight\.allowed\) \{/);
   assert.match(retailSaleSubmit, /missingLocation/);
@@ -544,9 +544,9 @@ test("143-144. splitInvoiceLineTax es pura (no lee el DOM, no persiste) y nunca 
 // R. Seguridad
 // ===========================================================================
 
-test("154-155. cada accion financiera exige canManageInvoices(): compras, pagos a suplidor, transferencias, ajustes, activos, custodias, ventas", () => {
+test("154-155. cada accion de inventario exige canManageInventory()", () => {
   [inventorySubmit, purchaseSubmit, supplierPaySubmit, transferSubmit, lossSubmit, countSubmit, retailSaleSubmit, custodySubmit, assetEventSubmit, recipeSubmit].forEach((block) => {
-    assert.match(block, /canManageInvoices\(\)/);
+    assert.match(block, /canManageInventory\(\)/);
   });
 });
 
@@ -558,7 +558,7 @@ test("158. user_metadata jamas se usa como autorizacion en ningun formulario nue
 
 test("159. las funciones internas (no solo los botones) estan protegidas: openSupplierPayForm exige permiso antes de abrir el formulario", () => {
   const source = extractFunction("openSupplierPayForm");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManageInventory\(\)/);
 });
 
 // ===========================================================================
@@ -675,7 +675,7 @@ test("costo/margen directo por servicio se congela en el detalle de factura al c
 
 test("confirmPendingServiceConsumption exige permiso, nunca borra el registro pendiente (lo marca Confirmado/Con errores) y reutiliza el MISMO sourceKey que el consumo directo (nunca duplica)", () => {
   const source = extractFunction("confirmPendingServiceConsumption");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManageInventory\(\)/);
   assert.doesNotMatch(source, /dbTable\("consumosPendientes"\)\.splice/);
   assert.match(source, /pending\.estado = errors\.length \? "Con errores" : "Confirmado";/);
 });
@@ -777,7 +777,7 @@ test("cliente es obligatorio SOLO para credito, transferencia pendiente o balanc
 
 test("reverseRetailSale exige permiso, motivo, bloquea si ya hay cobros aplicados a su CxC, y bloquea una segunda reversion (reversalMovements vacio)", () => {
   const source = extractFunction("reverseRetailSale");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManageInventory\(\)/);
   assert.match(source, /const reason = prompt\(/);
   assert.match(source, /alreadyCollected/);
   assert.match(source, /if \(!reversal\.reversalMovements\.length\) \{/);

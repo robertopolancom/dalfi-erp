@@ -518,9 +518,9 @@ test("51. justifyStationAudit(): bloquea si falta explicacion de CUALQUIER varia
   assert.match(source, /line\.classification !== "within_tolerance" && !explanations\[line\.itemId\] && !audit\.explanations\?\.\[line\.itemId\]/);
 });
 
-test("52. confirmStationAudit(): exige canManageInvoices(), usa buildInventoryAuditAdjustmentPlan, y NUNCA crea egreso ni CxC", () => {
+test("52. confirmStationAudit(): exige canManageInventory(), usa buildInventoryAuditAdjustmentPlan, y NUNCA crea egreso ni CxC", () => {
   const source = extractFunction("confirmStationAudit");
-  assert.match(source, /if \(!canManageInvoices\(\)\) return/);
+  assert.match(source, /if \(!canManageInventory\(\)\) return/);
   assert.match(source, /buildInventoryAuditAdjustmentPlan\(/);
   assert.doesNotMatch(source, /dbTable\("egresos"\)|dbTable\("cuentasCobrar"\)/);
 });
@@ -574,14 +574,14 @@ test("58. academy_inventory_audit_opened y academy_inventory_audit_confirmed se 
 // G. Seguridad e integracion / compatibilidad historica
 // ===========================================================================
 
-test("59. todas las acciones nuevas de inventario (Academia, salidas internas, auditoria de mesa) exigen canManageInvoices() o canReopenClosings(), nunca user_metadata", () => {
+test("59. las acciones nuevas de inventario exigen canManageInventory() o canReopenClosings(), nunca user_metadata", () => {
   [
     "internal-issue-form", "academy-consumption-form", "station-audit-form", "station-delivery-form", "academy-audit-form",
   ].forEach((formId) => {
     const from = appJs.indexOf(`byId("${formId}").addEventListener("submit"`);
     assert.ok(from !== -1, formId);
     const block = appJs.slice(from, from + 400);
-    assert.match(block, /canManageInvoices\(\)/, formId);
+    assert.match(block, /canManageInventory\(\)/, formId);
     assert.doesNotMatch(block, /user_metadata/, formId);
   });
 });

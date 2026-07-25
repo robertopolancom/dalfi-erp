@@ -175,11 +175,22 @@ export function authorizeDatabaseChanges(identity, changes) {
   }
 
   const permissions = identity.permissions || {};
+  const operationalInventorySideEffects = new Set(["inventarioMovimientos", "consumosPendientes"]);
+  const inventoryTablesChanged = changes.changedTables.filter((table) => TABLE_DOMAIN.get(table) === "inventario");
+  const inventoryIsInvoiceSideEffect =
+    changes.changedTables.includes("facturas") &&
+    inventoryTablesChanged.length > 0 &&
+    inventoryTablesChanged.every(
+      (table) => operationalInventorySideEffects.has(table) && changes.appendOnlyTables.includes(table),
+    );
   if (changes.domains.includes("reservas") && !permissions.canManageReservations) {
     return { allowed: false, reason: "missing_reservation_permission", permissions: ["canManageReservations"] };
   }
   if (changes.domains.includes("facturacion") && !permissions.canManageBilling) {
     return { allowed: false, reason: "missing_billing_permission", permissions: ["canManageBilling"] };
+  }
+  if (changes.domains.includes("inventario") && !inventoryIsInvoiceSideEffect && !permissions.canManageInventory) {
+    return { allowed: false, reason: "missing_inventory_permission", permissions: ["canManageInventory"] };
   }
   if (permissions.canManageInvoices) return { allowed: true };
 
@@ -204,18 +215,9 @@ export function authorizeDatabaseChanges(identity, changes) {
     return { allowed: false, reason: "missing_closing_permissions", permissions: missingClosingPermissions };
   }
 
-  const operationalInventorySideEffects = new Set(["inventarioMovimientos", "consumosPendientes"]);
-  const inventoryTablesChanged = changes.changedTables.filter((table) => TABLE_DOMAIN.get(table) === "inventario");
-  const inventoryIsInvoiceSideEffect =
-    changes.changedTables.includes("facturas") &&
-    inventoryTablesChanged.length > 0 &&
-    inventoryTablesChanged.every(
-      (table) => operationalInventorySideEffects.has(table) && changes.appendOnlyTables.includes(table),
-    );
-
   const deniedDomains = changes.domains.filter((domain) => {
     if (domain === "facturacion" || domain === "reservas") return false;
-    if (domain === "inventario" && inventoryIsInvoiceSideEffect) return false;
+    if (domain === "inventario" && (inventoryIsInvoiceSideEffect || permissions.canManageInventory)) return false;
     if (domain === "cierres") return false;
     return true;
   });

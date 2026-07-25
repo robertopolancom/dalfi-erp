@@ -1116,6 +1116,12 @@ function canManageBilling() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageBilling);
 }
 
+function canManageInventory() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageInventory);
+}
+
 function canManageReservations() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -5790,7 +5796,7 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
 // el registro pendiente: lo marca Confirmado (o "Con errores" si algo no
 // se pudo aplicar, nunca lo oculta).
 function confirmPendingServiceConsumption(pendingId) {
-  if (!canManageInvoices()) {
+  if (!canManageInventory()) {
     alert("Solo administración o propietario puede confirmar un consumo pendiente.");
     return null;
   }
@@ -5833,7 +5839,7 @@ function confirmPendingServiceConsumption(pendingId) {
 
 // Abre el panel "Pagar a suplidor" para una CxP especifica.
 function openSupplierPayForm(payableId) {
-  if (!canManageInvoices()) {
+  if (!canManageInventory()) {
     alert("Solo administración o propietario puede pagar a suplidores.");
     return;
   }
@@ -6395,7 +6401,7 @@ function justifyStationAudit(auditId, { explanations = {}, reviewer = "" } = {})
 // real, sourceKey estable (idempotente por construccion vía
 // buildInventoryAuditAdjustmentPlan). Nunca crea egreso ni CxC.
 function confirmStationAudit(auditId, { approvedBy = "" } = {}) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para confirmar auditorías de mesa." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para confirmar auditorías de mesa." };
   const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === auditId);
   if (!audit) return { ok: false, error: "Auditoría no encontrada." };
   if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Confirmada")) {
@@ -6706,7 +6712,7 @@ function renderInventoryAlerts() {
 // --- Minimos y reposicion por mesa (secciones 6-7) ---
 
 function saveStationInventoryRule({ ruleId = "", stationId, itemId, minimumStock, targetStock, observation = "" } = {}) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para configurar mínimos por mesa." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para configurar mínimos por mesa." };
   if (!stationId || !itemId) return { ok: false, error: "Selecciona mesa y artículo." };
   const min = Math.max(0, Number(minimumStock) || 0);
   const target = Math.max(0, Number(targetStock) || 0);
@@ -6742,7 +6748,7 @@ function saveStationInventoryRule({ ruleId = "", stationId, itemId, minimumStock
 }
 
 function deactivateStationInventoryRule(ruleId) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para desactivar reglas de mínimo por mesa." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para desactivar reglas de mínimo por mesa." };
   const rule = dbTable("stationInventoryRules").find((row) => row.ruleId === ruleId);
   if (!rule) return { ok: false, error: "Regla no encontrada." };
   rule.active = false;
@@ -6887,7 +6893,7 @@ const LOT_MANUAL_TRANSITIONS = {
 };
 
 function changeInventoryLotStatus(lotId, nextStatus, { reason = "" } = {}) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para modificar el estado de un lote." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para modificar el estado de un lote." };
   const lot = dbTable("lotesInventario").find((row) => row.lotId === lotId);
   if (!lot) return { ok: false, error: "Lote no encontrado." };
   const current = lotWithDerivedFields(lot).status;
@@ -6955,7 +6961,7 @@ function showLotMovements(lotId) {
 // --- Reglas de consumo anormal de activos (secciones 12-13) ---
 
 function saveAssetConsumptionRule({ ruleId = "", assetId = "", assetCategory = "", itemId = "", periodType = "monthly", maximumQuantity = "", maximumCost = "", observation = "" } = {}) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para configurar reglas de consumo de activos." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para configurar reglas de consumo de activos." };
   if (!assetId && !assetCategory) return { ok: false, error: "Indica un activo específico o una categoría." };
   if (maximumQuantity === "" && maximumCost === "") return { ok: false, error: "Indica un máximo de cantidad y/o de costo." };
   const table = dbTable("assetConsumptionRules");
@@ -6988,7 +6994,7 @@ function saveAssetConsumptionRule({ ruleId = "", assetId = "", assetCategory = "
 }
 
 function deactivateAssetConsumptionRule(ruleId) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado." };
   const rule = dbTable("assetConsumptionRules").find((row) => row.ruleId === ruleId);
   if (!rule) return { ok: false, error: "Regla no encontrada." };
   rule.active = false;
@@ -7167,7 +7173,7 @@ function buildCollaboratorInventoryAuditReport({ start, end, stationId = "", ite
 // funcion NUNCA lo modifica, solo agrega un registro informativo aparte en
 // distribucionesVariacionMesa). Nunca crea CxC ni sancion.
 function applySharedStationVarianceDistribution({ stationAuditId, itemId, mode, allocations, reason, allocatedBy }) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para distribuir variación compartida de mesa." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para distribuir variación compartida de mesa." };
   const audit = dbTable("auditoriasMesa").find((row) => row.stationAuditId === stationAuditId);
   if (!audit) return { ok: false, error: "Auditoría no encontrada." };
   if ((audit.collaboratorIds || []).length < 2) return { ok: false, error: "Esta mesa no es compartida (una sola colaboradora)." };
@@ -7420,7 +7426,7 @@ function justifyAcademyAudit(auditId, { explanations = {}, reviewer = "" } = {})
 }
 
 function confirmAcademyAudit(auditId, { approvedBy = "" } = {}) {
-  if (!canManageInvoices()) return { ok: false, error: "No autorizado para confirmar auditorías de Academia." };
+  if (!canManageInventory()) return { ok: false, error: "No autorizado para confirmar auditorías de Academia." };
   const audit = dbTable("auditoriasAcademia").find((row) => row.academyAuditId === auditId);
   if (!audit) return { ok: false, error: "Auditoría no encontrada." };
   if (!DalfiClosingMath.canTransitionInventoryAuditStatus(audit.status, "Confirmada")) {
@@ -7892,7 +7898,7 @@ function renderRetailSales() {
     ? rows
         .map((row) => {
           const reversed = row.estado === "Revertida";
-          const canReverse = !reversed && row.retailSaleId && canManageInvoices();
+          const canReverse = !reversed && row.retailSaleId && canManageInventory();
           return `<div class="list-item${reversed ? " danger" : ""}"><span>${row.itemNombre}${reversed ? " (Revertida)" : ""}</span><span>${dateOnly(row.fecha) || ""} · ${row.cantidad} · ${money.format(Number(row.total) || 0)}${canReverse ? ` <button type="button" class="secondary-btn compact reverse-retail-sale" data-retail-sale-id="${row.retailSaleId}">Anular</button>` : ""}</span></div>`;
         })
         .join("")
@@ -7910,7 +7916,7 @@ function renderRetailSales() {
 // servicios, propinas ni nomina.
 function reverseRetailSale(retailSaleId) {
   if (!retailSaleId) return;
-  if (!canManageInvoices()) {
+  if (!canManageInventory()) {
     alert("Solo administración o propietario puede anular ventas de productos.");
     return;
   }
@@ -12602,7 +12608,7 @@ function wireForms() {
 
   byId("inventory-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede crear o editar artículos de inventario.");
       return;
     }
@@ -12697,7 +12703,7 @@ function wireForms() {
 
   byId("asset-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede crear o editar activos fijos.");
       return;
     }
@@ -12741,7 +12747,7 @@ function wireForms() {
 
   byId("warehouse-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede crear almacenes o ubicaciones.");
       return;
     }
@@ -12780,7 +12786,7 @@ function wireForms() {
   byId("warehouse-list").addEventListener("click", (event) => {
     const button = event.target.closest(".toggle-warehouse-status");
     if (!button) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede activar o desactivar almacenes.");
       return;
     }
@@ -12802,7 +12808,7 @@ function wireForms() {
   });
 
   byId("use-provisions-warehouse").addEventListener("change", () => {
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede activar el Almacén de provisiones.");
       byId("use-provisions-warehouse").checked = !byId("use-provisions-warehouse").checked;
       return;
@@ -12823,7 +12829,7 @@ function wireForms() {
 
   byId("supplier-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede crear o editar suplidores.");
       return;
     }
@@ -12860,7 +12866,7 @@ function wireForms() {
   byId("supplier-list").addEventListener("click", (event) => {
     const button = event.target.closest(".toggle-supplier-status");
     if (!button) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede desactivar suplidores.");
       return;
     }
@@ -12881,7 +12887,7 @@ function wireForms() {
   byId("purchase-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (purchaseSubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar compras de inventario.");
       return;
     }
@@ -13097,7 +13103,7 @@ function wireForms() {
   byId("supplier-pay-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (supplierPaySubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede pagar a suplidores.");
       return;
     }
@@ -13168,7 +13174,7 @@ function wireForms() {
 
   byId("transfer-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede transferir inventario entre ubicaciones.");
       return;
     }
@@ -13234,7 +13240,7 @@ function wireForms() {
 
   byId("station-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede crear mesas o estaciones.");
       return;
     }
@@ -13253,7 +13259,7 @@ function wireForms() {
 
   byId("station-delivery-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede entregar inventario a una mesa.");
       return;
     }
@@ -13304,7 +13310,7 @@ function wireForms() {
   byId("station-delivery-list").addEventListener("click", (event) => {
     const button = event.target.closest(".confirm-station-delivery");
     if (!button) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede confirmar recepciones de mesa.");
       return;
     }
@@ -13327,7 +13333,7 @@ function wireForms() {
 
   byId("internal-issue-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar salidas internas de inventario.");
       return;
     }
@@ -13537,7 +13543,7 @@ function wireForms() {
   byId("internal-issue-list").addEventListener("click", (event) => {
     const button = event.target.closest(".confirm-collaborator-delivery");
     if (!button) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede confirmar recepciones de colaboradora.");
       return;
     }
@@ -13553,7 +13559,7 @@ function wireForms() {
 
   byId("academy-consumption-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar consumo de la Academia.");
       return;
     }
@@ -13659,7 +13665,7 @@ function wireForms() {
 
   byId("station-audit-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede abrir auditorías de mesa.");
       return;
     }
@@ -13759,7 +13765,7 @@ function wireForms() {
 
   byId("academy-audit-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede abrir auditorías de Academia.");
       return;
     }
@@ -13848,7 +13854,7 @@ function wireForms() {
 
   byId("recipe-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede modificar fichas técnicas.");
       return;
     }
@@ -13906,7 +13912,7 @@ function wireForms() {
 
   byId("inventory-consumption-mode").addEventListener("change", () => {
     const config = inventoryConfig();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede cambiar el modo de consumo automático de inventario.");
       byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
       return;
@@ -13932,7 +13938,7 @@ function wireForms() {
 
   byId("station-mode")?.addEventListener("change", () => {
     const config = inventoryConfig();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede cambiar el modo de mesa por línea de servicio.");
       byId("station-mode").value = config.modoMesaServicio || "disabled";
       return;
@@ -13967,7 +13973,7 @@ function wireForms() {
 
   byId("inventory-loss-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar pérdidas, daños o vencimientos.");
       return;
     }
@@ -14030,7 +14036,7 @@ function wireForms() {
 
   byId("physical-count-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede confirmar conteos físicos.");
       return;
     }
@@ -14134,7 +14140,7 @@ function wireForms() {
   byId("retail-sale-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (retailSaleSubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar ventas de productos.");
       return;
     }
@@ -14368,7 +14374,7 @@ function wireForms() {
 
   byId("asset-custody-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede asignar custodia de activos.");
       return;
     }
@@ -14415,7 +14421,7 @@ function wireForms() {
 
   byId("asset-event-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar mantenimiento, daño o pérdida de activos.");
       return;
     }
@@ -15853,7 +15859,7 @@ function wireInventoryCollaboratorAuditPhase() {
 
   byId("inventory-lot-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede registrar lotes.");
       return;
     }
@@ -15959,7 +15965,7 @@ function wireInventoryCollaboratorAuditPhase() {
 
   byId("inventory-expiration-config-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManageInventory()) {
       alert("Solo administración o propietario puede configurar los plazos de vencimiento.");
       return;
     }

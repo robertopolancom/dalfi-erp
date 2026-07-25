@@ -154,7 +154,7 @@ reportOptionValues.forEach((value) => {
   });
 });
 
-// --- Permisos (seccion 16): cada accion de escritura exige canManageInvoices() ---
+// --- Permisos (seccion 16): cada accion de escritura exige canManageInventory() ---
 
 const permissionGatedFunctions = [
   "saveStationInventoryRule",
@@ -166,9 +166,9 @@ const permissionGatedFunctions = [
 ];
 
 permissionGatedFunctions.forEach((name) => {
-  test(`H-permiso. ${name}() exige canManageInvoices() antes de escribir`, () => {
+  test(`H-permiso. ${name}() exige canManageInventory() antes de escribir`, () => {
     const source = extractFunctionSource(name);
-    assert.ok(/canManageInvoices\(\)/.test(source), `${name} no exige canManageInvoices()`);
+    assert.ok(/canManageInventory\(\)/.test(source), `${name} no exige canManageInventory()`);
   });
 });
 
@@ -247,18 +247,18 @@ test("H-no-invent. assetAbnormalConsumptionAlerts solo recorre consumosActivos y
 
 // --- Compatibilidad con el flujo existente (regresion) ---
 
-test("regresion. purchase-form sigue exigiendo canManageInvoices() (no se debilito el permiso al agregar lotes)", () => {
+test("regresion. purchase-form sigue exigiendo canManageInventory()", () => {
   const idx = appJs.indexOf('byId("purchase-form").addEventListener');
   assert.ok(idx > -1);
   const nearby = appJs.slice(idx, idx + 400);
-  assert.ok(nearby.includes("canManageInvoices()"));
+  assert.ok(nearby.includes("canManageInventory()"));
 });
 
-test("regresion. retail-sale-form sigue exigiendo canManageInvoices() tras el wiring de lotes/FEFO", () => {
+test("regresion. retail-sale-form sigue exigiendo canManageInventory() tras el wiring de lotes/FEFO", () => {
   const idx = appJs.indexOf('byId("retail-sale-form").addEventListener("submit"');
   assert.ok(idx > -1);
   const nearby = appJs.slice(idx, idx + 400);
-  assert.ok(nearby.includes("canManageInvoices()"));
+  assert.ok(nearby.includes("canManageInventory()"));
 });
 
 // --- E. FEFO conectado a los 5 flujos reales (seccion 11, pruebas 46-50) ---
