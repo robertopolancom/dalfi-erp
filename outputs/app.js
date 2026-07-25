@@ -1110,6 +1110,12 @@ function canManageInvoices() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageInvoices);
 }
 
+function canManageReservations() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageReservations);
+}
+
 function canConfirmClosings() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -1583,6 +1589,10 @@ function showReservationDetails(reservationId) {
 }
 
 function startReservationEdit(reservationId) {
+  if (!canManageReservations()) {
+    alert("Tu usuario puede consultar la reserva, pero no modificarla.");
+    return;
+  }
   const { record } = reservationRecordById(reservationId);
   const form = byId("reservation-form");
   if (!record || !form) return;
@@ -3536,7 +3546,7 @@ function renderAppointments(target, rows, emptyMessage) {
             <span class="status-pill ${statusClass}">${escapeHtml(status)}</span>
             <span>${reservation.invoiceId ? `Factura ${reservation.invoiceId}` : reservation.date}</span>
             <button class="secondary-btn compact view-reservation" data-reservation-id="${reservation.id}" type="button">Ver</button>
-            <button class="secondary-btn compact edit-reservation" data-reservation-id="${reservation.id}" type="button">Editar</button>
+            ${canManageReservations() ? `<button class="secondary-btn compact edit-reservation" data-reservation-id="${reservation.id}" type="button">Editar</button>` : ""}
             ${reservation.invoiceId ? "" : `<button class="secondary-btn compact invoice-reservation" data-reservation-id="${reservation.id}" type="button">Facturar</button>`}
           </div>
         </article>
@@ -14506,6 +14516,10 @@ function wireForms() {
       formMessage.textContent = text;
       formMessage.className = kind ? `form-message ${kind}` : "form-message";
     };
+    if (!canManageReservations()) {
+      setMessage("Tu usuario no está autorizado para crear ni editar reservas.", "error");
+      return;
+    }
     let client = byId("reservation-client-search").value.trim();
     const service = byId("reservation-service-search").value.trim();
     const staff = byId("reservation-staff").value.trim();

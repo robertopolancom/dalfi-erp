@@ -175,6 +175,9 @@ export function authorizeDatabaseChanges(identity, changes) {
   }
 
   const permissions = identity.permissions || {};
+  if (changes.domains.includes("reservas") && !permissions.canManageReservations) {
+    return { allowed: false, reason: "missing_reservation_permission", permissions: ["canManageReservations"] };
+  }
   if (permissions.canManageInvoices) return { allowed: true };
 
   const appendOnlyBillingTables = new Set([

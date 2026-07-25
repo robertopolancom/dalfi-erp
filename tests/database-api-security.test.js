@@ -28,6 +28,7 @@ function profile(overrides = {}) {
     can_confirm_treasury_closings: false,
     can_manage_users: false,
     can_manage_invoices: false,
+    can_manage_reservations: true,
     can_reopen_closings: false,
     ...overrides,
   };
@@ -130,6 +131,40 @@ test("operador activo guarda facturacion y el servidor genera auditoria minima",
     const auditBody = JSON.parse(audit.body);
     assert.deepStrictEqual(auditBody.new_data, { domains: ["facturacion"], tables: ["facturas"], envelope: [] });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(auditBody.new_data, "data"), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("permiso de reservas se exige en servidor y no depende de que la interfaz oculte Editar", async () => {
+  const { onRequestPut } = await import(apiUrl);
+  const current = baseDocument();
+  const proposed = structuredClone(current);
+  proposed.data.reservas.push({ reservaID: "RES-1", fecha: "2026-07-25", estado: "Programada" });
+
+  let fake = fakeSupabase({
+    document: current,
+    profileRow: profile({ can_manage_reservations: false }),
+  });
+  try {
+    const denied = await onRequestPut({
+      request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
+      env: ENV,
+    });
+    assert.strictEqual(denied.status, 403);
+    assert.ok(!fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
+  } finally {
+    fake.restore();
+  }
+
+  fake = fakeSupabase({ document: current, profileRow: profile({ can_manage_reservations: true }) });
+  try {
+    const allowed = await onRequestPut({
+      request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
+      env: ENV,
+    });
+    assert.strictEqual(allowed.status, 200);
+    assert.ok(fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
   } finally {
     fake.restore();
   }

@@ -38,6 +38,7 @@ export function defaultPermissionsForRole(role) {
   const normalized = normalizeRole(role);
   const privileged = PRIVILEGED_ROLES.has(normalized);
   const reviewer = ACCOUNT_REVIEW_ROLES.has(normalized);
+  const reservationsOperator = normalized === "operador";
   return {
     can_review_accounts: privileged || reviewer,
     can_review_audit: privileged || reviewer,
@@ -46,6 +47,7 @@ export function defaultPermissionsForRole(role) {
     can_confirm_treasury_closings: privileged,
     can_manage_users: privileged,
     can_manage_invoices: privileged,
+    can_manage_reservations: privileged || reservationsOperator,
     can_reopen_closings: privileged,
   };
 }
@@ -66,6 +68,7 @@ function allPermissionsGranted() {
     canConfirmTreasuryClosings: true,
     canManageUsers: true,
     canManageInvoices: true,
+    canManageReservations: true,
     canReopenClosings: true,
   };
 }
@@ -79,6 +82,7 @@ function permissionsFromProfileRow(row) {
     canConfirmTreasuryClosings: Boolean(row.can_confirm_treasury_closings),
     canManageUsers: Boolean(row.can_manage_users),
     canManageInvoices: Boolean(row.can_manage_invoices),
+    canManageReservations: Boolean(row.can_manage_reservations),
     canReopenClosings: Boolean(row.can_reopen_closings),
   };
 }
@@ -143,6 +147,7 @@ export async function upsertErpProfile(env, { userId, email, role, isActive = tr
     can_confirm_treasury_closings: defaults.can_confirm_treasury_closings,
     can_manage_users: defaults.can_manage_users,
     can_manage_invoices: defaults.can_manage_invoices,
+    can_manage_reservations: defaults.can_manage_reservations,
     can_reopen_closings: defaults.can_reopen_closings,
   };
   try {
@@ -241,6 +246,7 @@ const PERMISSION_TO_CAMEL = {
   canConfirmTreasuryClosings: "canConfirmTreasuryClosings",
   canManageUsers: "canManageUsers",
   canManageInvoices: "canManageInvoices",
+  canManageReservations: "canManageReservations",
   canReopenClosings: "canReopenClosings",
 };
 
