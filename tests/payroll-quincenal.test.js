@@ -247,8 +247,8 @@ test("validateCommissionThresholdRule/selectCommissionThreshold no leen el DOM n
   });
 });
 
-test("el submit de #commission-form valida con DalfiClosingMath.validateCommissionThresholdRule y exige canManageInvoices()", () => {
-  assert.match(commissionSubmit, /canManageInvoices\(\)/);
+test("el submit de #commission-form valida la regla y exige canManagePayroll()", () => {
+  assert.match(commissionSubmit, /canManagePayroll\(\)/);
   assert.match(commissionSubmit, /DalfiClosingMath\.validateCommissionThresholdRule\(/);
   assert.match(commissionSubmit, /if \(!validation\.valid\)/);
 });
@@ -322,8 +322,8 @@ test("47-48-49-50-51-52. bonos: linea repetible con concepto/monto/TSS, se filtr
   assert.match(source, /subjectToTss: row\.querySelector\("\.payroll-bonus-tss"\)\.checked/);
 });
 
-test("53. agregar bono require permiso: el boton solo funciona dentro de #payroll-form, cuyo Guardar ya exige canManageInvoices()", () => {
-  assert.match(payrollSubmit, /canManageInvoices\(\)/);
+test("53. agregar bono requiere el permiso de nómina del formulario", () => {
+  assert.match(payrollSubmit, /canManagePayroll\(\)/);
 });
 
 test("los bonos quedan en el snapshot de la nomina (campo 'bonos') y se suman al bruto via calculatePayrollSettlement", () => {
@@ -451,8 +451,8 @@ test("66-67-68. configuracion TSS: tasa, tope, base contributiva y vigencia se g
   assert.doesNotMatch(appJs, /0\.0[0-9]{1,2}\s*\*.*tss|tss.*0\.0[0-9]{1,2}\s*\*/i);
 });
 
-test("el submit de #tss-config-form exige canManageInvoices() y valida tasas 0-100 y fecha valida", () => {
-  assert.match(tssSubmit, /canManageInvoices\(\)/);
+test("el submit de #tss-config-form exige canManagePayroll() y valida tasas 0-100 y fecha valida", () => {
+  assert.match(tssSubmit, /canManagePayroll\(\)/);
   assert.match(tssSubmit, /employeeRate > 100 \|\| employerRate > 100/);
   assert.match(tssSubmit, /DalfiClosingMath\.isValidIsoDate\(effectiveDate\)/);
 });
@@ -518,9 +518,9 @@ test("81-82-83-84-85. un avance real (efectivo/salario/propina) crea exactamente
   assert.match(advanceBlock, /egresoID: expenseId,/);
 });
 
-test("86. crear un cargo interno exige permiso (canManageInvoices) y rechaza monto/colaborador/concepto invalidos", () => {
+test("86. crear un cargo interno exige canManagePayroll y rechaza datos invalidos", () => {
   const source = extractFunction("createCollaboratorInternalCharge");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManagePayroll\(\)/);
   assert.match(source, /if \(!Number\.isFinite\(safeAmount\) \|\| safeAmount <= 0\)/);
 });
 
@@ -829,34 +829,34 @@ test("152. si una propina incluida ya quedo asociada a OTRA nomina, la reversion
 // ===========================================================================
 
 test("153. Guardar nomina exige permiso (hallazgo previo corregido: antes no validaba nada)", () => {
-  assert.match(payrollSubmit, /if \(!canManageInvoices\(\)\) \{/);
+  assert.match(payrollSubmit, /if \(!canManagePayroll\(\)\) \{/);
 });
 
 test("154. Pagar exige permiso", () => {
-  assert.match(payPayrollSubmit, /if \(!canManageInvoices\(\)\) \{/);
+  assert.match(payPayrollSubmit, /if \(!canManagePayroll\(\)\) \{/);
 });
 
 test("155. configurar umbral exige permiso", () => {
-  assert.match(commissionSubmit, /if \(!canManageInvoices\(\)\) \{/);
+  assert.match(commissionSubmit, /if \(!canManagePayroll\(\)\) \{/);
 });
 
-test("156. agregar bono exige permiso (vive dentro de #payroll-form, protegido por el mismo canManageInvoices del submit)", () => {
+test("156. agregar bono exige permiso (vive dentro de #payroll-form protegido por canManagePayroll)", () => {
   assert.match(appJs, /byId\("add-payroll-bonus"\)\.addEventListener\("click"/);
 });
 
-test("157. crear CxC a colaboradores exige permiso: createCollaboratorInternalCharge y el bloque 'avance' viven detras de canManageInvoices", () => {
-  assert.match(extractFunction("createCollaboratorInternalCharge"), /canManageInvoices\(\)/);
+test("157. crear CxC a colaboradores exige el permiso específico de nómina", () => {
+  assert.match(extractFunction("createCollaboratorInternalCharge"), /canManagePayroll\(\)/);
 });
 
-test("158-159-160. usuario inactivo/sin perfil bloqueado, user_metadata jamas se usa como autorizacion (canManageInvoices ya es la fuente unica en todo el archivo)", () => {
+test("158-159-160. usuario inactivo/sin perfil queda bloqueado y user_metadata nunca autoriza", () => {
   [payrollSubmit, payPayrollSubmit, vacationSubmit, vacationApproveSubmit, vacationPaySubmit, commissionSubmit, tssSubmit].forEach((block) => {
     assert.doesNotMatch(block, /user_metadata/);
   });
 });
 
 test("openPayPayrollForm y revertPayrollPayment tambien exigen permiso (no solo el submit del formulario)", () => {
-  assert.match(extractFunction("openPayPayrollForm"), /canManageInvoices\(\)/);
-  assert.match(extractFunction("revertPayrollPayment"), /canManageInvoices\(\)/);
+  assert.match(extractFunction("openPayPayrollForm"), /canManagePayroll\(\)/);
+  assert.match(extractFunction("revertPayrollPayment"), /canManagePayroll\(\)/);
 });
 
 test("161. reportes: renderPayroll muestra estado y no confunde propina pendiente de cobro con propina pendiente de nomina (usa datos ya filtrados de payrollPreviewData)", () => {

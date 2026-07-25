@@ -30,6 +30,7 @@ function profile(overrides = {}) {
     can_manage_invoices: false,
     can_manage_billing: false,
     can_manage_inventory: false,
+    can_manage_payroll: false,
     can_manage_reservations: true,
     can_reopen_closings: false,
     ...overrides,
@@ -190,7 +191,7 @@ test("permiso de reservas se exige en servidor y no depende de que la interfaz o
   }
 });
 
-test("operador no puede cambiar nomina y nunca alcanza el RPC", async () => {
+test("nómina exige canManagePayroll y el permiso funciona sin canManageInvoices", async () => {
   const { onRequestPut } = await import(apiUrl);
   const current = baseDocument();
   const proposed = structuredClone(current);
@@ -205,6 +206,21 @@ test("operador no puede cambiar nomina y nunca alcanza el RPC", async () => {
     assert.ok(!fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
   } finally {
     fake.restore();
+  }
+
+  const allowedFake = fakeSupabase({
+    document: current,
+    profileRow: profile({ can_manage_invoices: false, can_manage_payroll: true }),
+  });
+  try {
+    const response = await onRequestPut({
+      request: request("PUT", { data: proposed, expectedUpdatedAt: "2026-07-25T10:00:00Z" }),
+      env: ENV,
+    });
+    assert.strictEqual(response.status, 200);
+    assert.ok(allowedFake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
+  } finally {
+    allowedFake.restore();
   }
 });
 

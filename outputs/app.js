@@ -1122,6 +1122,12 @@ function canManageInventory() {
   return Boolean(erpProfile.isActive && erpProfile.permissions?.canManageInventory);
 }
 
+function canManagePayroll() {
+  if (!supabaseClient || !supabaseSession) return true;
+  if (!erpProfileLoaded || !erpProfile) return false;
+  return Boolean(erpProfile.isActive && erpProfile.permissions?.canManagePayroll);
+}
+
 function canManageReservations() {
   if (!supabaseClient || !supabaseSession) return true;
   if (!erpProfileLoaded || !erpProfile) return false;
@@ -3688,7 +3694,7 @@ function existingActivePayrollFor(colaboradorID, staffName, periodoInicio, perio
 // dedicada); queda como funcion de datos permiso-validada y probada para
 // conectarse mas adelante sin duplicar esta logica.
 function createCollaboratorInternalCharge({ staffRecord, staffName, amount, concept, tipoCxC = "Cargo interno" } = {}) {
-  if (!canManageInvoices()) throw new Error("Solo administración o propietario puede crear cargos internos a colaboradores.");
+  if (!canManagePayroll()) throw new Error("Solo administración o propietario puede crear cargos internos a colaboradores.");
   const safeAmount = Number(amount);
   if (!Number.isFinite(safeAmount) || safeAmount <= 0) throw new Error("El monto del cargo debe ser mayor que cero.");
   if (!staffRecord && !staffName) throw new Error("Selecciona un colaborador.");
@@ -3762,7 +3768,7 @@ function getPayrollBonusLines() {
 // Aprobar no recalcula nada: solo exige permiso, exige que siga en
 // Borrador, cambia el estado y audita.
 function approvePayroll(payrollId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede aprobar nómina.");
     return;
   }
@@ -3790,7 +3796,7 @@ function approvePayroll(payrollId) {
 // egreso), reabrir no necesita restaurar nada: es un simple cambio de
 // estado con motivo obligatorio y auditoria.
 function reopenPayroll(payrollId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede reabrir una nómina aprobada.");
     return;
   }
@@ -3836,7 +3842,7 @@ function payrollTssBlockReason(payroll) {
 // lectura, deja el resto de la decision (cuenta, medio, fecha real) a
 // quien va a confirmar el pago.
 function openPayPayrollForm(payrollId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede pagar nómina.");
     return;
   }
@@ -3882,7 +3888,7 @@ function payPayrollSummaryHtml(payroll) {
 // descontaron, y deja la nomina en estado Revertida (nunca se vuelve a
 // pagar ni se vuelve a revertir).
 function revertPayrollPayment(payrollId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede revertir una nómina pagada.");
     return;
   }
@@ -3952,7 +3958,7 @@ function revertPayrollPayment(payrollId) {
 // Solicitada): aqui es donde se captura el valor diario, no en la
 // solicitud original.
 function openVacationApproveForm(vacationId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede aprobar vacaciones.");
     return;
   }
@@ -3969,7 +3975,7 @@ function openVacationApproveForm(vacationId) {
 
 // Abre el panel "Pagar anticipo" para una solicitud Aprobada.
 function openVacationPayForm(vacationId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede pagar el anticipo de vacaciones.");
     return;
   }
@@ -3987,7 +3993,7 @@ function openVacationPayForm(vacationId) {
 // no mueve dinero (el anticipo ya se pago), solo documenta que el
 // colaborador efectivamente tomo esos dias.
 function markVacationEnjoyed(vacationId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede marcar vacaciones como disfrutadas.");
     return;
   }
@@ -4012,7 +4018,7 @@ function markVacationEnjoyed(vacationId) {
 // bloquea explicitamente y se pide generar el ajuste (una CxC al
 // colaborador) como una accion administrativa aparte, nunca automatica.
 function cancelVacation(vacationId) {
-  if (!canManageInvoices()) {
+  if (!canManagePayroll()) {
     alert("Solo administración o propietario puede cancelar vacaciones.");
     return;
   }
@@ -14666,7 +14672,7 @@ function wireForms() {
   byId("payroll-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (payrollSubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede guardar nómina.");
       return;
     }
@@ -14784,7 +14790,7 @@ function wireForms() {
   byId("vacation-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (vacationSubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede solicitar vacaciones.");
       return;
     }
@@ -14851,7 +14857,7 @@ function wireForms() {
 
   byId("vacation-approve-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede aprobar vacaciones.");
       return;
     }
@@ -14894,7 +14900,7 @@ function wireForms() {
   byId("vacation-pay-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (vacationPaySubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede pagar el anticipo de vacaciones.");
       return;
     }
@@ -15024,7 +15030,7 @@ function wireForms() {
   byId("pay-payroll-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (payPayrollSubmitInFlight) return;
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede pagar nómina.");
       return;
     }
@@ -15477,7 +15483,7 @@ function wireForms() {
 
   byId("staff-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede configurar el salario o los umbrales de un colaborador.");
       return;
     }
@@ -15604,7 +15610,7 @@ function wireForms() {
 
   byId("commission-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede configurar umbrales de comisión.");
       return;
     }
@@ -15669,7 +15675,7 @@ function wireForms() {
 
   byId("tss-config-form").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!canManageInvoices()) {
+    if (!canManagePayroll()) {
       alert("Solo administración o propietario puede configurar TSS.");
       return;
     }

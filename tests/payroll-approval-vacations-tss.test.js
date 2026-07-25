@@ -150,7 +150,7 @@ test("11. Borrador no puede pagarse: openPayPayrollForm y el submit de pago exig
 
 test("12-13. Aprobar es una accion explicita (approvePayroll) que exige permiso y Borrador; el snapshot ya viene congelado desde Guardar, Aprobar no lo recalcula", () => {
   const source = extractFunction("approvePayroll");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManagePayroll\(\)/);
   assert.match(source, /normalize\(payroll\.estado \|\| ""\) !== "borrador"/);
   assert.match(source, /payroll\.estado = "Aprobada";/);
   assert.doesNotMatch(source, /DalfiClosingMath\.calculatePayrollSettlement|dbTable\("egresos"\)/);
@@ -162,7 +162,7 @@ test("14. Aprobada no editable: no existe ninguna funcion que modifique un snaps
 
 test("15-16. Reabrir (solo desde Aprobada) exige permiso Y motivo, nunca aplica sobre Pagada", () => {
   const source = extractFunction("reopenPayroll");
-  assert.match(source, /canManageInvoices\(\)/);
+  assert.match(source, /canManagePayroll\(\)/);
   assert.match(source, /normalize\(payroll\.estado \|\| ""\) !== "aprobada"/);
   assert.match(source, /const reason = prompt\(/);
   assert.match(source, /if \(!reason \|\| !reason\.trim\(\)\) \{/);
@@ -279,7 +279,7 @@ test("campos del registro de vacaciones: colaboradora, fechas, dias, valor diari
 
 test("pago anticipado requiere estado Aprobada + permiso + cuenta, y afecta Cierres en la fecha real de pago", () => {
   const paySubmit = extractStatementBlock('let vacationPaySubmitInFlight = false;', 'byId("vacation-pay-form").addEventListener("submit"');
-  assert.match(paySubmit, /canManageInvoices\(\)/);
+  assert.match(paySubmit, /canManagePayroll\(\)/);
   assert.match(paySubmit, /normalize\(vacation\.estado \|\| ""\) !== "aprobada"/);
   assert.match(paySubmit, /findAccountByName\(accountName\)/);
   assert.match(paySubmit, /refreshPendingClosingsForDate\(payDate\);/);
@@ -352,7 +352,7 @@ test("el listado muestra el egreso relacionado (o 'Sin salida de caja/banco' cua
 // ===========================================================================
 
 test("configurar salario exige permiso (hallazgo nuevo: staff-form tampoco validaba nada)", () => {
-  assert.match(staffSubmit, /if \(!canManageInvoices\(\)\) \{/);
+  assert.match(staffSubmit, /if \(!canManagePayroll\(\)\) \{/);
 });
 
 test("historial salarial: cada cambio real de salarioMensual genera una fila nueva en historialSalarial, nunca sobrescribe en silencio", () => {

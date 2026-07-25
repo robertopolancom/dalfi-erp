@@ -18,6 +18,7 @@ const MATRIX = [
   ["can_manage_invoices", "canManageInvoices"],
   ["can_manage_billing", "canManageBilling"],
   ["can_manage_inventory", "canManageInventory"],
+  ["can_manage_payroll", "canManagePayroll"],
   ["can_manage_reservations", "canManageReservations"],
   ["can_reopen_closings", "canReopenClosings"],
 ];
@@ -28,17 +29,18 @@ const profilesSql = [
   "20260725000002_add_reservation_permission.sql",
   "20260725000003_add_billing_permission.sql",
   "20260725000004_add_inventory_permission.sql",
+  "20260725000005_add_payroll_permission.sql",
 ].map((name) => fs.readFileSync(path.join(__dirname, "..", "supabase", "migrations", name), "utf8")).join("\n");
 const appJs = fs.readFileSync(path.join(__dirname, "..", "outputs", "app.js"), "utf8");
 
-test("migraciones SQL: erp_user_profiles tiene EXACTAMENTE las 11 columnas can_* de la matriz", () => {
+test("migraciones SQL: erp_user_profiles tiene EXACTAMENTE las 12 columnas can_* de la matriz", () => {
   const columnMatches = [...profilesSql.matchAll(/\b(can_[a-z_]+)\s+boolean/g)].map((m) => m[1]);
   const uniqueColumns = [...new Set(columnMatches)];
   const expected = MATRIX.map(([sqlColumn]) => sqlColumn).sort();
   assert.deepStrictEqual(uniqueColumns.sort(), expected);
 });
 
-test("authz.js defaultPermissionsForRole(): devuelve EXACTAMENTE las 11 claves snake_case de la matriz", async () => {
+test("authz.js defaultPermissionsForRole(): devuelve EXACTAMENTE las 12 claves snake_case de la matriz", async () => {
   const { defaultPermissionsForRole } = await import(authzModuleUrl);
   const keys = Object.keys(defaultPermissionsForRole("administradora")).sort();
   assert.deepStrictEqual(keys, MATRIX.map(([sqlColumn]) => sqlColumn).sort());
@@ -74,7 +76,7 @@ test("authz.js permissionsFromProfileRow() (via resolveErpIdentity): cada column
   }
 });
 
-test("authz.js upsertErpProfile(): el payload incluye las 11 columnas snake_case de la matriz", async () => {
+test("authz.js upsertErpProfile(): el payload incluye las 12 columnas snake_case de la matriz", async () => {
   const { upsertErpProfile } = await import(authzModuleUrl);
   const originalFetch = global.fetch;
   let capturedBody = null;
@@ -108,6 +110,7 @@ test("outputs/app.js: erpProfile.permissions.* se lee con las MISMAS claves came
   assert.match(appJs, /erpProfile\.permissions\?\.canManageInvoices/);
   assert.match(appJs, /erpProfile\.permissions\?\.canManageBilling/);
   assert.match(appJs, /erpProfile\.permissions\?\.canManageInventory/);
+  assert.match(appJs, /erpProfile\.permissions\?\.canManagePayroll/);
   assert.match(appJs, /erpProfile\.permissions\?\.canManageReservations/);
   assert.match(appJs, /erpProfile\.permissions\?\.canConfirmRegisterClosings/);
   assert.match(appJs, /erpProfile\.permissions\?\.canConfirmTreasuryClosings/);

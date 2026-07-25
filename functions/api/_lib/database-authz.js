@@ -192,6 +192,9 @@ export function authorizeDatabaseChanges(identity, changes) {
   if (changes.domains.includes("inventario") && !inventoryIsInvoiceSideEffect && !permissions.canManageInventory) {
     return { allowed: false, reason: "missing_inventory_permission", permissions: ["canManageInventory"] };
   }
+  if (changes.domains.includes("nomina") && !permissions.canManagePayroll) {
+    return { allowed: false, reason: "missing_payroll_permission", permissions: ["canManagePayroll"] };
+  }
   if (permissions.canManageInvoices) return { allowed: true };
 
   const appendOnlyBillingTables = new Set([
@@ -218,6 +221,7 @@ export function authorizeDatabaseChanges(identity, changes) {
   const deniedDomains = changes.domains.filter((domain) => {
     if (domain === "facturacion" || domain === "reservas") return false;
     if (domain === "inventario" && (inventoryIsInvoiceSideEffect || permissions.canManageInventory)) return false;
+    if (domain === "nomina" && permissions.canManagePayroll) return false;
     if (domain === "cierres") return false;
     return true;
   });

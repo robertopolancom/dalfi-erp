@@ -49,6 +49,7 @@ export function defaultPermissionsForRole(role) {
     can_manage_invoices: privileged,
     can_manage_billing: privileged,
     can_manage_inventory: privileged,
+    can_manage_payroll: privileged,
     can_manage_reservations: privileged || reservationsOperator,
     can_reopen_closings: privileged,
   };
@@ -72,6 +73,7 @@ function allPermissionsGranted() {
     canManageInvoices: true,
     canManageBilling: true,
     canManageInventory: true,
+    canManagePayroll: true,
     canManageReservations: true,
     canReopenClosings: true,
   };
@@ -88,6 +90,7 @@ function permissionsFromProfileRow(row) {
     canManageInvoices: Boolean(row.can_manage_invoices),
     canManageBilling: Boolean(row.can_manage_billing),
     canManageInventory: Boolean(row.can_manage_inventory),
+    canManagePayroll: Boolean(row.can_manage_payroll),
     canManageReservations: Boolean(row.can_manage_reservations),
     canReopenClosings: Boolean(row.can_reopen_closings),
   };
@@ -155,6 +158,7 @@ export async function upsertErpProfile(env, { userId, email, role, isActive = tr
     can_manage_invoices: defaults.can_manage_invoices,
     can_manage_billing: defaults.can_manage_billing,
     can_manage_inventory: defaults.can_manage_inventory,
+    can_manage_payroll: defaults.can_manage_payroll,
     can_manage_reservations: defaults.can_manage_reservations,
     can_reopen_closings: defaults.can_reopen_closings,
   };
@@ -256,6 +260,7 @@ const PERMISSION_TO_CAMEL = {
   canManageInvoices: "canManageInvoices",
   canManageBilling: "canManageBilling",
   canManageInventory: "canManageInventory",
+  canManagePayroll: "canManagePayroll",
   canManageReservations: "canManageReservations",
   canReopenClosings: "canReopenClosings",
 };
