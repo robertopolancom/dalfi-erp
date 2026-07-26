@@ -519,6 +519,38 @@ function updatePrivilegeVisibility() {
     .querySelectorAll(".user-admin-only")
     .forEach((item) => item.classList.toggle("hidden", !canAdminUsers));
   document.querySelectorAll(".accounts-review-only").forEach((item) => item.classList.toggle("hidden", !canReviewAccountsUser()));
+  updatePermissionControls(permissions);
+}
+
+// La autorizacion real vive en las funciones de servidor y en los guardas de
+// cada handler. Esta capa solo evita que un operador sin permiso intente
+// iniciar una operacion que la API rechazara, manteniendo disponibles las
+// pantallas de consulta.
+function updatePermissionControls(permissions = {}) {
+  const connected = Boolean(supabaseClient && supabaseSession);
+  const billingAllowed = !connected || Boolean(erpProfile?.isActive && permissions.canManageBilling);
+  const inventoryAllowed = !connected || Boolean(erpProfile?.isActive && permissions.canManageInventory);
+  const controls = [
+    [billingAllowed, [
+      "create-service-from-invoice", "add-invoice-line", "add-payment-line", "invoice-submit-button",
+      "payment-submit", "add-income-payment-line", "admin-new-invoice", "move-today-invoices-yesterday",
+      "move-july-9-invoices",
+    ], "Solo un usuario con permiso de facturacion puede guardar cambios."],
+    [inventoryAllowed, [
+      "add-retail-sale-line", "add-retail-sale-payment-line", "retail-sale-submit", "inventory-submit",
+    ], "Solo un usuario con permiso de inventario puede guardar cambios."],
+  ];
+  controls.forEach(([allowed, ids, message]) => {
+    ids.forEach((id) => {
+      const element = byId(id);
+      if (!element) return;
+      element.disabled = !allowed;
+      element.classList.toggle("permission-readonly", !allowed);
+      element.setAttribute("aria-disabled", String(!allowed));
+      if (!allowed) element.title = message;
+      else if (element.title === message) element.removeAttribute("title");
+    });
+  });
 }
 
 function updateAuthUi() {
