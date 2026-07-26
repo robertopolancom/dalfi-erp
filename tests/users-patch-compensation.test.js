@@ -76,7 +76,7 @@ test("users PATCH: si falla sincronizar el perfil, se aborta ANTES de tocar Auth
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === undefined) {
         return targetAuthUser();
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         authPatchCalls.push(options);
         return new Response(JSON.stringify({ id: TARGET_ID }), { status: 200 });
       }
@@ -112,7 +112,7 @@ test("users PATCH: si el perfil se sincroniza pero Auth rechaza el cambio, el pe
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === undefined) {
         return targetAuthUser();
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         return new Response(JSON.stringify({ message: "email ya esta en uso" }), { status: 400 });
       }
       if (url.includes("/rest/v1/erp_user_profiles") && url.includes(`user_id=eq.${TARGET_ID}`) && !options?.method) {
@@ -171,7 +171,7 @@ test("users PATCH: si el perfil no existia antes y Auth rechaza el cambio, el pe
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === undefined) {
         return targetAuthUser();
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         return new Response(JSON.stringify({ message: "rechazado" }), { status: 400 });
       }
       if (url.includes("/rest/v1/erp_user_profiles") && url.includes(`user_id=eq.${TARGET_ID}`) && options.method === "DELETE") {
@@ -205,7 +205,7 @@ test("users PATCH: exito normal cuando perfil y Auth se actualizan sin errores (
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === undefined) {
         return targetAuthUser();
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test" }), { status: 200 });
       }
       if (url.includes("/rest/v1/erp_user_profiles") && url.includes(`user_id=eq.${TARGET_ID}`) && !options?.method) {
@@ -268,7 +268,7 @@ test("users PATCH: una matriz explicita puede retirar permisos del rol y concede
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && !options?.method) {
         return targetAuthUser();
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test", user_metadata: {} }), { status: 200 });
       }
       if (url.includes("/rest/v1/erp_user_profiles") && url.includes(`user_id=eq.${TARGET_ID}`) && !options?.method) {

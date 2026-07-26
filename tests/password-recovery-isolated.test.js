@@ -66,7 +66,7 @@ test("reset de contrasena por administrador: invalida sesiones previas (llama a 
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && !options.method) {
         return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test", user_metadata: {} }), { status: 200 });
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test" }), { status: 200 });
       }
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}/logout` && options.method === "POST") {
@@ -105,7 +105,7 @@ test("reset de contrasena por administrador: la contrasena temporal NUNCA aparec
       if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && !options.method) {
         return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test", user_metadata: {} }), { status: 200 });
       }
-      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PATCH") {
+      if (url === `https://fake.supabase.co/auth/v1/admin/users/${TARGET_ID}` && options.method === "PUT") {
         return new Response(JSON.stringify({ id: TARGET_ID, email: "objetivo@dalfi.test" }), { status: 200 });
       }
       if (url.includes("/logout")) return new Response(null, { status: 204 });

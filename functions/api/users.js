@@ -225,7 +225,8 @@ export async function onRequestPatch({ request, env }) {
   }
 
   const response = await fetch(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
-    method: "PATCH",
+    // Supabase Auth Admin actualiza usuarios con PUT (no PATCH).
+    method: "PUT",
     headers: {
       "Content-Type": "application/json",
       apikey: serviceRoleKey,
