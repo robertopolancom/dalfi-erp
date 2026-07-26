@@ -135,6 +135,8 @@ test("run-closing-catchup: secreto incorrecto responde 401 sin ejecutar nada", a
   await withFakeFetch(fetchMock, async () => {
     const res = await onRequestPost({ request: postRequest("secreto-equivocado"), env: BASE_ENV });
     assert.equal(res.status, 401);
+    const body = await res.text();
+    assert.doesNotMatch(body, /test-cron-secret|secreto-equivocado|fake-service-key/i);
     assert.equal(requests.length, 0, "no debe llamar a Supabase si el secreto no coincide");
   });
 });

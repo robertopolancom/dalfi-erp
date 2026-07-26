@@ -153,6 +153,8 @@ test("sin permiso de facturacion no se puede manipular facturas mediante una lla
       env: ENV,
     });
     assert.strictEqual(response.status, 403);
+    const body = await response.text();
+    assert.doesNotMatch(body, /secret|token|password/i);
     assert.ok(!fake.calls.some((call) => call.url.includes("/rpc/save_erp_record_if_current")));
   } finally {
     fake.restore();
