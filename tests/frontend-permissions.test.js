@@ -204,3 +204,13 @@ test("contador/contadora: puede revisar cuentas pero NO confirmar cierres ni adm
   assert.strictEqual(sandbox.canManageConfiguration(), false);
   assert.strictEqual(sandbox.canConfirmClosings(), false);
 });
+
+test("la interfaz bloquea controles de escritura cuando faltan permisos de facturacion o inventario", () => {
+  const source = extractFunction("updatePermissionControls");
+  assert.match(source, /invoice-submit-button/);
+  assert.match(source, /payment-submit/);
+  assert.match(source, /retail-sale-submit/);
+  assert.match(source, /inventory-submit/);
+  assert.match(source, /element\.disabled = !allowed/);
+  assert.match(extracted, /updatePermissionControls\(permissions\)/);
+});
