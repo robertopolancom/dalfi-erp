@@ -87,3 +87,8 @@ test("retiro gradual: el legado queda documentado pero no aparece en controles n
   assert.doesNotMatch(appSource, /canManageInvoices\(\)/);
   assert.doesNotMatch(appSource, /\["canManageInvoices",/);
 });
+
+test("API de usuarios: el fallback de Pages delega PATCH al handler de permisos", () => {
+  assert.match(usersSource, /context\?\.request\?\.method === "PATCH"/);
+  assert.match(usersSource, /return onRequestPatch\(context\)/);
+});

@@ -317,6 +317,10 @@ export async function onRequestPatch({ request, env }) {
   });
 }
 
-export async function onRequest() {
+export async function onRequest(context) {
+  // Cloudflare Pages reconoce onRequestPatch en la documentación, pero
+  // algunas versiones del dispatcher pueden caer aquí para PATCH. Delegar
+  // explícitamente evita que la actualización de permisos termine en 405.
+  if (context?.request?.method === "PATCH") return onRequestPatch(context);
   return json({ error: "Metodo no permitido." }, 405);
 }
