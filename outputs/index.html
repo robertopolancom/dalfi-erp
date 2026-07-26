@@ -30,6 +30,7 @@
           <button class="nav-item" data-view="expenses" type="button">Egresos</button>
           <button class="nav-item accounts-review-only hidden" data-view="accounts-overview" type="button">Cuentas</button>
           <button class="nav-item" data-view="inventory" type="button">Inventario</button>
+          <button class="nav-item" data-view="retail-sales" type="button">Venta de productos</button>
           <button class="nav-item" data-view="fixed-assets" type="button">Activos fijos</button>
           <button class="nav-item" data-view="reports" type="button">Reportes</button>
           <button class="nav-item user-admin-only hidden" data-view="users" type="button">Usuarios</button>
@@ -640,6 +641,42 @@
                 <input class="inline-search" id="reservation-search" placeholder="Buscar cliente, servicio u hora" />
               </div>
               <div class="appointments list" id="reservation-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="retail-sales" class="view">
+          <div class="work-grid">
+            <form class="panel form-panel" id="retail-sale-form">
+              <div class="panel-head">
+                <h3>Facturación de venta de productos</h3>
+              </div>
+              <p class="panel-note">Venta independiente de servicios: solo productos del inventario, con cliente, impuestos, descuentos, formas de pago y cuenta por cobrar cuando corresponda.</p>
+              <label>
+                Cliente (opcional en efectivo; obligatorio a crédito o transferencia pendiente)
+                <input id="retail-sale-client-search" list="clients-list" placeholder="Buscar o dejar en blanco para consumidor final" />
+              </label>
+              <div class="invoice-line-list" id="retail-sale-line-list"></div>
+              <button class="secondary-btn compact" id="add-retail-sale-line" type="button">Agregar producto</button>
+              <section class="invoice-summary">
+                <div class="summary-row"><span>Subtotal exento</span><strong id="retail-sale-exempt-total">RD$0.00</strong></div>
+                <div class="summary-row"><span>Subtotal gravado</span><strong id="retail-sale-taxed-total">RD$0.00</strong></div>
+                <div class="summary-row"><span>Descuentos</span><strong id="retail-sale-discount-total">RD$0.00</strong></div>
+                <div class="summary-row"><span>Impuesto</span><strong id="retail-sale-tax-total">RD$0.00</strong></div>
+                <div class="summary-row total"><span>Total</span><strong id="retail-sale-grand-total">RD$0.00</strong></div>
+              </section>
+              <h4>Formas de pago</h4>
+              <div class="invoice-line-list" id="retail-sale-payment-line-list"></div>
+              <button class="secondary-btn compact" id="add-retail-sale-payment-line" type="button">Agregar forma de pago</button>
+              <output id="retail-sale-payment-summary">Pagado: RD$0.00 · Pendiente: RD$0.00</output>
+              <button class="primary-btn" id="retail-sale-submit" type="submit">Confirmar venta</button>
+              <p class="panel-note">La salida se descuenta exclusivamente de la ubicación seleccionada en cada línea. Si queda saldo pendiente, se registra como cuenta por cobrar de origen Producto.</p>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Ventas de productos registradas</h3>
+              </div>
+              <div class="simple-list" id="retail-sale-list"></div>
             </section>
           </div>
         </section>
@@ -1289,38 +1326,6 @@
                 <h3>Conteos físicos confirmados</h3>
               </div>
               <div class="simple-list" id="physical-count-list"></div>
-            </section>
-
-            <form class="panel form-panel" id="retail-sale-form">
-              <div class="panel-head">
-                <h3>Ventas de productos</h3>
-              </div>
-              <p class="panel-note">Módulo independiente de Facturación de servicios: solo productos, nunca servicios, colaboradoras de servicio ni propinas. Cada línea selecciona su propia ubicación de salida (estantería, almacén del salón u otra ubicación autorizada); nunca hay respaldo automático a otra ubicación.</p>
-              <label>
-                Cliente (opcional en efectivo; obligatorio a crédito o transferencia pendiente)
-                <input id="retail-sale-client-search" list="clients-list" placeholder="Buscar o dejar en blanco para consumidor final" />
-              </label>
-              <div class="invoice-line-list" id="retail-sale-line-list"></div>
-              <button class="secondary-btn compact" id="add-retail-sale-line" type="button">Agregar producto</button>
-              <section class="invoice-summary">
-                <div class="summary-row"><span>Subtotal exento</span><strong id="retail-sale-exempt-total">RD$0.00</strong></div>
-                <div class="summary-row"><span>Subtotal gravado</span><strong id="retail-sale-taxed-total">RD$0.00</strong></div>
-                <div class="summary-row"><span>Descuentos</span><strong id="retail-sale-discount-total">RD$0.00</strong></div>
-                <div class="summary-row"><span>Impuesto</span><strong id="retail-sale-tax-total">RD$0.00</strong></div>
-                <div class="summary-row total"><span>Total</span><strong id="retail-sale-grand-total">RD$0.00</strong></div>
-              </section>
-              <h4>Formas de pago</h4>
-              <div class="invoice-line-list" id="retail-sale-payment-line-list"></div>
-              <button class="secondary-btn compact" id="add-retail-sale-payment-line" type="button">Agregar forma de pago</button>
-              <output id="retail-sale-payment-summary">Pagado: RD$0.00 · Pendiente: RD$0.00</output>
-              <button class="primary-btn" id="retail-sale-submit" type="submit">Confirmar venta</button>
-              <p class="panel-note">Descuenta EXCLUSIVAMENTE la ubicación seleccionada en cada línea: nunca hay respaldo automático a otra ubicación. Si falta existencia o la ubicación no está habilitada para vender, la venta se bloquea. El saldo no cubierto con pago confirmado crea una cuenta por cobrar del cliente (misma cuenta corriente que Facturación de servicios, identificada como origen "Producto").</p>
-            </form>
-            <section class="panel">
-              <div class="panel-head">
-                <h3>Ventas de productos</h3>
-              </div>
-              <div class="simple-list" id="retail-sale-list"></div>
             </section>
 
             <form class="panel form-panel" id="inventory-expiration-config-form">

@@ -9627,6 +9627,7 @@ function switchToView(viewId) {
   if (button) byId("view-title").textContent = button.textContent;
   if (viewId === "cash") safeRender("cierres de caja", renderCash);
   if (viewId === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
+  if (viewId === "retail-sales") safeRender("ventas directas", renderRetailSales);
   return true;
 }
 
