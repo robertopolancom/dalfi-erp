@@ -77,3 +77,31 @@ test("navegador local: el login permanece explícito y no se envían credenciale
   assert.equal(await page.locator("#auth-email").inputValue(), "");
   assert.equal(await page.locator("#auth-password").inputValue(), "");
 });
+
+test("staging aislado: operador puede consultar pero no iniciar operaciones protegidas", { skip: !process.env.E2E_AUTH_LOCAL, timeout: 45000 }, async (t) => {
+  const baseUrl = process.env.E2E_AUTH_BASE_URL || "http://127.0.0.1:8788";
+  const email = process.env.E2E_AUTH_EMAIL;
+  const password = process.env.E2E_AUTH_PASSWORD;
+  assert.ok(email && password, "E2E_AUTH_EMAIL y E2E_AUTH_PASSWORD son obligatorios en modo autenticado");
+  const browser = await chromium.launch({ headless: true, executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  await page.goto(`${baseUrl}/`, { waitUntil: "networkidle", timeout: 20000 });
+  await page.locator("#auth-email").fill(email);
+  await page.locator("#auth-password").fill(password);
+  await page.locator('#auth-form button[type="submit"]').click();
+  await page.locator("#logout-button").waitFor({ state: "visible", timeout: 25000 });
+  const profile = await page.evaluate(async () => (await fetch("/api/me")).json());
+  assert.equal(profile.role, "operador");
+  assert.equal(profile.isActive, true);
+  assert.equal(profile.permissions.canManageBilling, false);
+  assert.equal(profile.permissions.canManageInventory, false);
+  for (const [view, submit] of [["billing", "#invoice-submit-button"], ["inventory", "#inventory-submit"], ["retail-sales", "#retail-sale-submit"]]) {
+    await page.locator(`[data-view="${view}"]`).click();
+    await page.waitForTimeout(250);
+    assert.equal(await page.locator(submit).isDisabled(), true, `${view} debe quedar en solo lectura`);
+  }
+  assert.equal(errors.length, 0, `errores de consola: ${errors.join(" | ")}`);
+});
