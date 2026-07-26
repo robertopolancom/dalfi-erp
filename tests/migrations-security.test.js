@@ -15,6 +15,7 @@ const path = require("node:path");
 const migrationsDir = path.join(__dirname, "..", "supabase", "migrations");
 const profilesSql = fs.readFileSync(path.join(migrationsDir, "20260721000000_create_erp_user_profiles.sql"), "utf8");
 const auditLogSql = fs.readFileSync(path.join(migrationsDir, "20260721000001_secure_erp_audit_log.sql"), "utf8");
+const hardenedPrivilegesSql = fs.readFileSync(path.join(migrationsDir, "20260726000000_harden_direct_privileges.sql"), "utf8");
 
 // Ambas migraciones documentan su intencion y su rollback en comentarios SQL
 // ("-- ..."), que a proposito mencionan cosas como "CASCADE" o "using
@@ -143,4 +144,18 @@ test("ninguna de las dos migraciones nuevas toca erp_records ni sus politicas (f
   // real fuera de comentarios.
   assert.ok(!/erp_records/i.test(profilesDdl), "20260721000000 no debe tener DDL real sobre erp_records");
   assert.ok(!/erp_records/i.test(auditLogDdl), "20260721000001 no debe tener DDL real sobre erp_records");
+});
+
+test("20260726000000: elimina privilegios directos heredados y conserva service_role", () => {
+  assert.match(hardenedPrivilegesSql, /revoke all on table public\.erp_records from anon, authenticated/i);
+  assert.match(hardenedPrivilegesSql, /grant select, insert, update, delete on table public\.erp_records to service_role/i);
+  assert.match(hardenedPrivilegesSql, /revoke all on table public\.erp_audit_log from anon, authenticated/i);
+  assert.match(hardenedPrivilegesSql, /grant select on table public\.erp_audit_log to authenticated/i);
+  assert.match(hardenedPrivilegesSql, /grant all on table public\.erp_audit_log to service_role/i);
+  for (const fn of ["current_erp_profile", "has_erp_role", "has_erp_permission"]) {
+    assert.match(hardenedPrivilegesSql, new RegExp(`revoke all on function public\\.${fn}\\([^)]*\\) from anon`, "i"));
+  }
+  assert.match(hardenedPrivilegesSql, /revoke all on function public\.set_updated_at\(\) from anon, authenticated/i);
+  assert.ok(!/grant .* on table public\.erp_records to (anon|authenticated)/i.test(hardenedPrivilegesSql));
+  assert.ok(!/grant .* on table public\.erp_audit_log to anon/i.test(hardenedPrivilegesSql));
 });
