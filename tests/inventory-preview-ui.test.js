@@ -28,3 +28,8 @@ test("el formulario de inventario usa el guardado server-side por dominio y revi
   assert.match(appJs, /const previousDatabase = structuredClone\(database\)/);
   assert.match(appJs, /database = previousDatabase/);
 });
+
+test("la previsualizacion muestra fallo de red sin mutar ni guardar", () => {
+  assert.match(appJs, /No se pudo contactar el servidor\. Intenta de nuevo\./);
+  assert.match(appJs, /No se pudo previsualizar inventario/);
+});

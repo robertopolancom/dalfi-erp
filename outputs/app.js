@@ -12917,11 +12917,18 @@ function wireForms() {
     const existingIndex = proposedInventory.findIndex((row) => row.itemID === editId);
     if (existingIndex >= 0) proposedInventory[existingIndex] = { ...proposedInventory[existingIndex], ...previewItem };
     else proposedInventory.push(previewItem);
-    const response = await fetch("/api/database-domain?domain=inventario&dryRun=1", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
-      body: JSON.stringify({ domain: "inventario", data: { inventario: proposedInventory }, expectedUpdatedAt: lastKnownRemoteUpdatedAt }),
-    });
+    let response;
+    try {
+      response = await fetch("/api/database-domain?domain=inventario&dryRun=1", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: proposedInventory }, expectedUpdatedAt: lastKnownRemoteUpdatedAt }),
+      });
+    } catch (error) {
+      if (messageEl) messageEl.textContent = "No se pudo contactar el servidor. Intenta de nuevo.";
+      console.warn("No se pudo previsualizar inventario.", error);
+      return;
+    }
     const result = await response.json().catch(() => ({}));
     if (response.status === 409) {
       if (messageEl) messageEl.textContent = "La base cambió en otra sesión. Recarga antes de continuar.";
