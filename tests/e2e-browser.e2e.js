@@ -115,6 +115,26 @@ test("staging aislado: operador puede consultar pero no iniciar operaciones prot
   assert.equal(profile.isActive, true);
   assert.equal(profile.permissions.canManageBilling, false);
   assert.equal(profile.permissions.canManageInventory, false);
+  const currentDocument = await page.evaluate(async (token) => {
+    const response = await fetch("/api/database", { headers: { Authorization: `Bearer ${token}` } });
+    return response.json();
+  }, accessToken);
+  assert.ok(currentDocument.data && currentDocument.updatedAt, "el operador debe poder leer el documento y su version");
+  const attemptedDocument = structuredClone(currentDocument.data);
+  attemptedDocument.facturas = [...(attemptedDocument.facturas || []), { __e2e_permission_probe: true }];
+  const blockedWrite = await page.evaluate(async ({ token, data, updatedAt }) => {
+    const response = await fetch("/api/database", {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ data, expectedUpdatedAt: updatedAt }),
+    });
+    return { status: response.status, body: await response.text() };
+  }, { token: accessToken, data: attemptedDocument, updatedAt: currentDocument.updatedAt });
+  assert.equal(blockedWrite.status, 403, "la API debe rechazar la mutacion directa del operador");
+  assert.doesNotMatch(blockedWrite.body, /secret|token|password/i);
+  // El navegador puede registrar la respuesta 403 deliberadamente provocada
+  // como "Failed to load resource"; no es un error de la aplicacion.
+  errors.length = 0;
   for (const [view, submit] of [["billing", "#invoice-submit-button"], ["inventory", "#inventory-submit"], ["retail-sales", "#retail-sale-submit"]]) {
     await page.locator(`[data-view="${view}"]`).click();
     await page.waitForTimeout(250);
