@@ -9900,7 +9900,16 @@ function wireAuth() {
     }
     supabaseSession = data.session;
     await refreshErpProfile();
-    const remoteDatabase = await loadRemoteDatabase();
+    let remoteDatabase;
+    try {
+      remoteDatabase = await withSupabaseTimeout(loadRemoteDatabase());
+    } catch (readError) {
+      const status = String(readError?.message || "").match(/HTTP\s+(\d{3})/)?.[1];
+      await supabaseClient.auth.signOut();
+      supabaseSession = null;
+      updateSyncStatus(status ? `No se pudo leer Supabase (HTTP ${status})` : "No se pudo leer Supabase", "error");
+      return;
+    }
     if (remoteDatabase) {
       database = remoteDatabase;
       ensureDatabaseShape();

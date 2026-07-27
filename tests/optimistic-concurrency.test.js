@@ -50,6 +50,13 @@ test("el login tiene timeout y no queda indefinidamente en Conectando Supabase",
   assert.match(appJs, /window\.setTimeout/);
 });
 
+test("el login muestra el HTTP real si falla la lectura inicial de /api/database", () => {
+  const loginBlock = appJs.slice(appJs.indexOf('byId("auth-form").addEventListener'), appJs.indexOf("function wireUserAdmin"));
+  assert.match(loginBlock, /withSupabaseTimeout\(loadRemoteDatabase\(\)\)/);
+  assert.match(loginBlock, /No se pudo leer Supabase \(HTTP \$\{status\}\)/);
+  assert.match(loginBlock, /auth\.signOut\(\)/);
+});
+
 test("un conflicto detiene nuevos autosaves y avisa sin sobrescribir", () => {
   assert.match(appJs, /remoteConflictDetected = true/);
   assert.match(appJs, /scheduleRemoteSave\(\)[\s\S]*remoteConflictDetected/);
