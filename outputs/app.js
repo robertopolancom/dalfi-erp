@@ -407,7 +407,8 @@ async function refreshRemoteDatabase({ force = false } = {}) {
     return true;
   } catch (error) {
     console.warn("No se pudo refrescar Supabase.", error);
-    updateSyncStatus("Error leyendo Supabase", "error");
+    const status = String(error?.message || "").match(/HTTP\s+(\d{3})/)?.[1];
+    updateSyncStatus(status ? `Error leyendo Supabase (HTTP ${status})` : "Error leyendo Supabase", "error");
     return false;
   } finally {
     isLoadingRemote = false;

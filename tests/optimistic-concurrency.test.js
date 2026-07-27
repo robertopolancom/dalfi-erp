@@ -39,6 +39,11 @@ test("si el login no puede leer /api/database, la SPA no intenta guardar el resp
   assert.doesNotMatch(loginBlock, /else \{\s*await saveRemoteDatabase\(\)/);
 });
 
+test("el refresco remoto conserva el codigo HTTP en el estado visible sin exponer el cuerpo", () => {
+  assert.match(appJs, /Error leyendo Supabase \(HTTP \$\{status\}\)/);
+  assert.match(appJs, /match\(\/HTTP\\s\+\(\\d\{3\}\)\/\)/);
+});
+
 test("un conflicto detiene nuevos autosaves y avisa sin sobrescribir", () => {
   assert.match(appJs, /remoteConflictDetected = true/);
   assert.match(appJs, /scheduleRemoteSave\(\)[\s\S]*remoteConflictDetected/);
