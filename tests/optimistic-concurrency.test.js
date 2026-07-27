@@ -33,6 +33,12 @@ test("la SPA carga y guarda exclusivamente mediante /api/database con la version
   assert.doesNotMatch(appJs, /\.rpc\("save_erp_record_if_current"/);
 });
 
+test("si el login no puede leer /api/database, la SPA no intenta guardar el respaldo local", () => {
+  const loginBlock = appJs.slice(appJs.indexOf('byId("auth-form").addEventListener'), appJs.indexOf("function wireUserAdmin"));
+  assert.match(loginBlock, /No se pudo leer Supabase\. No se guardó ningún dato\./);
+  assert.doesNotMatch(loginBlock, /else \{\s*await saveRemoteDatabase\(\)/);
+});
+
 test("un conflicto detiene nuevos autosaves y avisa sin sobrescribir", () => {
   assert.match(appJs, /remoteConflictDetected = true/);
   assert.match(appJs, /scheduleRemoteSave\(\)[\s\S]*remoteConflictDetected/);

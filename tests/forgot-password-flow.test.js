@@ -51,6 +51,6 @@ test("password_reset_required sigue siendo lo que fuerza el cambio obligatorio d
   const anchor = /byId\("auth-form"\)\.addEventListener\("submit"/;
   const match = anchor.exec(appJs);
   assert.ok(match);
-  const block = appJs.slice(match.index, match.index + 1500);
+  const block = appJs.slice(match.index, match.index + 2400);
   assert.match(block, /if\s*\(isPasswordResetRequired\(\)\)\s*\{\s*resetPasswordPanel\("forced"\)/);
 });

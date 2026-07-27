@@ -9886,7 +9886,13 @@ function wireAuth() {
       localStorage.setItem(dbStorageKey, JSON.stringify(database));
       localStorage.setItem(appStorageKey, JSON.stringify(state));
     } else {
-      await saveRemoteDatabase();
+      // Una sesion autenticada nunca debe convertir el respaldo local en un
+      // supuesto documento remoto cuando la lectura falla: eso podria
+      // sobrescribir datos reales o producir un error engañoso de guardado.
+      await supabaseClient.auth.signOut();
+      supabaseSession = null;
+      updateSyncStatus("No se pudo leer Supabase. No se guardó ningún dato.", "error");
+      return;
     }
     startRemoteRefreshLoop();
     updateAuthUi();
