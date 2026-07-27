@@ -21,3 +21,10 @@ test("la previsualizacion exige permiso y nunca llama al endpoint de guardado", 
   assert.doesNotMatch(preview, /fetch\("\/api\/database"/);
   assert.doesNotMatch(preview, /saveRemoteDatabase/);
 });
+
+test("el formulario de inventario usa el guardado server-side por dominio y revierte ante error", () => {
+  assert.match(appJs, /fetch\("\/api\/database-domain\?domain=inventario&commit=1"/);
+  assert.match(appJs, /saveState\(\{ skipRemote: true \}\)/);
+  assert.match(appJs, /const previousDatabase = structuredClone\(database\)/);
+  assert.match(appJs, /database = previousDatabase/);
+});

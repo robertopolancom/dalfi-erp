@@ -276,10 +276,10 @@ function loadState() {
   }
 }
 
-function saveState() {
+function saveState({ skipRemote = false } = {}) {
   localStorage.setItem(appStorageKey, JSON.stringify(state));
   if (database) localStorage.setItem(dbStorageKey, JSON.stringify(database));
-  scheduleRemoteSave();
+  if (!skipRemote) scheduleRemoteSave();
 }
 
 function initSupabaseClient() {
@@ -12934,7 +12934,21 @@ function wireForms() {
     if (messageEl) messageEl.textContent = result.allowed ? "Cambio autorizado: listo para guardar." : `Cambio rechazado: ${result.reason || "permiso insuficiente"}.`;
   });
 
-  byId("inventory-form").addEventListener("submit", (event) => {
+  async function saveInventoryDomainSlice() {
+    if (!isSupabaseReady()) return false;
+    const response = await fetch("/api/database-domain?domain=inventario&commit=1", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify({ domain: "inventario", data: { inventario: structuredClone(dbTable("inventario")), inventarioMovimientos: structuredClone(dbTable("inventarioMovimientos")) }, expectedUpdatedAt: lastKnownRemoteUpdatedAt }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (response.status === 409 || result?.conflict) throw new Error("Otra sesión modificó inventario. Recarga antes de guardar.");
+    if (!response.ok || !result?.saved) throw new Error(result?.error || `HTTP ${response.status}`);
+    if (result.updatedAt) lastKnownRemoteUpdatedAt = result.updatedAt;
+    return true;
+  }
+
+  byId("inventory-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!canManageInventory()) {
       alert("Solo administración o propietario puede crear o editar artículos de inventario.");
@@ -12967,6 +12981,8 @@ function wireForms() {
     }
     let item = dbTable("inventario").find((row) => row.itemID === editId);
     const isNew = !item;
+    const previousDatabase = structuredClone(database);
+    const previousState = structuredClone(state);
     const payload = {
       sku,
       nombre: name,
@@ -13025,7 +13041,18 @@ function wireForms() {
     byId("inventory-conversion-factor").value = 1;
     byId("inventory-controls-stock").checked = true;
     byId("inventory-can-consume").checked = true;
-    saveState();
+    saveState({ skipRemote: true });
+    try {
+      const savedByDomain = await saveInventoryDomainSlice();
+      if (!savedByDomain) scheduleRemoteSave();
+    } catch (error) {
+      database = previousDatabase;
+      state = previousState;
+      saveState({ skipRemote: true });
+      if (messageEl) messageEl.textContent = error?.message || "No se pudo guardar inventario.";
+      renderAll();
+      return;
+    }
     renderAll();
   });
 
