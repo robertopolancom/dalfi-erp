@@ -32,6 +32,10 @@ function isValidInventorySlice(data) {
   return true;
 }
 
+function hasValidExpectedUpdatedAt(payload) {
+  return payload?.expectedUpdatedAt === undefined || payload?.expectedUpdatedAt === null || typeof payload.expectedUpdatedAt === "string";
+}
+
 export async function onRequestGet({ request, env }) {
   const identity = await resolveErpIdentity(request, env);
   if (identity.error) return identityError(identity);
@@ -81,6 +85,7 @@ export async function onRequestPost({ request, env }) {
   if (payload?.domain !== "inventario" || !isValidInventorySlice(payload.data)) {
     return json({ error: "Slice de inventario invalido." }, 400);
   }
+  if (!hasValidExpectedUpdatedAt(payload)) return json({ error: "Version esperada invalida." }, 400);
   try {
     const response = await fetch(
       `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.${TABLE_NAME}&record_key=eq.${RECORD_KEY}&select=data,updated_at`,
@@ -131,6 +136,7 @@ export async function onRequestPut({ request, env }) {
   if (payload?.domain !== "inventario" || !isValidInventorySlice(payload.data)) {
     return json({ error: "Slice de inventario invalido." }, 400);
   }
+  if (!hasValidExpectedUpdatedAt(payload)) return json({ error: "Version esperada invalida." }, 400);
   try {
     const currentResponse = await fetch(
       `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.${TABLE_NAME}&record_key=eq.${RECORD_KEY}&select=data,updated_at`,
