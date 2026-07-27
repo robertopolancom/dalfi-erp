@@ -128,6 +128,20 @@ test("staging aislado: operador puede consultar pero no iniciar operaciones prot
   assert.equal(inventoryDomain.body.domain, "inventario");
   assert.ok(inventoryDomain.body.data && typeof inventoryDomain.body.data === "object");
   assert.equal(Object.prototype.hasOwnProperty.call(inventoryDomain.body.data, "facturas"), false, "el slice no debe exponer facturacion");
+  const inventoryProbe = structuredClone(inventoryDomain.body.data);
+  inventoryProbe.inventario = [...(inventoryProbe.inventario || []), { __e2e_inventory_probe: true }];
+  const dryRun = await page.evaluate(async ({ token, data, updatedAt }) => {
+    const response = await fetch("/api/database-domain?domain=inventario&dryRun=1", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: "inventario", data, expectedUpdatedAt: updatedAt }),
+    });
+    return { status: response.status, body: await response.json() };
+  }, { token: accessToken, data: inventoryProbe, updatedAt: currentDocument.updatedAt });
+  assert.equal(dryRun.status, 200);
+  assert.equal(dryRun.body.dryRun, true);
+  assert.equal(dryRun.body.allowed, false);
+  assert.equal(dryRun.body.reason, "missing_inventory_permission");
   const attemptedDocument = structuredClone(currentDocument.data);
   attemptedDocument.facturas = [...(attemptedDocument.facturas || []), { __e2e_permission_probe: true }];
   const blockedWrite = await page.evaluate(async ({ token, data, updatedAt }) => {
