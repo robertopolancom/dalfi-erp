@@ -157,6 +157,21 @@ test("database-domain dry-run: conserva el control optimista y devuelve conflict
   }
 });
 
+test("database-domain dry-run: rechaza tablas de inventario con tipos invalidos", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  const fake = fakeFetch();
+  try {
+    const response = await onRequestPost({
+      request: dryRunRequest("jwt", { domain: "inventario", data: { inventario: "manipulado" } }),
+      env: ENV,
+    });
+    assert.equal(response.status, 400);
+    assert.equal(fake.calls.some((url) => url.includes("/rest/v1/erp_records")), false);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("database-domain PUT: sin commit explicito no escribe y operador no autorizado recibe 403", async () => {
   const { onRequestPut } = await import(moduleUrl);
   const fake = fakeFetch();

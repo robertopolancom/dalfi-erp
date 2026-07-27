@@ -24,6 +24,14 @@ function serviceHeaders(env) {
   return { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}` };
 }
 
+function isValidInventorySlice(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  for (const table of ["inventario", "inventarioMovimientos"]) {
+    if (Object.prototype.hasOwnProperty.call(data, table) && !Array.isArray(data[table])) return false;
+  }
+  return true;
+}
+
 export async function onRequestGet({ request, env }) {
   const identity = await resolveErpIdentity(request, env);
   if (identity.error) return identityError(identity);
@@ -70,7 +78,7 @@ export async function onRequestPost({ request, env }) {
   } catch {
     return json({ error: "Solicitud invalida." }, 400);
   }
-  if (payload?.domain !== "inventario" || !payload?.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
+  if (payload?.domain !== "inventario" || !isValidInventorySlice(payload.data)) {
     return json({ error: "Slice de inventario invalido." }, 400);
   }
   try {
@@ -120,7 +128,7 @@ export async function onRequestPut({ request, env }) {
   } catch {
     return json({ error: "Solicitud invalida." }, 400);
   }
-  if (payload?.domain !== "inventario" || !payload?.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
+  if (payload?.domain !== "inventario" || !isValidInventorySlice(payload.data)) {
     return json({ error: "Slice de inventario invalido." }, 400);
   }
   try {
