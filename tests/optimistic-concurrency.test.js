@@ -44,6 +44,12 @@ test("el refresco remoto conserva el codigo HTTP en el estado visible sin expone
   assert.match(appJs, /match\(\/HTTP\\s\+\(\\d\{3\}\)\/\)/);
 });
 
+test("el login tiene timeout y no queda indefinidamente en Conectando Supabase", () => {
+  assert.match(appJs, /withSupabaseTimeout\(supabaseClient\.auth\.signInWithPassword/);
+  assert.match(appJs, /Supabase no respondió en 15 segundos/);
+  assert.match(appJs, /window\.setTimeout/);
+});
+
 test("un conflicto detiene nuevos autosaves y avisa sin sobrescribir", () => {
   assert.match(appJs, /remoteConflictDetected = true/);
   assert.match(appJs, /scheduleRemoteSave\(\)[\s\S]*remoteConflictDetected/);

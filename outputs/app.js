@@ -291,6 +291,20 @@ function isSupabaseReady() {
   return Boolean(supabaseClient && supabaseSession?.user);
 }
 
+async function withSupabaseTimeout(promise, timeoutMs = 15000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error("SUPABASE_TIMEOUT")), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) window.clearTimeout(timer);
+  }
+}
+
 function isPasswordResetRequired() {
   return Boolean(supabaseSession?.user?.user_metadata?.password_reset_required);
 }
@@ -9872,7 +9886,14 @@ function wireAuth() {
     const email = byId("auth-email").value.trim();
     const password = byId("auth-password").value;
     updateSyncStatus("Conectando Supabase...", "online");
-    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+    let signInResult;
+    try {
+      signInResult = await withSupabaseTimeout(supabaseClient.auth.signInWithPassword({ email, password }));
+    } catch (signInError) {
+      updateSyncStatus(signInError?.message === "SUPABASE_TIMEOUT" ? "Supabase no respondió en 15 segundos" : "No se pudo conectar con Supabase", "error");
+      return;
+    }
+    const { data, error } = signInResult;
     if (error) {
       updateSyncStatus("Usuario o contraseña incorrectos", "error");
       return;
