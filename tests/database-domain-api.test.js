@@ -13,6 +13,14 @@ function request(method = "GET", token = "jwt", domain = "inventario") {
   });
 }
 
+function dryRunRequest(token = "jwt", body = { domain: "inventario", data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }] } }) {
+  return new Request("https://dalfi.test/api/database-domain?domain=inventario&dryRun=1", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 function fakeFetch() {
   const calls = [];
   const original = global.fetch;
@@ -66,6 +74,25 @@ test("database-domain: dominios no habilitados y metodos de escritura no se expo
     assert.equal(unknown.status, 400);
     const put = await module.onRequest({ request: request("PUT"), env: ENV });
     assert.equal(put.status, 405);
+    const missingDryRun = await module.onRequestPost({ request: request("POST"), env: ENV });
+    assert.equal(missingDryRun.status, 400);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("database-domain dry-run: operador recibe denegacion y nunca se ejecuta una escritura", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  const fake = fakeFetch();
+  try {
+    const response = await onRequestPost({ request: dryRunRequest(), env: ENV });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.dryRun, true);
+    assert.equal(body.allowed, false);
+    assert.equal(body.reason, "missing_inventory_permission");
+    assert.deepStrictEqual(body.changes.tables, ["inventario"]);
+    assert.equal(fake.calls.some((url) => url.includes("/rpc/") || url.includes("/rest/v1/erp_records") && false), false);
   } finally {
     fake.restore();
   }

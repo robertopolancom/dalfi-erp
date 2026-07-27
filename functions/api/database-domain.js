@@ -1,5 +1,6 @@
 import { resolveErpIdentity } from "./_lib/authz.js";
-import { extractDomainSlice } from "./_lib/domain-slices.js";
+import { authorizeDatabaseChanges, detectDatabaseChanges } from "./_lib/database-authz.js";
+import { extractDomainSlice, mergeDomainSlice } from "./_lib/domain-slices.js";
 
 const TABLE_NAME = "app";
 const RECORD_KEY = "database";
@@ -42,6 +43,53 @@ export async function onRequestGet({ request, env }) {
   } catch (error) {
     console.error("database-domain GET:", error);
     return json({ error: "No se pudo leer el dominio." }, 500);
+  }
+}
+
+// Simula una mutacion de un dominio sin escribir ni generar auditoria. Este
+// contrato permite validar permisos y diferencias antes de separar la
+// persistencia real por tablas propias.
+export async function onRequestPost({ request, env }) {
+  const identity = await resolveErpIdentity(request, env);
+  if (identity.error) return identityError(identity);
+  const url = new URL(request.url);
+  if (url.searchParams.get("dryRun") !== "1") return json({ error: "Solo se admite dryRun=1." }, 400);
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ error: "Persistencia no configurada." }, 500);
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "Solicitud invalida." }, 400);
+  }
+  if (payload?.domain !== "inventario" || !payload?.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
+    return json({ error: "Slice de inventario invalido." }, 400);
+  }
+  try {
+    const response = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.${TABLE_NAME}&record_key=eq.${RECORD_KEY}&select=data,updated_at`,
+      { headers: serviceHeaders(env) },
+    );
+    if (!response.ok) return json({ error: "No se pudo leer el documento." }, 502);
+    const rows = await response.json().catch(() => []);
+    const row = rows?.[0];
+    if (!row?.data) return json({ error: "Base de datos no encontrada." }, 404);
+    if (payload.expectedUpdatedAt !== undefined && (payload.expectedUpdatedAt || null) !== (row.updated_at || null)) {
+      return json({ conflict: true, error: "Otra sesion guardo primero.", updatedAt: row.updated_at || null }, 409);
+    }
+    const merged = mergeDomainSlice(row.data, payload.domain, payload.data).document;
+    const changes = detectDatabaseChanges(row.data, merged);
+    const authorization = authorizeDatabaseChanges(identity, changes);
+    return json({
+      dryRun: true,
+      allowed: authorization.allowed,
+      reason: authorization.reason || null,
+      permissions: authorization.permissions || [],
+      changes: { domains: changes.domains, tables: changes.changedTables },
+      updatedAt: row.updated_at || null,
+    });
+  } catch (error) {
+    console.error("database-domain POST dry-run:", error);
+    return json({ error: "No se pudo simular el cambio." }, 500);
   }
 }
 
