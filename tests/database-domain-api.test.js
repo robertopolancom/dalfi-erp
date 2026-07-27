@@ -34,6 +34,10 @@ function fakeFetch(profile = { role: "operador", is_active: true, can_manage_inv
     if (target.includes("/rest/v1/erp_records")) {
       return new Response(JSON.stringify([{ updated_at: "2026-07-26T12:00:00Z", data: { data: { inventario: [{ itemID: "I-1" }], facturas: [{ facturaID: "F-1" }] } } }]), { status: 200 });
     }
+    if (target.includes("/rest/v1/rpc/save_erp_record_if_current")) {
+      return new Response(JSON.stringify([{ saved: true, new_updated_at: "2026-07-26T12:01:00Z" }]), { status: 200 });
+    }
+    if (target.includes("/rest/v1/erp_audit_log")) return new Response(null, { status: 201 });
     throw new Error(`ruta inesperada: ${target}`);
   };
   return { calls, restore: () => { global.fetch = original; } };
@@ -148,6 +152,52 @@ test("database-domain dry-run: conserva el control optimista y devuelve conflict
     const body = await response.json();
     assert.equal(body.conflict, true);
     assert.equal(body.updatedAt, "2026-07-26T12:00:00Z");
+  } finally {
+    fake.restore();
+  }
+});
+
+test("database-domain PUT: sin commit explicito no escribe y operador no autorizado recibe 403", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch();
+  try {
+    const missingCommit = await onRequestPut({ request: dryRunRequest(), env: ENV });
+    assert.equal(missingCommit.status, 400);
+    const write = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }] }, expectedUpdatedAt: "2026-07-26T12:00:00Z" }),
+      }),
+      env: ENV,
+    });
+    assert.equal(write.status, 403);
+    assert.equal(fake.calls.some((url) => url.includes("/rpc/")), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("database-domain PUT: perfil autorizado guarda el slice, usa el RPC y audita sin devolver el documento", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
+  try {
+    const response = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }] }, expectedUpdatedAt: "2026-07-26T12:00:00Z" }),
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.saved, true);
+    assert.equal(body.updatedAt, "2026-07-26T12:01:00Z");
+    assert.deepStrictEqual(body.changes.tables, ["inventario"]);
+    assert.equal(fake.calls.some((url) => url.includes("/rest/v1/rpc/save_erp_record_if_current")), true);
+    assert.equal(fake.calls.some((url) => url.includes("/rest/v1/erp_audit_log")), true);
+    assert.equal(JSON.stringify(body).includes("facturaID"), false);
   } finally {
     fake.restore();
   }
