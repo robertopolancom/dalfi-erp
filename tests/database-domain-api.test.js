@@ -114,3 +114,20 @@ test("database-domain dry-run: perfil autorizado aprueba el cambio sin ejecutar 
     fake.restore();
   }
 });
+
+test("database-domain dry-run: rechaza cuerpos excesivos antes de leer el documento", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
+  try {
+    const huge = new Request("https://dalfi.test/api/database-domain?domain=inventario&dryRun=1", {
+      method: "POST",
+      headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: "inventario", data: { inventario: "x".repeat(2 * 1024 * 1024) } }),
+    });
+    const response = await onRequestPost({ request: huge, env: ENV });
+    assert.equal(response.status, 413);
+    assert.equal(fake.calls.some((url) => url.includes("/rest/v1/erp_records")), false);
+  } finally {
+    fake.restore();
+  }
+});

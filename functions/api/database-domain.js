@@ -4,6 +4,7 @@ import { extractDomainSlice, mergeDomainSlice } from "./_lib/domain-slices.js";
 
 const TABLE_NAME = "app";
 const RECORD_KEY = "database";
+const MAX_DRY_RUN_BODY_BYTES = 2 * 1024 * 1024;
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -55,9 +56,15 @@ export async function onRequestPost({ request, env }) {
   const url = new URL(request.url);
   if (url.searchParams.get("dryRun") !== "1") return json({ error: "Solo se admite dryRun=1." }, 400);
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ error: "Persistencia no configurada." }, 500);
+  const contentLength = Number(request.headers.get("content-length")) || 0;
+  if (contentLength > MAX_DRY_RUN_BODY_BYTES) return json({ error: "Solicitud demasiado grande." }, 413);
   let payload;
   try {
-    payload = await request.json();
+    const rawBody = await request.text();
+    if (new TextEncoder().encode(rawBody).byteLength > MAX_DRY_RUN_BODY_BYTES) {
+      return json({ error: "Solicitud demasiado grande." }, 413);
+    }
+    payload = JSON.parse(rawBody);
   } catch {
     return json({ error: "Solicitud invalida." }, 400);
   }
