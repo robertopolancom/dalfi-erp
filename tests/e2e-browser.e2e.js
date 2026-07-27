@@ -93,7 +93,24 @@ test("staging aislado: operador puede consultar pero no iniciar operaciones prot
   await page.locator("#auth-password").fill(password);
   await page.locator('#auth-form button[type="submit"]').click();
   await page.locator("#logout-button").waitFor({ state: "visible", timeout: 25000 });
-  const profile = await page.evaluate(async () => (await fetch("/api/me")).json());
+  const accessToken = await page.evaluate(() => {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const value = localStorage.getItem(localStorage.key(index));
+      if (!value) continue;
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed?.access_token) return parsed.access_token;
+      } catch {
+        // Otra entrada de localStorage no es una sesion Supabase.
+      }
+    }
+    return "";
+  });
+  assert.ok(accessToken, "el login debe dejar un access_token de Supabase en la sesion del navegador");
+  const profile = await page.evaluate(async (token) => {
+    const response = await fetch("/api/me", { headers: { Authorization: `Bearer ${token}` } });
+    return response.json();
+  }, accessToken);
   assert.equal(profile.role, "operador");
   assert.equal(profile.isActive, true);
   assert.equal(profile.permissions.canManageBilling, false);
