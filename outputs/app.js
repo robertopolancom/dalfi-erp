@@ -12943,10 +12943,16 @@ function wireForms() {
 
   async function saveInventoryDomainSlice() {
     if (!isSupabaseReady()) return false;
+    const inventoryData = {};
+    inventoryDomainTables.forEach((table) => {
+      if (Object.prototype.hasOwnProperty.call(database?.data || {}, table) || Array.isArray(database?.data?.[table])) {
+        inventoryData[table] = structuredClone(dbTable(table));
+      }
+    });
     const response = await fetch("/api/database-domain?domain=inventario&commit=1", {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
-      body: JSON.stringify({ domain: "inventario", data: { inventario: structuredClone(dbTable("inventario")), inventarioMovimientos: structuredClone(dbTable("inventarioMovimientos")) }, expectedUpdatedAt: lastKnownRemoteUpdatedAt }),
+      body: JSON.stringify({ domain: "inventario", data: inventoryData, expectedUpdatedAt: lastKnownRemoteUpdatedAt }),
     });
     const result = await response.json().catch(() => ({}));
     if (response.status === 409 || result?.conflict) throw new Error("Otra sesión modificó inventario. Recarga antes de guardar.");

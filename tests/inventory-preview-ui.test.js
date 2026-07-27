@@ -27,6 +27,7 @@ test("el formulario de inventario usa el guardado server-side por dominio y revi
   assert.match(appJs, /saveState\(\{ skipRemote: true \}\)/);
   assert.match(appJs, /const previousDatabase = structuredClone\(database\)/);
   assert.match(appJs, /database = previousDatabase/);
+  assert.match(appJs, /inventoryDomainTables\.forEach\(\(table\) =>/);
 });
 
 test("la previsualizacion muestra fallo de red sin mutar ni guardar", () => {
