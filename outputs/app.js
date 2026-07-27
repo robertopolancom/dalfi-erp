@@ -12883,6 +12883,57 @@ function wireForms() {
     if (event.target.closest(".edit-expense")) startExpenseEdit(row.dataset.expenseId);
   });
 
+  byId("inventory-preview")?.addEventListener("click", async () => {
+    const messageEl = byId("inventory-preview-message");
+    if (messageEl) messageEl.textContent = "";
+    if (!isSupabaseReady()) {
+      if (messageEl) messageEl.textContent = "Inicia sesión para previsualizar cambios.";
+      return;
+    }
+    if (!canManageInventory()) {
+      if (messageEl) messageEl.textContent = "Tu usuario no tiene permiso para modificar inventario.";
+      return;
+    }
+    const sku = byId("inventory-sku").value.trim();
+    const name = byId("inventory-name").value.trim();
+    if (!sku || !name) {
+      if (messageEl) messageEl.textContent = "Indica SKU y producto antes de previsualizar.";
+      return;
+    }
+    const proposedInventory = structuredClone(dbTable("inventario"));
+    const editId = byId("inventory-edit-id").value;
+    const previewItem = {
+      itemID: editId || "__preview_inventory_item__",
+      sku,
+      nombre: name,
+      categoria: byId("inventory-category").value.trim(),
+      tipo: byId("inventory-type").value,
+      costo: Number(byId("inventory-cost").value) || 0,
+      precioVenta: Number(byId("inventory-sale-price").value) || 0,
+      existenciaMinima: Number(byId("inventory-min-stock").value) || 0,
+      unidad: byId("inventory-unit-base").value.trim() || byId("inventory-unit").value.trim(),
+      estado: "Activo",
+    };
+    const existingIndex = proposedInventory.findIndex((row) => row.itemID === editId);
+    if (existingIndex >= 0) proposedInventory[existingIndex] = { ...proposedInventory[existingIndex], ...previewItem };
+    else proposedInventory.push(previewItem);
+    const response = await fetch("/api/database-domain?domain=inventario&dryRun=1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify({ domain: "inventario", data: { inventario: proposedInventory }, expectedUpdatedAt: lastKnownRemoteUpdatedAt }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (response.status === 409) {
+      if (messageEl) messageEl.textContent = "La base cambió en otra sesión. Recarga antes de continuar.";
+      return;
+    }
+    if (!response.ok || !result.dryRun) {
+      if (messageEl) messageEl.textContent = result.error || "No se pudo previsualizar el cambio.";
+      return;
+    }
+    if (messageEl) messageEl.textContent = result.allowed ? "Cambio autorizado: listo para guardar." : `Cambio rechazado: ${result.reason || "permiso insuficiente"}.`;
+  });
+
   byId("inventory-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (!canManageInventory()) {
