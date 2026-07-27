@@ -21,7 +21,7 @@ function dryRunRequest(token = "jwt", body = { domain: "inventario", data: { inv
   });
 }
 
-function fakeFetch() {
+function fakeFetch(profile = { role: "operador", is_active: true, can_manage_inventory: false }) {
   const calls = [];
   const original = global.fetch;
   global.fetch = async (url) => {
@@ -29,7 +29,7 @@ function fakeFetch() {
     calls.push(target);
     if (target.includes("/auth/v1/user")) return new Response(JSON.stringify({ id: "user-1", email: "operador@dalfi.test" }), { status: 200 });
     if (target.includes("/rest/v1/erp_user_profiles")) {
-      return new Response(JSON.stringify([{ role: "operador", is_active: true, can_manage_inventory: false }]), { status: 200 });
+      return new Response(JSON.stringify([profile]), { status: 200 });
     }
     if (target.includes("/rest/v1/erp_records")) {
       return new Response(JSON.stringify([{ updated_at: "2026-07-26T12:00:00Z", data: { data: { inventario: [{ itemID: "I-1" }], facturas: [{ facturaID: "F-1" }] } } }]), { status: 200 });
@@ -93,6 +93,23 @@ test("database-domain dry-run: operador recibe denegacion y nunca se ejecuta una
     assert.equal(body.reason, "missing_inventory_permission");
     assert.deepStrictEqual(body.changes.tables, ["inventario"]);
     assert.equal(fake.calls.some((url) => url.includes("/rpc/") || url.includes("/rest/v1/erp_records") && false), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("database-domain dry-run: perfil autorizado aprueba el cambio sin ejecutar una escritura", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
+  try {
+    const response = await onRequestPost({ request: dryRunRequest(), env: ENV });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.dryRun, true);
+    assert.equal(body.allowed, true);
+    assert.equal(body.reason, null);
+    assert.deepStrictEqual(body.changes.tables, ["inventario"]);
+    assert.equal(fake.calls.some((url) => url.includes("/rpc/")), false);
   } finally {
     fake.restore();
   }
