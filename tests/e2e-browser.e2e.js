@@ -142,6 +142,16 @@ test("staging aislado: operador puede consultar pero no iniciar operaciones prot
   assert.equal(dryRun.body.dryRun, true);
   assert.equal(dryRun.body.allowed, false);
   assert.equal(dryRun.body.reason, "missing_inventory_permission");
+  const blockedDomainWrite = await page.evaluate(async ({ token, data, updatedAt }) => {
+    const response = await fetch("/api/database-domain?domain=inventario&commit=1", {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ domain: "inventario", data, expectedUpdatedAt: updatedAt }),
+    });
+    return { status: response.status, body: await response.text() };
+  }, { token: accessToken, data: inventoryProbe, updatedAt: currentDocument.updatedAt });
+  assert.equal(blockedDomainWrite.status, 403);
+  assert.doesNotMatch(blockedDomainWrite.body, /secret|token|password/i);
   const attemptedDocument = structuredClone(currentDocument.data);
   attemptedDocument.facturas = [...(attemptedDocument.facturas || []), { __e2e_permission_probe: true }];
   const blockedWrite = await page.evaluate(async ({ token, data, updatedAt }) => {
