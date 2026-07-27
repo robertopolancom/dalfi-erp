@@ -266,3 +266,28 @@ test("database-domain PUT: fallo de auditoria no revierte un guardado ya confirm
     fake.restore();
   }
 });
+
+test("database-domain PUT: un payload manipulado con facturas queda fuera del merge y de los cambios autorizados", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
+  try {
+    const response = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          domain: "inventario",
+          data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }], facturas: [{ facturaID: "NO-DEBE-ENTRAR" }] },
+          expectedUpdatedAt: "2026-07-26T12:00:00Z",
+        }),
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepStrictEqual(body.changes.tables, ["inventario"]);
+    assert.equal(JSON.stringify(body).includes("NO-DEBE-ENTRAR"), false);
+  } finally {
+    fake.restore();
+  }
+});
