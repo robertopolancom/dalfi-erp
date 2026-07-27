@@ -21,7 +21,7 @@ function dryRunRequest(token = "jwt", body = { domain: "inventario", data: { inv
   });
 }
 
-function fakeFetch(profile = { role: "operador", is_active: true, can_manage_inventory: false }) {
+function fakeFetch(profile = { role: "operador", is_active: true, can_manage_inventory: false }, options = {}) {
   const calls = [];
   const original = global.fetch;
   global.fetch = async (url) => {
@@ -35,9 +35,9 @@ function fakeFetch(profile = { role: "operador", is_active: true, can_manage_inv
       return new Response(JSON.stringify([{ updated_at: "2026-07-26T12:00:00Z", data: { data: { inventario: [{ itemID: "I-1" }], facturas: [{ facturaID: "F-1" }] } } }]), { status: 200 });
     }
     if (target.includes("/rest/v1/rpc/save_erp_record_if_current")) {
-      return new Response(JSON.stringify([{ saved: true, new_updated_at: "2026-07-26T12:01:00Z" }]), { status: 200 });
+      return new Response(JSON.stringify([{ saved: options.rpcSaved !== false, new_updated_at: "2026-07-26T12:01:00Z" }]), { status: options.rpcStatus || 200 });
     }
-    if (target.includes("/rest/v1/erp_audit_log")) return new Response(null, { status: 201 });
+    if (target.includes("/rest/v1/erp_audit_log")) return new Response(null, { status: options.auditStatus || 201 });
     throw new Error(`ruta inesperada: ${target}`);
   };
   return { calls, restore: () => { global.fetch = original; } };
@@ -220,6 +220,48 @@ test("database-domain PUT: una propuesta identica es idempotente y no ejecuta RP
     assert.equal(body.saved, true);
     assert.equal(body.noChanges, true);
     assert.equal(fake.calls.some((url) => url.includes("/rpc/") || url.includes("erp_audit_log")), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("database-domain PUT: un fallo del RPC devuelve 502 y no informa un guardado falso", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true }, { rpcStatus: 500, rpcSaved: false });
+  try {
+    const response = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }] }, expectedUpdatedAt: "2026-07-26T12:00:00Z" }),
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 502);
+    const body = await response.json();
+    assert.equal(body.saved, undefined);
+    assert.equal(fake.calls.some((url) => url.includes("erp_audit_log")), false);
+  } finally {
+    fake.restore();
+  }
+});
+
+test("database-domain PUT: fallo de auditoria no revierte un guardado ya confirmado", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true }, { auditStatus: 500 });
+  try {
+    const response = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }] }, expectedUpdatedAt: "2026-07-26T12:00:00Z" }),
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.saved, true);
+    assert.equal(body.updatedAt, "2026-07-26T12:01:00Z");
   } finally {
     fake.restore();
   }
