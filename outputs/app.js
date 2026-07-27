@@ -219,6 +219,8 @@ async function loadDatabase() {
         await refreshErpProfile();
         const remoteDatabase = await loadRemoteDatabase();
         if (remoteDatabase) {
+          const inventorySlice = await loadInventoryDomainSlice(remoteDatabase);
+          if (inventorySlice) Object.assign(remoteDatabase, inventorySlice);
           database = remoteDatabase;
           ensureDatabaseShape();
           localStorage.setItem(dbStorageKey, JSON.stringify(database));
@@ -310,6 +312,54 @@ async function loadRemoteDatabase() {
   }
 }
 
+// Lectura de compatibilidad durante la separacion gradual por dominios.
+// El endpoint sigue leyendo el mismo registro monolitico, pero la SPA ya
+// valida el slice de inventario por una ruta server-side aislada. Si falla,
+// conserva el documento completo como fallback seguro.
+const inventoryDomainTables = [
+  "inventario", "inventarioMovimientos", "almacenes", "comprasInventario",
+  "transferenciasInventario", "mesas", "entregasColaboradoras", "consumosGenerales",
+  "consumosActivos", "consumosAcademia", "consumosPendientes", "auditoriasMesa",
+  "auditoriasAcademia", "conteosFisicos", "ventasDirectas", "activosFijos",
+  "custodiaActivos", "assetEvents", "fichasTecnicas", "stationInventoryRules",
+  "distribucionesVariacionMesa", "lotesInventario", "configuracionInventario",
+  "assetConsumptionRules",
+];
+
+function canonicalDomainValue(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalDomainValue).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalDomainValue(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function loadInventoryDomainSlice(fullDatabase) {
+  if (!isSupabaseReady() || !fullDatabase) return null;
+  try {
+    const response = await fetch("/api/database-domain?domain=inventario", {
+      headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    if (payload?.domain !== "inventario" || !payload?.data || typeof payload.data !== "object") {
+      throw new Error("Respuesta de dominio invalida");
+    }
+    const expected = {};
+    inventoryDomainTables.forEach((table) => {
+      if (Object.prototype.hasOwnProperty.call(fullDatabase, table)) expected[table] = fullDatabase[table];
+    });
+    if (canonicalDomainValue(payload.data) !== canonicalDomainValue(expected)) {
+      console.warn("El slice server-side de inventario difiere del documento completo; se conserva el documento completo.");
+      return null;
+    }
+    return payload.data;
+  } catch (error) {
+    console.warn("No se pudo validar el slice server-side de inventario; se usa el documento completo.", error);
+    return null;
+  }
+}
+
 // Consulta liviana (solo la columna updated_at, no el jsonb completo) para
 // que el poll periodico pueda detectar "nadie cambio nada" sin pagar el
 // costo de descargar el documento entero cada vez.
@@ -342,7 +392,10 @@ async function refreshRemoteDatabase({ force = false } = {}) {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     if (!payload?.data) return false;
-    database = payload.data;
+    const nextDatabase = payload.data;
+    const inventorySlice = await loadInventoryDomainSlice(nextDatabase);
+    if (inventorySlice) Object.assign(nextDatabase, inventorySlice);
+    database = nextDatabase;
     lastKnownRemoteUpdatedAt = payload.updatedAt || lastKnownRemoteUpdatedAt;
     remoteConflictDetected = false;
     ensureDatabaseShape();
