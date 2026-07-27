@@ -212,6 +212,25 @@ test("database-domain PUT: sin JWT responde 401 antes de consultar erp_records",
   }
 });
 
+test("database-domain PUT: perfil inactivo responde 403 antes de leer el documento", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: false, can_manage_inventory: true });
+  try {
+    const response = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: [] }, expectedUpdatedAt: null }),
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 403);
+    assert.equal(fake.calls.some((url) => url.includes("/rest/v1/erp_records")), false);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("database-domain PUT: perfil autorizado guarda el slice, usa el RPC y audita sin devolver el documento", async () => {
   const { onRequestPut } = await import(moduleUrl);
   const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
