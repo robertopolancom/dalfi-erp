@@ -202,3 +202,25 @@ test("database-domain PUT: perfil autorizado guarda el slice, usa el RPC y audit
     fake.restore();
   }
 });
+
+test("database-domain PUT: una propuesta identica es idempotente y no ejecuta RPC ni auditoria", async () => {
+  const { onRequestPut } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
+  try {
+    const response = await onRequestPut({
+      request: new Request("https://dalfi.test/api/database-domain?domain=inventario&commit=1", {
+        method: "PUT",
+        headers: { Authorization: "Bearer jwt", "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "inventario", data: { inventario: [{ itemID: "I-1" }] }, expectedUpdatedAt: "2026-07-26T12:00:00Z" }),
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.saved, true);
+    assert.equal(body.noChanges, true);
+    assert.equal(fake.calls.some((url) => url.includes("/rpc/") || url.includes("erp_audit_log")), false);
+  } finally {
+    fake.restore();
+  }
+});
