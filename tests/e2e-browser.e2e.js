@@ -120,6 +120,14 @@ test("staging aislado: operador puede consultar pero no iniciar operaciones prot
     return response.json();
   }, accessToken);
   assert.ok(currentDocument.data && currentDocument.updatedAt, "el operador debe poder leer el documento y su version");
+  const inventoryDomain = await page.evaluate(async (token) => {
+    const response = await fetch("/api/database-domain?domain=inventario", { headers: { Authorization: `Bearer ${token}` } });
+    return { status: response.status, body: await response.json() };
+  }, accessToken);
+  assert.equal(inventoryDomain.status, 200, "el operador activo debe poder consultar el slice de inventario");
+  assert.equal(inventoryDomain.body.domain, "inventario");
+  assert.ok(inventoryDomain.body.data && typeof inventoryDomain.body.data === "object");
+  assert.equal(Object.prototype.hasOwnProperty.call(inventoryDomain.body.data, "facturas"), false, "el slice no debe exponer facturacion");
   const attemptedDocument = structuredClone(currentDocument.data);
   attemptedDocument.facturas = [...(attemptedDocument.facturas || []), { __e2e_permission_probe: true }];
   const blockedWrite = await page.evaluate(async ({ token, data, updatedAt }) => {
