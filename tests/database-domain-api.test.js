@@ -131,3 +131,24 @@ test("database-domain dry-run: rechaza cuerpos excesivos antes de leer el docume
     fake.restore();
   }
 });
+
+test("database-domain dry-run: conserva el control optimista y devuelve conflicto sin simular una version obsoleta", async () => {
+  const { onRequestPost } = await import(moduleUrl);
+  const fake = fakeFetch({ role: "administrador", is_active: true, can_manage_inventory: true });
+  try {
+    const response = await onRequestPost({
+      request: dryRunRequest("jwt", {
+        domain: "inventario",
+        data: { inventario: [{ itemID: "I-1" }, { itemID: "I-2" }] },
+        expectedUpdatedAt: "2026-07-26T11:59:00Z",
+      }),
+      env: ENV,
+    });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.conflict, true);
+    assert.equal(body.updatedAt, "2026-07-26T12:00:00Z");
+  } finally {
+    fake.restore();
+  }
+});
