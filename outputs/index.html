@@ -1233,11 +1233,11 @@
                 </select>
               </label>
               <label class="panel-note">
-                Modo de mesa/colaboradora por línea de servicio en Facturación
+                Modo de mesa/estación por línea de servicio en Facturación (no afecta a servicio ni colaboradora, siempre obligatorios)
                 <select id="station-mode">
-                  <option value="disabled">Desactivado: la mesa no es obligatoria</option>
-                  <option value="audit_only">Auditoría: guarda la factura aunque falte la mesa (conciliar después)</option>
-                  <option value="required">Obligatorio: bloquea la factura si falta la mesa o Área general</option>
+                  <option value="disabled">Desactivado: el campo de mesa no se muestra en Facturación</option>
+                  <option value="audit_only">Auditoría: muestra el campo y guarda la factura aunque falte la mesa (conciliar después)</option>
+                  <option value="required">Obligatorio: muestra el campo y bloquea la factura si falta la mesa o Área general</option>
                 </select>
               </label>
             </form>

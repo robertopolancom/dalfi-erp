@@ -10471,7 +10471,7 @@ function addInvoiceLine(defaultStaff = "") {
         Colaboradora
         <input class="line-staff" list="staff-list" value="${escapeHtml(staffValue)}" placeholder="Buscar colaboradora" required />
       </label>
-      <label>
+      <label class="station-field hidden">
         Mesa / ubicación de consumo
         <input class="line-station" list="stations-list" placeholder="Buscar mesa o Área general" />
       </label>
@@ -10578,6 +10578,14 @@ function updateInvoiceLineOptionalFields(line) {
   line.querySelector(".discount-note-field")?.classList.toggle("hidden", discount <= 0);
   if (extra <= 0) line.querySelector(".line-extra-note").value = "";
   if (discount <= 0) line.querySelector(".line-discount-note").value = "";
+  // El campo de mesa/estacion es solo para el control fisico opcional por
+  // ubicacion (Auditoria de mesas, seccion inventario). El consumo de
+  // implementos y materiales gastables por servicio SIEMPRE se calcula con
+  // la ficha tecnica (requiredConsumptionLinesForInvoice/
+  // consumeInventoryForInvoice), sin depender de este campo, asi que se
+  // oculta salvo que el negocio active explicitamente el modo de mesas.
+  const stationFieldVisible = (inventoryConfig().modoMesaServicio || "disabled") !== "disabled";
+  line.querySelector(".station-field")?.classList.toggle("hidden", !stationFieldVisible);
 }
 
 function updateInvoiceTotals() {

@@ -813,6 +813,25 @@ test("getInvoiceLines() captura la mesa de cada linea", () => {
   assert.match(source, /station: line\.querySelector\("\.line-station"\)/);
 });
 
+test("el campo de mesa nace oculto en el HTML de cada linea de factura (negocios que no usan mesas no lo ven jamas)", () => {
+  const source = extractFunction("addInvoiceLine");
+  assert.match(source, /class="station-field hidden"/);
+});
+
+test("servicio y colaboradora de la linea de factura son SIEMPRE obligatorios y nunca dependen del modo de mesa", () => {
+  const source = extractFunction("addInvoiceLine");
+  const serviceLabel = /Servicio\s*<input class="line-service"[^>]*required/;
+  const staffLabel = /Colaboradora\s*<input class="line-staff"[^>]*required/;
+  assert.match(source, serviceLabel);
+  assert.match(source, staffLabel);
+});
+
+test("updateInvoiceLineOptionalFields() muestra el campo de mesa solo si modoMesaServicio no esta 'disabled' (el consumo de materiales por ficha tecnica no depende de este campo)", () => {
+  const source = extractFunction("updateInvoiceLineOptionalFields");
+  assert.match(source, /inventoryConfig\(\)\.modoMesaServicio \|\| "disabled"\) !== "disabled"/);
+  assert.match(source, /querySelector\("\.station-field"\)\?\.classList\.toggle\("hidden", !stationFieldVisible\)/);
+});
+
 test("findStationByName: 'Área general' es una ubicacion explicita (stationId vacio, nunca una mesa inventada); un texto desconocido no se asigna a ninguna mesa existente en silencio", () => {
   const source = extractFunction("findStationByName");
   assert.match(source, /stationId: ""/);
