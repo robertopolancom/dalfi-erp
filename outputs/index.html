@@ -20,7 +20,7 @@
         <nav class="nav-list">
           <button class="nav-item active" data-view="dashboard" type="button">Dashboard</button>
           <button class="nav-item" data-view="billing" type="button">Facturación</button>
-          <button class="nav-item" data-view="turno" type="button">Turno</button>
+          <button class="nav-item" data-view="turno" type="button">Mesas / Turno</button>
           <button class="nav-item admin-only hidden" data-view="invoice-admin" type="button">Admin facturas</button>
           <button class="nav-item" data-view="receivables" type="button">Cuentas por cobrar</button>
           <button class="nav-item" data-view="pending-transfers" type="button">Transferencias pendientes</button>
@@ -391,8 +391,8 @@
           <section class="panel">
             <div class="panel-head">
               <div>
-                <h3>Turno actual</h3>
-                <p class="panel-note">Control interno de inventario: asigna mesas a manicuristas para relacionar los insumos y la cantidad de servicios realizados. La mesa no aparece como campo normal en Facturación; si falta al comenzar el turno, se solicita allí antes de continuar.</p>
+                <h3>Mesas del turno actual</h3>
+                <p class="panel-note">Control interno de inventario: asigna mesas a manicuristas para relacionar los insumos y la cantidad de servicios realizados. Este es el único módulo para cambiar una manicurista de mesa. Facturación solo permite asignarla cuando todavía no tiene mesa y conserva la mesa original de cada servicio ya facturado.</p>
               </div>
               <div class="panel-actions">
                 <button class="primary-btn" id="open-turno-btn" type="button">Abrir turno</button>
@@ -414,7 +414,10 @@
 
           <section class="panel">
             <div class="panel-head">
-              <h3>Asignación de mesas</h3>
+              <div>
+                <h3>Asignación y cambio de mesas</h3>
+                <p class="panel-note">Puedes mover una manicurista directamente a otra mesa disponible. Las facturas y consumos ya registrados permanecen en la mesa donde se realizaron.</p>
+              </div>
             </div>
             <div class="simple-list" id="turno-assignment-list"></div>
           </section>
@@ -1261,7 +1264,7 @@
               </div>
               <button class="primary-btn" type="submit">Agregar a la ficha técnica</button>
               <label class="panel-note">
-                Modo de consumo automático al facturar (usa las fichas técnicas de arriba)
+                Modo de consumo automático al facturar (usa las fichas técnicas y descuenta la mesa de cada manicurista; Obligatorio es el valor inicial)
                 <select id="inventory-consumption-mode">
                   <option value="disabled">Desactivado: no descuenta nada</option>
                   <option value="audit_only">Auditoría: guarda la factura y deja el consumo pendiente de confirmar</option>
@@ -3252,6 +3255,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
-    <script src="app.js?v=20260803-billing-payment-flow"></script>
+    <script src="app.js?v=20260803-multi-staff-station-inventory"></script>
   </body>
 </html>

@@ -1084,8 +1084,8 @@ function requestInvoiceStationSelection(lines) {
   if (!dialog || !select) return false;
   pendingInvoiceStationSelection = { colaboradorId: staff.colaboradorID, colaboradorNombre: staff.nombreCompleto };
   byId("invoice-station-message").textContent = available.length
-    ? `${staff.nombreCompleto} no tiene una mesa asignada. Elige una mesa disponible para continuar con la factura.`
-    : `${staff.nombreCompleto} no tiene una mesa asignada y ahora mismo no hay mesas disponibles. Libera una mesa en Turno para continuar.`;
+    ? `${staff.nombreCompleto} es una de las manicuristas de esta factura y no tiene una mesa asignada. Elige una mesa disponible para continuar; después se comprobarán las demás manicuristas.`
+    : `${staff.nombreCompleto} no tiene una mesa asignada y ahora mismo no hay mesas disponibles. Libera una mesa en Mesas / Turno para continuar.`;
   select.innerHTML = available.length
     ? `<option value="">Seleccionar mesa disponible</option>${available.map((station) => `<option value="${escapeHtml(station.stationId)}">${escapeHtml(station.nombre)}</option>`).join("")}`
     : '<option value="">No hay mesas disponibles</option>';
@@ -5712,7 +5712,16 @@ function inventoryConfig() {
   if (table.length) {
     const config = table[0];
     if (!config.modoConsumoInventario) {
-      config.modoConsumoInventario = config.consumirInventarioEnFacturacion ? "required" : "disabled";
+      config.modoConsumoInventario = "required";
+    }
+    // Activacion unica de la politica solicitada: las bases que heredaron
+    // el antiguo valor predeterminado "disabled" pasan una sola vez a
+    // consumo obligatorio por mesa. Si administracion lo desactiva despues,
+    // el marcador evita volver a sobreescribir esa decision.
+    if (!config.stationConsumptionPolicyVersion) {
+      if (config.modoConsumoInventario === "disabled") config.modoConsumoInventario = "required";
+      config.stationConsumptionPolicyVersion = "2026-08-03";
+      config.consumirInventarioEnFacturacion = config.modoConsumoInventario === "required";
     }
     if (!config.diasAlertaTemprana) config.diasAlertaTemprana = 60;
     if (!config.diasAlertaProxima) config.diasAlertaProxima = 30;
@@ -5722,7 +5731,8 @@ function inventoryConfig() {
   const config = stampRecord({
     configId: "INVCFG-1",
     usarAlmacenProvisiones: false,
-    modoConsumoInventario: "disabled",
+    modoConsumoInventario: "required",
+    stationConsumptionPolicyVersion: "2026-08-03",
     diasAlertaTemprana: 60,
     diasAlertaProxima: 30,
     diasAlertaUrgente: 7,
@@ -6004,17 +6014,55 @@ function buildServiceConsumptionPreflight(lines, mode) {
     const item = items.find((i) => i.itemID === recipe.itemId);
     return { ...recipe, reutilizable: item?.reutilizable, activoFijo: item?.activoFijo, puedeConsumirse: item?.puedeConsumirse };
   });
-  const warehouseInventory = {};
-  items.forEach((item) => {
-    warehouseInventory[item.itemID] = { quantity: itemStockAt(item.itemID, warehouse.locationId), unitCost: Number(item.costoPromedio) || Number(item.costo) || 0 };
+  // Cada manicurista consume desde la mesa que tiene activa en este
+  // instante. Se agrupa por ubicacion antes de prevalidar para que dos
+  // servicios de la misma mesa no puedan gastar dos veces una existencia
+  // insuficiente, y para que una factura mixta valide cada mesa por
+  // separado. Personal que no sea manicurista conserva el almacen del
+  // salon como ubicacion compatible con el comportamiento historico.
+  const groups = new Map();
+  (lines || []).forEach((line) => {
+    const staff = findStaffByName(line.staff);
+    const station = resolveLineStation(line.staff);
+    const locationId = staff && isManicurista(staff) ? station.stationId : warehouse.locationId;
+    const locationName = staff && isManicurista(staff) ? station.stationName : warehouse.nombre;
+    if (!locationId) return;
+    const group = groups.get(locationId) || { locationId, locationName, invoiceLines: [] };
+    group.invoiceLines.push({ servicio: line.service, cantidad: line.qty });
+    groups.set(locationId, group);
   });
-  return DalfiClosingMath.preflightServiceInventoryConsumption({
-    invoiceLines: (lines || []).map((line) => ({ servicio: line.service, cantidad: line.qty })),
-    serviceRecipes,
-    warehouseInventory,
-    mode,
-    allowNegativeStockFor: (itemId) => items.find((i) => i.itemID === itemId)?.controlaExistencia === false,
+
+  const combined = {
+    requiredItems: [], availableItems: [], shortages: [], invalidRecipes: [],
+    estimatedCost: 0, movementPlan: [], blockingErrors: [], warnings: [],
+    allowed: true, mode,
+  };
+  if (!groups.size) return combined;
+
+  groups.forEach((group) => {
+    const locationInventory = {};
+    items.forEach((item) => {
+      locationInventory[item.itemID] = {
+        quantity: itemStockAt(item.itemID, group.locationId),
+        unitCost: Number(item.costoPromedio) || Number(item.costo) || 0,
+      };
+    });
+    const result = DalfiClosingMath.preflightServiceInventoryConsumption({
+      invoiceLines: group.invoiceLines,
+      serviceRecipes,
+      warehouseInventory: locationInventory,
+      mode,
+      allowNegativeStockFor: (itemId) => items.find((i) => i.itemID === itemId)?.controlaExistencia === false,
+    });
+    ["requiredItems", "availableItems", "shortages", "invalidRecipes", "movementPlan"].forEach((key) => {
+      combined[key].push(...result[key].map((row) => ({ ...row, locationId: group.locationId, locationName: group.locationName })));
+    });
+    combined.estimatedCost = Math.round((combined.estimatedCost + result.estimatedCost) * 100) / 100;
+    combined.blockingErrors.push(...result.blockingErrors.map((message) => `${group.locationName}: ${message}`));
+    combined.warnings.push(...result.warnings.map((message) => `${group.locationName}: ${message}`));
+    if (!result.allowed) combined.allowed = false;
   });
+  return combined;
 }
 
 // Consumo automatico de inventario al crear una factura, segun ficha
@@ -6045,6 +6093,8 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
       items: requiredLines.map((line) => ({
         detalleID: line.detail.detalleID,
         servicio: line.detail.servicio,
+        stationId: line.detail.stationId || "",
+        stationName: line.detail.stationName || "",
         itemId: line.item.itemID,
         itemNombre: line.item.nombre,
         cantidadBase: line.baseQuantity,
@@ -6065,16 +6115,18 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
     return result;
   }
 
-  const warehouse = defaultSalonWarehouse();
   requiredLines.forEach(({ detail, item, baseQuantity }) => {
     const sourceKey = `consumo:${invoiceId}:${detail.detalleID}:${item.itemID}`;
     const allowNegative = item.controlaExistencia === false;
+    const warehouse = defaultSalonWarehouse();
+    const consumptionLocationId = detail.stationId || warehouse.locationId;
+    const consumptionLocationName = detail.stationName || warehouse.nombre;
     // FEFO real (seccion 11): un articulo con lotes reales reparte el
     // consumo entre ellos; si los lotes no alcanzan y NO se permite
     // negativo, se intenta como una sola solicitud por el total (igual que
     // antes de esta fase) para que applyInventoryMovement la rechace
     // exactamente igual que sin lotes, nunca un consumo parcial silencioso.
-    const realLots = lotsAvailableForFEFO(item.itemID, warehouse.locationId);
+    const realLots = lotsAvailableForFEFO(item.itemID, consumptionLocationId);
     let allocations = [{ lotId: "", quantityTaken: baseQuantity }];
     if (realLots.length) {
       const fefo = DalfiClosingMath.allocateFEFO({ lots: realLots, quantityNeeded: baseQuantity, referenceDate: today });
@@ -6093,12 +6145,12 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
         tipo: "consumo_servicio",
         cantidadBase: allocQty,
         costoUnitario: Number(item.costoPromedio) || Number(item.costo) || 0,
-        locationId: warehouse.locationId,
+        locationId: consumptionLocationId,
         lotId: allocation.lotId || "",
         origen: "Consumo por servicio",
         sourceId: invoiceId,
         sourceKey: `${sourceKey}${lotSuffix}`,
-        motivo: `Consumo estimado: ${detail.servicio}`,
+        motivo: `Consumo estimado: ${detail.servicio} en ${consumptionLocationName}`,
         allowNegativeStock: allowNegative,
       });
       if (!movementResult.movement) {
@@ -6112,8 +6164,8 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
       logAudit("service_inventory_failed", {
         entity: "inventarioMovimientos",
         entityId: sourceKey,
-        newData: { invoiceId, itemId: item.itemID, detalleID: detail.detalleID, errors: lineError },
-        note: `Consumo de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}) falló: ${lineError}`,
+        newData: { invoiceId, itemId: item.itemID, detalleID: detail.detalleID, stationId: consumptionLocationId, errors: lineError },
+        note: `Consumo de ${item.nombre} por el servicio ${detail.servicio} en ${consumptionLocationName} (factura ${invoiceId}) falló: ${lineError}`,
         success: false,
       });
       return;
@@ -6122,8 +6174,8 @@ function consumeInventoryForInvoice(invoiceId, detailRecords, mode = "disabled")
     logAudit("service_inventory_consumed", {
       entity: "inventarioMovimientos",
       entityId: movementIds[0],
-      newData: { invoiceId, itemId: item.itemID, cantidadBase: baseQuantity, detalleID: detail.detalleID, movementIds },
-      note: `Consumo de ${baseQuantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre} por el servicio ${detail.servicio} (factura ${invoiceId}).`,
+      newData: { invoiceId, itemId: item.itemID, cantidadBase: baseQuantity, detalleID: detail.detalleID, stationId: consumptionLocationId, movementIds },
+      note: `Consumo de ${baseQuantity} ${item.unidadBase || item.unidad || ""} de ${item.nombre} por el servicio ${detail.servicio} en ${consumptionLocationName} (factura ${invoiceId}).`,
       success: true,
     });
   });
@@ -6146,21 +6198,23 @@ function confirmPendingServiceConsumption(pendingId) {
   }
   const pending = dbTable("consumosPendientes").find((row) => row.pendingId === pendingId);
   if (!pending || pending.estado !== "Pendiente") return null;
-  const warehouse = defaultSalonWarehouse();
   const created = [];
   const errors = [];
   (pending.items || []).forEach((line) => {
     const sourceKey = `consumo:${pending.invoiceId}:${line.detalleID}:${line.itemId}`;
+    const warehouse = defaultSalonWarehouse();
+    const consumptionLocationId = line.stationId || warehouse.locationId;
+    const consumptionLocationName = line.stationName || warehouse.nombre;
     const movementResult = createInventoryMovement({
       itemId: line.itemId,
       tipo: "consumo_servicio",
       cantidadBase: line.cantidadBase,
       costoUnitario: line.costoUnitario,
-      locationId: warehouse.locationId,
+      locationId: consumptionLocationId,
       origen: "Consumo por servicio (confirmado)",
       sourceId: pending.invoiceId,
       sourceKey,
-      motivo: `Consumo confirmado: ${line.servicio}`,
+      motivo: `Consumo confirmado: ${line.servicio} en ${consumptionLocationName}`,
     });
     if (!movementResult.movement) {
       errors.push(`${line.itemNombre || line.itemId}: ${movementResult.result.validationErrors.join(" ")}`);
@@ -7962,7 +8016,7 @@ function renderRecipes() {
         .join("")
     : '<p class="empty">No hay fichas técnicas registradas.</p>';
   const config = inventoryConfig();
-  if (byId("inventory-consumption-mode")) byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
+  if (byId("inventory-consumption-mode")) byId("inventory-consumption-mode").value = config.modoConsumoInventario || "required";
   renderPendingConsumptions();
 }
 
@@ -12186,22 +12240,24 @@ function wireForms() {
     const totals = invoiceTotalsFromLines(lines, generalExtra, generalDiscountPercent);
     const { servicesTotal, extrasTotal, discountTotal: discount, grandTotal: total } = totals;
     const totalWithTip = total + tip;
+    // La mesa no aparece como campo permanente de Facturacion. Se recorre
+    // la factura completa y, si cualquiera de sus manicuristas no tiene
+    // asignacion activa, se solicita una mesa y se reanuda este mismo
+    // submit. Los reintentos continúan hasta resolverlas a todas, siempre
+    // antes de crear pagos, consumos o la factura.
+    if (!editId && requestInvoiceStationSelection(lines)) return;
     // Prevalidacion de consumo de inventario ANTES de cualquier mutacion:
     // en modo "required" un faltante bloquea aqui mismo (la factura nunca
     // llega a persistirse a medias). En "audit_only"/"disabled" nunca
     // bloquea; solo se usa mas abajo para saber que crear. No aplica a
     // ediciones (saveEditedInvoice tiene su propio flujo, ver seccion de
     // edicion de factura e inventario).
-    const consumptionMode = inventoryConfig().modoConsumoInventario || "disabled";
+    const consumptionMode = inventoryConfig().modoConsumoInventario || "required";
     const consumptionPreflight = editId ? null : buildServiceConsumptionPreflight(lines, consumptionMode);
     if (!editId && consumptionMode === "required" && !consumptionPreflight.allowed) {
       alert(`No se puede guardar la factura: ${consumptionPreflight.blockingErrors.join(" ")}`);
       return;
     }
-    // La mesa no aparece como campo permanente de Facturacion. Solo cuando
-    // una manicurista no tiene asignacion activa se abre una seleccion breve
-    // con las mesas disponibles; al asignarla se reanuda este mismo submit.
-    if (!editId && requestInvoiceStationSelection(lines)) return;
     // A partir de aqui empiezan las mutaciones reales (crear/editar la
     // factura, aplicar pagos, generar CxC y propinas): se marca
     // invoiceSubmitInFlight para que un doble clic/doble submit mientras
@@ -12519,8 +12575,8 @@ function wireForms() {
       success: true,
     });
     // Consumo automatico de inventario por ficha tecnica, segun el modo
-    // configurado (disabled por defecto para no sorprender a un salon que
-    // todavia no configuro fichas tecnicas). Ya no hay try/catch: el
+    // configurado (required por defecto para contabilizar los insumos de la
+    // mesa; sin ficha tecnica no inventa consumos). Ya no hay try/catch: el
     // resultado es SIEMPRE estructurado (nunca lanza) y sus errores se
     // muestran, nunca se ocultan en console.error. En "required" ya se
     // prevalido antes de crear la factura (ver consumptionPreflight
@@ -14037,14 +14093,24 @@ function wireForms() {
     const colaboradorId = select.value;
     const now = new Date().toISOString();
     const currentStationAssignment = activeAssignmentForStation(stationId);
+    const previousCollaboratorAssignment = colaboradorId ? activeAssignmentForCollaborator(colaboradorId) : null;
 
-    if (colaboradorId) {
-      const conflict = activeAssignmentForCollaborator(colaboradorId);
-      if (conflict && conflict.stationId !== stationId) {
-        alert(`Esa manicurista ya está asignada a ${conflict.stationName}. Libérala ahí primero.`);
-        renderTurno();
-        return;
-      }
+    // Cambiar de mesa se hace exclusivamente en este modulo. La asignacion
+    // anterior se libera y se crea una fila nueva; las lineas de factura ya
+    // guardadas conservan stationId/stationName y por eso no se trasladan ni
+    // cambian sus consumos historicos.
+    if (previousCollaboratorAssignment && previousCollaboratorAssignment.stationId === stationId) return;
+    if (previousCollaboratorAssignment && previousCollaboratorAssignment.stationId !== stationId) {
+      previousCollaboratorAssignment.estado = "Liberada";
+      previousCollaboratorAssignment.fechaLiberacion = now;
+      stampRecord(previousCollaboratorAssignment, "updated");
+      logAudit("mesa_reasignada_turno", {
+        entity: "asignacionesMesaTurno",
+        entityId: previousCollaboratorAssignment.asignacionId,
+        newData: { turnoId: turno.turnoId, stationIdAnterior: previousCollaboratorAssignment.stationId, stationIdNuevo: stationId, colaboradorId },
+        note: `${previousCollaboratorAssignment.colaboradorNombre || colaboradorId} cambió de ${previousCollaboratorAssignment.stationName || previousCollaboratorAssignment.stationId} a ${station?.nombre || stationId}. Las facturas anteriores conservaron su mesa original.`,
+        success: true,
+      });
     }
 
     if (currentStationAssignment) {
@@ -14096,6 +14162,15 @@ function wireForms() {
       alert("Esa mesa ya no está disponible. Selecciona otra mesa.");
       byId("invoice-station-dialog").close();
       requestInvoiceStationSelection(getInvoiceLines());
+      return;
+    }
+    const assignmentCreatedElsewhere = activeAssignmentForCollaborator(pendingInvoiceStationSelection.colaboradorId);
+    if (assignmentCreatedElsewhere) {
+      pendingInvoiceStationSelection = null;
+      byId("invoice-station-dialog").close();
+      saveState();
+      renderAll();
+      window.setTimeout(() => byId("invoice-form").requestSubmit(), 0);
       return;
     }
     const turno = createOpenTurno("Turno abierto automáticamente al asignar una mesa desde Facturación.");
@@ -14786,7 +14861,7 @@ function wireForms() {
     const config = inventoryConfig();
     if (!canManageInventory()) {
       alert("Solo administración o propietario puede cambiar el modo de consumo automático de inventario.");
-      byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
+      byId("inventory-consumption-mode").value = config.modoConsumoInventario || "required";
       return;
     }
     const previousMode = config.modoConsumoInventario;

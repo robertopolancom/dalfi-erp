@@ -368,11 +368,13 @@ test("recipeLinesForService() busca por nombre de servicio normalizado (compatib
 // K. Facturacion y consumo
 // ===========================================================================
 
-test("93-96. la factura consume materiales SOLO segun el modo configurado (inventoryConfig().modoConsumoInventario, no un booleano ambiguo); disabled por defecto para no sorprender con datos sin fichas técnicas configuradas", () => {
+test("93-96. la factura consume materiales segun el modo configurado y required queda activo por defecto para descontar la mesa", () => {
   const source = extractFunction("consumeInventoryForInvoice");
   assert.match(source, /if \(mode === "disabled"\) return result;/);
   const configSource = extractFunction("inventoryConfig");
-  assert.match(configSource, /modoConsumoInventario: "disabled"/);
+  assert.match(configSource, /modoConsumoInventario: "required"/);
+  assert.match(configSource, /stationConsumptionPolicyVersion: "2026-08-03"/);
+  assert.match(configSource, /if \(config\.modoConsumoInventario === "disabled"\) config\.modoConsumoInventario = "required";/);
 });
 
 test("modo required/audit_only/disabled es un enum explicito, nunca un booleano: los tres valores literales existen en el modulo", () => {
@@ -409,6 +411,28 @@ test("modo required bloquea ANTES de crear la factura (buildServiceConsumptionPr
   const invoicePushIdx = invoiceSubmit.indexOf('dbTable("facturas").push(invoiceRecord)');
   assert.ok(preflightIdx !== -1 && invoicePushIdx !== -1 && preflightIdx < invoicePushIdx, "la prevalidacion debe ocurrir antes de persistir la factura");
   assert.match(invoiceSubmit, /if \(!editId && consumptionMode === "required" && !consumptionPreflight\.allowed\) \{/);
+});
+
+test("la prevalidacion agrupa servicios por mesa y comprueba la existencia de cada ubicacion por separado", () => {
+  const source = extractFunction("buildServiceConsumptionPreflight");
+  assert.match(source, /const station = resolveLineStation\(line\.staff\);/);
+  assert.match(source, /const groups = new Map\(\);/);
+  assert.match(source, /quantity: itemStockAt\(item\.itemID, group\.locationId\)/);
+  assert.match(source, /locationName: group\.locationName/);
+});
+
+test("cada consumo de servicio descuenta la mesa congelada en facturaDetalle y no el almacen general", () => {
+  const source = extractFunction("consumeInventoryForInvoice");
+  assert.match(source, /const consumptionLocationId = detail\.stationId \|\| warehouse\.locationId;/);
+  assert.match(source, /lotsAvailableForFEFO\(item\.itemID, consumptionLocationId\)/);
+  assert.match(source, /locationId: consumptionLocationId,/);
+  assert.match(source, /stationId: line\.detail\.stationId \|\| "",/);
+});
+
+test("confirmar un consumo pendiente conserva la mesa historica de cada servicio", () => {
+  const source = extractFunction("confirmPendingServiceConsumption");
+  assert.match(source, /const consumptionLocationId = line\.stationId \|\| warehouse\.locationId;/);
+  assert.match(source, /locationId: consumptionLocationId,/);
 });
 
 test("audit_only nunca bloquea el guardado, pero deja el consumo Pendiente y lo audita como service_inventory_pending", () => {
@@ -871,8 +895,10 @@ test("service_station_assigned se audita SOLO cuando la linea tiene mesa (nunca 
   assert.match(appJs, /if \(detail\.stationName\) \{\s*\n\s*logAudit\("service_station_assigned"/);
 });
 
-test("asignar una mesa ya asignada a otra manicurista en el mismo turno se bloquea (exclusiva, nunca se mueve en silencio)", () => {
-  assert.match(appJs, /Esa manicurista ya está asignada a \$\{conflict\.stationName\}\. Libérala ahí primero\./);
+test("mover una manicurista desde Mesas Turno libera su asignacion anterior y crea otra sin tocar el historial", () => {
+  assert.match(appJs, /previousCollaboratorAssignment\.estado = "Liberada";/);
+  assert.match(appJs, /logAudit\("mesa_reasignada_turno"/);
+  assert.match(appJs, /Las facturas anteriores conservaron su mesa original\./);
 });
 
 test("cerrar un turno libera todas sus asignaciones activas (ninguna manicurista queda con mesa activa fuera de un turno abierto)", () => {

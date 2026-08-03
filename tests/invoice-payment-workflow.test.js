@@ -59,3 +59,32 @@ test("la mesa queda fuera del formulario normal y, si falta, abre la seleccion p
   assert.match(appJs, /requestInvoiceStationSelection\(lines\)/);
   assert.match(stationSource, /if \(!assignment\) return \{ stationId: "", stationName: "" \}/);
 });
+
+test("una factura con varias manicuristas resuelve una por una todas las asignaciones faltantes", () => {
+  const selectionSource = extractFunction("requestInvoiceStationSelection");
+  assert.match(selectionSource, /lines\.find\(\(line\) => \{/);
+  assert.match(selectionSource, /!activeAssignmentForCollaborator\(staff\.colaboradorID\)/);
+  assert.match(selectionSource, /después se comprobarán las demás manicuristas/);
+  assert.match(appJs, /window\.setTimeout\(\(\) => byId\("invoice-form"\)\.requestSubmit\(\), 0\);/);
+  const stationCheck = appJs.indexOf("requestInvoiceStationSelection(lines)");
+  const preflight = appJs.indexOf("buildServiceConsumptionPreflight(lines, consumptionMode)", stationCheck);
+  const invoiceMutation = appJs.indexOf('dbTable("facturas").push(invoiceRecord)', preflight);
+  assert.ok(stationCheck > -1 && preflight > stationCheck && invoiceMutation > preflight);
+});
+
+test("cada linea congela la mesa de su propia manicurista para conservar el historial", () => {
+  assert.match(appJs, /const stationRecord = resolveLineStation\(line\.staff\);/);
+  assert.match(appJs, /stationId: stationRecord\.stationId \|\| "",\s*\n\s*stationName: stationRecord\.stationName \|\| "",/);
+  assert.match(indexHtml, /Las facturas y consumos ya registrados permanecen en la mesa donde se realizaron\./);
+});
+
+test("el cambio directo de mesa solo vive en Mesas Turno y libera la asignacion anterior sin reescribir facturas", () => {
+  const assignmentStart = appJs.indexOf('byId("turno-assignment-list")?.addEventListener("change"');
+  const assignmentEnd = appJs.indexOf('byId("invoice-station-form")?.addEventListener', assignmentStart);
+  const assignmentHandler = appJs.slice(assignmentStart, assignmentEnd);
+  assert.match(indexHtml, /data-view="turno"[^>]*>Mesas \/ Turno</);
+  assert.match(assignmentHandler, /previousCollaboratorAssignment\.estado = "Liberada"/);
+  assert.match(assignmentHandler, /logAudit\("mesa_reasignada_turno"/);
+  assert.doesNotMatch(assignmentHandler, /facturaDetalle/);
+  assert.doesNotMatch(appJs, /Libérala ahí primero/);
+});
