@@ -2,7 +2,8 @@
   "scripts": {
     "build": "node scripts/write-supabase-config.mjs",
     "test": "node --test",
-    "test:e2e": "node --test tests/e2e-browser.e2e.js tests/e2e-business-flows.test.js"
+    "test:e2e": "node --test tests/e2e-browser.e2e.js tests/e2e-business-flows.test.js",
+    "test:load": "node scripts/load-test.mjs"
   },
   "devDependencies": {
     "playwright": "^1.62.0"

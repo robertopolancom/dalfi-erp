@@ -148,6 +148,7 @@ let remoteConflictDetected = false;
 // jsonb completo, en vez de descargarlo entero cada 30s aunque nadie haya
 // cambiado nada. Ver refreshRemoteDatabase().
 let lastKnownRemoteUpdatedAt = null;
+let inventoryDomainSliceCache = null;
 // Perfil y permisos efectivos segun el servidor (GET /api/me), fuente unica
 // de autorizacion real desde la auditoria tecnica 2026-07-20/21. NUNCA usar
 // supabaseSession.user.user_metadata.role para decidir si una accion esta
@@ -162,6 +163,36 @@ let erpProfileLoaded = false;
 // la primera respuesta), las llamadas siguientes reutilizan esa misma
 // promesa en vez de abrir un fetch nuevo en paralelo.
 let erpProfileRefreshPromise = null;
+// Cola de tareas no críticas del navegador. Las operaciones pesadas (por
+// ejemplo, reportes grandes) se ejecutan después de devolver el control al
+// evento actual y una por una, para que la persona pueda seguir navegando.
+let backgroundTaskQueue = [];
+let backgroundTaskRunning = false;
+
+function enqueueBackgroundTask(label, task) {
+  return new Promise((resolve, reject) => {
+    backgroundTaskQueue.push({ label, task, resolve, reject });
+    processBackgroundTaskQueue();
+  });
+}
+
+function processBackgroundTaskQueue() {
+  if (backgroundTaskRunning || !backgroundTaskQueue.length) return;
+  backgroundTaskRunning = true;
+  const next = backgroundTaskQueue.shift();
+  window.setTimeout(async () => {
+    try {
+      next.resolve(await next.task());
+    } catch (error) {
+      console.error(`Tarea en segundo plano falló (${next.label}).`, error);
+      next.reject(error);
+    } finally {
+      backgroundTaskRunning = false;
+      processBackgroundTaskQueue();
+    }
+  }, 0);
+}
+
 // Throttle de logs: si /api/me falla varias veces seguidas (por ejemplo la
 // red esta caida), solo se avisa una vez por racha de fallos, no cada 30s.
 let erpProfileFailureLogged = false;
@@ -351,6 +382,10 @@ function canonicalDomainValue(value) {
 
 async function loadInventoryDomainSlice(fullDatabase) {
   if (!isSupabaseReady() || !fullDatabase) return null;
+  const cacheKey = lastKnownRemoteUpdatedAt || "";
+  if (cacheKey && inventoryDomainSliceCache?.updatedAt === cacheKey) {
+    return structuredClone(inventoryDomainSliceCache.data);
+  }
   try {
     const response = await fetch("/api/database-domain?domain=inventario", {
       headers: { Authorization: `Bearer ${supabaseSession.access_token}` },
@@ -368,6 +403,7 @@ async function loadInventoryDomainSlice(fullDatabase) {
       console.warn("El slice server-side de inventario difiere del documento completo; se conserva el documento completo.");
       return null;
     }
+    inventoryDomainSliceCache = { updatedAt: cacheKey, data: structuredClone(payload.data) };
     return payload.data;
   } catch (error) {
     console.warn("No se pudo validar el slice server-side de inventario; se usa el documento completo.", error);
@@ -500,6 +536,7 @@ async function saveRemoteDatabase() {
     // que el proximo poll de 30s no se confunda y vuelva a traer el
     // documento completo solo porque nosotros mismos lo cambiamos.
     if (result.updatedAt) lastKnownRemoteUpdatedAt = result.updatedAt;
+    inventoryDomainSliceCache = null;
     remoteConflictDetected = false;
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
     return true;
@@ -11992,8 +12029,12 @@ function wireForms() {
   };
 
   byId("generate-report").addEventListener("click", () => {
-    reportGenerated = true;
+    const reportButton = byId("generate-report");
+    const reportStatus = byId("report-generation-status");
     const reportType = byId("report-type").value;
+    reportGenerated = true;
+    reportButton.disabled = true;
+    if (reportStatus) reportStatus.textContent = "Reporte en segundo plano… puedes continuar usando el ERP.";
     // Auditado UNA vez por click explicito (no en cada re-render de
     // renderAll, seccion 17): esto es lo que distingue "el usuario abrio
     // este reporte" de un simple recalculo de pantalla.
@@ -12006,8 +12047,15 @@ function wireForms() {
         success: true,
       });
     }
-    renderReports();
-    byId("report-result-panel").scrollIntoView({ block: "start", behavior: "smooth" });
+    enqueueBackgroundTask(`reporte:${reportType}`, async () => {
+      renderReports();
+      byId("report-result-panel").scrollIntoView({ block: "start", behavior: "smooth" });
+    }).catch(() => {
+      if (reportStatus) reportStatus.textContent = "No se pudo generar el reporte. Intenta nuevamente.";
+    }).finally(() => {
+      reportButton.disabled = false;
+      if (reportStatus && !reportStatus.textContent.includes("No se pudo")) reportStatus.textContent = "Reporte listo.";
+    });
   });
 
   byId("report-result-panel").addEventListener("click", (event) => {

@@ -1,0 +1,15 @@
+# Recursos públicos versionados: se pueden cachear en el edge sin afectar
+# datos autenticados. app.js usa un query-string de versión como cache-buster.
+/app.js
+  Cache-Control: public, max-age=31536000, immutable
+
+/styles.css
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+/database.json
+  Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+
+# Las funciones /api/* devuelven sus propios encabezados no-store y no deben
+# reutilizar respuestas personalizadas entre usuarios.
+/api/*
+  Cache-Control: no-store
