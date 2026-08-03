@@ -126,6 +126,7 @@ let paymentLineCounter = 0;
 let incomePaymentLineCounter = 0;
 let retailSaleLineCounter = 0;
 let retailSalePaymentLineCounter = 0;
+let pendingInvoiceStationSelection = null;
 // Identificador local unico (no persistido) para cada porcion de "balance a
 // favor" aplicada a una CxC anterior: balance a favor no genera un pagoID
 // real (no crea addConfirmedPayment), asi que este contador es lo que le da
@@ -446,6 +447,14 @@ function startRemoteRefreshLoop() {
     // usuario tenga abierto en ese momento, solo actualizar que secciones
     // ".admin-only"/".accounts-review-only" se ven.
     refreshErpProfile().then(() => updatePrivilegeVisibility());
+    // Cierre automatico de turnos vencidos (ver ensureTurnoAutoClose): se
+    // revisa en cada poll para que una pestana abierta toda la noche cierre
+    // el turno solo al llegar a las 11:59pm, sin esperar a que alguien
+    // recargue la pagina al dia siguiente.
+    if (ensureTurnoAutoClose()) {
+      saveState();
+      renderAll();
+    }
   }, 30000);
 }
 
@@ -970,6 +979,191 @@ function findStationByName(name) {
   if (!trimmed) return null;
   if (normalize(trimmed) === normalize("Área general")) return { stationId: "", nombre: "Área general" };
   return dbTable("mesas").find((row) => normalize(row.nombre) === normalize(trimmed)) || null;
+}
+
+// Clasificacion usada por el control interno de turnos e inventario. La mesa
+// no es un campo permanente de Facturacion: si falta al comenzar el turno,
+// se solicita en un formulario puntual y luego se reanuda la factura.
+function isManicurista(colaborador) {
+  return normalize(colaborador?.funcion || "").includes("manicurista");
+}
+
+function activeManicuristas() {
+  return dbTable("colaboradores").filter(
+    (staff) => normalize(staff.estado || "Activo") === "activo" && isManicurista(staff),
+  );
+}
+
+// Solo puede haber un turno "Abierto" a la vez: es lo que le da sentido
+// unico a "la asignacion activa" al momento de facturar, sin ambiguedad de
+// a cual turno pertenece cada mesa.
+function activeOpenTurno() {
+  return dbTable("turnos").find((row) => row.estado === "Abierto") || null;
+}
+
+function createOpenTurno(note = "Turno abierto.") {
+  const existing = activeOpenTurno();
+  if (existing) return existing;
+  const turno = stampRecord({
+    turnoId: nextDbId("turnos", "turnoId", "TRN"),
+    fecha: today,
+    estado: "Abierto",
+    cerradoPor: null,
+    fechaCierre: null,
+    esUnico: null,
+    estadoConfirmacion: null,
+    cierreAutomatico: false,
+  });
+  dbTable("turnos").push(turno);
+  logAudit("turno_abierto", {
+    entity: "turnos",
+    entityId: turno.turnoId,
+    newData: { fecha: turno.fecha },
+    note,
+    success: true,
+  });
+  return turno;
+}
+
+function activeAssignmentForCollaborator(colaboradorId) {
+  const turno = activeOpenTurno();
+  if (!turno || !colaboradorId) return null;
+  return (
+    dbTable("asignacionesMesaTurno").find(
+      (row) => row.turnoId === turno.turnoId && row.colaboradorId === colaboradorId && row.estado === "Activa",
+    ) || null
+  );
+}
+
+function activeAssignmentForStation(stationId) {
+  const turno = activeOpenTurno();
+  if (!turno || !stationId) return null;
+  return (
+    dbTable("asignacionesMesaTurno").find(
+      (row) => row.turnoId === turno.turnoId && row.stationId === stationId && row.estado === "Activa",
+    ) || null
+  );
+}
+
+const defaultStationNames = ["Mesa 1", "Mesa 2", "Mesa 3", "Mesa 4", "Mesa 5"];
+
+// Alta idempotente de las cinco mesas operativas iniciales. En bases ya
+// existentes solo agrega los nombres que falten y nunca duplica una mesa.
+function ensureDefaultStations() {
+  let changed = false;
+  defaultStationNames.forEach((name) => {
+    if (findStationByName(name)) return;
+    dbTable("mesas").push(stampRecord({
+      stationId: nextDbId("mesas", "stationId", "MSA"),
+      nombre: name,
+      colaboradoraPrincipal: "",
+      estado: "Disponible",
+    }));
+    changed = true;
+  });
+  return changed;
+}
+
+function availableStationsForInvoice() {
+  return dbTable("mesas").filter(
+    (station) => normalize(station.estado || "Disponible") !== "inactivo" && !activeAssignmentForStation(station.stationId),
+  );
+}
+
+function requestInvoiceStationSelection(lines) {
+  const missingLine = lines.find((line) => {
+    const staff = findStaffByName(line.staff);
+    return staff && isManicurista(staff) && !activeAssignmentForCollaborator(staff.colaboradorID);
+  });
+  if (!missingLine) return false;
+
+  const staff = findStaffByName(missingLine.staff);
+  const available = availableStationsForInvoice();
+  const dialog = byId("invoice-station-dialog");
+  const select = byId("invoice-station-choice");
+  if (!dialog || !select) return false;
+  pendingInvoiceStationSelection = { colaboradorId: staff.colaboradorID, colaboradorNombre: staff.nombreCompleto };
+  byId("invoice-station-message").textContent = available.length
+    ? `${staff.nombreCompleto} no tiene una mesa asignada. Elige una mesa disponible para continuar con la factura.`
+    : `${staff.nombreCompleto} no tiene una mesa asignada y ahora mismo no hay mesas disponibles. Libera una mesa en Turno para continuar.`;
+  select.innerHTML = available.length
+    ? `<option value="">Seleccionar mesa disponible</option>${available.map((station) => `<option value="${escapeHtml(station.stationId)}">${escapeHtml(station.nombre)}</option>`).join("")}`
+    : '<option value="">No hay mesas disponibles</option>';
+  select.disabled = !available.length;
+  byId("invoice-station-confirm").disabled = !available.length;
+  dialog.showModal();
+  return true;
+}
+
+// Deriva de forma silenciosa la mesa de una linea a partir de la asignacion
+// activa del turno. Es metadato interno para inventario, consumo esperado y
+// conteo de servicios por mesa. La validacion interactiva de una asignacion
+// faltante vive en requestInvoiceStationSelection().
+function resolveLineStation(staffName) {
+  const staff = findStaffByName(staffName);
+  if (!staff || !isManicurista(staff)) return { stationId: "", stationName: "" };
+  const assignment = activeAssignmentForCollaborator(staff.colaboradorID);
+  if (!assignment) return { stationId: "", stationName: "" };
+  return { stationId: assignment.stationId, stationName: assignment.stationName };
+}
+
+// Un turno "Abierto" cuya fecha ya llego a las 11:59pm (hora Santo Domingo,
+// igual zona que dateTimeForOperationalDate) queda elegible para el cierre
+// automatico de seguridad: si nadie lo cerro a mano, no debe quedar abierto
+// indefinidamente bloqueando la asignacion de mesas del dia siguiente.
+function turnoAutoCloseEligible(turno) {
+  if (!turno || turno.estado !== "Abierto") return false;
+  const nowDate = localDateString();
+  if (turno.fecha < nowDate) return true;
+  if (turno.fecha > nowDate) return false;
+  const nowTime = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Santo_Domingo",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date());
+  return nowTime >= "23:59";
+}
+
+// Cierre automatico de turnos vencidos: mismo espiritu que
+// ensureProvisionalClosings() para los cierres de caja (seccion "cierres
+// provisionales"). Si un turno sigue "Abierto" al llegar a turnoAutoCloseEligible,
+// se cierra solo, libera sus asignaciones activas, y queda "Pendiente de
+// confirmacion" como cierre UNICO del dia (nadie contesto si se abriria
+// otro turno, asi que se asume que no hasta que administracion lo confirme
+// desde el panel de turnos pendientes). Se llama al cargar la app y en cada
+// poll periodico (ver startRemoteRefreshLoop) para no depender de que
+// alguien reabra la pestana justo despues de medianoche.
+function ensureTurnoAutoClose() {
+  const turno = activeOpenTurno();
+  if (!turnoAutoCloseEligible(turno)) return false;
+  const now = new Date().toISOString();
+  turno.estado = "Cerrado";
+  turno.cerradoPor = "Sistema (cierre automático 11:59pm)";
+  turno.fechaCierre = now;
+  turno.esUnico = true;
+  turno.estadoConfirmacion = "Pendiente de confirmacion";
+  turno.cierreAutomatico = true;
+  stampRecord(turno, "updated");
+  dbTable("asignacionesMesaTurno")
+    .filter((row) => row.turnoId === turno.turnoId && row.estado === "Activa")
+    .forEach((row) => {
+      row.estado = "Liberada";
+      row.fechaLiberacion = now;
+      stampRecord(row, "updated");
+    });
+  logAudit("turno_cerrado_automatico", {
+    entity: "turnos",
+    entityId: turno.turnoId,
+    newData: { estado: "Cerrado", cierreAutomatico: true, esUnico: true },
+    note: `Turno ${turno.turnoId} cerrado automáticamente al llegar las 11:59pm sin cierre manual; queda pendiente de confirmación como cierre único del día.`,
+    success: true,
+  });
+  return true;
+}
+
+function pendingConfirmationTurnos() {
+  return dbTable("turnos").filter((row) => row.estadoConfirmacion === "Pendiente de confirmacion");
 }
 
 function findAccountByName(name) {
@@ -5513,12 +5707,6 @@ function saleEligibleLocations() {
 // campo se migra en memoria SOLO al leerla (nunca se reescribe erp_records
 // masivamente / no es backfill): el booleano viejo decide el valor inicial
 // una sola vez, luego el campo nuevo manda.
-// modoMesaServicio: igual patron que modoConsumoInventario, para exigir (o
-// no) mesa/colaboradora por linea de servicio. "required" bloquea al
-// guardar si falta mesa; "audit_only" guarda igual pero deja constancia de
-// que falta (para conciliar despues); "disabled" (default, compatibilidad
-// historica) nunca exige nada. Una base existente sin este campo lo recibe
-// SOLO al leerla (nunca backfill masivo).
 function inventoryConfig() {
   const table = dbTable("configuracionInventario");
   if (table.length) {
@@ -5526,7 +5714,6 @@ function inventoryConfig() {
     if (!config.modoConsumoInventario) {
       config.modoConsumoInventario = config.consumirInventarioEnFacturacion ? "required" : "disabled";
     }
-    if (!config.modoMesaServicio) config.modoMesaServicio = "disabled";
     if (!config.diasAlertaTemprana) config.diasAlertaTemprana = 60;
     if (!config.diasAlertaProxima) config.diasAlertaProxima = 30;
     if (!config.diasAlertaUrgente) config.diasAlertaUrgente = 7;
@@ -5536,7 +5723,6 @@ function inventoryConfig() {
     configId: "INVCFG-1",
     usarAlmacenProvisiones: false,
     modoConsumoInventario: "disabled",
-    modoMesaServicio: "disabled",
     diasAlertaTemprana: 60,
     diasAlertaProxima: 30,
     diasAlertaUrgente: 7,
@@ -6148,6 +6334,66 @@ function renderStations() {
   byId("station-list").innerHTML = rows.length
     ? rows.map((row) => `<div class="list-item"><span>${row.nombre}</span><span>${row.colaboradoraPrincipal || "Sin asignar"} · ${row.estado || "Disponible"}</span></div>`).join("")
     : '<p class="empty">No hay mesas registradas.</p>';
+}
+
+// Turno: asignacion mesa<->manicurista vigente antes de facturar. Solo puede
+// haber un turno "Abierto" a la vez (activeOpenTurno) y, dentro de el, cada
+// mesa/colaboradora tiene a lo sumo una fila "Activa" en
+// asignacionesMesaTurno (exclusiva, nunca compartida). Reasignar SIEMPRE
+// libera la fila vieja y crea una nueva, nunca se edita in-place, mismo
+// patron que entregasColaboradoras.
+function renderTurno() {
+  const turno = activeOpenTurno();
+  const statusEl = byId("turno-status");
+  if (statusEl) {
+    statusEl.textContent = turno
+      ? `Turno ${turno.turnoId} abierto desde ${new Date(turno.fechaCreacion).toLocaleString("es-DO")} por ${turno.creadoPor || "—"}.`
+      : "No hay turno abierto.";
+  }
+  const openBtn = byId("open-turno-btn");
+  const closeBtn = byId("close-turno-btn");
+  if (openBtn) openBtn.disabled = Boolean(turno);
+  if (closeBtn) closeBtn.disabled = !turno;
+
+  const pendingList = byId("turno-pending-list");
+  if (pendingList) {
+    const pending = pendingConfirmationTurnos();
+    pendingList.innerHTML = pending.length
+      ? pending
+          .map(
+            (row) =>
+              `<div class="list-item"><span>Turno ${escapeHtml(row.turnoId)} · ${escapeHtml(row.fecha)} · cerrado automáticamente a las 11:59pm, sin confirmar si fue el turno único del día</span><button class="secondary-btn compact confirm-turno-btn" data-turno-id="${escapeHtml(row.turnoId)}" type="button">Confirmar</button></div>`,
+          )
+          .join("")
+      : '<p class="empty">No hay turnos pendientes de confirmación.</p>';
+  }
+
+  const list = byId("turno-assignment-list");
+  if (!list) return;
+  if (!turno) {
+    list.innerHTML = '<p class="empty">Abre un turno para asignar mesas.</p>';
+    return;
+  }
+  const stations = dbTable("mesas");
+  if (!stations.length) {
+    list.innerHTML = '<p class="empty">No hay mesas registradas. Créalas en Inventario → Mesas y estaciones.</p>';
+    return;
+  }
+  const manicuristas = activeManicuristas();
+  list.innerHTML = stations
+    .map((station) => {
+      const assignment = activeAssignmentForStation(station.stationId);
+      const options = [`<option value="">Vacante</option>`]
+        .concat(
+          manicuristas.map(
+            (staff) =>
+              `<option value="${escapeHtml(staff.colaboradorID)}" ${assignment?.colaboradorId === staff.colaboradorID ? "selected" : ""}>${escapeHtml(staff.nombreCompleto)}</option>`,
+          ),
+        )
+        .join("");
+      return `<div class="list-item"><span>${escapeHtml(station.nombre)}</span><select class="turno-assign-select" data-station-id="${escapeHtml(station.stationId)}">${options}</select></div>`;
+    })
+    .join("");
 }
 
 // ===========================================================================
@@ -7717,7 +7963,6 @@ function renderRecipes() {
     : '<p class="empty">No hay fichas técnicas registradas.</p>';
   const config = inventoryConfig();
   if (byId("inventory-consumption-mode")) byId("inventory-consumption-mode").value = config.modoConsumoInventario || "disabled";
-  if (byId("station-mode")) byId("station-mode").value = config.modoMesaServicio || "disabled";
   renderPendingConsumptions();
 }
 
@@ -9588,6 +9833,7 @@ function renderAll() {
   safeRender("datalists", renderDatalists);
   safeRender("dashboard", renderDashboard);
   safeRender("facturacion", renderInvoices);
+  safeRender("turno", renderTurno);
   safeRender("administracion de facturas", renderInvoiceAdmin);
   safeRender("cuentas por cobrar", renderReceivables);
   safeRender("registros de ingresos", renderIncomeRecords);
@@ -10472,10 +10718,6 @@ function addInvoiceLine(defaultStaff = "") {
         <input class="line-staff" list="staff-list" value="${escapeHtml(staffValue)}" placeholder="Buscar colaboradora" required />
       </label>
       <label>
-        Mesa / ubicación de consumo
-        <input class="line-station" list="stations-list" placeholder="Buscar mesa o Área general" />
-      </label>
-      <label>
         Precio
         <input class="line-price" type="number" min="0" step="0.01" readonly required />
       </label>
@@ -10523,7 +10765,6 @@ function getInvoiceLines() {
       element: line,
       service: line.querySelector(".line-service").value.trim(),
       staff: line.querySelector(".line-staff").value.trim(),
-      station: line.querySelector(".line-station")?.value.trim() || "",
       qty,
       price,
       extra,
@@ -10696,7 +10937,7 @@ function clearInvoiceFormAfterSubmit() {
   delete byId("invoice-form").dataset.editVersion;
   byId("invoice-edit-id").value = "";
   byId("invoice-date").value = today;
-  byId("invoice-submit-button").textContent = "Crear factura";
+  byId("invoice-submit-button").textContent = "Guardar factura y registrar cobro";
   byId("cancel-invoice-edit").classList.add("hidden");
   byId("invoice-line-list").innerHTML = "";
   byId("payment-line-list").innerHTML = "";
@@ -10714,8 +10955,6 @@ function clearInvoiceFormAfterSubmit() {
 function fillInvoiceLine(lineElement, detail) {
   lineElement.querySelector(".line-service").value = detail.servicio || "";
   lineElement.querySelector(".line-staff").value = detail.colaboradorNombre || "";
-  const stationField = lineElement.querySelector(".line-station");
-  if (stationField) stationField.value = detail.stationName || "";
   lineElement.querySelector(".line-price").value = Number(detail.precioBase) || Number(detail.subtotal) || 0;
   lineElement.querySelector(".line-extra").value = Number(detail.extraMonto) || 0;
   lineElement.querySelector(".line-extra-note").value = detail.extraConcepto_50 || "";
@@ -10816,7 +11055,7 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
     const serviceRecord = findServiceByName(line.service);
     const staffRecord = ensureStaffRecord(line.staff);
     const allocation = allocations[index] || {};
-    const stationRecord = findStationByName(line.station);
+    const stationRecord = resolveLineStation(line.staff);
     dbTable("facturaDetalle").push(stampRecord({
       detalleID: nextDbId("facturaDetalle", "detalleID", "DET"),
       facturaID: invoiceId,
@@ -10824,8 +11063,8 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
       servicio: line.service,
       colaboradorID: staffRecord.colaboradorID || "",
       colaboradorNombre: staffRecord.nombreCompleto || line.staff,
-      stationId: stationRecord?.stationId || "",
-      stationName: stationRecord?.nombre || line.station || "",
+      stationId: stationRecord.stationId || "",
+      stationName: stationRecord.stationName || "",
       cantidad: line.qty,
       precioBase: line.price,
       extraMonto: line.extra,
@@ -10907,7 +11146,7 @@ function openAdminInvoiceEditor(invoiceId = "") {
   }
   clearInvoiceFormAfterSubmit();
   byId("invoice-date").value = today;
-  byId("invoice-submit-button").textContent = "Crear factura admin";
+  byId("invoice-submit-button").textContent = "Guardar factura admin y registrar cobro";
   revealFormAtTop(byId("invoice-form"), { focusSelector: "#invoice-client-search" });
 }
 
@@ -10963,7 +11202,8 @@ function addPaymentLine() {
     <div class="line-grid">
       <label>
         Método
-        <select class="payment-method">
+        <select class="payment-method" required>
+          <option value="">Seleccionar forma de pago</option>
           <option value="efectivo">Efectivo</option>
           <option value="tarjeta">Tarjeta</option>
           <option value="transferencia_confirmada">Transferencia confirmada</option>
@@ -11016,6 +11256,23 @@ function getPaymentLines() {
   }));
 }
 
+// Al escoger la forma de pago propone el saldo completo que falta. El monto
+// sigue siendo editable para permitir pagos mixtos.
+function fillRemainingInvoicePayment(line) {
+  const amountInput = line?.querySelector(".payment-amount");
+  if (!amountInput || (Number(amountInput.value) || 0) > 0) return;
+  const totals = invoiceTotalsFromLines(
+    getInvoiceLines(),
+    Number(byId("invoice-general-extra")?.value) || 0,
+    Number(byId("invoice-general-discount-percent")?.value) || 0,
+  );
+  const tip = Number(byId("invoice-tip")?.value) || 0;
+  const otherPayments = getPaymentLines()
+    .filter((payment) => payment.element !== line)
+    .reduce((sum, payment) => sum + payment.amount, 0);
+  amountInput.value = Math.max(0, totals.grandTotal + tip - otherPayments).toFixed(2);
+}
+
 function updatePaymentLineState(line) {
   const method = line.querySelector(".payment-method").value;
   const due = line.querySelector(".payment-due-date");
@@ -11027,7 +11284,10 @@ function updatePaymentLineState(line) {
   line.querySelector(".payment-reference-field")?.classList.add("hidden");
   line.querySelector(".payment-due-field")?.classList.add("hidden");
 
-  if (method === "transferencia_pendiente") {
+  if (!method) {
+    state.value = "Selecciona una forma de pago";
+    account.value = "";
+  } else if (method === "transferencia_pendiente") {
     state.value = "Pendiente por confirmar";
     due.value = today;
     line.querySelector(".payment-account-field")?.classList.remove("hidden");
@@ -11737,6 +11997,11 @@ function wireForms() {
     addPaymentLine();
   });
 
+  byId("continue-to-payment")?.addEventListener("click", () => {
+    byId("invoice-payment-section")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.querySelector(".payment-method")?.focus();
+  });
+
   byId("invoice-line-list").addEventListener("input", (event) => {
     const line = event.target.closest(".invoice-line");
     if (!line) return;
@@ -11829,6 +12094,7 @@ function wireForms() {
     const line = event.target.closest(".payment-line");
     if (!line || !event.target.classList.contains("payment-method")) return;
     updatePaymentLineState(line);
+    fillRemainingInvoicePayment(line);
     updateInvoiceTotals();
   });
 
@@ -11872,7 +12138,16 @@ function wireForms() {
     const client = byId("invoice-client-search").value.trim();
     const lines = getInvoiceLines().filter((line) => line.service && line.staff && line.qty > 0);
     const editId = byId("invoice-edit-id").value;
-    if (!client || !lines.length) return;
+    if (!client) {
+      alert("Selecciona o escribe el cliente antes de continuar al cobro.");
+      byId("invoice-client-search").focus();
+      return;
+    }
+    if (!lines.length) {
+      alert("Agrega por lo menos un servicio con su colaboradora antes de continuar al cobro.");
+      document.querySelector(".line-service")?.focus();
+      return;
+    }
     const payments = getPaymentLines().filter((payment) => payment.amount > 0);
     const invoiceDate = canManageBilling() ? (byId("invoice-date")?.value || today) : today;
     if (!editId && !isClosingOpenForEdits(closingForDate(invoiceDate))) {
@@ -11890,6 +12165,12 @@ function wireForms() {
     if (missingTransferAccount) {
       alert("Selecciona una cuenta bancaria válida para la transferencia.");
       missingTransferAccount.element.querySelector(".payment-account")?.focus();
+      return;
+    }
+    const missingPaymentMethod = payments.find((payment) => !payment.method);
+    if (missingPaymentMethod) {
+      alert("Selecciona la forma de pago antes de guardar la factura.");
+      missingPaymentMethod.element.querySelector(".payment-method")?.focus();
       return;
     }
     const tip = Number(byId("invoice-tip").value) || 0;
@@ -11917,18 +12198,10 @@ function wireForms() {
       alert(`No se puede guardar la factura: ${consumptionPreflight.blockingErrors.join(" ")}`);
       return;
     }
-    // Mesa/ubicacion de consumo por linea de servicio (nunca una unica mesa
-    // general para toda la factura): en modo "required" bloquea ANTES de
-    // persistir si falta alguna; "audit_only"/"disabled" nunca bloquean
-    // (compatibilidad historica con facturas y lineas sin mesa).
-    const stationMode = inventoryConfig().modoMesaServicio || "disabled";
-    if (!editId && stationMode === "required") {
-      const missingStation = lines.find((line) => !findStationByName(line.station));
-      if (missingStation) {
-        alert("Selecciona la mesa (o Área general) de cada línea de servicio antes de guardar.");
-        return;
-      }
-    }
+    // La mesa no aparece como campo permanente de Facturacion. Solo cuando
+    // una manicurista no tiene asignacion activa se abre una seleccion breve
+    // con las mesas disponibles; al asignarla se reanuda este mismo submit.
+    if (!editId && requestInvoiceStationSelection(lines)) return;
     // A partir de aqui empiezan las mutaciones reales (crear/editar la
     // factura, aplicar pagos, generar CxC y propinas): se marca
     // invoiceSubmitInFlight para que un doble clic/doble submit mientras
@@ -11976,7 +12249,7 @@ function wireForms() {
       // articulo en este instante, nunca se recalculan despues aunque el
       // costo promedio del articulo cambie mas adelante.
       const directCostMargin = computeServiceDirectCostAndMargin(line.service, netSubtotal, line.qty);
-      const stationRecord = findStationByName(line.station);
+      const stationRecord = resolveLineStation(line.staff);
       const detail = {
         detalleID: detailId,
         facturaID: invoiceId,
@@ -11984,8 +12257,8 @@ function wireForms() {
         servicio: line.service,
         colaboradorID: staffRecord.colaboradorID || "",
         colaboradorNombre: staffRecord.nombreCompleto || line.staff,
-        stationId: stationRecord?.stationId || "",
-        stationName: stationRecord?.nombre || line.station || "",
+        stationId: stationRecord.stationId || "",
+        stationName: stationRecord.stationName || "",
         cantidad: line.qty,
         precioBase: line.price,
         extraMonto: line.extra,
@@ -12267,6 +12540,7 @@ function wireForms() {
     clearInvoiceFormAfterSubmit();
     saveState();
     renderAll();
+    alert(`Factura ${invoiceId} guardada y contabilizada. Estado: ${invoiceRecord.estadoFactura}. Las formas de pago quedaron registradas.`);
     } finally {
       invoiceSubmitInFlight = false;
       byId("invoice-submit-button").disabled = false;
@@ -13662,6 +13936,199 @@ function wireForms() {
     renderAll();
   });
 
+  byId("open-turno-btn")?.addEventListener("click", () => {
+    if (!canManageBilling()) {
+      alert("Solo quien puede facturar puede abrir un turno.");
+      return;
+    }
+    if (activeOpenTurno()) {
+      alert("Ya hay un turno abierto. Ciérralo antes de abrir uno nuevo.");
+      return;
+    }
+    createOpenTurno();
+    saveState();
+    renderAll();
+  });
+
+  byId("close-turno-btn")?.addEventListener("click", () => {
+    if (!canManageBilling()) {
+      alert("Solo quien puede facturar puede cerrar el turno.");
+      return;
+    }
+    const turno = activeOpenTurno();
+    if (!turno) {
+      alert("No hay turno abierto.");
+      return;
+    }
+    if (!confirm(`¿Cerrar el turno ${turno.turnoId}? Se liberarán todas las mesas asignadas.`)) return;
+    // Se pregunta explicitamente si se abrira otro turno hoy: la respuesta
+    // define esUnico, que el cierre automatico de medianoche (ver
+    // ensureTurnoAutoClose) no puede saber por si solo y por eso siempre
+    // asume "unico" hasta que administracion lo confirme.
+    const abrirOtroTurnoHoy = confirm(
+      "¿Se abrirá otro turno más hoy?\n\nAceptar = Sí, se abrirá otro turno hoy.\nCancelar = No, este fue el turno único del día.",
+    );
+    turno.estado = "Cerrado";
+    turno.cerradoPor = currentUserEmail();
+    turno.fechaCierre = new Date().toISOString();
+    turno.esUnico = !abrirOtroTurnoHoy;
+    turno.estadoConfirmacion = "Confirmado";
+    turno.cierreAutomatico = false;
+    stampRecord(turno, "updated");
+    dbTable("asignacionesMesaTurno")
+      .filter((row) => row.turnoId === turno.turnoId && row.estado === "Activa")
+      .forEach((row) => {
+        row.estado = "Liberada";
+        row.fechaLiberacion = new Date().toISOString();
+        stampRecord(row, "updated");
+      });
+    logAudit("turno_cerrado", {
+      entity: "turnos",
+      entityId: turno.turnoId,
+      newData: { estado: "Cerrado", esUnico: turno.esUnico },
+      note: `Turno ${turno.turnoId} cerrado (${turno.esUnico ? "turno único del día" : "se abrirá otro turno hoy"}).`,
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
+  byId("turno-pending-list")?.addEventListener("click", (event) => {
+    const button = event.target.closest(".confirm-turno-btn");
+    if (!button) return;
+    if (!canManageBilling()) {
+      alert("Solo quien puede facturar puede confirmar el cierre de un turno.");
+      return;
+    }
+    const turno = dbTable("turnos").find((row) => row.turnoId === button.dataset.turnoId);
+    if (!turno) return;
+    const abrioOtroTurnoEseDia = confirm(
+      "¿Se abrió otro turno ese día después de este cierre automático?\n\nAceptar = Sí.\nCancelar = No, fue el turno único del día.",
+    );
+    turno.estadoConfirmacion = "Confirmado";
+    turno.esUnico = !abrioOtroTurnoEseDia;
+    stampRecord(turno, "updated");
+    logAudit("turno_confirmado", {
+      entity: "turnos",
+      entityId: turno.turnoId,
+      newData: { estadoConfirmacion: "Confirmado", esUnico: turno.esUnico },
+      note: `Turno ${turno.turnoId} confirmado manualmente tras cierre automático (${turno.esUnico ? "turno único del día" : "se abrió otro turno ese día"}).`,
+      success: true,
+    });
+    saveState();
+    renderAll();
+  });
+
+  byId("turno-assignment-list")?.addEventListener("change", (event) => {
+    const select = event.target.closest(".turno-assign-select");
+    if (!select) return;
+    if (!canManageBilling()) {
+      alert("Solo quien puede facturar puede asignar mesas.");
+      renderTurno();
+      return;
+    }
+    const turno = activeOpenTurno();
+    if (!turno) {
+      renderTurno();
+      return;
+    }
+    const stationId = select.dataset.stationId;
+    const station = dbTable("mesas").find((row) => row.stationId === stationId);
+    const colaboradorId = select.value;
+    const now = new Date().toISOString();
+    const currentStationAssignment = activeAssignmentForStation(stationId);
+
+    if (colaboradorId) {
+      const conflict = activeAssignmentForCollaborator(colaboradorId);
+      if (conflict && conflict.stationId !== stationId) {
+        alert(`Esa manicurista ya está asignada a ${conflict.stationName}. Libérala ahí primero.`);
+        renderTurno();
+        return;
+      }
+    }
+
+    if (currentStationAssignment) {
+      currentStationAssignment.estado = "Liberada";
+      currentStationAssignment.fechaLiberacion = now;
+      stampRecord(currentStationAssignment, "updated");
+    }
+
+    if (colaboradorId) {
+      const staff = dbTable("colaboradores").find((row) => row.colaboradorID === colaboradorId);
+      const asignacion = stampRecord({
+        asignacionId: nextDbId("asignacionesMesaTurno", "asignacionId", "ASG"),
+        turnoId: turno.turnoId,
+        stationId,
+        stationName: station?.nombre || "",
+        colaboradorId,
+        colaboradorNombre: staff?.nombreCompleto || "",
+        estado: "Activa",
+        fechaLiberacion: null,
+      });
+      dbTable("asignacionesMesaTurno").push(asignacion);
+      logAudit("mesa_asignada_turno", {
+        entity: "asignacionesMesaTurno",
+        entityId: asignacion.asignacionId,
+        newData: { turnoId: turno.turnoId, stationId, colaboradorId },
+        note: `Mesa ${station?.nombre || stationId} asignada a ${staff?.nombreCompleto || colaboradorId} en el turno ${turno.turnoId}.`,
+        success: true,
+      });
+    } else if (currentStationAssignment) {
+      logAudit("mesa_liberada_turno", {
+        entity: "asignacionesMesaTurno",
+        entityId: currentStationAssignment.asignacionId,
+        newData: { turnoId: turno.turnoId, stationId },
+        note: `Mesa ${station?.nombre || stationId} liberada en el turno ${turno.turnoId}.`,
+        success: true,
+      });
+    }
+
+    saveState();
+    renderAll();
+  });
+
+  byId("invoice-station-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!canManageBilling() || !pendingInvoiceStationSelection) return;
+    const stationId = byId("invoice-station-choice").value;
+    const station = dbTable("mesas").find((row) => row.stationId === stationId);
+    if (!station || activeAssignmentForStation(stationId)) {
+      alert("Esa mesa ya no está disponible. Selecciona otra mesa.");
+      byId("invoice-station-dialog").close();
+      requestInvoiceStationSelection(getInvoiceLines());
+      return;
+    }
+    const turno = createOpenTurno("Turno abierto automáticamente al asignar una mesa desde Facturación.");
+    const asignacion = stampRecord({
+      asignacionId: nextDbId("asignacionesMesaTurno", "asignacionId", "ASG"),
+      turnoId: turno.turnoId,
+      stationId: station.stationId,
+      stationName: station.nombre,
+      colaboradorId: pendingInvoiceStationSelection.colaboradorId,
+      colaboradorNombre: pendingInvoiceStationSelection.colaboradorNombre,
+      estado: "Activa",
+      fechaLiberacion: null,
+    });
+    dbTable("asignacionesMesaTurno").push(asignacion);
+    logAudit("mesa_asignada_desde_facturacion", {
+      entity: "asignacionesMesaTurno",
+      entityId: asignacion.asignacionId,
+      newData: { turnoId: turno.turnoId, stationId: station.stationId, colaboradorId: asignacion.colaboradorId },
+      note: `${station.nombre} asignada a ${asignacion.colaboradorNombre} para continuar la factura.`,
+      success: true,
+    });
+    pendingInvoiceStationSelection = null;
+    byId("invoice-station-dialog").close();
+    saveState();
+    renderAll();
+    window.setTimeout(() => byId("invoice-form").requestSubmit(), 0);
+  });
+
+  byId("invoice-station-cancel")?.addEventListener("click", () => {
+    pendingInvoiceStationSelection = null;
+    byId("invoice-station-dialog").close();
+  });
+
   byId("station-delivery-form").addEventListener("submit", (event) => {
     event.preventDefault();
     if (!canManageInventory()) {
@@ -14335,28 +14802,6 @@ function wireForms() {
       oldData: { modoConsumoInventario: previousMode },
       newData: { modoConsumoInventario: config.modoConsumoInventario },
       note: `Modo de consumo automático de inventario cambiado a "${config.modoConsumoInventario}".`,
-      success: true,
-    });
-    saveState();
-    renderAll();
-  });
-
-  byId("station-mode")?.addEventListener("change", () => {
-    const config = inventoryConfig();
-    if (!canManageInventory()) {
-      alert("Solo administración o propietario puede cambiar el modo de mesa por línea de servicio.");
-      byId("station-mode").value = config.modoMesaServicio || "disabled";
-      return;
-    }
-    const previousMode = config.modoMesaServicio;
-    config.modoMesaServicio = byId("station-mode").value;
-    stampRecord(config, "updated");
-    logAudit("service_station_mode_changed", {
-      entity: "configuracionInventario",
-      entityId: config.configId,
-      oldData: { modoMesaServicio: previousMode },
-      newData: { modoMesaServicio: config.modoMesaServicio },
-      note: `Modo de mesa por línea de servicio cambiado a "${config.modoMesaServicio}".`,
       success: true,
     });
     saveState();
@@ -16446,8 +16891,13 @@ function wireInventoryCollaboratorAuditPhase() {
 
 async function init() {
   await loadDatabase();
+  // Crear catalogos de inventario exige el permiso correspondiente. El seed
+  // local ya contiene las cinco mesas; en una base remota antigua solo una
+  // sesion autorizada de inventario completa las que falten.
+  if (canManageInventory()) ensureDefaultStations();
   ensureCashModuleMarkup();
   const provisionalClosingChanges = ensureProvisionalClosings();
+  ensureTurnoAutoClose();
   state = loadState();
   if (provisionalClosingChanges) state = stateFromDatabase(database);
   saveState();

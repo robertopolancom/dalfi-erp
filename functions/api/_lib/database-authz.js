@@ -16,6 +16,8 @@ const DOMAIN_TABLES = {
     "ingresoAplicaciones",
     "propinas",
     "auditLogLocal",
+    "turnos",
+    "asignacionesMesaTurno",
   ]),
   reservas: new Set(["reservas"]),
   cierres: new Set(["cierres", "cierreIntentos"]),
