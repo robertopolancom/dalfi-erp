@@ -368,11 +368,13 @@ test("recipeLinesForService() busca por nombre de servicio normalizado (compatib
 // K. Facturacion y consumo
 // ===========================================================================
 
-test("93-96. la factura consume materiales SOLO segun el modo configurado (inventoryConfig().modoConsumoInventario, no un booleano ambiguo); disabled por defecto para no sorprender con datos sin fichas técnicas configuradas", () => {
+test("93-96. la factura consume materiales segun el modo configurado y required queda activo por defecto para descontar la mesa", () => {
   const source = extractFunction("consumeInventoryForInvoice");
   assert.match(source, /if \(mode === "disabled"\) return result;/);
   const configSource = extractFunction("inventoryConfig");
-  assert.match(configSource, /modoConsumoInventario: "disabled"/);
+  assert.match(configSource, /modoConsumoInventario: "required"/);
+  assert.match(configSource, /stationConsumptionPolicyVersion: "2026-08-03"/);
+  assert.match(configSource, /if \(config\.modoConsumoInventario === "disabled"\) config\.modoConsumoInventario = "required";/);
 });
 
 test("modo required/audit_only/disabled es un enum explicito, nunca un booleano: los tres valores literales existen en el modulo", () => {
@@ -409,6 +411,28 @@ test("modo required bloquea ANTES de crear la factura (buildServiceConsumptionPr
   const invoicePushIdx = invoiceSubmit.indexOf('dbTable("facturas").push(invoiceRecord)');
   assert.ok(preflightIdx !== -1 && invoicePushIdx !== -1 && preflightIdx < invoicePushIdx, "la prevalidacion debe ocurrir antes de persistir la factura");
   assert.match(invoiceSubmit, /if \(!editId && consumptionMode === "required" && !consumptionPreflight\.allowed\) \{/);
+});
+
+test("la prevalidacion agrupa servicios por mesa y comprueba la existencia de cada ubicacion por separado", () => {
+  const source = extractFunction("buildServiceConsumptionPreflight");
+  assert.match(source, /const station = resolveLineStation\(line\.staff\);/);
+  assert.match(source, /const groups = new Map\(\);/);
+  assert.match(source, /quantity: itemStockAt\(item\.itemID, group\.locationId\)/);
+  assert.match(source, /locationName: group\.locationName/);
+});
+
+test("cada consumo de servicio descuenta la mesa congelada en facturaDetalle y no el almacen general", () => {
+  const source = extractFunction("consumeInventoryForInvoice");
+  assert.match(source, /const consumptionLocationId = detail\.stationId \|\| warehouse\.locationId;/);
+  assert.match(source, /lotsAvailableForFEFO\(item\.itemID, consumptionLocationId\)/);
+  assert.match(source, /locationId: consumptionLocationId,/);
+  assert.match(source, /stationId: line\.detail\.stationId \|\| "",/);
+});
+
+test("confirmar un consumo pendiente conserva la mesa historica de cada servicio", () => {
+  const source = extractFunction("confirmPendingServiceConsumption");
+  assert.match(source, /const consumptionLocationId = line\.stationId \|\| warehouse\.locationId;/);
+  assert.match(source, /locationId: consumptionLocationId,/);
 });
 
 test("audit_only nunca bloquea el guardado, pero deja el consumo Pendiente y lo audita como service_inventory_pending", () => {
@@ -796,96 +820,144 @@ test("reverseRetailSale nunca afecta facturas de servicios, propinas ni nomina",
 });
 
 // ===========================================================================
-// S. Mesa/ubicacion de consumo por linea de SERVICIO (Facturacion), modo
-// configurable required/audit_only/disabled. Nunca una unica mesa general
-// para toda la factura; "Área general" es una ubicacion explicita, nunca
-// una mesa ficticia. Compatibilidad historica: default "disabled".
+// S. Mesa por linea de SERVICIO, derivada como metadato interno desde la
+// asignacion activa del turno abierto (agosto 2026): ya no es un campo
+// manual de Facturacion. Cuando existe asignacion se congela en el detalle
+// para inventario; cuando falta al comienzo del turno, un formulario muestra
+// solo mesas libres, asigna una y reanuda la misma factura.
 // ===========================================================================
 
-test("cada linea de servicio permite elegir mesa/ubicacion de consumo (campo propio, no una unica mesa por factura)", () => {
+test("la linea de factura ya no tiene campo manual de mesa (se deriva del turno, no se digita)", () => {
   const source = extractFunction("addInvoiceLine");
-  assert.match(source, /line-station/);
-  assert.match(source, /list="stations-list"/);
+  assert.doesNotMatch(source, /line-station/);
 });
 
-test("getInvoiceLines() captura la mesa de cada linea", () => {
+test("getInvoiceLines() ya no lee mesa de la linea (la resuelve resolveLineStation a partir de la colaboradora)", () => {
   const source = extractFunction("getInvoiceLines");
-  assert.match(source, /station: line\.querySelector\("\.line-station"\)/);
+  assert.doesNotMatch(source, /line-station/);
 });
 
-test("el campo de mesa nace oculto en el HTML de cada linea de factura (negocios que no usan mesas no lo ven jamas)", () => {
-  const source = extractFunction("addInvoiceLine");
-  assert.match(source, /class="station-field hidden"/);
-});
-
-test("servicio y colaboradora de la linea de factura son SIEMPRE obligatorios y nunca dependen del modo de mesa", () => {
-  const source = extractFunction("addInvoiceLine");
-  const serviceLabel = /Servicio\s*<input class="line-service"[^>]*required/;
-  const staffLabel = /Colaboradora\s*<input class="line-staff"[^>]*required/;
-  assert.match(source, serviceLabel);
-  assert.match(source, staffLabel);
-});
-
-test("updateInvoiceLineOptionalFields() muestra el campo de mesa solo si modoMesaServicio no esta 'disabled' (el consumo de materiales por ficha tecnica no depende de este campo)", () => {
-  const source = extractFunction("updateInvoiceLineOptionalFields");
-  assert.match(source, /inventoryConfig\(\)\.modoMesaServicio \|\| "disabled"\) !== "disabled"/);
-  assert.match(source, /querySelector\("\.station-field"\)\?\.classList\.toggle\("hidden", !stationFieldVisible\)/);
-});
-
-test("aviso 'no tiene mesa asignada' con boton de asignar rapido: nace en el HTML de cada linea, junto al campo de mesa", () => {
-  const source = extractFunction("addInvoiceLine");
-  assert.match(source, /class="station-missing-hint hidden"/);
-  assert.match(source, /class="secondary-btn compact assign-general-station"/);
-});
-
-test("el aviso de mesa faltante solo se muestra si el campo esta visible Y la mesa esta vacia; nunca si ya tiene mesa o el modo esta desactivado", () => {
-  const source = extractFunction("updateInvoiceLineOptionalFields");
-  assert.match(source, /station-missing-hint"\)\?\.classList\.toggle\("hidden", !stationFieldVisible \|\| Boolean\(stationValue\)\)/);
-});
-
-test("el boton 'Usar Area general' rellena la mesa de esa linea con un solo click y dispara recalculo (input event), sin bloquear ni pedir mas datos", () => {
-  assert.match(appJs, /assign-general-station[\s\S]{0,300}stationInput\.value = "Área general"/);
-  assert.match(appJs, /stationInput\.dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\)/);
-});
-
-test("cambiar la mesa de una linea (line-station) tambien actualiza el aviso en vivo, no solo adicional/descuento", () => {
-  assert.match(appJs, /line-extra"\) \|\| event\.target\.classList\.contains\("line-discount"\) \|\| event\.target\.classList\.contains\("line-station"\)/);
-});
-
-test("el bloqueo de guardado por mesa obligatoria faltante enfoca y resalta la linea exacta, y explica que NO afecta el monto a cobrar (nunca un alert generico sin contexto)", () => {
-  assert.match(appJs, /missingStation\.element\.querySelector\("\.line-station"\)\?\.focus\(\)/);
-  assert.match(appJs, /Esto no afecta el monto a cobrar/);
-});
-
-test("findStationByName: 'Área general' es una ubicacion explicita (stationId vacio, nunca una mesa inventada); un texto desconocido no se asigna a ninguna mesa existente en silencio", () => {
+test("findStationByName: 'Área general' es una ubicacion explicita (stationId vacio, nunca una mesa inventada); un texto desconocido no se asigna a ninguna mesa existente en silencio (sigue usandose en formularios de administracion de inventario, no en Facturacion)", () => {
   const source = extractFunction("findStationByName");
   assert.match(source, /stationId: ""/);
   assert.match(source, /return dbTable\("mesas"\)\.find/);
 });
 
-test("modoMesaServicio: default 'disabled' (compatibilidad historica), config singleton nunca requiere migracion", () => {
-  const source = extractFunction("inventoryConfig");
-  assert.match(source, /modoMesaServicio = "disabled"/);
+test("isManicurista/activeManicuristas: el control interno de turno lista solo colaboradoras activas cuya funcion incluye 'manicurista'", () => {
+  const isManicuristaSource = extractFunction("isManicurista");
+  assert.match(isManicuristaSource, /normalize\(colaborador\?\.funcion \|\| ""\)\.includes\("manicurista"\)/);
+  const activeManicuristasSource = extractFunction("activeManicuristas");
+  assert.match(activeManicuristasSource, /isManicurista\(staff\)/);
+  assert.match(activeManicuristasSource, /normalize\(staff\.estado \|\| "Activo"\) === "activo"/);
 });
 
-test("modo 'required' bloquea la factura NUEVA si falta mesa en alguna linea; nunca bloquea edicion de facturas historicas sin mesa", () => {
-  assert.match(appJs, /stationMode === "required"/);
-  assert.match(appJs, /if \(!editId && stationMode === "required"\)/);
+test("solo puede haber un turno Abierto a la vez: activeOpenTurno busca estado Abierto, abrir uno nuevo con otro ya abierto se bloquea", () => {
+  const source = extractFunction("activeOpenTurno");
+  assert.match(source, /row\.estado === "Abierto"/);
+  assert.match(appJs, /Ya hay un turno abierto\. Ciérralo antes de abrir uno nuevo\./);
 });
 
-test("facturaDetalle congela stationId/stationName (tanto al crear como al editar), nunca reasigna silenciosamente una mesa distinta despues", () => {
-  const createMatches = appJs.match(/stationId: stationRecord\?\.stationId \|\| ""/g) || [];
+test("resolveLineStation deriva la asignacion como metadato y delega el faltante al formulario de seleccion", () => {
+  const source = extractFunction("resolveLineStation");
+  assert.match(source, /if \(!staff \|\| !isManicurista\(staff\)\) return \{ stationId: "", stationName: "" \}/);
+  assert.match(source, /if \(!assignment\) return \{ stationId: "", stationName: "" \}/);
+  assert.doesNotMatch(source, /error:|bloque|alert\(/);
+});
+
+test("una factura nueva pausa si la manicurista no tiene mesa, abre el selector y reanuda el mismo submit despues de asignar", () => {
+  assert.match(appJs, /if \(!editId && requestInvoiceStationSelection\(lines\)\) return;/);
+  assert.match(appJs, /byId\("invoice-station-dialog"\)\.close\(\);/);
+  assert.match(appJs, /byId\("invoice-form"\)\.requestSubmit\(\)/);
+});
+
+test("el selector emergente de Facturacion muestra solo mesas sin asignacion activa", () => {
+  const source = extractFunction("availableStationsForInvoice");
+  assert.match(source, /!activeAssignmentForStation\(station\.stationId\)/);
+  assert.match(indexHtml, /id="invoice-station-choice"/);
+  assert.match(indexHtml, /Asignar mesa y continuar facturación/);
+});
+
+test("existen cinco mesas iniciales y su alta remota es idempotente y exige permiso de inventario", () => {
+  const database = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "outputs", "database.json"), "utf8"));
+  assert.deepStrictEqual(database.mesas.map((row) => row.nombre), ["Mesa 1", "Mesa 2", "Mesa 3", "Mesa 4", "Mesa 5"]);
+  const source = extractFunction("ensureDefaultStations");
+  assert.match(source, /if \(findStationByName\(name\)\) return;/);
+  assert.match(appJs, /if \(canManageInventory\(\)\) ensureDefaultStations\(\);/);
+});
+
+test("facturaDetalle congela stationId/stationName (tanto al crear como al editar) usando resolveLineStation, nunca un campo manual", () => {
+  const createMatches = appJs.match(/stationId: stationRecord\.stationId \|\| ""/g) || [];
   assert.ok(createMatches.length >= 2, "se espera en el flujo de creacion Y de edicion de factura");
 });
 
-test("service_station_assigned se audita SOLO cuando la linea tiene mesa (nunca en facturas historicas sin mesa, nunca un evento vacio)", () => {
+test("service_station_assigned se audita SOLO cuando la linea tiene mesa (nunca en lineas de personal sin mesa, nunca un evento vacio)", () => {
   assert.match(appJs, /logAudit\("service_station_assigned"/);
   assert.match(appJs, /if \(detail\.stationName\) \{\s*\n\s*logAudit\("service_station_assigned"/);
 });
 
-test("cambiar el modo de mesa exige permiso y audita el cambio (service_station_mode_changed), igual patron que el modo de consumo de inventario", () => {
-  assert.match(appJs, /logAudit\("service_station_mode_changed"/);
-  assert.match(appJs, /Solo administración o propietario puede cambiar el modo de mesa por línea de servicio/);
+test("mover una manicurista desde Mesas Turno libera su asignacion anterior y crea otra sin tocar el historial", () => {
+  assert.match(appJs, /previousCollaboratorAssignment\.estado = "Liberada";/);
+  assert.match(appJs, /logAudit\("mesa_reasignada_turno"/);
+  assert.match(appJs, /Las facturas anteriores conservaron su mesa original\./);
+});
+
+test("cerrar un turno libera todas sus asignaciones activas (ninguna manicurista queda con mesa activa fuera de un turno abierto)", () => {
+  assert.match(
+    appJs,
+    /dbTable\("asignacionesMesaTurno"\)\s*\.filter\(\(row\) => row\.turnoId === turno\.turnoId && row\.estado === "Activa"\)/,
+  );
+  assert.match(appJs, /row\.estado = "Liberada";/);
+});
+
+test("abrir/cerrar turno y asignar mesa estan gateados por canManageBilling (misma autorizacion que crear facturas)", () => {
+  assert.match(appJs, /Solo quien puede facturar puede abrir un turno\./);
+  assert.match(appJs, /Solo quien puede facturar puede cerrar el turno\./);
+  assert.match(appJs, /Solo quien puede facturar puede asignar mesas\./);
+});
+
+// ===========================================================================
+// T. Cierre de turno: pregunta si se abrira otro turno el mismo dia
+// (esUnico) y cierre automatico de seguridad a las 11:59pm (agosto 2026).
+// ===========================================================================
+
+test("cerrar un turno a mano pregunta si se abrira otro turno hoy y guarda esUnico + estadoConfirmacion Confirmado", () => {
+  const source = extractFunction("wireForms");
+  assert.match(source, /¿Se abrirá otro turno más hoy\?/);
+  assert.match(source, /turno\.esUnico = !abrirOtroTurnoHoy;/);
+  assert.match(source, /turno\.estadoConfirmacion = "Confirmado";/);
+  assert.match(source, /turno\.cierreAutomatico = false;/);
+});
+
+test("turnoAutoCloseEligible: solo turnos Abiertos cuya fecha ya paso, o cuya fecha es hoy pero ya son las 11:59pm o mas", () => {
+  const source = extractFunction("turnoAutoCloseEligible");
+  assert.match(source, /if \(!turno \|\| turno\.estado !== "Abierto"\) return false;/);
+  assert.match(source, /if \(turno\.fecha < nowDate\) return true;/);
+  assert.match(source, /timeZone: "America\/Santo_Domingo"/);
+  assert.match(source, /nowTime >= "23:59"/);
+});
+
+test("ensureTurnoAutoClose: cierra el turno vencido, libera sus asignaciones activas, y lo deja Pendiente de confirmacion como cierre unico del dia", () => {
+  const source = extractFunction("ensureTurnoAutoClose");
+  assert.match(source, /if \(!turnoAutoCloseEligible\(turno\)\) return false;/);
+  assert.match(source, /turno\.esUnico = true;/);
+  assert.match(source, /turno\.estadoConfirmacion = "Pendiente de confirmacion";/);
+  assert.match(source, /turno\.cierreAutomatico = true;/);
+  assert.match(source, /row\.estado = "Liberada";/);
+  assert.match(appJs, /logAudit\("turno_cerrado_automatico"/);
+});
+
+test("ensureTurnoAutoClose se revisa al cargar la app (init, junto a ensureProvisionalClosings) y en cada poll de 30s (startRemoteRefreshLoop), no solo al recargar la pagina al dia siguiente", () => {
+  assert.match(appJs, /ensureProvisionalClosings\(\);\s*\n\s*ensureTurnoAutoClose\(\);/);
+  const source = extractFunction("startRemoteRefreshLoop");
+  assert.match(source, /if \(ensureTurnoAutoClose\(\)\) \{/);
+});
+
+test("un turno cerrado automaticamente aparece en 'Turnos pendientes de confirmación' y se puede confirmar preguntando de nuevo si se abrio otro turno ese dia", () => {
+  assert.match(appJs, /function pendingConfirmationTurnos\(\)/);
+  assert.match(appJs, /estadoConfirmacion === "Pendiente de confirmacion"/);
+  assert.match(appJs, /¿Se abrió otro turno ese día después de este cierre automático\?/);
+  assert.match(appJs, /logAudit\("turno_confirmado"/);
+  assert.match(indexHtml, /id="turno-pending-list"/);
 });
 
 test("el reporte de Cuentas por cobrar (vista comun) muestra el origen (Servicio/Producto) de cada CxC de cliente, reutilizando receivableOriginLabel", () => {

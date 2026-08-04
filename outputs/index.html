@@ -20,6 +20,7 @@
         <nav class="nav-list">
           <button class="nav-item active" data-view="dashboard" type="button">Dashboard</button>
           <button class="nav-item" data-view="billing" type="button">Facturación</button>
+          <button class="nav-item" data-view="turno" type="button">Mesas / Turno</button>
           <button class="nav-item admin-only hidden" data-view="invoice-admin" type="button">Admin facturas</button>
           <button class="nav-item" data-view="receivables" type="button">Cuentas por cobrar</button>
           <button class="nav-item" data-view="pending-transfers" type="button">Transferencias pendientes</button>
@@ -297,13 +298,15 @@
                   <span>Total servicios antes de propina</span>
                   <strong id="invoice-grand-total">RD$0.00</strong>
                 </div>
+                <button class="primary-btn" id="continue-to-payment" type="button">Continuar al cobro</button>
               </section>
 
-              <section class="invoice-lines">
+              <section class="invoice-lines" id="invoice-payment-section">
                 <div class="section-title-row">
-                  <h4>Formas de pago</h4>
+                  <h4>Cobro de esta factura</h4>
                   <button class="secondary-btn compact" id="add-payment-line" type="button">Agregar pago</button>
                 </div>
+                <p class="panel-note">Selecciona la forma de pago. Al elegirla se propone el saldo completo; puedes editar el monto y agregar otras formas para un pago mixto.</p>
                 <div class="invoice-line-list" id="payment-line-list"></div>
                 <div class="line-actions">
                   <button class="secondary-btn add-payment-line-action" type="button">Agregar otra forma de pago</button>
@@ -351,7 +354,7 @@
               </label>
               <input id="invoice-edit-id" type="hidden" />
               <div class="form-row">
-                <button class="primary-btn" id="invoice-submit-button" type="submit">Crear factura</button>
+                <button class="primary-btn" id="invoice-submit-button" type="submit">Guardar factura y registrar cobro</button>
                 <button class="secondary-btn hidden" id="cancel-invoice-edit" type="button">Cancelar edición</button>
               </div>
             </form>
@@ -382,6 +385,42 @@
               </div>
             </section>
           </div>
+        </section>
+
+        <section id="turno" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Mesas del turno actual</h3>
+                <p class="panel-note">Control interno de inventario: asigna mesas a manicuristas para relacionar los insumos y la cantidad de servicios realizados. Este es el único módulo para cambiar una manicurista de mesa. Facturación solo permite asignarla cuando todavía no tiene mesa y conserva la mesa original de cada servicio ya facturado.</p>
+              </div>
+              <div class="panel-actions">
+                <button class="primary-btn" id="open-turno-btn" type="button">Abrir turno</button>
+                <button class="secondary-btn" id="close-turno-btn" type="button">Cerrar turno</button>
+              </div>
+            </div>
+            <div class="readonly-hint" id="turno-status">No hay turno abierto.</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Turnos pendientes de confirmación</h3>
+                <p class="panel-note">Un turno se cierra solo a las 11:59pm si nadie lo cerró a mano. Queda aquí hasta que confirmes si ese día se abrió otro turno o fue el único.</p>
+              </div>
+            </div>
+            <div class="simple-list" id="turno-pending-list"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h3>Asignación y cambio de mesas</h3>
+                <p class="panel-note">Puedes mover una manicurista directamente a otra mesa disponible. Las facturas y consumos ya registrados permanecen en la mesa donde se realizaron.</p>
+              </div>
+            </div>
+            <div class="simple-list" id="turno-assignment-list"></div>
+          </section>
         </section>
 
         <section id="invoice-admin" class="view">
@@ -1225,19 +1264,11 @@
               </div>
               <button class="primary-btn" type="submit">Agregar a la ficha técnica</button>
               <label class="panel-note">
-                Modo de consumo automático al facturar (usa las fichas técnicas de arriba)
+                Modo de consumo automático al facturar (usa las fichas técnicas y descuenta la mesa de cada manicurista; Obligatorio es el valor inicial)
                 <select id="inventory-consumption-mode">
                   <option value="disabled">Desactivado: no descuenta nada</option>
                   <option value="audit_only">Auditoría: guarda la factura y deja el consumo pendiente de confirmar</option>
                   <option value="required">Obligatorio: bloquea la factura si falta material</option>
-                </select>
-              </label>
-              <label class="panel-note">
-                Modo de mesa/estación por línea de servicio en Facturación (no afecta a servicio ni colaboradora, siempre obligatorios)
-                <select id="station-mode">
-                  <option value="disabled">Desactivado: el campo de mesa no se muestra en Facturación</option>
-                  <option value="audit_only">Auditoría: muestra el campo y guarda la factura aunque falte la mesa (conciliar después)</option>
-                  <option value="required">Obligatorio: muestra el campo y bloquea la factura si falta la mesa o Área general</option>
                 </select>
               </label>
             </form>
@@ -2616,6 +2647,7 @@
                   Incluir descuentos
                 </label>
                 <button class="primary-btn inline report-generate-btn" id="generate-report" type="button">Generar reporte</button>
+                <span class="readonly-hint" id="report-generation-status" aria-live="polite"></span>
               </div>
             </section>
 
@@ -3192,6 +3224,23 @@
       </form>
     </dialog>
 
+    <dialog id="invoice-station-dialog" class="app-dialog">
+      <form class="panel form-panel" id="invoice-station-form">
+        <div class="panel-head">
+          <h3>Asignar mesa para continuar</h3>
+        </div>
+        <p class="panel-note" id="invoice-station-message"></p>
+        <label>
+          Mesa disponible
+          <select id="invoice-station-choice" required></select>
+        </label>
+        <div class="row-actions">
+          <button class="primary-btn" id="invoice-station-confirm" type="submit">Asignar mesa y continuar facturación</button>
+          <button class="secondary-btn" id="invoice-station-cancel" type="button">Cancelar</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="reservation-details-dialog" class="app-dialog">
       <section class="panel form-panel">
         <div class="panel-head">
@@ -3207,6 +3256,6 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
-    <script src="app.js?v=20260724-permission-presets"></script>
+    <script src="app.js?v=20260803-index-cache-async-load"></script>
   </body>
 </html>

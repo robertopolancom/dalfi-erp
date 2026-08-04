@@ -643,6 +643,38 @@
       "notas_funcionales": "Primera quincena solo mitad salario; segunda agrega variables"
     }
   ],
+  "mesas": [
+    {
+      "stationId": "MSA-0001",
+      "nombre": "Mesa 1",
+      "colaboradoraPrincipal": "",
+      "estado": "Disponible"
+    },
+    {
+      "stationId": "MSA-0002",
+      "nombre": "Mesa 2",
+      "colaboradoraPrincipal": "",
+      "estado": "Disponible"
+    },
+    {
+      "stationId": "MSA-0003",
+      "nombre": "Mesa 3",
+      "colaboradoraPrincipal": "",
+      "estado": "Disponible"
+    },
+    {
+      "stationId": "MSA-0004",
+      "nombre": "Mesa 4",
+      "colaboradoraPrincipal": "",
+      "estado": "Disponible"
+    },
+    {
+      "stationId": "MSA-0005",
+      "nombre": "Mesa 5",
+      "colaboradoraPrincipal": "",
+      "estado": "Disponible"
+    }
+  ],
   "reservas": [],
   "suplidores": [],
   "cuentasPagar": []
