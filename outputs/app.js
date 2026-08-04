@@ -8548,11 +8548,16 @@ function reverseRetailSale(retailSaleId) {
 // factura este abierto (si esta confirmado, administracion debe reabrirlo
 // primero, exactamente igual que para editarla). Nunca permite anular una
 // factura ya anulada.
+// Solo decide si el boton "Anular" se muestra: permiso + que no este ya
+// anulada. Deliberadamente NO revisa aqui el cierre, cobros posteriores ni
+// propina pagada en nomina -esas reglas viven dentro de voidInvoice() y
+// cada una explica por que con un mensaje especifico- para que quien tiene
+// el permiso SIEMPRE pueda intentarlo y entender el motivo exacto del
+// bloqueo, en vez de que el boton desaparezca en silencio.
 function canVoidInvoice(invoiceId) {
   if (!canReopenClosings()) return false;
   const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
-  if (!invoice || invoice.estadoFactura === "Anulada") return false;
-  return isClosingOpenForEdits(closingForDate(invoiceOperationalDate(invoiceId)));
+  return Boolean(invoice) && invoice.estadoFactura !== "Anulada";
 }
 
 // Anulacion integral de UNA factura de servicio: inventario (fichas

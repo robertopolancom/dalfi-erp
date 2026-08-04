@@ -19,7 +19,7 @@ test("Ver reserva abre un dialogo de detalle sin modificar la reserva", () => {
 });
 
 test("el recurso principal usa un cache-buster de la capa segura y la SPA guarda por API", () => {
-  assert.match(html, /app\.js\?v=20260804-void-invoice/);
-  assert.doesNotMatch(html, /app\.js\?v=20260804-invoice-line-scope-fix/);
+  assert.match(html, /app\.js\?v=20260804-void-invoice-clear-messages/);
+  assert.doesNotMatch(html, /app\.js\?v=20260804-void-invoice"/);
   assert.match(app, /fetch\("\/api\/database"/);
 });

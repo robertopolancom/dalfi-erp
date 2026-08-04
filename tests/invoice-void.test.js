@@ -29,11 +29,11 @@ function extractFunction(name, source = appJs) {
   throw new Error(`function ${name} incompleta`);
 }
 
-test("canVoidInvoice(): exige canReopenClosings() (nivel administrador senior, no el permiso general de facturacion), bloquea si ya esta anulada y exige cierre abierto", () => {
+test("canVoidInvoice(): solo exige canReopenClosings() y que no este ya anulada; DELIBERADAMENTE no revisa cierre/cobros posteriores/propina pagada, para que el boton nunca desaparezca en silencio y voidInvoice() pueda explicar el motivo exacto al intentarlo", () => {
   const source = extractFunction("canVoidInvoice");
   assert.match(source, /if \(!canReopenClosings\(\)\) return false;/);
-  assert.match(source, /invoice\.estadoFactura === "Anulada"\) return false;/);
-  assert.match(source, /isClosingOpenForEdits\(closingForDate\(invoiceOperationalDate\(invoiceId\)\)\)/);
+  assert.match(source, /Boolean\(invoice\) && invoice\.estadoFactura !== "Anulada";/);
+  assert.doesNotMatch(source, /isClosingOpenForEdits/);
 });
 
 test("voidInvoice(): nunca borra la factura (marca estadoFactura:Anulada, conserva anuladaEn/anuladaPor/motivoAnulacion)", () => {
@@ -52,6 +52,21 @@ test("voidInvoice(): exige permiso de administrador senior, bloquea si ya esta a
   assert.match(source, /Primero administración debe reabrir el cierre\./);
   assert.match(source, /const reason = prompt\(/);
   assert.match(source, /if \(!reason\) \{/);
+});
+
+test("las 3 reglas de bloqueo (cierre confirmado, cobro posterior ya aplicado, propina ya pagada en nomina) SIEMPRE explican el motivo exacto: el boton Anular nunca se oculta por estas 3 razones, asi que la persona siempre llega a intentarlo y ver el mensaje", () => {
+  const canVoidSource = extractFunction("canVoidInvoice");
+  assert.doesNotMatch(canVoidSource, /isClosingOpenForEdits|montoAplicado|invoiceVoidTipBlockedReason/);
+  const voidSource = extractFunction("voidInvoice");
+  assert.match(voidSource, /Esta factura pertenece a un día con cierre confirmado\. Primero administración debe reabrir el cierre\./);
+  assert.match(voidSource, /No se puede anular: esta factura tiene cobros posteriores aplicados a su cuenta por cobrar\./);
+  assert.match(voidSource, /alert\(tipBlockedReason\);/);
+  // Orden: cierre -> cobro posterior -> propina pagada, cada uno con su
+  // propio return antes de mutar nada.
+  const closingCheck = voidSource.indexOf("Primero administración debe reabrir el cierre");
+  const collectedCheck = voidSource.indexOf("cobros posteriores aplicados");
+  const tipCheck = voidSource.indexOf("invoiceVoidTipBlockedReason(invoiceId)");
+  assert.ok(closingCheck > -1 && collectedCheck > closingCheck && tipCheck > collectedCheck);
 });
 
 test("voidInvoice(): bloquea si hay un cobro posterior (recibo) ya aplicado a la CxC de esta factura, igual patron que reverseRetailSale", () => {
