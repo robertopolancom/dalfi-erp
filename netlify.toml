@@ -1,6 +1,16 @@
+# Netlify sigue conectado a este repositorio, pero desde agosto 2026 la
+# plataforma activa es Cloudflare Pages (ver DEPLOYMENT.md). "ignore" es la
+# forma soportada por Netlify de saltar builds disparados por git push sin
+# desconectar el repositorio: "exit 0" siempre salta. Un despliegue manual
+# (CLI "netlify deploy" o el boton "Trigger deploy" del dashboard) SIEMPRE
+# ignora este comando y construye igual, asi que Netlify se puede seguir
+# actualizando a mano cuando haga falta. Cloudflare Pages no depende de
+# este archivo en absoluto: su despliegue automatico en cada push sigue
+# exactamente igual.
 [build]
   publish = "outputs"
   functions = "netlify/functions"
+  ignore = "exit 0"
 
 [[redirects]]
   from = "/*"
