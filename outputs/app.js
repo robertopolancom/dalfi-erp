@@ -10474,6 +10474,10 @@ function addInvoiceLine(defaultStaff = "") {
       <label class="station-field hidden">
         Mesa / ubicación de consumo
         <input class="line-station" list="stations-list" placeholder="Buscar mesa o Área general" />
+        <small class="station-missing-hint hidden">
+          Esta línea no tiene mesa asignada (no afecta el monto a cobrar).
+          <button class="secondary-btn compact assign-general-station" type="button">Usar Área general</button>
+        </small>
       </label>
       <label>
         Precio
@@ -10586,6 +10590,12 @@ function updateInvoiceLineOptionalFields(line) {
   // oculta salvo que el negocio active explicitamente el modo de mesas.
   const stationFieldVisible = (inventoryConfig().modoMesaServicio || "disabled") !== "disabled";
   line.querySelector(".station-field")?.classList.toggle("hidden", !stationFieldVisible);
+  // Aviso visible EN LA LINEA (nunca un alert bloqueante silencioso): solo
+  // cuando el campo esta visible (modo de mesas activo) y todavia no tiene
+  // mesa. El monto a cobrar y lo que falta por pagar (updateInvoiceTotals)
+  // se calculan siempre, tenga o no mesa asignada esta linea.
+  const stationValue = line.querySelector(".line-station")?.value.trim() || "";
+  line.querySelector(".station-missing-hint")?.classList.toggle("hidden", !stationFieldVisible || Boolean(stationValue));
 }
 
 function updateInvoiceTotals() {
@@ -11755,7 +11765,7 @@ function wireForms() {
     if (event.target.classList.contains("line-staff")) {
       byId("tip-allocation").dataset.signature = "";
     }
-    if (event.target.classList.contains("line-extra") || event.target.classList.contains("line-discount")) {
+    if (event.target.classList.contains("line-extra") || event.target.classList.contains("line-discount") || event.target.classList.contains("line-station")) {
       updateInvoiceLineOptionalFields(line);
     }
     updateInvoiceTotals();
@@ -11787,6 +11797,14 @@ function wireForms() {
   });
 
   byId("invoice-line-list").addEventListener("click", (event) => {
+    if (event.target.classList.contains("assign-general-station")) {
+      const stationInput = event.target.closest(".invoice-line")?.querySelector(".line-station");
+      if (stationInput) {
+        stationInput.value = "Área general";
+        stationInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return;
+    }
     if (!event.target.classList.contains("remove-invoice-line")) return;
     const lines = document.querySelectorAll(".invoice-line:not(.payment-line)");
     if (lines.length <= 1) return;
@@ -11933,7 +11951,10 @@ function wireForms() {
     if (!editId && stationMode === "required") {
       const missingStation = lines.find((line) => !findStationByName(line.station));
       if (missingStation) {
-        alert("Selecciona la mesa (o Área general) de cada línea de servicio antes de guardar.");
+        updateInvoiceLineOptionalFields(missingStation.element);
+        missingStation.element.scrollIntoView({ behavior: "smooth", block: "center" });
+        missingStation.element.querySelector(".line-station")?.focus();
+        alert(`La colaboradora "${missingStation.staff}" no tiene mesa asignada en el servicio "${missingStation.service}". Esto no afecta el monto a cobrar, pero el modo obligatorio de mesas pide una: usa el botón "Usar Área general" en esa línea (resaltada) o elige una mesa real para continuar.`);
         return;
       }
     }

@@ -832,6 +832,31 @@ test("updateInvoiceLineOptionalFields() muestra el campo de mesa solo si modoMes
   assert.match(source, /querySelector\("\.station-field"\)\?\.classList\.toggle\("hidden", !stationFieldVisible\)/);
 });
 
+test("aviso 'no tiene mesa asignada' con boton de asignar rapido: nace en el HTML de cada linea, junto al campo de mesa", () => {
+  const source = extractFunction("addInvoiceLine");
+  assert.match(source, /class="station-missing-hint hidden"/);
+  assert.match(source, /class="secondary-btn compact assign-general-station"/);
+});
+
+test("el aviso de mesa faltante solo se muestra si el campo esta visible Y la mesa esta vacia; nunca si ya tiene mesa o el modo esta desactivado", () => {
+  const source = extractFunction("updateInvoiceLineOptionalFields");
+  assert.match(source, /station-missing-hint"\)\?\.classList\.toggle\("hidden", !stationFieldVisible \|\| Boolean\(stationValue\)\)/);
+});
+
+test("el boton 'Usar Area general' rellena la mesa de esa linea con un solo click y dispara recalculo (input event), sin bloquear ni pedir mas datos", () => {
+  assert.match(appJs, /assign-general-station[\s\S]{0,300}stationInput\.value = "Área general"/);
+  assert.match(appJs, /stationInput\.dispatchEvent\(new Event\("input", \{ bubbles: true \}\)\)/);
+});
+
+test("cambiar la mesa de una linea (line-station) tambien actualiza el aviso en vivo, no solo adicional/descuento", () => {
+  assert.match(appJs, /line-extra"\) \|\| event\.target\.classList\.contains\("line-discount"\) \|\| event\.target\.classList\.contains\("line-station"\)/);
+});
+
+test("el bloqueo de guardado por mesa obligatoria faltante enfoca y resalta la linea exacta, y explica que NO afecta el monto a cobrar (nunca un alert generico sin contexto)", () => {
+  assert.match(appJs, /missingStation\.element\.querySelector\("\.line-station"\)\?\.focus\(\)/);
+  assert.match(appJs, /Esto no afecta el monto a cobrar/);
+});
+
 test("findStationByName: 'Área general' es una ubicacion explicita (stationId vacio, nunca una mesa inventada); un texto desconocido no se asigna a ninguna mesa existente en silencio", () => {
   const source = extractFunction("findStationByName");
   assert.match(source, /stationId: ""/);

@@ -812,6 +812,17 @@ textarea:focus {
   margin: 0;
 }
 
+.station-missing-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--rose);
+  font-weight: 400;
+  font-size: 12px;
+}
+
 .invoice-summary {
   display: grid;
   gap: 10px;
