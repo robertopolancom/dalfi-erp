@@ -21,6 +21,41 @@ function extractFunction(name) {
   throw new Error(`function ${name} incompleta`);
 }
 
+// ===========================================================================
+// Regresion critica (agosto 2026): Ventas de productos reutiliza la clase
+// "invoice-line" para estilos (retail-sale-line, retail-payment-line,
+// income-payment-line) y esas lineas EXISTEN en el DOM desde que arranca la
+// app (init() las crea una vez, aunque su vista este oculta). Antes de este
+// fix, getInvoiceLines()/currentDefaultInvoiceStaff()/
+// applyGeneralDiscountPercent() y varios listeners usaban
+// document.querySelectorAll(".invoice-line...") SIN acotar a
+// #invoice-line-list: la primera linea ajena sin .line-price/.line-service
+// hacia lanzar un TypeError (".value" de null) que abortaba el calculo en
+// vivo Y el guardado de la factura, en silencio, en TODA factura nueva.
+// ===========================================================================
+
+test("getInvoiceLines()/currentDefaultInvoiceStaff()/applyGeneralDiscountPercent() SIEMPRE escopeados a #invoice-line-list, nunca document.querySelectorAll(\".invoice-line\" a secas (evita la colision con retail-sale-line/retail-payment-line/income-payment-line)", () => {
+  assert.match(extractFunction("getInvoiceLines"), /byId\("invoice-line-list"\)\.querySelectorAll\(".invoice-line:not\(.payment-line\)"\)/);
+  assert.match(extractFunction("currentDefaultInvoiceStaff"), /byId\("invoice-line-list"\)\.querySelector\(".line-staff"\)/);
+  assert.match(extractFunction("applyGeneralDiscountPercent"), /byId\("invoice-line-list"\)\.querySelectorAll\(".invoice-line:not\(.payment-line\)"\)/);
+  assert.doesNotMatch(appJs, /document\.querySelectorAll\("\.invoice-line:not\(\.payment-line\)"\)/);
+  assert.doesNotMatch(appJs, /document\.querySelector\("\.invoice-line:not\(\.payment-line\)"\)/);
+  assert.doesNotMatch(appJs, /if \(!document\.querySelector\("\.invoice-line"\)\) addInvoiceLine/);
+});
+
+test("init() nunca cuenta lineas ajenas al decidir si agregar la primera linea de servicio o de pago", () => {
+  assert.match(appJs, /if \(!byId\("invoice-line-list"\)\.querySelector\("\.invoice-line"\)\) addInvoiceLine\(\);/);
+  assert.match(appJs, /if \(!byId\("payment-line-list"\)\.querySelector\("\.payment-line"\)\) addPaymentLine\(\);/);
+});
+
+test("el Precio de cada linea de servicio se muestra en formato moneda con signo de pesos (money.format), guardando el numero real aparte en data-raw-value", () => {
+  assert.match(extractFunction("addInvoiceLine"), /<input class="line-price" type="text" data-raw-value="0" readonly required \/>/);
+  const source = extractFunction("setLinePrice");
+  assert.match(source, /input\.dataset\.rawValue = String\(price\)/);
+  assert.match(source, /input\.value = money\.format\(price\)/);
+  assert.match(extractFunction("getInvoiceLines"), /line\.querySelector\("\.line-price"\)\.dataset\.rawValue/);
+});
+
 test("Facturacion separa visualmente los servicios del paso Cobro de esta factura", () => {
   assert.match(indexHtml, /id="continue-to-payment"[^>]*>Continuar al cobro</);
   assert.match(indexHtml, /id="invoice-payment-section"/);

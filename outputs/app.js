@@ -1128,7 +1128,17 @@ function requestInvoiceStationSelection(lines) {
     : '<option value="">No hay mesas disponibles</option>';
   select.disabled = !available.length;
   byId("invoice-station-confirm").disabled = !available.length;
-  dialog.showModal();
+  // showModal() es una API nativa relativamente reciente: en un navegador
+  // que no la soporte (o falle por cualquier razon), NUNCA debe dejar el
+  // guardado de la factura colgado en silencio sin decir nada. Si falla,
+  // se usa el open plano como respaldo visual y se explica el error real.
+  try {
+    dialog.showModal();
+  } catch (error) {
+    console.error("dialog.showModal() falló al pedir mesa para la factura.", error);
+    dialog.setAttribute("open", "");
+    alert("No se pudo abrir el selector de mesa en este navegador. Actualiza la app (recarga sin caché) o asigna la mesa desde Mesas / Turno antes de facturar.");
+  }
   return true;
 }
 
@@ -10810,7 +10820,7 @@ function addInvoiceLine(defaultStaff = "") {
       </label>
       <label>
         Precio
-        <input class="line-price" type="number" min="0" step="0.01" readonly required />
+        <input class="line-price" type="text" data-raw-value="0" readonly required />
       </label>
       <label class="invoice-detail-field hidden">
         Adicional
@@ -10841,14 +10851,36 @@ function addInvoiceLine(defaultStaff = "") {
 }
 
 function currentDefaultInvoiceStaff() {
-  const firstLineStaff = document.querySelector(".line-staff")?.value.trim();
+  const firstLineStaff = byId("invoice-line-list").querySelector(".line-staff")?.value.trim();
   return firstLineStaff || "";
 }
 
+// El precio de una linea de servicio es de solo lectura (lo fija el
+// catalogo de servicios, nunca se digita a mano), asi que se muestra en
+// formato moneda con signo de pesos (money.format) en vez de un numero
+// crudo. El valor numerico real vive en data-raw-value: es lo que lee
+// getInvoiceLines()/applyGeneralDiscountPercent(), nunca el texto
+// formateado.
+function setLinePrice(line, value) {
+  const price = Number(value) || 0;
+  const input = line.querySelector(".line-price");
+  if (!input) return;
+  input.dataset.rawValue = String(price);
+  input.value = money.format(price);
+}
+
+// IMPORTANTE: siempre escopeado a #invoice-line-list, nunca
+// document.querySelectorAll a secas. Ventas de productos y otros formularios
+// reutilizan la misma clase "invoice-line" para estilos (retail-sale-line,
+// retail-payment-line, income-payment-line) y existen en el DOM aunque su
+// vista este oculta (se crean una vez al iniciar la app). Sin este alcance,
+// esas lineas ajenas -sin .line-price/.line-service/etc.- se cuelan aqui y
+// getInvoiceLines() lanza una excepcion silenciosa en CADA factura: el
+// monto a cobrar nunca se actualiza y el guardado nunca llega a intentarse.
 function getInvoiceLines() {
-  return [...document.querySelectorAll(".invoice-line:not(.payment-line)")].map((line) => {
+  return [...byId("invoice-line-list").querySelectorAll(".invoice-line:not(.payment-line)")].map((line) => {
     const qty = 1;
-    const price = Number(line.querySelector(".line-price").value) || 0;
+    const price = Number(line.querySelector(".line-price").dataset.rawValue) || 0;
     const extra = Number(line.querySelector(".line-extra").value) || 0;
     const discount = Number(line.querySelector(".line-discount").value) || 0;
     const subtotal = Math.max(0, qty * price + extra - discount);
@@ -10895,8 +10927,8 @@ function invoiceCommissionAllocations(lines, generalDiscountAmount = 0) {
 function applyGeneralDiscountPercent() {
   const percent = Number(byId("invoice-general-discount-percent")?.value) || 0;
   if (percent <= 0) return;
-  document.querySelectorAll(".invoice-line:not(.payment-line)").forEach((line) => {
-    const price = Number(line.querySelector(".line-price")?.value) || 0;
+  byId("invoice-line-list").querySelectorAll(".invoice-line:not(.payment-line)").forEach((line) => {
+    const price = Number(line.querySelector(".line-price")?.dataset.rawValue) || 0;
     const discount = Number((price * (percent / 100)).toFixed(2));
     line.querySelector(".line-discount").value = discount;
     line.querySelector(".line-discount-note").value = `Descuento general ${percent}%`;
@@ -11046,7 +11078,7 @@ function clearInvoiceFormAfterSubmit() {
 function fillInvoiceLine(lineElement, detail) {
   lineElement.querySelector(".line-service").value = detail.servicio || "";
   lineElement.querySelector(".line-staff").value = detail.colaboradorNombre || "";
-  lineElement.querySelector(".line-price").value = Number(detail.precioBase) || Number(detail.subtotal) || 0;
+  setLinePrice(lineElement, Number(detail.precioBase) || Number(detail.subtotal) || 0);
   lineElement.querySelector(".line-extra").value = Number(detail.extraMonto) || 0;
   lineElement.querySelector(".line-extra-note").value = detail.extraConcepto_50 || "";
   lineElement.querySelector(".line-discount").value = Number(detail.deduccionMonto) || 0;
@@ -11268,12 +11300,12 @@ function populateInvoiceFromReservation(reservationId) {
   byId("invoice-note").value = `Factura generada desde reserva ${reservationId}`;
   byId("invoice-line-list").innerHTML = "";
   addInvoiceLine(staffName);
-  const line = document.querySelector(".invoice-line:not(.payment-line)");
+  const line = byId("invoice-line-list").querySelector(".invoice-line:not(.payment-line)");
   if (line) {
     line.querySelector(".line-service").value = serviceName;
     line.querySelector(".line-staff").value = staffName;
     const price = servicePrice(serviceName);
-    if (price !== "") line.querySelector(".line-price").value = price;
+    if (price !== "") setLinePrice(line, price);
     updateInvoiceTotals();
   }
   openBillingView();
@@ -12109,7 +12141,7 @@ function wireForms() {
     if (!line) return;
     if (event.target.classList.contains("line-service")) {
       const price = servicePrice(event.target.value);
-      if (price !== "") line.querySelector(".line-price").value = price;
+      if (price !== "") setLinePrice(line, price);
     }
     if (event.target.classList.contains("line-staff")) {
       byId("tip-allocation").dataset.signature = "";
@@ -12131,7 +12163,7 @@ function wireForms() {
   ["invoice-general-extra", "invoice-general-extra-note", "invoice-general-discount-percent"].forEach((id) => {
     byId(id).addEventListener("input", () => {
       if (id === "invoice-general-discount-percent") {
-        document.querySelectorAll(".invoice-line:not(.payment-line)").forEach((line) => updateInvoiceLineOptionalFields(line));
+        byId("invoice-line-list").querySelectorAll(".invoice-line:not(.payment-line)").forEach((line) => updateInvoiceLineOptionalFields(line));
       }
       updateInvoiceTotals();
     });
@@ -12147,7 +12179,7 @@ function wireForms() {
 
   byId("invoice-line-list").addEventListener("click", (event) => {
     if (!event.target.classList.contains("remove-invoice-line")) return;
-    const lines = document.querySelectorAll(".invoice-line:not(.payment-line)");
+    const lines = byId("invoice-line-list").querySelectorAll(".invoice-line:not(.payment-line)");
     if (lines.length <= 1) return;
     event.target.closest(".invoice-line").remove();
     byId("tip-allocation").dataset.signature = "";
@@ -16433,11 +16465,12 @@ function wireForms() {
     const shouldReturnToInvoice = event.target.dataset.returnToInvoice === "true";
     delete event.target.dataset.returnToInvoice;
     if (shouldReturnToInvoice) {
-      const emptyLine = [...document.querySelectorAll(".invoice-line:not(.payment-line)")].find((line) => !line.querySelector(".line-service").value.trim());
-      const line = emptyLine || document.querySelector(".invoice-line:not(.payment-line)");
+      const invoiceLineListEl = byId("invoice-line-list");
+      const emptyLine = [...invoiceLineListEl.querySelectorAll(".invoice-line:not(.payment-line)")].find((line) => !line.querySelector(".line-service").value.trim());
+      const line = emptyLine || invoiceLineListEl.querySelector(".invoice-line:not(.payment-line)");
       if (line) {
         line.querySelector(".line-service").value = service.servicio || name;
-        line.querySelector(".line-price").value = Number(service.precioBase) || 0;
+        setLinePrice(line, Number(service.precioBase) || 0);
       }
     }
     byId("service-category").value = "Uñas";
@@ -17066,8 +17099,8 @@ async function init() {
   });
   startRemoteRefreshLoop();
   attachSearchableLookups();
-  if (!document.querySelector(".invoice-line")) addInvoiceLine();
-  if (!document.querySelector(".payment-line")) addPaymentLine();
+  if (!byId("invoice-line-list").querySelector(".invoice-line")) addInvoiceLine();
+  if (!byId("payment-line-list").querySelector(".payment-line")) addPaymentLine();
   if (!document.querySelector(".retail-sale-line")) addRetailSaleLine();
   if (!document.querySelector(".retail-payment-line")) addRetailSalePaymentLine();
   updateIncomePaymentFields();
