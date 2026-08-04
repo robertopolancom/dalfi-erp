@@ -888,6 +888,12 @@ th {
   background: #ffe4e6;
 }
 
+.badge.voided {
+  color: #52525b;
+  background: #e4e4e7;
+  text-decoration: line-through;
+}
+
 .appointments,
 .simple-list {
   display: grid;

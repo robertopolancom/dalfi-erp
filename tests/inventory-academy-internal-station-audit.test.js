@@ -493,9 +493,9 @@ test("46. openStationAudit(): existe, bloquea periodo invalido y solapamiento (o
   assert.doesNotMatch(source, /createInventoryMovement\(/);
 });
 
-test("47. facturaDetalleLinesInRange(): excluye facturas anuladas (normalize(invoice.estado) !== 'anulada')", () => {
+test("47. facturaDetalleLinesInRange(): excluye facturas anuladas (invoice.estadoFactura !== 'Anulada', el campo real que usa el resto del sistema; invoice.estado nunca existe en una fila de facturas y siempre habia sido un no-op)", () => {
   const source = extractFunction("facturaDetalleLinesInRange");
-  assert.match(source, /normalize\(invoice\.estado\) !== "anulada"/);
+  assert.match(source, /invoice\.estadoFactura !== "Anulada"/);
 });
 
 test("48. servicio sin mesa asignada: aggregateExpectedServiceConsumptionByStation (ya probada aparte) reporta withoutStation, y openStationAudit lo conserva en servicesWithoutStation (nunca lo asigna silenciosamente)", () => {

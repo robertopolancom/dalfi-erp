@@ -820,6 +820,7 @@ function stateFromDatabase(db) {
         payment: normalizePayment(firstPayment.metodoPago || (Number(invoice.totalCxC) > 0 ? "Crédito" : "Efectivo")),
         paid: Number(invoice.totalPagadoConfirmado) || 0,
         note: invoice.observaciones || "",
+        voided: invoice.estadoFactura === "Anulada",
       };
     }),
     payments: (data.pagosFactura || [])
@@ -1632,6 +1633,8 @@ function invoiceOperationalDate(invoiceId) {
 
 function canEditInvoice(invoiceId) {
   if (!canManageBilling()) return false;
+  const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
+  if (invoice?.estadoFactura === "Anulada") return false;
   return isClosingOpenForEdits(closingForDate(invoiceOperationalDate(invoiceId)));
 }
 
@@ -2599,7 +2602,7 @@ function closingCollaboratorSummary(date) {
   const detailRows = dbTable("facturaDetalle")
     .filter((detail) => {
       const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
-      return invoice && dateOnly(invoice.fechaHora) === date && normalize(invoice.estado) !== "anulada";
+      return invoice && dateOnly(invoice.fechaHora) === date && invoice.estadoFactura !== "Anulada";
     })
     .map((detail) => ({
       collaboratorId: detail.colaboradorID,
@@ -3020,7 +3023,7 @@ function revealFormAtTop(form, { focusSelector = "input:not([type=hidden]):not([
 }
 
 function renderDashboard() {
-  const todayInvoices = state.invoices.filter((invoice) => invoice.date === today);
+  const todayInvoices = state.invoices.filter((invoice) => invoice.date === today && !invoice.voided);
   const todayPayments = clientReceivablePaymentsOn(today);
   const todayIncome = confirmedIncomeOn(today);
   const todayReservations = state.reservations.filter((reservation) => reservation.date === today).sort((a, b) => a.time.localeCompare(b.time));
@@ -3073,6 +3076,7 @@ function renderDashboard() {
 }
 
 function statusBadge(invoice) {
+  if (invoice.voided) return '<span class="badge voided">Anulada</span>';
   if (outstanding(invoice) <= 0) return '<span class="badge paid">Pagada</span>';
   if (invoice.paid > 0) return '<span class="badge credit">Abonada</span>';
   return '<span class="badge pending">Pendiente</span>';
@@ -3157,10 +3161,11 @@ function renderInvoices() {
     .filter((invoice) => matches(invoice, query, ["id", "client", "service", "payment"]))
     .sort((a, b) => `${b.date || ""} ${b.id || ""}`.localeCompare(`${a.date || ""} ${a.id || ""}`));
   const target = byId("invoice-table");
-  if (!rows.length) return renderEmpty(target, 7, "No hay facturas con ese criterio.");
+  if (!rows.length) return renderEmpty(target, 8, "No hay facturas con ese criterio.");
   target.innerHTML = rows
     .map((invoice) => {
       const editable = canEditInvoice(invoice.id);
+      const voidable = !invoice.voided && canVoidInvoice(invoice.id);
       return `
         <tr data-invoice-id="${escapeHtml(invoice.id)}">
           <td>${invoice.id}</td>
@@ -3169,11 +3174,13 @@ function renderInvoices() {
           <td>${invoice.service}</td>
           <td>${money.format(invoice.total)}</td>
           <td>${invoice.payment}</td>
+          <td>${statusBadge(invoice)}</td>
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice" type="button">Ver</button>
               <button class="secondary-btn compact export-invoice" type="button">Exportar</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice" type="button">Editar</button>' : ""}
+              ${voidable ? '<button class="secondary-btn compact danger void-invoice" type="button">Anular</button>' : ""}
             </div>
           </td>
         </tr>
@@ -3186,7 +3193,7 @@ function renderInvoiceAdmin() {
   const target = byId("invoice-admin-table");
   if (!target) return;
   if (!canManageBilling()) {
-    return renderEmpty(target, 6, "Solo administración o propietario puede usar este módulo.");
+    return renderEmpty(target, 7, "Solo administración o propietario puede usar este módulo.");
   }
   const query = normalize(byId("invoice-admin-search")?.value || "");
   const rows = dbTable("facturas")
@@ -3195,12 +3202,14 @@ function renderInvoiceAdmin() {
       return [invoice.facturaID, invoice.clienteNombre, invoice.estadoFactura, dateOnly(invoice.fechaHora)].some((field) => normalize(field).includes(query));
     })
     .sort((a, b) => String(b.fechaHora || "").localeCompare(String(a.fechaHora || "")));
-  if (!rows.length) return renderEmpty(target, 6, "No hay facturas registradas.");
+  if (!rows.length) return renderEmpty(target, 7, "No hay facturas registradas.");
   target.innerHTML = rows
     .map((invoice) => {
       const invoiceDate = dateOnly(invoice.fechaHora);
       const closing = closingForDate(invoiceDate);
-      const editable = canEditRecordDate(invoiceDate);
+      const voided = invoice.estadoFactura === "Anulada";
+      const editable = !voided && canEditRecordDate(invoiceDate);
+      const voidable = !voided && canVoidInvoice(invoice.facturaID);
       const closingStatus = closing ? closing.estado || "Cerrado" : "Sin cierre";
       return `
         <tr data-invoice-id="${escapeHtml(invoice.facturaID)}">
@@ -3209,11 +3218,13 @@ function renderInvoiceAdmin() {
           <td>${invoice.clienteNombre || "-"}</td>
           <td class="amount">${money.format(Number(invoice.totalFacturado) || 0)}</td>
           <td>${escapeHtml(closingStatus)}</td>
+          <td>${voided ? '<span class="badge voided">Anulada</span>' : escapeHtml(invoice.estadoFactura || "-")}</td>
           <td>
             <div class="row-actions">
               <button class="secondary-btn compact view-invoice-admin" type="button">Ver</button>
               <button class="secondary-btn compact export-invoice-admin" type="button">Exportar</button>
               ${editable ? '<button class="secondary-btn compact edit-invoice-admin" type="button">Editar factura</button>' : ""}
+              ${voidable ? '<button class="secondary-btn compact danger void-invoice-admin" type="button">Anular</button>' : ""}
             </div>
           </td>
         </tr>
@@ -3369,6 +3380,11 @@ function invoiceReportHtml(invoiceId) {
       <p>Powered By Seben ERP</p>
       <hr />
       <h2>Factura ${escapeHtml(invoiceId)}</h2>
+      ${
+        dbInvoice?.estadoFactura === "Anulada"
+          ? `<div class="payment-warning"><strong>FACTURA ANULADA</strong>${dbInvoice.anuladaEn ? ` · ${escapeHtml(dateOnly(dbInvoice.anuladaEn))}` : ""}${dbInvoice.motivoAnulacion ? ` · Motivo: ${escapeHtml(dbInvoice.motivoAnulacion)}` : ""}</div>`
+          : ""
+      }
       <p><strong>Fecha:</strong> ${escapeHtml(date || "")}</p>
       <p><strong>Cliente:</strong> ${escapeHtml(client)}</p>
       <h3>1. Servicios y precios listados</h3>
@@ -6692,7 +6708,7 @@ function renderAcademyConsumptions() {
 function facturaDetalleLinesInRange(start, end) {
   return dbTable("facturaDetalle").filter((detail) => {
     const invoice = dbTable("facturas").find((row) => row.facturaID === detail.facturaID);
-    return invoice && normalize(invoice.estado) !== "anulada" && inRangeDate(invoice.fechaHora, start, end);
+    return invoice && invoice.estadoFactura !== "Anulada" && inRangeDate(invoice.fechaHora, start, end);
   });
 }
 
@@ -8522,6 +8538,143 @@ function reverseRetailSale(retailSaleId) {
       success: true,
     });
   });
+  saveState();
+  renderAll();
+}
+
+// Anular una factura es una accion de administracion senior (mismo nivel
+// que reabrir un cierre confirmado, nunca el permiso general de
+// facturacion): requiere canReopenClosings() y que el cierre del dia de la
+// factura este abierto (si esta confirmado, administracion debe reabrirlo
+// primero, exactamente igual que para editarla). Nunca permite anular una
+// factura ya anulada.
+function canVoidInvoice(invoiceId) {
+  if (!canReopenClosings()) return false;
+  const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
+  if (!invoice || invoice.estadoFactura === "Anulada") return false;
+  return isClosingOpenForEdits(closingForDate(invoiceOperationalDate(invoiceId)));
+}
+
+// Anulacion integral de UNA factura de servicio: inventario (fichas
+// tecnicas), propinas, pagos confirmados y CxC. Nunca borra la factura ni
+// su detalle (marca estadoFactura:"Anulada" y conserva quien/cuando/por
+// que, igual patron que reverseRetailSale). Bloquea si ya hay un cobro
+// posterior aplicado a su CxC (recibo de cliente: debe anularse primero
+// desde Cuentas por cobrar) o si alguna propina de la factura ya se pago
+// en nomina (invoiceVoidTipBlockedReason). Nunca reescribe el ingreso
+// original ya registrado ese dia: lo compensa con un egreso nuevo, para
+// conservar el rastro de auditoria de que el dinero entro y luego salio.
+function voidInvoice(invoiceId) {
+  if (!canReopenClosings()) {
+    alert("Solo administración o propietario con permiso de reabrir cierres puede anular facturas.");
+    return;
+  }
+  const invoice = dbTable("facturas").find((row) => row.facturaID === invoiceId);
+  if (!invoice) return;
+  if (invoice.estadoFactura === "Anulada") {
+    alert("Esta factura ya está anulada.");
+    return;
+  }
+  if (!isClosingOpenForEdits(closingForDate(invoiceOperationalDate(invoiceId)))) {
+    alert("Esta factura pertenece a un día con cierre confirmado. Primero administración debe reabrir el cierre.");
+    return;
+  }
+  const relatedReceivables = dbTable("cuentasCobrar").filter((row) => row.facturaID === invoiceId && row.estado !== "Anulada");
+  const alreadyCollectedElsewhere = relatedReceivables.some((row) => Number(row.montoAplicado) > 0);
+  if (alreadyCollectedElsewhere) {
+    alert("No se puede anular: esta factura tiene cobros posteriores aplicados a su cuenta por cobrar. Primero anula esos recibos desde Cuentas por cobrar → Anular recibo.");
+    return;
+  }
+  const tipBlockedReason = invoiceVoidTipBlockedReason(invoiceId);
+  if (tipBlockedReason) {
+    alert(tipBlockedReason);
+    return;
+  }
+  const reason = prompt(`Motivo de la anulación de la factura ${invoiceId}:`);
+  if (!reason) {
+    alert("La anulación requiere un motivo.");
+    return;
+  }
+  const reversal = DalfiClosingMath.reverseInvoiceInventoryEffects({
+    invoiceId,
+    inventoryMovements: dbTable("inventarioMovimientos"),
+    reason,
+    actor: currentUserEmail(),
+  });
+  if (!reversal.allowed) {
+    alert(reversal.blockingErrors.join(" "));
+    return;
+  }
+  reversal.reversalMovements.forEach((planned) => {
+    createInventoryMovement({
+      itemId: planned.itemId,
+      tipo: "reversion",
+      cantidadBase: planned.cantidadBase,
+      costoUnitario: planned.costoUnitario,
+      locationId: planned.locationId,
+      lotId: planned.lotId,
+      origen: planned.origen,
+      sourceId: planned.sourceId,
+      sourceKey: planned.sourceKey,
+      motivo: planned.motivo,
+      usuario: planned.usuario,
+    });
+  });
+  reverseAllInvoiceTipCollections(invoice);
+  const relatedPayments = dbTable("pagosFactura").filter((row) => row.facturaID === invoiceId && row.estadoPago === "Confirmado");
+  let totalReversedCash = 0;
+  relatedPayments.forEach((payment) => {
+    const amount = Number(payment.montoNetoConfirmado) || 0;
+    if (amount > 0) {
+      dbTable("egresos").push(stampRecord({
+        egresoID: nextDbId("egresos", "egresoID", "EGR"),
+        fechaHora: `${today}T12:00:00`,
+        tipoEgreso: "reversion_factura",
+        cuentaOrigenID: payment.cuentaDestinoID || "",
+        cuentaOrigen: payment.cuentaDestino || "",
+        cuentaDestinoID: "",
+        cuentaDestino: "",
+        concepto: `Reversión de factura ${invoiceId} anulada`,
+        monto: amount,
+        estado: "Registrado",
+        observaciones: reason,
+      }));
+      totalReversedCash += amount;
+    }
+    payment.estadoPago = "Revertido";
+    stampRecord(payment, "updated");
+  });
+  relatedReceivables.forEach((cxc) => {
+    cxc.estado = "Anulada";
+    cxc.balancePendiente = 0;
+    cxc.observaciones = `${cxc.observaciones || ""} Anulada junto a la factura ${invoiceId}.`.trim();
+    stampRecord(cxc, "updated");
+  });
+  const previousEstadoFactura = invoice.estadoFactura;
+  invoice.estadoFactura = "Anulada";
+  invoice.totalCxC = 0;
+  invoice.anuladaEn = new Date().toISOString();
+  invoice.anuladaPor = currentUserEmail();
+  invoice.motivoAnulacion = reason;
+  stampRecord(invoice, "updated");
+  logAudit("invoice_voided", {
+    entity: "facturas",
+    entityId: invoiceId,
+    oldData: { estadoFactura: previousEstadoFactura },
+    newData: { estadoFactura: "Anulada", motivo: reason, efectivoRevertido: totalReversedCash },
+    note: `Factura ${invoiceId} anulada: ${reason}`,
+    success: true,
+  });
+  reversal.reversalMovements.forEach((planned) => {
+    logAudit("service_inventory_reversed", {
+      entity: "inventarioMovimientos",
+      entityId: planned.sourceKey,
+      newData: { itemId: planned.itemId, cantidad: planned.cantidadBase },
+      note: `Inventario restaurado para ${planned.itemId} por anulación de ${invoiceId}.`,
+      success: true,
+    });
+  });
+  state = stateFromDatabase(database);
   saveState();
   renderAll();
 }
@@ -11862,6 +12015,44 @@ function reverseInvoiceTipCollection(dbInvoice, cxc) {
   return totalReversed;
 }
 
+// Version "factura completa" de invoiceTipReversalBlockedReason(): al
+// ANULAR una factura hay que revisar TODOS los origenes de cobro que
+// financiaron su propina (el cobro original al crearla, source=facturaID,
+// y cualquier recibo posterior, source=cxCID/pagoID), no solo uno. Misma
+// regla de fondo: si la colaboradora ya cobro esa propina en nomina, la
+// anulacion se bloquea hasta que se ajuste la nomina a mano.
+function invoiceVoidTipBlockedReason(invoiceId) {
+  const alreadyPaid = dbTable("propinas").find(
+    (row) => row.facturaID === invoiceId && Number(row.montoBruto) > 0 && normalize(row.estadoPagoNomina || "Pendiente") !== "pendiente",
+  );
+  if (!alreadyPaid) return "";
+  return `La propina de ${alreadyPaid.colaboradorNombre || "una colaboradora"} de esta factura ya fue pagada en nómina (estado: ${alreadyPaid.estadoPagoNomina}). No se puede anular automáticamente: ajusta la nómina manualmente primero.`;
+}
+
+// Anula TODA la propina de una factura, sin importar el origen del cobro
+// (a diferencia de reverseInvoiceTipCollection, que solo deshace lo
+// financiado por UN cobro/CxC especifico). Solo se llama despues de
+// confirmar con invoiceVoidTipBlockedReason() que nada ya se pago en
+// nomina. Deja cada fila de propinas en 0 con pagosAplicados vacio, nunca
+// borra la fila (conserva el historial de que existio).
+function reverseAllInvoiceTipCollections(dbInvoice) {
+  let totalReversed = 0;
+  dbTable("propinas")
+    .filter((row) => row.facturaID === dbInvoice.facturaID)
+    .forEach((row) => {
+      totalReversed += Number(row.montoBruto) || 0;
+      row.montoBruto = 0;
+      row.retencion20Tarjeta = 0;
+      row.montoNetoPagar = 0;
+      row.pagosAplicados = [];
+      row.estadoPagoNomina = "Anulada";
+      stampRecord(row, "updated");
+    });
+  dbInvoice.propinaCobrada = 0;
+  dbInvoice.propinaPendiente = 0;
+  return totalReversed;
+}
+
 // paymentId (el pagoID que YA se genero para este cobro especifico, ver
 // applyReceivablePaymentLines/applyClientReceivablesFirst) identifica de
 // forma UNICA cada aplicacion: cxc.cxCID por si solo NO alcanza como
@@ -12690,6 +12881,7 @@ function wireForms() {
     if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".export-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
+    if (event.target.closest(".void-invoice")) voidInvoice(invoiceId);
   });
   byId("open-client-receipt")?.addEventListener("click", openClientReceiptFromBilling);
 
@@ -12700,6 +12892,7 @@ function wireForms() {
     if (event.target.closest(".view-invoice-admin")) openInvoiceReport(invoiceId);
     if (event.target.closest(".export-invoice-admin")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice-admin")) openAdminInvoiceEditor(invoiceId);
+    if (event.target.closest(".void-invoice-admin")) voidInvoice(invoiceId);
   });
   byId("admin-new-invoice").addEventListener("click", () => openAdminInvoiceEditor());
   byId("move-july-9-invoices").addEventListener("click", moveBuggedJuly9InvoicesToJuly8);
