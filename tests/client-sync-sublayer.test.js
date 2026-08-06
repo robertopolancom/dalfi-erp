@@ -29,7 +29,7 @@ test("resolveOrCreateClientProfile vincula a cliente existente cuando el teléfo
   assert.equal(res.isNew, false);
   assert.equal(res.clientId, "CLI-101");
   assert.equal(res.clientName, "María Gomez");
-  assert.ok(res.note.includes("coincide con cliente existente"));
+  assert.ok(res.note.includes("Cliente coincidente detectado"));
 });
 
 test("resolveOrCreateClientProfile vincula la conversación de un amigo a la cuenta del cliente real sin duplicar ni crear cuenta errónea", () => {
