@@ -1062,6 +1062,100 @@ export function resolveOrCreateClientProfile({
   };
 }
 
+// Genera el texto formateado para WhatsApp de una factura, cobro o adición de servicio.
+export function generateWhatsAppReceiptText({
+  eventType = "invoice.created",
+  invoiceId = "",
+  clientName = "Cliente",
+  clientPhone = "",
+  date = "",
+  lines = [],
+  subtotal = 0,
+  tip = 0,
+  total = 0,
+  paymentMethods = [],
+  serviceName = "",
+  staffName = "",
+}) {
+  const formattedDate = date || new Date().toISOString().slice(0, 10);
+  const businessName = "DALFI STUDIO NAILS & ACADEMY";
+
+  if (eventType === "service.added") {
+    return `🌸 *${businessName}* 🌸
+💅 *NUEVO SERVICIO AGREGADO A TU CITA*
+----------------------------------------
+👤 *Cliente:* ${clientName}
+📅 *Fecha:* ${formattedDate}
+✨ *Servicio:* ${serviceName || "Servicio"}
+👩‍🎨 *Especialista:* ${staffName || "Manicurista"}
+----------------------------------------
+¡Nos vemos pronto en el salón! ✨`;
+  }
+
+  if (eventType === "payment.recorded") {
+    return `🌸 *${businessName}* 🌸
+🧾 *RECIBO DE PAGO / COBRO*
+----------------------------------------
+👤 *Cliente:* ${clientName}
+📅 *Fecha:* ${formattedDate}
+📋 *Factura / Referencia:* ${invoiceId}
+💰 *Monto Pagado:* RD$ ${Number(total || subtotal).toLocaleString("es-DO", { minimumFractionDigits: 2 })}
+💳 *Forma de Pago:* ${Array.isArray(paymentMethods) && paymentMethods.length ? paymentMethods.join(", ") : "Efectivo / Transferencia"}
+----------------------------------------
+¡Gracias por tu pago! ✨`;
+  }
+
+  // Por defecto: invoice.created
+  let linesText = "";
+  if (Array.isArray(lines) && lines.length > 0) {
+    linesText = lines
+      .map((l) => `• ${l.name || l.concepto || "Servicio"}: RD$ ${Number(l.total || l.precio || 0).toLocaleString("es-DO", { minimumFractionDigits: 2 })}`)
+      .join("\n");
+  } else if (serviceName) {
+    linesText = `• ${serviceName}: RD$ ${Number(subtotal || total).toLocaleString("es-DO", { minimumFractionDigits: 2 })}`;
+  } else {
+    linesText = `• Servicio de Manicura / Pedicura: RD$ ${Number(subtotal || total).toLocaleString("es-DO", { minimumFractionDigits: 2 })}`;
+  }
+
+  const paymentsText = Array.isArray(paymentMethods) && paymentMethods.length ? paymentMethods.join(", ") : "Contado";
+
+  return `🌸 *${businessName}* 🌸
+🧾 *COMPROBANTE DE FACTURA N° ${invoiceId || "FACTURA"}*
+----------------------------------------
+👤 *Cliente:* ${clientName}
+📱 *Teléfono:* ${clientPhone || "N/A"}
+📅 *Fecha:* ${formattedDate}
+
+💅 *Detalle de Servicios / Productos:*
+${linesText}
+
+----------------------------------------
+💰 *Subtotal:* RD$ ${Number(subtotal || total).toLocaleString("es-DO", { minimumFractionDigits: 2 })}
+${tip > 0 ? `✨ *Propina:* RD$ ${Number(tip).toLocaleString("es-DO", { minimumFractionDigits: 2 })}\n` : ""}💳 *Total Factura:* RD$ ${Number(total).toLocaleString("es-DO", { minimumFractionDigits: 2 })}
+✅ *Pagado:* RD$ ${Number(total).toLocaleString("es-DO", { minimumFractionDigits: 2 })} (${paymentsText})
+----------------------------------------
+¡Gracias por visitarnos en Dalfi Studio! ✨`;
+}
+
+export function buildChatbotNotificationPayload({
+  eventType = "invoice.created",
+  clientPhone = "",
+  clientName = "Cliente",
+  invoiceId = "",
+  receiptText = "",
+  extraData = {},
+}) {
+  return {
+    event: eventType,
+    timestamp: new Date().toISOString(),
+    recipientPhone: clientPhone,
+    clientName,
+    receiptNumber: invoiceId,
+    whatsappFormattedText: receiptText,
+    data: extraData,
+  };
+}
+
 if (typeof globalThis !== "undefined") {
   globalThis.DalfiBookingEngine = {
     TIMEZONE,
@@ -1087,5 +1181,7 @@ if (typeof globalThis !== "undefined") {
     determineInitialBookingStatus,
     normalizePhoneDigits,
     resolveOrCreateClientProfile,
+    generateWhatsAppReceiptText,
+    buildChatbotNotificationPayload,
   };
 }
