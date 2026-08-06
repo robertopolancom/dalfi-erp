@@ -61,7 +61,8 @@ export async function onRequestPost({ request, env }) {
   const dateStr = requestedStartAt ? requestedStartAt.slice(0, 10) : payloadDate;
   const timeStr = requestedStartAt ? requestedStartAt.slice(11, 16) : payloadTime;
 
-  if (!dateStr || !timeStr || !Array.isArray(serviceLines) || serviceLines.length === 0) {
+  const targetResId = payload.reservationId || payload.reservaID;
+  if (!targetResId && (!dateStr || !timeStr || !Array.isArray(serviceLines) || serviceLines.length === 0)) {
     return json({ success: false, error: "Datos de cita incompletos (fecha, hora y servicio requeridos)." }, 400);
   }
 
