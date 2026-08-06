@@ -10,6 +10,8 @@ import {
   determineInitialBookingStatus,
 } from "../../../outputs/lib/booking-engine.js";
 
+import { validateChatbotSecret } from "./_auth.js";
+
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -23,6 +25,10 @@ function serviceHeaders(env) {
 export async function onRequestPost({ request, env }) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
     return json({ error: "Persistencia no configurada." }, 500);
+  }
+
+  if (!validateChatbotSecret(request, env)) {
+    return json({ success: false, error: "No autorizado. Se requiere x-chatbot-secret o Bearer token dedicado del Chatbot Bridge." }, 401);
   }
 
   const safeFetch = env.fetch || fetch;
