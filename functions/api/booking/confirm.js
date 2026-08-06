@@ -210,7 +210,9 @@ export async function onRequestPost({ request, env }) {
       idempotencyKey,
       selectedByClient: collaboratorPreference.mode === "specific",
       assignmentStrategy,
-      estado: "Confirmada",
+      estado: String(source).toLowerCase().includes("chatbot") || String(source).toLowerCase().includes("whatsapp") || String(source).toLowerCase().includes("instagram")
+        ? "Preaprobada"
+        : "Confirmada",
       observaciones: notes || "",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),

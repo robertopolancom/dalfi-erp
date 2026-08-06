@@ -691,3 +691,250 @@ export function buildAvailabilityResponseForChatbot({
     },
   };
 }
+
+// Genera la matriz diaria consolidada de reservas y disponibilidad para todas las manicuristas.
+export function buildConsolidatedDailyMatrix({
+  date,
+  staffList = [],
+  appointments = [],
+  services = [],
+  businessSchedule = {},
+  weeklySchedules = [],
+  exceptions = [],
+  slotIntervalMinutes = 30,
+}) {
+  const bSched = normalizeBusinessSchedule(businessSchedule);
+  const openingMin = parseTimeToMinutes(bSched.defaultOpeningTime) ?? 540;
+  const closingMin = parseTimeToMinutes(bSched.defaultClosingTime) ?? 1080;
+  const step = slotIntervalMinutes || 30;
+
+  const activeStaff = staffList.filter((s) => String(s.estado || "Activo").toLowerCase() === "activo");
+
+  const staffColumns = activeStaff.map((s) => ({
+    id: String(s.colaboradorID || s.id || s.nombreCompleto),
+    name: s.nombreCompleto || s.nombre || String(s.colaboradorID || s.id),
+  }));
+
+  // Generar ranuras de hora
+  const timeSlots = [];
+  for (let min = openingMin; min < closingMin; min += step) {
+    timeSlots.push({
+      time: formatMinutesToTime(min),
+      timeMin: min,
+    });
+  }
+
+  // Pre-resolver horarios efectivos y citas activas por manicurista
+  const staffContextMap = new Map();
+  for (const staff of staffColumns) {
+    const effSched = resolveEffectiveStaffSchedule({
+      collaboratorId: staff.id,
+      date,
+      weeklySchedules,
+      exceptions,
+      businessSchedule: bSched,
+    });
+
+    const staffApts = appointments.filter((apt) => {
+      const status = String(apt.estado || apt.status || "").toLowerCase();
+      const isCancelled = status.includes("cancelad") || status.includes("reprogramad") || status.includes("no_asistio");
+      if (isCancelled) return false;
+      const aptDate = apt.fecha || (apt.startAt ? apt.startAt.slice(0, 10) : null);
+      if (aptDate !== date) return false;
+
+      const aptStaff = String(apt.colaboradorID || apt.collaboratorId || apt.colaboradorNombre || "");
+      return aptStaff.includes(staff.id) || staff.id.includes(aptStaff);
+    });
+
+    staffContextMap.set(staff.id, {
+      effSched,
+      appointments: staffApts,
+    });
+  }
+
+  const matrix = timeSlots.map((slot) => {
+    const slotMin = slot.timeMin;
+    const staffSlots = {};
+    let availableCount = 0;
+    let bookedCount = 0;
+    let lunchCount = 0;
+    let exceptionCount = 0;
+
+    for (const staff of staffColumns) {
+      const ctx = staffContextMap.get(staff.id);
+      const eff = ctx.effSched;
+
+      if (!eff.isBusinessOpen || !eff.isStaffWorking) {
+        staffSlots[staff.id] = {
+          status: "closed",
+          label: "Cerrado / No laborable",
+          busyUntil: null,
+          appointment: null,
+        };
+        continue;
+      }
+
+      const entryM = parseTimeToMinutes(eff.entryTime) ?? openingMin;
+      const exitM = parseTimeToMinutes(eff.exitTime) ?? closingMin;
+      const lunchStartM = parseTimeToMinutes(eff.lunchStartTime) ?? 720;
+      const lunchEndM = parseTimeToMinutes(eff.lunchEndTime) ?? 840;
+
+      // 1. Fuera de jornada individual
+      if (slotMin < entryM || slotMin >= exitM) {
+        staffSlots[staff.id] = {
+          status: "outside",
+          label: "Fuera de jornada",
+          busyUntil: null,
+          appointment: null,
+        };
+        continue;
+      }
+
+      // 2. Almuerzo
+      if (lunchEndM > lunchStartM && slotMin >= lunchStartM && slotMin < lunchEndM) {
+        lunchCount++;
+        staffSlots[staff.id] = {
+          status: "lunch",
+          label: `Almuerzo (${eff.lunchStartTime} - ${eff.lunchEndTime})`,
+          busyUntil: eff.lunchEndTime,
+          appointment: null,
+        };
+        continue;
+      }
+
+      // 3. Excepciones
+      const exc = eff.exceptions.find((e) => {
+        if (e.allDay) return true;
+        const sM = parseTimeToMinutes(e.startTime);
+        const eM = parseTimeToMinutes(e.endTime);
+        return sM !== null && eM !== null && slotMin >= sM && slotMin < eM;
+      });
+
+      if (exc) {
+        exceptionCount++;
+        staffSlots[staff.id] = {
+          status: "exception",
+          label: `Bloqueo: ${exc.reason || exc.type || "Excepción"}`,
+          busyUntil: exc.endTime || null,
+          appointment: null,
+        };
+        continue;
+      }
+
+      // 4. Citas activas
+      const matchingApt = ctx.appointments.find((apt) => {
+        const startM = parseTimeToMinutes(apt.hora || (apt.startAt ? apt.startAt.slice(11, 16) : null));
+        if (startM === null) return false;
+        const durM = Number(apt.duracionMin || apt.durationMinutes) || 30;
+        const endM = startM + durM;
+        return slotMin >= startM && slotMin < endM;
+      });
+
+      if (matchingApt) {
+        bookedCount++;
+        const startM = parseTimeToMinutes(matchingApt.hora || (matchingApt.startAt ? matchingApt.startAt.slice(11, 16) : null));
+        const durM = Number(matchingApt.duracionMin || matchingApt.durationMinutes) || 30;
+        const endM = startM + durM;
+        const busyUntilStr = matchingApt.horaFin || formatMinutesToTime(endM);
+
+        staffSlots[staff.id] = {
+          status: "booked",
+          label: `Reservada hasta ${busyUntilStr}`,
+          busyUntil: busyUntilStr,
+          clientName: matchingApt.clienteNombre || matchingApt.client || "Cliente",
+          service: matchingApt.servicio || matchingApt.service || "Servicio",
+          appointmentId: matchingApt.reservaID || matchingApt.id,
+          appointmentStatus: matchingApt.estado || "Confirmada",
+          source: matchingApt.canalOrigen || matchingApt.source || "ERP",
+          appointment: matchingApt,
+        };
+      } else {
+        availableCount++;
+        staffSlots[staff.id] = {
+          status: "available",
+          label: "Disponible",
+          busyUntil: null,
+          appointment: null,
+        };
+      }
+    }
+
+    return {
+      time: slot.time,
+      timeMin: slot.timeMin,
+      staffSlots,
+      availableCount,
+      bookedCount,
+      lunchCount,
+      exceptionCount,
+    };
+  });
+
+  return {
+    date,
+    staffColumns,
+    timeSlots,
+    matrix,
+    businessSchedule: bSched,
+  };
+}
+
+// Verifica si una reserva creada vía Chatbot (estado "Preaprobada") requiere recordatorio/confirmación del salón (4 horas laborales transcurridas).
+export function checkPreapprovedConfirmationReminder(appointment, referenceDateStr = null) {
+  if (!appointment) return { requiresConfirmationAlert: false };
+  const status = String(appointment.estado || appointment.status || "");
+  const source = String(appointment.canalOrigen || appointment.source || "").toLowerCase();
+
+  const isPreapproved = status === "Preaprobada" || status === "Pendiente" || status.includes("Preaprobad");
+  const isChatbotSource = source.includes("chatbot") || source.includes("whatsapp") || source.includes("instagram");
+
+  if (!isPreapproved && !isChatbotSource) {
+    return { requiresConfirmationAlert: false };
+  }
+
+  const createdAt = appointment.created_at || appointment.createdAt;
+  if (!createdAt) {
+    return { requiresConfirmationAlert: true, alertReason: "Reserva del chatbot pendiente de confirmación por el salón." };
+  }
+
+  const createdTime = new Date(createdAt).getTime();
+  const refTime = referenceDateStr ? new Date(referenceDateStr).getTime() : Date.now();
+  const elapsedMs = Math.max(0, refTime - createdTime);
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+
+  // 4 horas laborales o de espera
+  const isOverdue = elapsedHours >= 4 || isPreapproved;
+
+  return {
+    requiresConfirmationAlert: isOverdue,
+    elapsedHours: Math.round(elapsedHours * 10) / 10,
+    alertReason: isOverdue
+      ? `Reserva preaprobada del chatbot sin confirmar en salón (${Math.round(elapsedHours)}h desde solicitud). Requiere atención.`
+      : "Reserva preaprobada pendiente de confirmación.",
+  };
+}
+
+if (typeof globalThis !== "undefined") {
+  globalThis.DalfiBookingEngine = {
+    TIMEZONE,
+    DEFAULT_BUSINESS_SCHEDULE,
+    DEFAULT_LUNCH_DURATION_MINUTES,
+    DEFAULT_LUNCH_START,
+    DEFAULT_LUNCH_END,
+    parseTimeToMinutes,
+    formatMinutesToTime,
+    getDayOfWeekFromDateString,
+    normalizeBusinessSchedule,
+    normalizeStaffWeeklySchedule,
+    resolveEffectiveStaffSchedule,
+    calculateAppointmentDuration,
+    intervalsOverlap,
+    appointmentOverlaps,
+    calculateAvailableSlots,
+    scoreEligibleCollaborator,
+    selectBestAvailableCollaborator,
+    buildAvailabilityResponseForChatbot,
+    buildConsolidatedDailyMatrix,
+    checkPreapprovedConfirmationReminder,
+  };
+}

@@ -4019,6 +4019,167 @@ function renderReservations() {
     .filter((reservation) => matches(reservation, query, ["client", "service", "staff", "time", "date"]))
     .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
   renderAppointments(byId("reservation-list"), rows, "No hay citas con ese criterio.");
+  renderConsolidatedMatrix();
+}
+
+function confirmSalonReservation(reservationId) {
+  if (!canManageReservations()) {
+    alert("Tu usuario no está autorizado para confirmar reservas en salón.");
+    return;
+  }
+  const dbRow = dbTable("reservas").find((row) => String(row.reservaID || row.id) === String(reservationId));
+  if (!dbRow) {
+    alert("No se encontró la reserva.");
+    return;
+  }
+  dbRow.estado = "Confirmada";
+  stampRecord(dbRow, "updated");
+  logAudit("appointment_confirmed_salon", {
+    entity: "reservas",
+    entityId: reservationId,
+    newData: { estado: "Confirmada", verificadoEnSalon: true },
+    note: `Reserva ${reservationId} confirmada presencialmente por la administradora en salón.`,
+    success: true,
+  });
+  state = stateFromDatabase(database);
+  saveState();
+  renderAll();
+  alert(`Cita ${reservationId} confirmada exitosamente en el salón.`);
+}
+
+function renderConsolidatedMatrix() {
+  const container = byId("matrix-table-container");
+  const banner = byId("preapproved-reminders-banner");
+  if (!container) return;
+
+  const dateInput = byId("matrix-date-input");
+  if (dateInput && !dateInput.value) dateInput.value = today;
+  const targetDate = dateInput?.value || today;
+
+  const staffList = dbTable("colaboradores");
+  const appointments = dbTable("reservas");
+  const services = dbTable("servicios");
+  const businessSchedule = database.data?.businessSchedule || {};
+  const weeklySchedules = database.data?.staffWeeklySchedules || [];
+  const exceptions = database.data?.staffScheduleExceptions || [];
+
+  // 1. Banner de Recordatorios de Reservas Preaprobadas del Chatbot (4h)
+  const pendingPreapproved = appointments.filter((apt) => {
+    const status = String(apt.estado || "").toLowerCase();
+    const source = String(apt.canalOrigen || "").toLowerCase();
+    return status.includes("preaprobad") || status.includes("pendiente") || source.includes("chatbot") || source.includes("whatsapp") || source.includes("instagram");
+  });
+
+  if (banner) {
+    if (pendingPreapproved.length === 0) {
+      banner.innerHTML = "";
+    } else {
+      banner.innerHTML = `
+        <div class="panel" style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
+          <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas Preaprobadas por Chatbot pendientes de confirmación en salón (${pendingPreapproved.length})</h4>
+          <p style="margin:0 0 10px; font-size: 13px; color: #1e3a8a;">
+            Las reservas del chatbot quedan en estado <strong>Preaprobada</strong>. El salón debe confirmarlas activamente dentro de las 4 horas laborales.
+          </p>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            ${pendingPreapproved.map((apt) => {
+              const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt) : { requiresConfirmationAlert: true, alertReason: "Pendiente de confirmación" };
+              return `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #dbeafe;">
+                  <div>
+                    <strong>${escapeHtml(apt.clienteNombre || "Cliente")}</strong> · ${escapeHtml(apt.servicio || "Servicio")} (${escapeHtml(apt.fecha)} a las ${escapeHtml(apt.hora)})
+                    <span style="font-size:12px; color:#64748b;"> · Canal: ${escapeHtml(apt.canalOrigen || "Chatbot")} · Est: ${escapeHtml(apt.estado || "Preaprobada")}</span>
+                    ${check.requiresConfirmationAlert ? `<br/><span style="color:#b91c1c; font-size:12px; font-weight:600;">⏰ ${escapeHtml(check.alertReason)}</span>` : ""}
+                  </div>
+                  <button class="primary-btn compact confirm-salon-reservation" data-reservation-id="${escapeHtml(apt.reservaID)}" type="button">Confirmar cita en salón</button>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  // 2. Generar Matriz Consolidada Diaria
+  if (typeof DalfiBookingEngine === "undefined") {
+    container.innerHTML = `<p class="panel-note">Cargando motor de reservas...</p>`;
+    return;
+  }
+
+  const matrixData = DalfiBookingEngine.buildConsolidatedDailyMatrix({
+    date: targetDate,
+    staffList,
+    appointments,
+    services,
+    businessSchedule,
+    weeklySchedules,
+    exceptions,
+    slotIntervalMinutes: 30,
+  });
+
+  const summaryContainer = byId("matrix-summary-pills");
+  if (summaryContainer) {
+    const totalAvail = matrixData.matrix.reduce((sum, row) => sum + row.availableCount, 0);
+    const totalBooked = matrixData.matrix.reduce((sum, row) => sum + row.bookedCount, 0);
+    summaryContainer.innerHTML = `
+      <span class="slot-badge available">Libres: ${totalAvail} ranuras</span>
+      <span class="slot-badge booked">Reservadas: ${totalBooked} ranuras</span>
+    `;
+  }
+
+  if (matrixData.staffColumns.length === 0) {
+    container.innerHTML = `<p class="panel-note">No hay manicuristas activas registradas.</p>`;
+    return;
+  }
+
+  let html = `
+    <table class="schedule-table">
+      <thead>
+        <tr>
+          <th style="width: 90px;">Hora</th>
+          ${matrixData.staffColumns.map((col) => `<th>${escapeHtml(col.name)}</th>`).join("")}
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  for (const row of matrixData.matrix) {
+    html += `<tr>`;
+    html += `<td><strong>${row.time}</strong></td>`;
+
+    for (const col of matrixData.staffColumns) {
+      const slot = row.staffSlots[col.id];
+      if (!slot) {
+        html += `<td>-</td>`;
+        continue;
+      }
+
+      if (slot.status === "available") {
+        html += `<td style="background:#f0fdf4;"><span class="slot-badge available">Disponible</span></td>`;
+      } else if (slot.status === "booked") {
+        const isPre = slot.appointmentStatus === "Preaprobada";
+        const badgeClass = isPre ? "slot-badge exception" : "slot-badge booked";
+        html += `
+          <td style="background:${isPre ? "#eff6ff" : "#fef2f2"};">
+            <span class="${badgeClass}">${isPre ? "Preaprobada" : "Reservada hasta " + slot.busyUntil}</span>
+            <div style="font-size:12px; font-weight:600; margin-top:2px;">${escapeHtml(slot.clientName)}</div>
+            <div style="font-size:11px; color:#475569;">${escapeHtml(slot.service)}</div>
+            ${isPre ? `<button class="secondary-btn compact confirm-salon-reservation" data-reservation-id="${escapeHtml(slot.appointmentId)}" style="margin-top:4px; font-size:10px;" type="button">Confirmar</button>` : ""}
+          </td>
+        `;
+      } else if (slot.status === "lunch") {
+        html += `<td style="background:#fffbeb;"><span class="slot-badge lunch">Almuerzo</span></td>`;
+      } else if (slot.status === "exception") {
+        html += `<td style="background:#eef2ff;"><span class="slot-badge exception">${escapeHtml(slot.label)}</span></td>`;
+      } else {
+        html += `<td style="background:#f8fafc; color:#94a3b8; font-size:11px;">${escapeHtml(slot.label)}</td>`;
+      }
+    }
+    html += `</tr>`;
+  }
+
+  html += `</tbody></table>`;
+  container.innerHTML = html;
 }
 
 function payrollPeriodRange(period, cut) {
@@ -15760,6 +15921,45 @@ function wireForms() {
 
   byId("reservation-details-close").addEventListener("click", () => {
     byId("reservation-details-dialog").close();
+  });
+
+  // Pestañas del módulo de Reservas
+  const bookingTabsMap = [
+    { btn: "booking-tab-agenda", panel: "booking-panel-agenda" },
+    { btn: "booking-tab-matrix", panel: "booking-panel-matrix" },
+    { btn: "booking-tab-schedules", panel: "booking-panel-schedules" },
+    { btn: "booking-tab-exceptions", panel: "booking-panel-exceptions" },
+    { btn: "booking-tab-business", panel: "booking-panel-business" },
+  ];
+
+  bookingTabsMap.forEach(({ btn, panel }) => {
+    const btnEl = byId(btn);
+    if (!btnEl) return;
+    btnEl.addEventListener("click", () => {
+      bookingTabsMap.forEach((item) => {
+        byId(item.btn)?.classList.toggle("active", item.btn === btn);
+        byId(item.panel)?.classList.toggle("hidden", item.panel !== panel);
+      });
+      if (panel === "booking-panel-matrix") {
+        renderConsolidatedMatrix();
+      }
+    });
+  });
+
+  byId("matrix-date-input")?.addEventListener("change", () => {
+    renderConsolidatedMatrix();
+  });
+
+  byId("matrix-today-btn")?.addEventListener("click", () => {
+    if (byId("matrix-date-input")) byId("matrix-date-input").value = today;
+    renderConsolidatedMatrix();
+  });
+
+  document.addEventListener("click", (event) => {
+    const confirmBtn = event.target.closest(".confirm-salon-reservation");
+    if (confirmBtn) {
+      confirmSalonReservation(confirmBtn.dataset.reservationId);
+    }
   });
 
   byId("reservation-form").addEventListener("submit", (event) => {

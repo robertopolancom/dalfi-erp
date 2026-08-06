@@ -613,6 +613,7 @@
         <section id="reservations" class="view">
           <div class="booking-tabs">
             <button class="booking-tab-btn active" id="booking-tab-agenda" type="button">Agenda y Reservas</button>
+            <button class="booking-tab-btn" id="booking-tab-matrix" type="button">Matriz Consolidada Diaria</button>
             <button class="booking-tab-btn" id="booking-tab-schedules" type="button">Horarios y Almuerzos</button>
             <button class="booking-tab-btn" id="booking-tab-exceptions" type="button">Ausencias y Bloqueos</button>
             <button class="booking-tab-btn" id="booking-tab-business" type="button">Configuración del Negocio</button>
@@ -692,6 +693,28 @@
               </div>
               <div class="appointments list" id="reservation-list"></div>
             </section>
+          </div>
+
+          <!-- Pestaña Matriz Consolidada Diaria y Recordatorios Chatbot -->
+          <div id="booking-panel-matrix" class="panel hidden">
+            <div class="panel-head">
+              <h3>Matriz Consolidada Diaria por Manicurista</h3>
+            </div>
+            <!-- Banner de Recordatorios de Reservas Preaprobadas del Chatbot -->
+            <div id="preapproved-reminders-banner" style="margin-bottom: 16px;"></div>
+
+            <div class="calendar-controls">
+              <div class="calendar-controls-group">
+                <label style="margin:0;">
+                  Fecha seleccionada:
+                  <input id="matrix-date-input" type="date" />
+                </label>
+                <button class="secondary-btn compact" id="matrix-today-btn" type="button">Hoy</button>
+              </div>
+              <div id="matrix-summary-pills" class="calendar-controls-group"></div>
+            </div>
+
+            <div id="matrix-table-container" style="overflow-x: auto;"></div>
           </div>
 
           <!-- Pestaña 2: Horarios Semanales y Almuerzos por Manicurista -->
@@ -3378,6 +3401,7 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
+    <script src="lib/booking-engine.js?v=20260806-booking-engine"></script>
     <script src="app.js?v=20260804-void-invoice-clear-messages"></script>
   </body>
 </html>
