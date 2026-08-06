@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildConsolidatedDailyMatrix,
   checkPreapprovedConfirmationReminder,
+  determineInitialBookingStatus,
 } from "../outputs/lib/booking-engine.js";
 
 test("buildConsolidatedDailyMatrix consolida disponibilidad y citas por hora para todas las manicuristas", () => {
@@ -101,4 +102,32 @@ test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes 
 
   const reminderFresh = checkPreapprovedConfirmationReminder(freshApt);
   assert.equal(reminderFresh.requiresConfirmationAlert, false);
+});
+
+test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 4h o menos de anticipación y deja preaprobadas las lejanas", () => {
+  const refTime = new Date("2026-08-03T10:00:00Z");
+
+  // 1. Cita del chatbot solicitada para dentro de 2 horas (12:00) -> Queda "Confirmada"
+  const statusUrgent = determineInitialBookingStatus({
+    source: "chatbot_whatsapp",
+    requestedStartAt: "2026-08-03T12:00:00Z",
+    referenceTime: refTime,
+  });
+  assert.equal(statusUrgent, "Confirmada");
+
+  // 2. Cita del chatbot solicitada para dentro de 24 horas (mañana 10:00) -> Queda "Preaprobada"
+  const statusFar = determineInitialBookingStatus({
+    source: "chatbot_whatsapp",
+    requestedStartAt: "2026-08-04T10:00:00Z",
+    referenceTime: refTime,
+  });
+  assert.equal(statusFar, "Preaprobada");
+
+  // 3. Cita del ERP -> Queda "Confirmada" independientemente del tiempo
+  const statusErp = determineInitialBookingStatus({
+    source: "ERP",
+    requestedStartAt: "2026-08-04T10:00:00Z",
+    referenceTime: refTime,
+  });
+  assert.equal(statusErp, "Confirmada");
 });

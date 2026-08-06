@@ -7,6 +7,7 @@ import {
   normalizeBusinessSchedule,
   calculateAppointmentDuration,
   parseTimeToMinutes,
+  determineInitialBookingStatus,
 } from "../../../outputs/lib/booking-engine.js";
 
 const json = (body, status = 200) =>
@@ -210,9 +211,12 @@ export async function onRequestPost({ request, env }) {
       idempotencyKey,
       selectedByClient: collaboratorPreference.mode === "specific",
       assignmentStrategy,
-      estado: String(source).toLowerCase().includes("chatbot") || String(source).toLowerCase().includes("whatsapp") || String(source).toLowerCase().includes("instagram")
-        ? "Preaprobada"
-        : "Confirmada",
+      estado: determineInitialBookingStatus({
+        source,
+        requestedStartAt,
+        date: dateStr,
+        time: timeStr,
+      }),
       observaciones: notes || "",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
