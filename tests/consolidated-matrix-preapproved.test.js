@@ -78,9 +78,8 @@ test("buildConsolidatedDailyMatrix consolida disponibilidad y citas por hora par
   assert.equal(slot1200.staffSlots["COL-2"].status, "lunch");
 });
 
-test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes que requieren confirmación tras 1 hora laboral", () => {
+test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes 4h antes de la cita y genera ciclo horario", () => {
   const oldDate = new Date(Date.now() - 2 * 3600 * 1000).toISOString(); // Hace 2 horas
-  const recentDate = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // Hace 10 minutos
 
   const overdueApt = {
     reservaID: "RES-CHAT-01",
@@ -93,24 +92,24 @@ test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes 
     reservaID: "RES-ERP-01",
     estado: "Confirmada",
     canalOrigen: "ERP",
-    created_at: recentDate,
   };
 
   const reminderOverdue = checkPreapprovedConfirmationReminder(overdueApt);
   assert.equal(reminderOverdue.requiresConfirmationAlert, true);
-  assert.ok(reminderOverdue.alertReason.includes("Reserva preaprobada del chatbot"));
+  assert.equal(reminderOverdue.hourlyCycle, 2);
+  assert.ok(reminderOverdue.alertReason.includes("Recordatorio horario #2"));
 
   const reminderFresh = checkPreapprovedConfirmationReminder(freshApt);
   assert.equal(reminderFresh.requiresConfirmationAlert, false);
 });
 
-test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 1h o menos de anticipación y deja preaprobadas las lejanas", () => {
+test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 4h o menos de anticipación a la cita", () => {
   const refTime = new Date("2026-08-03T10:00:00Z");
 
-  // 1. Cita del chatbot solicitada para dentro de 30 minutos (10:30) -> Queda "Confirmada"
+  // 1. Cita del chatbot solicitada para dentro de 2 horas (12:00) -> Queda "Confirmada" automáticamente
   const statusUrgent = determineInitialBookingStatus({
     source: "chatbot_whatsapp",
-    requestedStartAt: "2026-08-03T10:30:00Z",
+    requestedStartAt: "2026-08-03T12:00:00Z",
     referenceTime: refTime,
   });
   assert.equal(statusUrgent, "Confirmada");
