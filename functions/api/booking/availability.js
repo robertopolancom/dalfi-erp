@@ -147,7 +147,7 @@ export async function onRequestGet({ request, env }) {
       );
     }
   } catch (error) {
-    console.error("booking/availability GET:", error);
-    return json({ error: "Error al calcular disponibilidad." }, 500);
+    console.error("booking/availability GET error:", error);
+    return json({ error: "Error al calcular disponibilidad.", detail: String(error?.message || error) }, 500);
   }
 }

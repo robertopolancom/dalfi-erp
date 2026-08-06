@@ -235,8 +235,11 @@ export function calculateAppointmentDuration({ serviceLines = [], services = [],
   const warnings = [];
 
   for (const line of serviceLines) {
-    const sId = line.serviceId || line.servicioID;
-    const match = services.find((s) => String(s.id || s.servicioID) === String(sId));
+    const targetKey = String(line.serviceId || line.servicioID || line.id || line.name || "").toLowerCase();
+    const match = services.find(
+      (s) =>
+        String(s.servicioID || s.id || s.servicio).toLowerCase() === targetKey
+    );
 
     if (!match) {
       warnings.push(`Servicio ${sId || line.name || "desconocido"} no encontrado en el catálogo.`);

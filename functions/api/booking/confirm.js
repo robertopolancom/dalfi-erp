@@ -82,7 +82,55 @@ export async function onRequestPost({ request, env }) {
     const docData = currentDoc.data || currentDoc;
     const appointments = Array.isArray(docData.reservas) ? docData.reservas : [];
 
-    // 2. Verificar idempotencia: si la idempotencyKey ya existe, devolver la cita guardada
+    // 2. Si se proporciona reservationId / reservaID, actualizar el estado de una cita preaprobada existente
+    const targetResId = payload.reservationId || payload.reservaID;
+    if (targetResId) {
+      const existingApt = appointments.find((a) => String(a.reservaID) === String(targetResId));
+      if (!existingApt) {
+        return json({ success: false, error: `Reserva '${targetResId}' no encontrada.` }, 404);
+      }
+
+      const updatedApt = {
+        ...existingApt,
+        estado: payload.status || "Confirmada",
+        observaciones: payload.notes || existingApt.observaciones || "",
+        updated_at: new Date().toISOString(),
+      };
+
+      const updatedReservas = appointments.map((a) =>
+        String(a.reservaID) === String(targetResId) ? updatedApt : a
+      );
+
+      const updatedDoc = currentDoc.data
+        ? { ...currentDoc, data: { ...currentDoc.data, reservas: updatedReservas } }
+        : { ...currentDoc, reservas: updatedReservas };
+
+      const saveRes = await safeFetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
+        method: "POST",
+        headers: { ...serviceHeaders(env), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          p_table_name: "app",
+          p_record_key: "database",
+          p_expected_updated_at: expectedUpdatedAt,
+          p_data: updatedDoc,
+        }),
+      });
+
+      if (!saveRes.ok) return json({ error: "Fallo al actualizar el estado de la reserva." }, 500);
+
+      return json({
+        success: true,
+        updated: true,
+        appointment: {
+          appointmentId: updatedApt.reservaID,
+          confirmationCode: updatedApt.reservaID,
+          status: updatedApt.estado,
+          startAt: `${updatedApt.fecha}T${updatedApt.hora}:00`,
+        },
+      });
+    }
+
+    // 2b. Verificar idempotencia: si la idempotencyKey ya existe, devolver la cita guardada
     const existingKeyApt = appointments.find((a) => a.idempotencyKey === idempotencyKey);
     if (existingKeyApt) {
       return json({
