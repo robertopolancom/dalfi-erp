@@ -26,6 +26,7 @@ export async function onRequestGet({ request, env }) {
     );
     if (!response.ok) return json({ error: "No se pudo consultar el catálogo de manicuristas." }, 502);
 
+    const rows = await response.json().catch(() => []);
     const currentDoc = rows?.[0]?.data || {};
     const docData = currentDoc.data || currentDoc;
     const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];

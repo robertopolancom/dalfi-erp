@@ -1249,14 +1249,23 @@ ${tip > 0 ? `✨ *Propina:* RD$ ${Number(tip).toLocaleString("es-DO", { minimumF
 
 export function buildChatbotNotificationPayload({
   eventType = "invoice.created",
+  actionRequired = null,
   clientPhone = "",
   clientName = "Cliente",
   invoiceId = "",
   receiptText = "",
   extraData = {},
 }) {
+  const defaultAction =
+    eventType === "booking.preapproved_escalation"
+      ? "escalate_to_human_agent"
+      : eventType === "booking.preapproved_reminder"
+      ? "send_customer_reminder"
+      : "process_notification";
+
   return {
     event: eventType,
+    actionRequired: actionRequired || defaultAction,
     timestamp: new Date().toISOString(),
     recipientPhone: clientPhone,
     clientName,
