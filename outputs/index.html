@@ -611,7 +611,15 @@
         </section>
 
         <section id="reservations" class="view">
-          <div class="work-grid">
+          <div class="booking-tabs">
+            <button class="booking-tab-btn active" id="booking-tab-agenda" type="button">Agenda y Reservas</button>
+            <button class="booking-tab-btn" id="booking-tab-schedules" type="button">Horarios y Almuerzos</button>
+            <button class="booking-tab-btn" id="booking-tab-exceptions" type="button">Ausencias y Bloqueos</button>
+            <button class="booking-tab-btn" id="booking-tab-business" type="button">Configuración del Negocio</button>
+          </div>
+
+          <!-- Pestaña 1: Agenda y Reservas -->
+          <div id="booking-panel-agenda" class="work-grid">
             <form class="panel form-panel" id="reservation-form">
               <div class="panel-head">
                 <h3>Nueva reserva</h3>
@@ -663,6 +671,7 @@
                 <select id="reservation-status">
                   <option value="Programada">Programada</option>
                   <option value="Confirmada">Confirmada</option>
+                  <option value="En proceso">En proceso</option>
                   <option value="Completada">Completada</option>
                   <option value="Cancelada">Cancelada</option>
                   <option value="No asistió">No asistió</option>
@@ -683,6 +692,117 @@
               </div>
               <div class="appointments list" id="reservation-list"></div>
             </section>
+          </div>
+
+          <!-- Pestaña 2: Horarios Semanales y Almuerzos por Manicurista -->
+          <div id="booking-panel-schedules" class="panel hidden">
+            <div class="panel-head">
+              <h3>Horario Semanal e Intervalo de Almuerzo por Manicurista</h3>
+              <p class="panel-note">Asigna hora de entrada, salida y las 2 horas de almuerzo por día. Domingo no laborable por defecto.</p>
+            </div>
+            <div class="form-row" style="margin-bottom: 12px;">
+              <label>
+                Manicurista
+                <select id="staff-schedule-filter-staff">
+                  <option value="">Todas las manicuristas</option>
+                </select>
+              </label>
+            </div>
+            <div id="staff-schedules-container"></div>
+          </div>
+
+          <!-- Pestaña 3: Excepciones, Permisos, Ausencias y Vacaciones -->
+          <div id="booking-panel-exceptions" class="work-grid hidden">
+            <form class="panel form-panel" id="staff-exception-form">
+              <div class="panel-head">
+                <h3>Registrar Excepción o Bloqueo</h3>
+              </div>
+              <label>
+                Manicurista
+                <select id="exception-staff" required>
+                  <option value="">Seleccionar manicurista</option>
+                </select>
+              </label>
+              <div class="form-row">
+                <label>
+                  Fecha
+                  <input id="exception-date" type="date" required />
+                </label>
+                <label>
+                  Tipo
+                  <select id="exception-type" required>
+                    <option value="ausencia">Ausencia</option>
+                    <option value="permiso">Permiso</option>
+                    <option value="vacaciones">Vacaciones</option>
+                    <option value="capacitacion">Capacitación</option>
+                    <option value="bloqueo">Bloqueo administrativo</option>
+                    <option value="entrada_especial">Entrada especial</option>
+                    <option value="salida_especial">Salida especial</option>
+                    <option value="almuerzo_especial">Almuerzo especial</option>
+                  </select>
+                </label>
+              </div>
+              <label style="display:flex; align-items:center; gap:8px; margin: 8px 0;">
+                <input id="exception-all-day" type="checkbox" checked /> Día completo
+              </label>
+              <div class="form-row" id="exception-times-row" style="display:none;">
+                <label>
+                  Hora inicio
+                  <input id="exception-start-time" type="time" />
+                </label>
+                <label>
+                  Hora fin
+                  <input id="exception-end-time" type="time" />
+                </label>
+              </div>
+              <label>
+                Motivo / Observación
+                <input id="exception-reason" placeholder="Ej: Cita médica, Vacaciones autorizadas" required />
+              </label>
+              <button class="primary-btn" type="submit">Guardar excepción</button>
+            </form>
+            <section class="panel">
+              <div class="panel-head">
+                <h3>Excepciones Registradas</h3>
+              </div>
+              <div id="staff-exceptions-list" class="simple-list"></div>
+            </section>
+          </div>
+
+          <!-- Pestaña 4: Configuración General del Establecimiento -->
+          <div id="booking-panel-business" class="panel hidden">
+            <div class="panel-head">
+              <h3>Configuración General del Negocio</h3>
+            </div>
+            <form id="business-schedule-form" class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px;">
+              <label>
+                Apertura general
+                <input id="biz-opening-time" type="time" value="09:00" required />
+              </label>
+              <label>
+                Cierre general
+                <input id="biz-closing-time" type="time" value="18:00" required />
+              </label>
+              <label>
+                Aviso mínimo (minutos)
+                <input id="biz-notice-minutes" type="number" min="0" value="30" required />
+              </label>
+              <label>
+                Máximo días de anticipación
+                <input id="biz-max-days" type="number" min="1" value="60" required />
+              </label>
+              <label>
+                Intervalo de slots (minutos)
+                <input id="biz-slot-interval" type="number" min="5" value="15" required />
+              </label>
+              <label>
+                Buffer predeterminado (minutos)
+                <input id="biz-buffer-after" type="number" min="0" value="0" />
+              </label>
+              <div style="grid-column: 1 / -1;">
+                <button class="primary-btn inline" type="submit">Guardar configuración del negocio</button>
+              </div>
+            </form>
           </div>
         </section>
 

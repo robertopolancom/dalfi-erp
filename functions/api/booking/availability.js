@@ -1,0 +1,151 @@
+// Endpoint público/chatbot para consultar horarios de disponibilidad reales.
+
+import {
+  calculateAvailableSlots,
+  selectBestAvailableCollaborator,
+  buildAvailabilityResponseForChatbot,
+  normalizeBusinessSchedule,
+} from "../../../outputs/lib/booking-engine.js";
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+
+function serviceHeaders(env) {
+  return { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}` };
+}
+
+export async function onRequestGet({ request, env }) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    return json({ error: "Persistencia no configurada." }, 500);
+  }
+
+  try {
+    const url = new URL(request.url);
+    const serviceId = url.searchParams.get("serviceId");
+    const date = url.searchParams.get("date"); // YYYY-MM-DD
+    const collaboratorId = url.searchParams.get("collaboratorId"); // opcional
+
+    if (!serviceId || !date) {
+      return json({ success: false, error: "Parámetros 'serviceId' y 'date' son requeridos." }, 400);
+    }
+
+    const response = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data`,
+      { headers: serviceHeaders(env) }
+    );
+    if (!response.ok) return json({ error: "No se pudo consultar la disponibilidad." }, 502);
+
+    const rows = await response.json().catch(() => []);
+    const data = rows?.[0]?.data || {};
+
+    const services = Array.isArray(data.servicios) ? data.servicios : [];
+    const staffList = Array.isArray(data.colaboradores) ? data.colaboradores : [];
+    const appointments = Array.isArray(data.reservas) ? data.reservas : [];
+    const weeklySchedules = Array.isArray(data.staffWeeklySchedules) ? data.staffWeeklySchedules : [];
+    const exceptions = Array.isArray(data.staffScheduleExceptions) ? data.staffScheduleExceptions : [];
+    const bSched = normalizeBusinessSchedule(data.businessSchedule);
+
+    const targetService = services.find((s) => String(s.servicioID || s.id) === String(serviceId));
+    if (!targetService) {
+      return json(
+        buildAvailabilityResponseForChatbot({
+          success: false,
+          errorCode: "SERVICE_NOT_FOUND",
+          errorMessage: "El servicio solicitado no existe en el catálogo.",
+        }),
+        404
+      );
+    }
+
+    const serviceLines = [{ serviceId, quantity: 1 }];
+
+    if (collaboratorId) {
+      // 1. Manicurista específica elegida por la clienta
+      const staffMember = staffList.find(
+        (s) => String(s.colaboradorID || s.id || s.nombreCompleto) === String(collaboratorId)
+      );
+
+      const avail = calculateAvailableSlots({
+        date,
+        collaboratorId,
+        serviceLines,
+        businessSchedule: bSched,
+        weeklySchedules,
+        exceptions,
+        appointments,
+        services,
+      });
+
+      return json(
+        buildAvailabilityResponseForChatbot({
+          success: avail.available,
+          date,
+          serviceId,
+          serviceName: targetService.servicio || targetService.name,
+          durationMinutes: targetService.duracionMin || targetService.durationMinutes || 30,
+          collaboratorId,
+          collaboratorName: staffMember?.nombreCompleto || staffMember?.nombre || collaboratorId,
+          slots: avail.slots,
+          cancellationPolicy: bSched.cancellationPolicy,
+          errorMessage: avail.reason,
+        })
+      );
+    } else {
+      // 2. Asignación automática sin preferencia
+      const eligibleStaff = staffList.filter((s) => {
+        const estado = String(s.estado || "Activo").toLowerCase();
+        if (estado !== "activo") return false;
+        const eligible = targetService.eligibleCollaboratorIds;
+        if (Array.isArray(eligible) && eligible.length > 0) {
+          const sId = String(s.colaboradorID || s.id || s.nombreCompleto);
+          if (!eligible.includes(sId) && !eligible.includes(s.nombreCompleto)) return false;
+        }
+        return true;
+      });
+
+      const bestSelection = selectBestAvailableCollaborator({
+        eligibleCollaborators: eligibleStaff,
+        date,
+        serviceLines,
+        services,
+        businessSchedule: bSched,
+        weeklySchedules,
+        exceptions,
+        appointments,
+      });
+
+      if (!bestSelection.selected) {
+        return json(
+          buildAvailabilityResponseForChatbot({
+            success: false,
+            date,
+            serviceId,
+            serviceName: targetService.servicio || targetService.name,
+            durationMinutes: targetService.duracionMin || targetService.durationMinutes || 30,
+            errorMessage: bestSelection.reason,
+          })
+        );
+      }
+
+      return json(
+        buildAvailabilityResponseForChatbot({
+          success: true,
+          date,
+          serviceId,
+          serviceName: targetService.servicio || targetService.name,
+          durationMinutes: targetService.duracionMin || targetService.durationMinutes || 30,
+          collaboratorId: bestSelection.selected.colaboradorID || bestSelection.selected.id,
+          collaboratorName: bestSelection.selected.nombreCompleto,
+          slots: bestSelection.availableSlots,
+          cancellationPolicy: bSched.cancellationPolicy,
+        })
+      );
+    }
+  } catch (error) {
+    console.error("booking/availability GET:", error);
+    return json({ error: "Error al calcular disponibilidad." }, 500);
+  }
+}

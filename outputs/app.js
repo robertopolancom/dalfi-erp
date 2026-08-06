@@ -702,6 +702,25 @@ function ensureDatabaseShape() {
   database.data ||= {};
   database.schema ||= [];
   if (!database.data.reservas) database.data.reservas = [];
+  if (!database.data.staffWeeklySchedules) database.data.staffWeeklySchedules = [];
+  if (!database.data.staffScheduleExceptions) database.data.staffScheduleExceptions = [];
+  if (!database.data.businessSchedule) {
+    database.data.businessSchedule = {
+      timezone: "America/Santo_Domingo",
+      weekDays: [1, 2, 3, 4, 5, 6],
+      defaultOpeningTime: "09:00",
+      defaultClosingTime: "18:00",
+      closedDays: [0],
+      holidayClosures: [],
+      minimumBookingNoticeMinutes: 30,
+      maximumAdvanceBookingDays: 60,
+      defaultSlotIntervalMinutes: 15,
+      defaultBufferBeforeMinutes: 0,
+      defaultBufferAfterMinutes: 0,
+      cancellationPolicy: "Cancelación libre hasta 2 horas antes de la cita.",
+      reschedulingPolicy: "Reprogramación libre hasta 2 horas antes de la cita.",
+    };
+  }
   if (!database.data.cuentasPagar) database.data.cuentasPagar = [];
   if (!database.data.suplidores) database.data.suplidores = [];
   if (!database.data.procesadores) database.data.procesadores = [];
@@ -890,6 +909,9 @@ function stateFromDatabase(db) {
       amount: Number(row.monto) || 0,
       note: row.observaciones || "",
     })),
+    businessSchedule: data.businessSchedule || {},
+    staffWeeklySchedules: data.staffWeeklySchedules || [],
+    staffScheduleExceptions: data.staffScheduleExceptions || [],
   };
 }
 

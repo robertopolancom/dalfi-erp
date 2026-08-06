@@ -63,7 +63,8 @@ export async function insertAuditLog(env, entry) {
     note: entry.note || null,
   };
   try {
-    const response = await fetch(`${supabaseUrl}/rest/v1/erp_audit_log`, {
+    const safeFetch = env.fetch || fetch;
+    const response = await safeFetch(`${supabaseUrl}/rest/v1/erp_audit_log`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -19,7 +19,7 @@ const DOMAIN_TABLES = {
     "turnos",
     "asignacionesMesaTurno",
   ]),
-  reservas: new Set(["reservas"]),
+  reservas: new Set(["reservas", "staffWeeklySchedules", "staffScheduleExceptions"]),
   cierres: new Set(["cierres", "cierreIntentos"]),
   nomina: new Set([
     "colaboradores",
@@ -65,7 +65,7 @@ const DOMAIN_TABLES = {
     "suplidores",
     "cuentasPagar",
   ]),
-  configuracion: new Set(["servicios", "usuarios", "menu", "diccionario", "reportes"]),
+  configuracion: new Set(["servicios", "usuarios", "menu", "diccionario", "reportes", "businessSchedule"]),
 };
 
 const TABLE_DOMAIN = new Map(
