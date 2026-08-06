@@ -38,17 +38,19 @@ export async function onRequestGet({ request, env }) {
     );
     if (!response.ok) return json({ error: "No se pudo consultar la disponibilidad." }, 502);
 
-    const rows = await response.json().catch(() => []);
-    const data = rows?.[0]?.data || {};
+    const currentDoc = rows?.[0]?.data || {};
+    const docData = currentDoc.data || currentDoc;
 
-    const services = Array.isArray(data.servicios) ? data.servicios : [];
-    const staffList = Array.isArray(data.colaboradores) ? data.colaboradores : [];
-    const appointments = Array.isArray(data.reservas) ? data.reservas : [];
-    const weeklySchedules = Array.isArray(data.staffWeeklySchedules) ? data.staffWeeklySchedules : [];
-    const exceptions = Array.isArray(data.staffScheduleExceptions) ? data.staffScheduleExceptions : [];
-    const bSched = normalizeBusinessSchedule(data.businessSchedule);
+    const services = Array.isArray(docData.servicios) ? docData.servicios : [];
+    const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];
+    const appointments = Array.isArray(docData.reservas) ? docData.reservas : [];
+    const weeklySchedules = Array.isArray(docData.staffWeeklySchedules) ? docData.staffWeeklySchedules : [];
+    const exceptions = Array.isArray(docData.staffScheduleExceptions) ? docData.staffScheduleExceptions : [];
+    const bSched = normalizeBusinessSchedule(docData.businessSchedule);
 
-    const targetService = services.find((s) => String(s.servicioID || s.id) === String(serviceId));
+    const targetService = services.find(
+      (s) => String(s.servicioID || s.id || s.servicio).toLowerCase() === String(serviceId).toLowerCase()
+    );
     if (!targetService) {
       return json(
         buildAvailabilityResponseForChatbot({

@@ -26,14 +26,14 @@ export async function onRequestGet({ request, env }) {
     );
     if (!response.ok) return json({ error: "No se pudo consultar el catálogo de manicuristas." }, 502);
 
-    const rows = await response.json().catch(() => []);
-    const data = rows?.[0]?.data || {};
-    const staffList = Array.isArray(data.colaboradores) ? data.colaboradores : [];
-    const servicesList = Array.isArray(data.servicios) ? data.servicios : [];
+    const currentDoc = rows?.[0]?.data || {};
+    const docData = currentDoc.data || currentDoc;
+    const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];
+    const servicesList = Array.isArray(docData.servicios) ? docData.servicios : [];
 
     let targetService = null;
     if (serviceId) {
-      targetService = servicesList.find((s) => String(s.servicioID || s.id) === String(serviceId));
+      targetService = servicesList.find((s) => String(s.servicioID || s.id || s.servicio).toLowerCase() === String(serviceId).toLowerCase());
     }
 
     const filtered = staffList
