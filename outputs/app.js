@@ -4078,7 +4078,7 @@ function renderConsolidatedMatrix() {
         <div class="panel" style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
           <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas Preaprobadas por Chatbot pendientes de confirmación en salón (${pendingPreapproved.length})</h4>
           <p style="margin:0 0 10px; font-size: 13px; color: #1e3a8a;">
-            Las reservas del chatbot quedan en estado <strong>Preaprobada</strong>. El salón debe confirmarlas activamente dentro de las 4 horas laborales.
+            Las reservas del chatbot quedan en estado <strong>Preaprobada</strong>. El salón debe confirmarlas activamente dentro de 1 hora laboral.
           </p>
           <div style="display:flex; flex-direction:column; gap:6px;">
             ${pendingPreapproved.map((apt) => {

@@ -879,7 +879,7 @@ export function buildConsolidatedDailyMatrix({
   };
 }
 
-// Verifica si una reserva creada vía Chatbot (estado "Preaprobada") requiere recordatorio/confirmación del salón (4 horas laborales transcurridas).
+// Verifica si una reserva creada vía Chatbot (estado "Preaprobada") requiere recordatorio/confirmación del salón (1 hora laboral transcurrida).
 export function checkPreapprovedConfirmationReminder(appointment, referenceDateStr = null) {
   if (!appointment) return { requiresConfirmationAlert: false };
   const status = String(appointment.estado || appointment.status || "");
@@ -902,8 +902,8 @@ export function checkPreapprovedConfirmationReminder(appointment, referenceDateS
   const elapsedMs = Math.max(0, refTime - createdTime);
   const elapsedHours = elapsedMs / (1000 * 60 * 60);
 
-  // 4 horas laborales o de espera
-  const isOverdue = elapsedHours >= 4 || isPreapproved;
+  // 1 hora laboral o de espera
+  const isOverdue = elapsedHours >= 1 || isPreapproved;
 
   return {
     requiresConfirmationAlert: isOverdue,
@@ -915,7 +915,7 @@ export function checkPreapprovedConfirmationReminder(appointment, referenceDateS
 }
 
 // Determina el estado inicial de una reserva.
-// Si es del chatbot y faltan menos de 4 horas para la cita, se confirma automáticamente.
+// Si es del chatbot y falta 1 hora o menos para la cita, se confirma automáticamente.
 // De lo contrario, queda "Preaprobada". Si es del ERP, queda "Confirmada".
 export function determineInitialBookingStatus({ source, requestedStartAt = null, date = null, time = null, referenceTime = new Date() }) {
   const src = String(source || "").toLowerCase();
@@ -934,8 +934,8 @@ export function determineInitialBookingStatus({ source, requestedStartAt = null,
   const refMs = referenceTime instanceof Date ? referenceTime.getTime() : new Date(referenceTime).getTime();
   const hoursUntilAppointment = (aptStartMs - refMs) / (1000 * 3600);
 
-  // Si la cita es dentro de 4 horas o menos (o ya es inminente), se confirma automáticamente
-  if (hoursUntilAppointment <= 4) {
+  // Si la cita es dentro de 1 hora o menos (o ya es inminente), se confirma automáticamente
+  if (hoursUntilAppointment <= 1) {
     return "Confirmada";
   }
 

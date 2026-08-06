@@ -78,9 +78,9 @@ test("buildConsolidatedDailyMatrix consolida disponibilidad y citas por hora par
   assert.equal(slot1200.staffSlots["COL-2"].status, "lunch");
 });
 
-test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes que requieren confirmación tras 4 horas laborales", () => {
-  const oldDate = new Date(Date.now() - 5 * 3600 * 1000).toISOString(); // Hace 5 horas
-  const recentDate = new Date(Date.now() - 1 * 3600 * 1000).toISOString(); // Hace 1 hora
+test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes que requieren confirmación tras 1 hora laboral", () => {
+  const oldDate = new Date(Date.now() - 2 * 3600 * 1000).toISOString(); // Hace 2 horas
+  const recentDate = new Date(Date.now() - 10 * 60 * 1000).toISOString(); // Hace 10 minutos
 
   const overdueApt = {
     reservaID: "RES-CHAT-01",
@@ -104,13 +104,13 @@ test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes 
   assert.equal(reminderFresh.requiresConfirmationAlert, false);
 });
 
-test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 4h o menos de anticipación y deja preaprobadas las lejanas", () => {
+test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 1h o menos de anticipación y deja preaprobadas las lejanas", () => {
   const refTime = new Date("2026-08-03T10:00:00Z");
 
-  // 1. Cita del chatbot solicitada para dentro de 2 horas (12:00) -> Queda "Confirmada"
+  // 1. Cita del chatbot solicitada para dentro de 30 minutos (10:30) -> Queda "Confirmada"
   const statusUrgent = determineInitialBookingStatus({
     source: "chatbot_whatsapp",
-    requestedStartAt: "2026-08-03T12:00:00Z",
+    requestedStartAt: "2026-08-03T10:30:00Z",
     referenceTime: refTime,
   });
   assert.equal(statusUrgent, "Confirmada");
