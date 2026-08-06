@@ -64,6 +64,6 @@ export async function onRequestGet({ request, env }) {
     });
   } catch (error) {
     console.error("booking/staff GET:", error);
-    return json({ error: "Error interno al consultar manicuristas." }, 500);
+    return json({ error: "Error interno al consultar manicuristas.", detail: String(error?.message || error) }, 500);
   }
 }
