@@ -964,7 +964,49 @@ export function normalizePhoneDigits(phoneStr) {
   return digits;
 }
 
-// Resuelve o crea un perfil de cliente ERP asociando sublíneas o contactos secundarios si habla desde el teléfono de un amigo.
+// Normaliza textos para comparación difusa (quita acentos, puntuación y pasa a minúsculas)
+export function normalizeTextForMatching(str) {
+  if (!str) return "";
+  return String(str)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .trim();
+}
+
+// Compara la similitud de dos nombres de clientes (índice Jaccard de tokens)
+export function calculateNameSimilarity(name1, name2) {
+  const norm1 = normalizeTextForMatching(name1);
+  const norm2 = normalizeTextForMatching(name2);
+  if (!norm1 || !norm2) return 0;
+  if (norm1 === norm2) return 1.0;
+
+  const tokens1 = new Set(norm1.split(/\s+/).filter(Boolean));
+  const tokens2 = new Set(norm2.split(/\s+/).filter(Boolean));
+
+  let intersection = 0;
+  for (const t of tokens1) {
+    if (tokens2.has(t)) intersection++;
+  }
+
+  const union = new Set([...tokens1, ...tokens2]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+// Compara dos números telefónicos considerando los últimos 7 y 10 dígitos (soporta formatos locales e internacionales)
+export function isPhoneMatch(phone1, phone2) {
+  const digits1 = normalizePhoneDigits(phone1);
+  const digits2 = normalizePhoneDigits(phone2);
+  if (!digits1 || !digits2) return false;
+  if (digits1 === digits2) return true;
+  if (digits1.length >= 7 && digits2.length >= 7) {
+    return digits1.slice(-7) === digits2.slice(-7) && (digits1.slice(-10) === digits2.slice(-10) || digits1.length < 10 || digits2.length < 10);
+  }
+  return false;
+}
+
+// Resuelve o crea un perfil de cliente ERP evitando duplicados mediante deduplicación inteligente multi-capa
 export function resolveOrCreateClientProfile({
   clientList = [],
   client = {},
@@ -973,44 +1015,64 @@ export function resolveOrCreateClientProfile({
 }) {
   const targetPhone = client.phone || client.telefono || "";
   const targetName = client.name || client.clienteNombre || client.nombreCompleto || "Cliente Chatbot";
+  const targetEmail = (client.email || client.correo || "").trim().toLowerCase();
+
   const normalizedTargetPhone = normalizePhoneDigits(targetPhone);
   const normalizedSenderPhone = normalizePhoneDigits(senderPhone);
 
   const clients = Array.isArray(clientList) ? clientList : [];
 
-  // 1. Buscar coincidencia por teléfono principal o sublíneas vinculadas
+  // CAPA 1: Coincidencia por teléfono principal o sublíneas de contacto
   let existingClient = clients.find((c) => {
-    const mainPhone = normalizePhoneDigits(c.telefono || c.phone);
-    if (normalizedTargetPhone && mainPhone === normalizedTargetPhone) return true;
+    const mainPhone = c.telefono || c.phone;
+    if (isPhoneMatch(mainPhone, targetPhone)) return true;
 
-    // Buscar en subcapa de líneas vinculadas
     const linked = Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [];
-    return linked.some((l) => normalizePhoneDigits(l.phone || l.telefono) === normalizedTargetPhone);
+    return linked.some((l) => isPhoneMatch(l.phone || l.telefono, targetPhone));
   });
 
-  // Si no coincidió por targetPhone pero senderPhone existe y coincide con un cliente existente
+  // CAPA 2: Coincidencia por emisor de WhatsApp (senderPhone)
   if (!existingClient && normalizedSenderPhone) {
     existingClient = clients.find((c) => {
-      const mainPhone = normalizePhoneDigits(c.telefono || c.phone);
-      if (mainPhone === normalizedSenderPhone) return true;
+      const mainPhone = c.telefono || c.phone;
+      if (isPhoneMatch(mainPhone, senderPhone)) return true;
       const linked = Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [];
-      return linked.some((l) => normalizePhoneDigits(l.phone || l.telefono) === normalizedSenderPhone);
+      return linked.some((l) => isPhoneMatch(l.phone || l.telefono, senderPhone));
+    });
+  }
+
+  // CAPA 3: Coincidencia por correo electrónico exacto
+  if (!existingClient && targetEmail) {
+    existingClient = clients.find((c) => {
+      const email = (c.correo || c.email || "").trim().toLowerCase();
+      return email && email === targetEmail;
+    });
+  }
+
+  // CAPA 4: Coincidencia inteligente por Similitud Fonética/Nombre + Dígitos coincidente
+  if (!existingClient && targetName) {
+    existingClient = clients.find((c) => {
+      const nameSim = calculateNameSimilarity(targetName, c.nombreCompleto || c.nombre || "");
+      if (nameSim >= 0.85) return true; // Nombres prácticamente idénticos (ej. "Maria Gomez" y "María Gómez")
+      const mainPhone = c.telefono || c.phone;
+      if (nameSim >= 0.5 && isPhoneMatch(mainPhone, targetPhone)) return true;
+      return false;
     });
   }
 
   const nowISO = new Date().toISOString();
 
   if (existingClient) {
-    // Cliente ya existe en ERP. Vincular sublínea si emisor es distinto
+    // Cliente existente encontrado. Vincular sublíneas de contacto para no duplicar
     const linkedLines = Array.isArray(existingClient.lineasContactoVinculadas)
       ? [...existingClient.lineasContactoVinculadas]
       : [];
 
-    if (normalizedSenderPhone && normalizedSenderPhone !== normalizePhoneDigits(existingClient.telefono)) {
-      const alreadyLinked = linkedLines.some((l) => normalizePhoneDigits(l.phone) === normalizedSenderPhone);
+    if (normalizedSenderPhone && !isPhoneMatch(existingClient.telefono, senderPhone)) {
+      const alreadyLinked = linkedLines.some((l) => isPhoneMatch(l.phone, senderPhone));
       if (!alreadyLinked) {
         linkedLines.push({
-          phone: senderPhone || normalizedSenderPhone,
+          phone: senderPhone,
           name: `Línea emisor WhatsApp (${targetName})`,
           source,
           linkedAt: nowISO,
@@ -1019,6 +1081,25 @@ export function resolveOrCreateClientProfile({
       }
     }
 
+    if (targetPhone && !isPhoneMatch(existingClient.telefono, targetPhone)) {
+      const alreadyLinked = linkedLines.some((l) => isPhoneMatch(l.phone, targetPhone));
+      if (!alreadyLinked) {
+        linkedLines.push({
+          phone: targetPhone,
+          name: `Teléfono secundario (${targetName})`,
+          source,
+          linkedAt: nowISO,
+        });
+        existingClient.lineasContactoVinculadas = linkedLines;
+      }
+    }
+
+    if (targetEmail && !existingClient.correo) {
+      existingClient.correo = targetEmail;
+    }
+
+    existingClient.updated_at = nowISO;
+
     return {
       isNew: false,
       clientRecord: existingClient,
@@ -1026,17 +1107,17 @@ export function resolveOrCreateClientProfile({
       clientName: existingClient.nombreCompleto || targetName,
       phone: existingClient.telefono || targetPhone,
       linkedToExisting: true,
-      note: `Teléfono ${targetPhone} coincide con cliente existente '${existingClient.nombreCompleto}'. Cita vinculada a su cuenta ERP.`,
+      note: `Cliente coincidente detectado ('${existingClient.nombreCompleto}'). Datos unificados sin duplicar.`,
     };
   }
 
-  // 2. Si no existe, crear perfil nuevo de cliente con subcapa de líneas vinculadas
+  // CAPA 5: Si definitivamente no existe ninguna coincidencia, crear perfil único
   const newClientId = `CLI-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   const linkedLines = [];
-  if (senderPhone && normalizedSenderPhone !== normalizedTargetPhone) {
+  if (senderPhone && !isPhoneMatch(senderPhone, targetPhone)) {
     linkedLines.push({
       phone: senderPhone,
-      name: `WhatsApp de contacto emisor`,
+      name: `WhatsApp emisor`,
       source,
       linkedAt: nowISO,
     });
@@ -1046,7 +1127,7 @@ export function resolveOrCreateClientProfile({
     clienteID: newClientId,
     nombreCompleto: targetName,
     telefono: targetPhone,
-    correo: client.email || client.correo || "",
+    correo: targetEmail,
     lineasContactoVinculadas: linkedLines,
     origenRegistro: source,
     estado: "Activo",
@@ -1061,7 +1142,33 @@ export function resolveOrCreateClientProfile({
     clientName: targetName,
     phone: targetPhone,
     linkedToExisting: false,
-    note: `Nuevo cliente '${targetName}' registrado desde el chatbot.`,
+    note: `Nuevo cliente '${targetName}' registrado con perfil único.`,
+  };
+}
+
+// Escanea y fusiona clientes duplicados en un listado completo
+export function deduplicateClientDatabase(clientList = []) {
+  if (!Array.isArray(clientList)) return { cleanedList: [], mergedCount: 0 };
+  const cleanedList = [];
+  let mergedCount = 0;
+
+  for (const client of clientList) {
+    const res = resolveOrCreateClientProfile({
+      clientList: cleanedList,
+      client,
+      source: client.origenRegistro || "ERP",
+    });
+
+    if (res.isNew) {
+      cleanedList.push(res.clientRecord);
+    } else {
+      mergedCount++;
+    }
+  }
+
+  return {
+    cleanedList,
+    mergedCount,
   };
 }
 
@@ -1183,7 +1290,11 @@ if (typeof globalThis !== "undefined") {
     checkPreapprovedConfirmationReminder,
     determineInitialBookingStatus,
     normalizePhoneDigits,
+    normalizeTextForMatching,
+    calculateNameSimilarity,
+    isPhoneMatch,
     resolveOrCreateClientProfile,
+    deduplicateClientDatabase,
     generateWhatsAppReceiptText,
     buildChatbotNotificationPayload,
   };
