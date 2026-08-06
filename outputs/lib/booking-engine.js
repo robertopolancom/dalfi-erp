@@ -950,6 +950,118 @@ export function determineInitialBookingStatus({ source, requestedStartAt = null,
   return "Preaprobada";
 }
 
+// Normaliza números de teléfono para comparar sin formato (espacios, guiones, extensión +1)
+export function normalizePhoneDigits(phoneStr) {
+  if (!phoneStr) return "";
+  const digits = String(phoneStr).replace(/\D/g, "");
+  // Si empieza con código de país 1 (ej. 1809...), tomar los últimos 10 dígitos para Republica Dominicana
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return digits.slice(1);
+  }
+  return digits;
+}
+
+// Resuelve o crea un perfil de cliente ERP asociando sublíneas o contactos secundarios si habla desde el teléfono de un amigo.
+export function resolveOrCreateClientProfile({
+  clientList = [],
+  client = {},
+  senderPhone = null,
+  source = "chatbot_whatsapp",
+}) {
+  const targetPhone = client.phone || client.telefono || "";
+  const targetName = client.name || client.clienteNombre || client.nombreCompleto || "Cliente Chatbot";
+  const normalizedTargetPhone = normalizePhoneDigits(targetPhone);
+  const normalizedSenderPhone = normalizePhoneDigits(senderPhone);
+
+  const clients = Array.isArray(clientList) ? clientList : [];
+
+  // 1. Buscar coincidencia por teléfono principal o sublíneas vinculadas
+  let existingClient = clients.find((c) => {
+    const mainPhone = normalizePhoneDigits(c.telefono || c.phone);
+    if (normalizedTargetPhone && mainPhone === normalizedTargetPhone) return true;
+
+    // Buscar en subcapa de líneas vinculadas
+    const linked = Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [];
+    return linked.some((l) => normalizePhoneDigits(l.phone || l.telefono) === normalizedTargetPhone);
+  });
+
+  // Si no coincidió por targetPhone pero senderPhone existe y coincide con un cliente existente
+  if (!existingClient && normalizedSenderPhone) {
+    existingClient = clients.find((c) => {
+      const mainPhone = normalizePhoneDigits(c.telefono || c.phone);
+      if (mainPhone === normalizedSenderPhone) return true;
+      const linked = Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [];
+      return linked.some((l) => normalizePhoneDigits(l.phone || l.telefono) === normalizedSenderPhone);
+    });
+  }
+
+  const nowISO = new Date().toISOString();
+
+  if (existingClient) {
+    // Cliente ya existe en ERP. Vincular sublínea si emisor es distinto
+    const linkedLines = Array.isArray(existingClient.lineasContactoVinculadas)
+      ? [...existingClient.lineasContactoVinculadas]
+      : [];
+
+    if (normalizedSenderPhone && normalizedSenderPhone !== normalizePhoneDigits(existingClient.telefono)) {
+      const alreadyLinked = linkedLines.some((l) => normalizePhoneDigits(l.phone) === normalizedSenderPhone);
+      if (!alreadyLinked) {
+        linkedLines.push({
+          phone: senderPhone || normalizedSenderPhone,
+          name: `Línea emisor WhatsApp (${targetName})`,
+          source,
+          linkedAt: nowISO,
+        });
+        existingClient.lineasContactoVinculadas = linkedLines;
+      }
+    }
+
+    return {
+      isNew: false,
+      clientRecord: existingClient,
+      clientId: String(existingClient.clienteID || existingClient.id),
+      clientName: existingClient.nombreCompleto || targetName,
+      phone: existingClient.telefono || targetPhone,
+      linkedToExisting: true,
+      note: `Teléfono ${targetPhone} coincide con cliente existente '${existingClient.nombreCompleto}'. Cita vinculada a su cuenta ERP.`,
+    };
+  }
+
+  // 2. Si no existe, crear perfil nuevo de cliente con subcapa de líneas vinculadas
+  const newClientId = `CLI-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const linkedLines = [];
+  if (senderPhone && normalizedSenderPhone !== normalizedTargetPhone) {
+    linkedLines.push({
+      phone: senderPhone,
+      name: `WhatsApp de contacto emisor`,
+      source,
+      linkedAt: nowISO,
+    });
+  }
+
+  const newClientRecord = {
+    clienteID: newClientId,
+    nombreCompleto: targetName,
+    telefono: targetPhone,
+    correo: client.email || client.correo || "",
+    lineasContactoVinculadas: linkedLines,
+    origenRegistro: source,
+    estado: "Activo",
+    created_at: nowISO,
+    updated_at: nowISO,
+  };
+
+  return {
+    isNew: true,
+    clientRecord: newClientRecord,
+    clientId: newClientId,
+    clientName: targetName,
+    phone: targetPhone,
+    linkedToExisting: false,
+    note: `Nuevo cliente '${targetName}' registrado desde el chatbot.`,
+  };
+}
+
 if (typeof globalThis !== "undefined") {
   globalThis.DalfiBookingEngine = {
     TIMEZONE,
@@ -973,5 +1085,7 @@ if (typeof globalThis !== "undefined") {
     buildConsolidatedDailyMatrix,
     checkPreapprovedConfirmationReminder,
     determineInitialBookingStatus,
+    normalizePhoneDigits,
+    resolveOrCreateClientProfile,
   };
 }

@@ -8,6 +8,7 @@ import {
   calculateAppointmentDuration,
   parseTimeToMinutes,
   determineInitialBookingStatus,
+  resolveOrCreateClientProfile,
 } from "../../../outputs/lib/booking-engine.js";
 
 import { validateChatbotSecret } from "./_auth.js";
@@ -187,7 +188,24 @@ export async function onRequestPost({ request, env }) {
       );
     }
 
-    // 4. Crear nuevo registro de reserva
+    // 4. Resolver o crear perfil de cliente en ERP con subcapa de líneas vinculadas
+    const clientList = Array.isArray(docData.clientes) ? docData.clientes : [];
+    const clientProfile = resolveOrCreateClientProfile({
+      clientList,
+      client,
+      senderPhone: sourceConversationId || payload.senderPhone || null,
+      source,
+    });
+
+    let updatedClients = clientList;
+    if (clientProfile.isNew) {
+      updatedClients = [...clientList, clientProfile.clientRecord];
+    } else {
+      updatedClients = clientList.map((c) =>
+        String(c.clienteID || c.id) === clientProfile.clientId ? clientProfile.clientRecord : c
+      );
+    }
+
     const durationRes = calculateAppointmentDuration({ serviceLines, services });
     const durationMin = durationRes.totalServiceMinutes || 30;
     const startMin = parseTimeToMinutes(timeStr) || 540;
@@ -203,11 +221,11 @@ export async function onRequestPost({ request, env }) {
       hora: timeStr,
       horaFin: endTimeStr,
       duracionMin: durationMin,
-      clienteID: client?.id || "CLI-PROVISIONAL",
-      clienteNombre: client?.name || "Cliente Chatbot",
-      telefono: client?.phone || "",
+      clienteID: clientProfile.clientId,
+      clienteNombre: clientProfile.clientName,
+      telefono: clientProfile.phone,
       correo: client?.email || "",
-      clienteProvisional: !client?.id,
+      clienteProvisional: false,
       colaboradorID: targetCollaboratorId,
       colaboradorNombre: assignedCollaborator.nombreCompleto || assignedCollaborator.nombre,
       servicioID: serviceLines[0]?.serviceId || "SRV-GENERIC",
@@ -223,15 +241,15 @@ export async function onRequestPost({ request, env }) {
         date: dateStr,
         time: timeStr,
       }),
-      observaciones: notes || "",
+      observaciones: notes || clientProfile.note || "",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
     // 5. Guardar atómicamente en erp_records usando save_erp_record_if_current
     const updatedDoc = currentDoc.data
-      ? { ...currentDoc, data: { ...currentDoc.data, reservas: [...appointments, newAppointment] } }
-      : { ...currentDoc, reservas: [...appointments, newAppointment] };
+      ? { ...currentDoc, data: { ...currentDoc.data, reservas: [...appointments, newAppointment], clientes: updatedClients } }
+      : { ...currentDoc, reservas: [...appointments, newAppointment], clientes: updatedClients };
 
     const saveResponse = await safeFetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
       method: "POST",
