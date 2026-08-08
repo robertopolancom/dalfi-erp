@@ -16,11 +16,13 @@ export async function onRequestGet({ request, env }) {
     return json({ error: "Persistencia no configurada." }, 500);
   }
 
+  const safeFetch = env.fetch || fetch;
+
   try {
     const url = new URL(request.url);
     const serviceId = url.searchParams.get("serviceId");
 
-    const response = await fetch(
+    const response = await safeFetch(
       `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data`,
       { headers: serviceHeaders(env) }
     );

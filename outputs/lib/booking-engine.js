@@ -58,6 +58,26 @@ export function getDayOfWeekFromDateString(dateStr) {
   return dt.getUTCDay();
 }
 
+// Resuelve la fecha/hora actual en America/Santo_Domingo (UTC-4 fijo, sin horario de verano)
+// a partir de un Date/ISO string. Acepta también un objeto ya resuelto {date, time} para pruebas.
+export function resolveSantoDomingoNow(now) {
+  if (now && typeof now === "object" && typeof now.date === "string") {
+    return { date: now.date, time: now.time || "00:00" };
+  }
+  const d = now instanceof Date ? now : new Date(now);
+  const shifted = new Date(d.getTime() - 4 * 60 * 60 * 1000);
+  return { date: shifted.toISOString().slice(0, 10), time: shifted.toISOString().slice(11, 16) };
+}
+
+// Diferencia en días de calendario (dateStr - baseDateStr), ambos "YYYY-MM-DD".
+export function diffCalendarDays(dateStr, baseDateStr) {
+  const parse = (s) => {
+    const [y, m, d] = s.split("-").map(Number);
+    return Date.UTC(y, m - 1, d);
+  };
+  return Math.round((parse(dateStr) - parse(baseDateStr)) / 86400000);
+}
+
 // Sanitiza y normaliza la configuración general del negocio.
 export function normalizeBusinessSchedule(input) {
   const src = input && typeof input === "object" ? input : {};
@@ -242,7 +262,7 @@ export function calculateAppointmentDuration({ serviceLines = [], services = [],
     );
 
     if (!match) {
-      warnings.push(`Servicio ${sId || line.name || "desconocido"} no encontrado en el catálogo.`);
+      warnings.push(`Servicio ${targetKey || line.name || "desconocido"} no encontrado en el catálogo.`);
       continue;
     }
 
@@ -281,6 +301,27 @@ export function calculateAppointmentDuration({ serviceLines = [], services = [],
   };
 }
 
+// Verifica si una colaboradora está habilitada para realizar un servicio específico.
+// Si el servicio no define eligibleCollaboratorIds (o está vacío), se considera abierto a cualquier colaboradora activa.
+export function isCollaboratorEligibleForService(collaborator, service) {
+  const eligible = service?.eligibleCollaboratorIds;
+  if (!Array.isArray(eligible) || eligible.length === 0) return true;
+  const collaboratorId = String(collaborator?.colaboradorID || collaborator?.id || "");
+  const collaboratorName = String(collaborator?.nombreCompleto || collaborator?.nombre || "");
+  return eligible.includes(collaboratorId) || eligible.includes(collaboratorName);
+}
+
+// Verifica si una colaboradora está habilitada para TODAS las líneas de servicio de una reserva.
+// Servicios que no se encuentren en el catálogo se ignoran aquí (calculateAppointmentDuration ya los reporta como warning).
+export function isCollaboratorEligibleForServiceLines(collaborator, serviceLines = [], services = []) {
+  return serviceLines.every((line) => {
+    const targetKey = String(line.serviceId || line.servicioID || line.id || line.name || "").toLowerCase();
+    const service = services.find((s) => String(s.servicioID || s.id || s.servicio).toLowerCase() === targetKey);
+    if (!service) return true;
+    return isCollaboratorEligibleForService(collaborator, service);
+  });
+}
+
 // Comprueba si dos rangos numéricos [start1, end1] y [start2, end2] se solapan.
 export function intervalsOverlap(start1, end1, start2, end2) {
   return Math.max(start1, start2) < Math.min(end1, end2);
@@ -314,9 +355,36 @@ export function calculateAvailableSlots({
   services = [],
   slotIntervalMinutes = null,
   referenceTime = null, // "HH:MM" si es para la fecha de hoy
+  now = null, // Date | ISO string | {date,time} — si se provee, aplica fecha pasada + anticipación mín/máx
 }) {
   const bSched = normalizeBusinessSchedule(businessSchedule);
   const interval = slotIntervalMinutes || bSched.defaultSlotIntervalMinutes;
+
+  let resolvedNow = null;
+  if (now) {
+    resolvedNow = resolveSantoDomingoNow(now);
+    if (date < resolvedNow.date) {
+      return {
+        date,
+        collaboratorId,
+        available: false,
+        reason: "No se pueden reservar fechas pasadas.",
+        slots: [],
+        warnings: [],
+      };
+    }
+    const daysAhead = diffCalendarDays(date, resolvedNow.date);
+    if (daysAhead > bSched.maximumAdvanceBookingDays) {
+      return {
+        date,
+        collaboratorId,
+        available: false,
+        reason: `La fecha solicitada excede la anticipación máxima permitida (${bSched.maximumAdvanceBookingDays} días).`,
+        slots: [],
+        warnings: [],
+      };
+    }
+  }
 
   const effectiveSched = resolveEffectiveStaffSchedule({
     collaboratorId,
@@ -416,8 +484,9 @@ export function calculateAvailableSlots({
 
   // 4. Límite de aviso mínimo si es hoy
   let minAllowedStart = entryMin;
-  if (referenceTime) {
-    const refM = parseTimeToMinutes(referenceTime);
+  const effectiveReferenceTime = referenceTime || (resolvedNow && date === resolvedNow.date ? resolvedNow.time : null);
+  if (effectiveReferenceTime) {
+    const refM = parseTimeToMinutes(effectiveReferenceTime);
     if (refM !== null) {
       minAllowedStart = Math.max(minAllowedStart, refM + bSched.minimumBookingNoticeMinutes);
     }
@@ -550,6 +619,7 @@ export function selectBestAvailableCollaborator({
   appointments = [],
   requestedTime = null,
   seed = "default",
+  now = null,
 }) {
   const candidates = [];
 
@@ -579,6 +649,7 @@ export function selectBestAvailableCollaborator({
       appointments,
       services,
       referenceTime: null,
+      now,
     });
 
     if (!avail.available || avail.slots.length === 0) continue;

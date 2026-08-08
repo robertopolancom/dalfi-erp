@@ -9,6 +9,7 @@ import {
   parseTimeToMinutes,
   determineInitialBookingStatus,
   resolveOrCreateClientProfile,
+  isCollaboratorEligibleForServiceLines,
 } from "../../../outputs/lib/booking-engine.js";
 
 import { validateChatbotSecret } from "./_auth.js";
@@ -160,14 +161,29 @@ export async function onRequestPost({ request, env }) {
     let assignmentStrategy = "specific";
 
     if (collaboratorPreference.mode === "specific" && collaboratorPreference.collaboratorId) {
-      assignedCollaborator = staffList.find(
+      const requested = staffList.find(
         (s) => String(s.colaboradorID || s.id || s.nombreCompleto) === String(collaboratorPreference.collaboratorId)
       );
+      if (requested && !isCollaboratorEligibleForServiceLines(requested, serviceLines, services)) {
+        return json(
+          {
+            success: false,
+            code: "SPECIALIST_NOT_ELIGIBLE",
+            message: "La colaboradora seleccionada no está capacitada para uno o más de los servicios solicitados.",
+          },
+          409
+        );
+      }
+      assignedCollaborator = requested;
     }
 
     if (!assignedCollaborator) {
-      // Auto selección
-      const eligibleStaff = staffList.filter((s) => String(s.estado || "Activo").toLowerCase() === "activo");
+      // Auto selección — debe estar capacitada para TODOS los servicios pedidos
+      const eligibleStaff = staffList.filter(
+        (s) =>
+          String(s.estado || "Activo").toLowerCase() === "activo" &&
+          isCollaboratorEligibleForServiceLines(s, serviceLines, services)
+      );
       const best = selectBestAvailableCollaborator({
         eligibleCollaborators: eligibleStaff,
         date: dateStr,
@@ -178,6 +194,7 @@ export async function onRequestPost({ request, env }) {
         exceptions,
         appointments,
         requestedTime: timeStr,
+        now: new Date(),
       });
 
       if (!best.selected) {
@@ -207,6 +224,7 @@ export async function onRequestPost({ request, env }) {
       exceptions,
       appointments,
       services,
+      now: new Date(),
     });
 
     const isSlotFree = avail.available && avail.slots.some((s) => s.time === timeStr);
@@ -278,7 +296,12 @@ export async function onRequestPost({ request, env }) {
       colaboradorID: targetCollaboratorId,
       colaboradorNombre: assignedCollaborator.nombreCompleto || assignedCollaborator.nombre,
       servicioID: serviceLines[0]?.serviceId || "SRV-GENERIC",
-      servicio: durationRes.evaluatedServices[0]?.name || "Servicio",
+      servicio: durationRes.evaluatedServices.map((s) => s.name).join(" + ") || "Servicio",
+      servicios: durationRes.evaluatedServices.map((s) => ({
+        servicioID: s.id,
+        servicio: s.name,
+        duracionMin: s.durationMinutes,
+      })),
       canalOrigen: source,
       sourceConversationId: sourceConversationId || null,
       idempotencyKey,

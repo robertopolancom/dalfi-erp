@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 
 import { onRequestPost as confirmPost } from "../functions/api/booking/confirm.js";
 
+// Fecha futura relativa a "ahora" — confirm.js valida fechas pasadas/anticipación
+// máxima contra el reloj real, así que las citas de prueba no pueden quedar fijas
+// en el pasado a medida que corre el tiempo.
+const FUTURE_DATE = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+
 function createMockEnv(initialDoc) {
   let doc = JSON.parse(JSON.stringify(initialDoc));
   let updatedAt = "2026-08-03T12:00:00.000Z";
@@ -46,7 +51,7 @@ test("Confirmación de reserva atómica: la primera tiene éxito y la segunda en
       idempotencyKey: "IDEM-101",
       client: { id: "CLI-1", name: "Maria Lopez" },
       serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
-      requestedStartAt: "2026-08-03T09:00:00",
+      requestedStartAt: `${FUTURE_DATE}T09:00:00`,
       collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
     }),
   });
@@ -65,7 +70,7 @@ test("Confirmación de reserva atómica: la primera tiene éxito y la segunda en
       idempotencyKey: "IDEM-102",
       client: { id: "CLI-2", name: "Carmen Rosa" },
       serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
-      requestedStartAt: "2026-08-03T09:00:00",
+      requestedStartAt: `${FUTURE_DATE}T09:00:00`,
       collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
     }),
   });
@@ -90,7 +95,7 @@ test("IdempotencyKey repetida devuelve la misma cita en vez de crear un duplicad
     idempotencyKey: "IDEM-REPEAT-KEY",
     client: { id: "CLI-1", name: "Maria Lopez" },
     serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
-    requestedStartAt: "2026-08-03T10:00:00",
+    requestedStartAt: `${FUTURE_DATE}T10:00:00`,
     collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
   };
 

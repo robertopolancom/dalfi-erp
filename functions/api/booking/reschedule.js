@@ -6,6 +6,7 @@ import {
   normalizeBusinessSchedule,
   calculateAppointmentDuration,
   parseTimeToMinutes,
+  isCollaboratorEligibleForServiceLines,
 } from "../../../outputs/lib/booking-engine.js";
 
 import { validateChatbotSecret } from "./_auth.js";
@@ -52,8 +53,10 @@ export async function onRequestPost({ request, env }) {
     return json({ success: false, error: "Parámetros 'appointmentId', 'date' y 'time' requeridos." }, 400);
   }
 
+  const safeFetch = env.fetch || fetch;
+
   try {
-    const response = await fetch(
+    const response = await safeFetch(
       `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data,updated_at`,
       { headers: serviceHeaders(env) }
     );
@@ -65,7 +68,8 @@ export async function onRequestPost({ request, env }) {
 
     const currentDoc = row.data;
     const expectedUpdatedAt = row.updated_at || null;
-    const appointments = Array.isArray(currentDoc.reservas) ? currentDoc.reservas : [];
+    const docData = currentDoc.data || currentDoc;
+    const appointments = Array.isArray(docData.reservas) ? docData.reservas : [];
 
     const targetIndex = appointments.findIndex((a) => String(a.reservaID || a.id) === String(appointmentId));
     if (targetIndex === -1) {
@@ -73,19 +77,33 @@ export async function onRequestPost({ request, env }) {
     }
 
     const currentApt = appointments[targetIndex];
-    const services = Array.isArray(currentDoc.servicios) ? currentDoc.servicios : [];
-    const staffList = Array.isArray(currentDoc.colaboradores) ? currentDoc.colaboradores : [];
-    const weeklySchedules = Array.isArray(currentDoc.staffWeeklySchedules) ? currentDoc.staffWeeklySchedules : [];
-    const exceptions = Array.isArray(currentDoc.staffScheduleExceptions) ? currentDoc.staffScheduleExceptions : [];
-    const bSched = normalizeBusinessSchedule(currentDoc.businessSchedule);
+    const services = Array.isArray(docData.servicios) ? docData.servicios : [];
+    const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];
+    const weeklySchedules = Array.isArray(docData.staffWeeklySchedules) ? docData.staffWeeklySchedules : [];
+    const exceptions = Array.isArray(docData.staffScheduleExceptions) ? docData.staffScheduleExceptions : [];
+    const bSched = normalizeBusinessSchedule(docData.businessSchedule);
 
     const collabId = newCollaboratorId || currentApt.colaboradorID;
     const staffMember = staffList.find((s) => String(s.colaboradorID || s.id || s.nombreCompleto) === String(collabId));
 
+    const serviceLines = Array.isArray(currentApt.servicios) && currentApt.servicios.length > 0
+      ? currentApt.servicios.map((s) => ({ serviceId: s.servicioID, quantity: 1 }))
+      : [{ serviceId: currentApt.servicioID, quantity: 1 }];
+
+    if (staffMember && !isCollaboratorEligibleForServiceLines(staffMember, serviceLines, services)) {
+      return json(
+        {
+          success: false,
+          code: "SPECIALIST_NOT_ELIGIBLE",
+          message: "La colaboradora seleccionada no está capacitada para uno o más de los servicios de esta cita.",
+        },
+        409
+      );
+    }
+
     // Filtrar citas excluyendo la cita actual que se está reprogramando (para evitar auto-conflicto)
     const otherAppointments = appointments.filter((a) => String(a.reservaID || a.id) !== String(appointmentId));
 
-    const serviceLines = [{ serviceId: currentApt.servicioID, quantity: 1 }];
     const avail = calculateAvailableSlots({
       date: targetDate,
       collaboratorId: collabId,
@@ -95,6 +113,7 @@ export async function onRequestPost({ request, env }) {
       exceptions,
       appointments: otherAppointments,
       services,
+      now: new Date(),
     });
 
     const isSlotFree = avail.available && avail.slots.some((s) => s.time === targetTime);
@@ -134,15 +153,11 @@ export async function onRequestPost({ request, env }) {
     const newAppointments = [...appointments];
     newAppointments[targetIndex] = updatedApt;
 
-    const updatedDoc = {
-      ...currentDoc,
-      data: {
-        ...currentDoc.data,
-        reservas: newAppointments,
-      },
-    };
+    const updatedDoc = currentDoc.data
+      ? { ...currentDoc, data: { ...currentDoc.data, reservas: newAppointments } }
+      : { ...currentDoc, reservas: newAppointments };
 
-    const saveResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
+    const saveResponse = await safeFetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
       method: "POST",
       headers: { ...serviceHeaders(env), "Content-Type": "application/json" },
       body: JSON.stringify({

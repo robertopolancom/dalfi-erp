@@ -5,6 +5,8 @@ import {
   selectBestAvailableCollaborator,
   buildAvailabilityResponseForChatbot,
   normalizeBusinessSchedule,
+  calculateAppointmentDuration,
+  isCollaboratorEligibleForServiceLines,
 } from "../../../outputs/lib/booking-engine.js";
 
 const json = (body, status = 200) =>
@@ -22,17 +24,26 @@ export async function onRequestGet({ request, env }) {
     return json({ error: "Persistencia no configurada." }, 500);
   }
 
+  const safeFetch = env.fetch || fetch;
+
   try {
     const url = new URL(request.url);
-    const serviceId = url.searchParams.get("serviceId");
+    // Soporta un solo servicio (?serviceId=X) o varios para bloque continuo
+    // (?serviceId=X&serviceId=Y o ?serviceId=X,Y).
+    const rawServiceIds = url.searchParams.getAll("serviceId");
+    const serviceIds = rawServiceIds
+      .flatMap((v) => v.split(","))
+      .map((v) => v.trim())
+      .filter(Boolean);
+    const serviceId = serviceIds[0] || null; // primer servicio, usado para nombre/duración de referencia
     const date = url.searchParams.get("date"); // YYYY-MM-DD
     const collaboratorId = url.searchParams.get("collaboratorId"); // opcional
 
-    if (!serviceId || !date) {
+    if (serviceIds.length === 0 || !date) {
       return json({ success: false, error: "Parámetros 'serviceId' y 'date' son requeridos." }, 400);
     }
 
-    const response = await fetch(
+    const response = await safeFetch(
       `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data`,
       { headers: serviceHeaders(env) }
     );
@@ -63,13 +74,40 @@ export async function onRequestGet({ request, env }) {
       );
     }
 
-    const serviceLines = [{ serviceId, quantity: 1 }];
+    const serviceLines = serviceIds.map((id) => ({ serviceId: id, quantity: 1 }));
+    const durationRes = calculateAppointmentDuration({ serviceLines, services });
+    if (!durationRes.isValid) {
+      return json(
+        buildAvailabilityResponseForChatbot({
+          success: false,
+          errorCode: "SERVICE_NOT_FOUND",
+          errorMessage:
+            durationRes.warnings[0] || "Uno o más de los servicios solicitados no existen en el catálogo.",
+        }),
+        404
+      );
+    }
+    const combinedServiceName = durationRes.evaluatedServices.map((s) => s.name).join(" + ");
+    const combinedDurationMinutes = durationRes.totalServiceMinutes;
 
     if (collaboratorId) {
       // 1. Manicurista específica elegida por la clienta
       const staffMember = staffList.find(
         (s) => String(s.colaboradorID || s.id || s.nombreCompleto) === String(collaboratorId)
       );
+
+      if (!staffMember || !isCollaboratorEligibleForServiceLines(staffMember, serviceLines, services)) {
+        return json(
+          buildAvailabilityResponseForChatbot({
+            success: false,
+            date,
+            serviceId,
+            errorCode: "SPECIALIST_NOT_ELIGIBLE",
+            errorMessage: "La colaboradora seleccionada no está capacitada para uno o más de los servicios solicitados.",
+          }),
+          409
+        );
+      }
 
       const avail = calculateAvailableSlots({
         date,
@@ -80,6 +118,7 @@ export async function onRequestGet({ request, env }) {
         exceptions,
         appointments,
         services,
+        now: new Date(),
       });
 
       return json(
@@ -87,8 +126,8 @@ export async function onRequestGet({ request, env }) {
           success: avail.available,
           date,
           serviceId,
-          serviceName: targetService.servicio || targetService.name,
-          durationMinutes: targetService.duracionMin || targetService.durationMinutes || 30,
+          serviceName: combinedServiceName || targetService.servicio || targetService.name,
+          durationMinutes: combinedDurationMinutes || targetService.duracionMin || targetService.durationMinutes || 30,
           collaboratorId,
           collaboratorName: staffMember?.nombreCompleto || staffMember?.nombre || collaboratorId,
           slots: avail.slots,
@@ -97,16 +136,11 @@ export async function onRequestGet({ request, env }) {
         })
       );
     } else {
-      // 2. Asignación automática sin preferencia
+      // 2. Asignación automática sin preferencia — debe estar capacitada para TODOS los servicios pedidos
       const eligibleStaff = staffList.filter((s) => {
         const estado = String(s.estado || "Activo").toLowerCase();
         if (estado !== "activo") return false;
-        const eligible = targetService.eligibleCollaboratorIds;
-        if (Array.isArray(eligible) && eligible.length > 0) {
-          const sId = String(s.colaboradorID || s.id || s.nombreCompleto);
-          if (!eligible.includes(sId) && !eligible.includes(s.nombreCompleto)) return false;
-        }
-        return true;
+        return isCollaboratorEligibleForServiceLines(s, serviceLines, services);
       });
 
       const bestSelection = selectBestAvailableCollaborator({
@@ -118,6 +152,7 @@ export async function onRequestGet({ request, env }) {
         weeklySchedules,
         exceptions,
         appointments,
+        now: new Date(),
       });
 
       if (!bestSelection.selected) {
@@ -126,8 +161,8 @@ export async function onRequestGet({ request, env }) {
             success: false,
             date,
             serviceId,
-            serviceName: targetService.servicio || targetService.name,
-            durationMinutes: targetService.duracionMin || targetService.durationMinutes || 30,
+            serviceName: combinedServiceName || targetService.servicio || targetService.name,
+            durationMinutes: combinedDurationMinutes || targetService.duracionMin || targetService.durationMinutes || 30,
             errorMessage: bestSelection.reason,
           })
         );
@@ -138,8 +173,8 @@ export async function onRequestGet({ request, env }) {
           success: true,
           date,
           serviceId,
-          serviceName: targetService.servicio || targetService.name,
-          durationMinutes: targetService.duracionMin || targetService.durationMinutes || 30,
+          serviceName: combinedServiceName || targetService.servicio || targetService.name,
+          durationMinutes: combinedDurationMinutes || targetService.duracionMin || targetService.durationMinutes || 30,
           collaboratorId: bestSelection.selected.colaboradorID || bestSelection.selected.id,
           collaboratorName: bestSelection.selected.nombreCompleto,
           slots: bestSelection.availableSlots,

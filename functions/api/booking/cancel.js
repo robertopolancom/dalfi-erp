@@ -36,8 +36,10 @@ export async function onRequestPost({ request, env }) {
     return json({ success: false, error: "Se requiere 'appointmentId'." }, 400);
   }
 
+  const safeFetch = env.fetch || fetch;
+
   try {
-    const response = await fetch(
+    const response = await safeFetch(
       `${env.SUPABASE_URL}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data,updated_at`,
       { headers: serviceHeaders(env) }
     );
@@ -49,7 +51,8 @@ export async function onRequestPost({ request, env }) {
 
     const currentDoc = row.data;
     const expectedUpdatedAt = row.updated_at || null;
-    const appointments = Array.isArray(currentDoc.reservas) ? currentDoc.reservas : [];
+    const docData = currentDoc.data || currentDoc;
+    const appointments = Array.isArray(docData.reservas) ? docData.reservas : [];
 
     const targetIndex = appointments.findIndex((a) => String(a.reservaID || a.id) === String(appointmentId));
     if (targetIndex === -1) {
@@ -72,15 +75,11 @@ export async function onRequestPost({ request, env }) {
     const newAppointments = [...appointments];
     newAppointments[targetIndex] = updatedApt;
 
-    const updatedDoc = {
-      ...currentDoc,
-      data: {
-        ...currentDoc.data,
-        reservas: newAppointments,
-      },
-    };
+    const updatedDoc = currentDoc.data
+      ? { ...currentDoc, data: { ...currentDoc.data, reservas: newAppointments } }
+      : { ...currentDoc, reservas: newAppointments };
 
-    const saveResponse = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
+    const saveResponse = await safeFetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
       method: "POST",
       headers: { ...serviceHeaders(env), "Content-Type": "application/json" },
       body: JSON.stringify({
