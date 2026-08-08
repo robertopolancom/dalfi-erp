@@ -3398,6 +3398,34 @@
       </section>
     </dialog>
 
+    <dialog id="invoice-sent-modal" class="app-dialog invoice-modal-dialog">
+      <section class="panel form-panel" style="max-width: 650px; width: 100%;">
+        <div class="panel-head">
+          <h3 id="invoice-modal-title">🧾 Factura de Venta</h3>
+        </div>
+        <div id="invoice-modal-summary" class="panel-note" style="background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 14px; font-size: 13px;"></div>
+        
+        <div id="invoice-modal-body" style="max-height: 320px; overflow-y: auto; margin-bottom: 14px; border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px; background: #ffffff;"></div>
+
+        <div style="background: #e0f2fe; border: 1px solid #bae6fd; padding: 12px; border-radius: 8px; margin-bottom: 14px;">
+          <label style="font-weight: bold; font-size: 13px; display: block; margin-bottom: 6px; color: #0369a1;">
+            📱 Teléfono del Cliente para enviar Factura y Solicitar Reseña en Google (WhatsApp):
+          </label>
+          <input type="tel" id="invoice-modal-phone" placeholder="Ej: +1 (809) 555-0199" style="width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #93c5fd; font-size: 14px; box-sizing: border-box;" />
+        </div>
+
+        <p class="form-message" id="invoice-modal-message" style="margin-bottom: 12px; min-height: 20px; font-weight: bold;"></p>
+
+        <div class="row-actions" style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
+          <button class="primary-btn" id="invoice-modal-send-close" type="button" style="background: #16a34a; color: white; border: none; font-weight: bold; padding: 10px 18px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+            💬 Enviar por WhatsApp y Cerrar
+          </button>
+          <button class="secondary-btn" id="invoice-modal-print" type="button">🖨️ Imprimir / PDF</button>
+          <button class="secondary-btn" id="invoice-modal-close" type="button">Cerrar sin enviar</button>
+        </div>
+      </section>
+    </dialog>
+
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>

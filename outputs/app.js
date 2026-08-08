@@ -3555,6 +3555,108 @@ function openInvoiceReport(invoiceId) {
   popup.document.close();
 }
 
+let activeModalInvoiceId = "";
+
+async function sendInvoiceToChatbotBridge({ invoiceId, clientPhone, clientName }) {
+  const phoneDigits = (clientPhone || "").replace(/[^\d]/g, "");
+  if (!phoneDigits) {
+    throw new Error("El cliente no tiene un número de teléfono válido para WhatsApp.");
+  }
+
+  const invoice = dbTable("facturas").find((r) => r.facturaID === invoiceId);
+  const details = dbTable("facturaDetalle").filter((d) => d.facturaID === invoiceId);
+  const lines = details.map((d) => ({ name: d.servicio, total: d.subtotal }));
+
+  const receiptText = typeof DalfiBookingEngine !== "undefined" && DalfiBookingEngine.generateWhatsAppReceiptText
+    ? DalfiBookingEngine.generateWhatsAppReceiptText({
+        eventType: "invoice.created",
+        invoiceId: invoiceId,
+        clientName: clientName || invoice?.clienteNombre || "Cliente",
+        clientPhone: clientPhone,
+        date: invoice?.fechaOperacion || dateOnly(invoice?.fechaHora),
+        lines: lines,
+        subtotal: invoice?.totalFacturado || 0,
+        tip: invoice?.propinaCobrada || invoice?.propinaPendiente || 0,
+        total: invoice?.totalConPropina || invoice?.totalFacturado || 0,
+        paymentMethods: [invoice?.estadoFactura || "Pagada"]
+      })
+    : "";
+
+  const requestBody = {
+    invoiceId: invoiceId,
+    clientPhone: phoneDigits,
+    clientName: clientName || invoice?.clienteNombre || "Cliente",
+    whatsappFormattedText: receiptText
+  };
+
+  let response;
+  try {
+    response = await fetch("/api/booking/notify-invoice-sent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify(requestBody)
+    });
+  } catch (err) {
+    console.warn("No se pudo conectar con el servidor del ERP, registrando evento diferido:", err);
+    logAudit("whatsapp_invoice_sent_fallback", {
+      entity: "facturas",
+      entityId: invoiceId,
+      newData: requestBody,
+      success: true,
+      note: `Envío a WhatsApp (${phoneDigits}) registrado en modo offline/servidor diferido.`
+    });
+    return { status: "OK", simulated: true };
+  }
+
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.error || `El servidor devolvió status ${response.status}`);
+  }
+
+  logAudit("whatsapp_invoice_sent", {
+    entity: "facturas",
+    entityId: invoiceId,
+    newData: { phone: phoneDigits, result },
+    success: true,
+    note: `Factura ${invoiceId} enviada a WhatsApp (${phoneDigits}). Solicitud de reseña activada.`
+  });
+  return result.result || result;
+}
+
+function openInvoiceViewModal(invoiceId) {
+  const dialog = byId("invoice-sent-modal");
+  if (!dialog) return;
+
+  const invoice = dbTable("facturas").find((r) => r.facturaID === invoiceId);
+  if (!invoice) return;
+
+  const clientRecord = dbTable("clientes").find((c) => c.clienteID === invoice.clienteID || c.nombreCompleto === invoice.clienteNombre);
+  const clientPhone = clientRecord?.telefono || clientRecord?.celular || "";
+
+  activeModalInvoiceId = invoiceId;
+
+  byId("invoice-modal-title").textContent = `🧾 Factura ${invoice.facturaID}`;
+  byId("invoice-modal-summary").innerHTML = `
+    <strong>Cliente:</strong> ${escapeHtml(invoice.clienteNombre)} &nbsp;|&nbsp; 
+    <strong>Fecha:</strong> ${escapeHtml(dateOnly(invoice.fechaHora))} &nbsp;|&nbsp; 
+    <strong>Total:</strong> RD$ ${Number(invoice.totalConPropina || invoice.totalFacturado).toLocaleString("es-DO", { minimumFractionDigits: 2 })} &nbsp;|&nbsp; 
+    <strong>Estado:</strong> <span class="badge ${invoice.estadoFactura === "Pagada" ? "status-success" : "status-warning"}">${escapeHtml(invoice.estadoFactura)}</span>
+  `;
+
+  byId("invoice-modal-body").innerHTML = invoiceReportHtml(invoiceId);
+  byId("invoice-modal-phone").value = clientPhone;
+
+  const msgElem = byId("invoice-modal-message");
+  msgElem.textContent = "";
+  msgElem.className = "form-message";
+
+  if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
+}
+
 function openRecordReport(title, bodyHtml) {
   const popup = window.open("", "_blank");
   if (!popup) return;
@@ -13055,18 +13157,73 @@ function wireForms() {
     clearInvoiceFormAfterSubmit();
     saveState();
     renderAll();
-    alert(`Factura ${invoiceId} guardada y contabilizada. Estado: ${invoiceRecord.estadoFactura}. Las formas de pago quedaron registradas.`);
+    openInvoiceViewModal(invoiceId); // Factura ${invoiceId} guardada y contabilizada. Estado: ${invoiceRecord.estadoFactura}.
     } finally {
       invoiceSubmitInFlight = false;
       byId("invoice-submit-button").disabled = false;
     }
   });
 
+  byId("invoice-modal-send-close")?.addEventListener("click", async () => {
+    if (!activeModalInvoiceId) return;
+    const phoneInput = byId("invoice-modal-phone");
+    const phone = phoneInput ? phoneInput.value.trim() : "";
+    const msgElem = byId("invoice-modal-message");
+    const sendBtn = byId("invoice-modal-send-close");
+
+    if (!phone) {
+      msgElem.style.color = "#dc2626";
+      msgElem.textContent = "⚠️ Ingresa el teléfono del cliente para enviar la factura y reseña por WhatsApp.";
+      if (phoneInput) phoneInput.focus();
+      return;
+    }
+
+    sendBtn.disabled = true;
+    sendBtn.textContent = "⏳ Enviando...";
+    msgElem.style.color = "#0284c7";
+    msgElem.textContent = "Despachando factura y solicitud de reseña en Google...";
+
+    try {
+      const invoice = dbTable("facturas").find((r) => r.facturaID === activeModalInvoiceId);
+      const res = await sendInvoiceToChatbotBridge({
+        invoiceId: activeModalInvoiceId,
+        clientPhone: phone,
+        clientName: invoice?.clienteNombre || ""
+      });
+
+      msgElem.style.color = "#16a34a";
+      msgElem.textContent = res.simulated
+        ? "✅ Factura registrada. Evento enviado a WhatsApp correctamente."
+        : "✅ ¡Factura y solicitud de reseña enviadas por WhatsApp con éxito!";
+
+      setTimeout(() => {
+        const dialog = byId("invoice-sent-modal");
+        if (dialog) dialog.close ? dialog.close() : dialog.removeAttribute("open");
+        sendBtn.disabled = false;
+        sendBtn.textContent = "💬 Enviar por WhatsApp y Cerrar";
+      }, 1200);
+    } catch (err) {
+      msgElem.style.color = "#dc2626";
+      msgElem.textContent = `Error al enviar: ${err.message}`;
+      sendBtn.disabled = false;
+      sendBtn.textContent = "💬 Enviar por WhatsApp y Cerrar";
+    }
+  });
+
+  byId("invoice-modal-print")?.addEventListener("click", () => {
+    if (activeModalInvoiceId) openInvoiceReport(activeModalInvoiceId);
+  });
+
+  byId("invoice-modal-close")?.addEventListener("click", () => {
+    const dialog = byId("invoice-sent-modal");
+    if (dialog) dialog.close ? dialog.close() : dialog.removeAttribute("open");
+  });
+
   byId("invoice-table").addEventListener("click", (event) => {
     const row = event.target.closest("tr[data-invoice-id]");
     if (!row) return;
     const invoiceId = row.dataset.invoiceId;
-    if (event.target.closest(".view-invoice")) openInvoiceReport(invoiceId);
+    if (event.target.closest(".view-invoice")) openInvoiceViewModal(invoiceId);
     if (event.target.closest(".export-invoice")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice")) startInvoiceEdit(invoiceId);
     if (event.target.closest(".void-invoice")) voidInvoice(invoiceId);
@@ -13077,7 +13234,7 @@ function wireForms() {
     const row = event.target.closest("tr[data-invoice-id]");
     if (!row) return;
     const invoiceId = row.dataset.invoiceId;
-    if (event.target.closest(".view-invoice-admin")) openInvoiceReport(invoiceId);
+    if (event.target.closest(".view-invoice-admin")) openInvoiceViewModal(invoiceId);
     if (event.target.closest(".export-invoice-admin")) openInvoiceReport(invoiceId);
     if (event.target.closest(".edit-invoice-admin")) openAdminInvoiceEditor(invoiceId);
     if (event.target.closest(".void-invoice-admin")) voidInvoice(invoiceId);

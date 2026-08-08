@@ -1016,6 +1016,8 @@ export function resolveOrCreateClientProfile({
   const targetPhone = client.phone || client.telefono || "";
   const targetName = client.name || client.clienteNombre || client.nombreCompleto || "Cliente Chatbot";
   const targetEmail = (client.email || client.correo || "").trim().toLowerCase();
+  const targetDob = client.dateOfBirth || client.fechaNacimiento || "";
+  const targetPreferredService = client.preferredService || client.servicioInteres || "";
 
   const normalizedTargetPhone = normalizePhoneDigits(targetPhone);
   const normalizedSenderPhone = normalizePhoneDigits(senderPhone);
@@ -1097,6 +1099,12 @@ export function resolveOrCreateClientProfile({
     if (targetEmail && !existingClient.correo) {
       existingClient.correo = targetEmail;
     }
+    if (targetDob && !existingClient.fechaNacimiento) {
+      existingClient.fechaNacimiento = targetDob;
+    }
+    if (targetPreferredService && !existingClient.servicioInteres) {
+      existingClient.servicioInteres = targetPreferredService;
+    }
 
     existingClient.updated_at = nowISO;
 
@@ -1128,6 +1136,8 @@ export function resolveOrCreateClientProfile({
     nombreCompleto: targetName,
     telefono: targetPhone,
     correo: targetEmail,
+    fechaNacimiento: targetDob || null,
+    servicioInteres: targetPreferredService || null,
     lineasContactoVinculadas: linkedLines,
     origenRegistro: source,
     estado: "Activo",
@@ -1186,9 +1196,34 @@ export function generateWhatsAppReceiptText({
   paymentMethods = [],
   serviceName = "",
   staffName = "",
+  time = "",
 }) {
   const formattedDate = date || new Date().toISOString().slice(0, 10);
   const businessName = "DALFI STUDIO NAILS & ACADEMY";
+  const whenText = `${formattedDate}${time ? ` a las ${time}` : ""}`;
+
+  if (eventType === "booking.preapproved_reminder") {
+    return `🌸 *${businessName}* 🌸
+⏰ *RECORDATORIO: CITA PENDIENTE DE CONFIRMAR*
+----------------------------------------
+👤 *Cliente:* ${clientName}
+✨ *Servicio:* ${serviceName || "Servicio"}
+📅 *Fecha:* ${whenText}
+👩‍🎨 *Especialista:* ${staffName || "Manicurista"}
+----------------------------------------
+Tu cita todavía está *pendiente de confirmación* del salón. Responde a este mensaje o llámanos para confirmarla. ¡Te esperamos! ✨`;
+  }
+
+  if (eventType === "booking.preapproved_escalation") {
+    return `🌸 *${businessName}* 🌸
+⚠️ *TU CITA NECESITA ATENCIÓN*
+----------------------------------------
+👤 *Cliente:* ${clientName}
+✨ *Servicio:* ${serviceName || "Servicio"}
+📅 *Fecha:* ${whenText}
+----------------------------------------
+Un miembro de nuestro equipo te contactará en breve para confirmar los detalles de tu cita. ¡Gracias por tu paciencia! ✨`;
+  }
 
   if (eventType === "service.added") {
     return `🌸 *${businessName}* 🌸

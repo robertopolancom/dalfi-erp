@@ -689,6 +689,11 @@ textarea:focus {
   box-shadow: 0 20px 50px rgba(20, 15, 10, 0.25);
 }
 
+.invoice-modal-dialog {
+  max-width: 650px !important;
+  width: calc(100% - 32px);
+}
+
 .app-dialog::backdrop {
   background: rgba(20, 15, 10, 0.45);
 }
