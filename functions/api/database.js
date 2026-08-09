@@ -1,6 +1,7 @@
 import { insertAuditLog } from "./_lib/audit.js";
 import { resolveErpIdentity } from "./_lib/authz.js";
 import { authorizeDatabaseChanges, detectDatabaseChanges } from "./_lib/database-authz.js";
+import { syncChangedAppointmentsToGoogleCalendar } from "./_lib/google-calendar.js";
 
 const TABLE_NAME = "app";
 const RECORD_KEY = "database";
@@ -156,7 +157,29 @@ export async function onRequestPut({ request, env }) {
     });
     if (!audit.ok) console.error("database PUT: guardado completado pero fallo auditoria", audit.error);
 
-    return json({ saved: true, updatedAt: result.new_updated_at || null, changes: { domains: changes.domains, tables: changes.changedTables } });
+    // La base del ERP se guarda primero y sigue siendo la fuente de verdad.
+    // Google Calendar es una proyeccion secundaria: un fallo externo nunca
+    // revierte ni deja a medias el guardado autorizado de la cita.
+    const calendarSync = await syncChangedAppointmentsToGoogleCalendar(
+      env,
+      current.data,
+      payload.data,
+      { fetchImpl: env.fetch || fetch },
+    );
+    if (!calendarSync.ok && !calendarSync.skipped) {
+      console.warn("database PUT: sincronizacion de calendario pendiente", {
+        code: calendarSync.code,
+        total: calendarSync.total,
+        failed: calendarSync.failed,
+      });
+    }
+
+    return json({
+      saved: true,
+      updatedAt: result.new_updated_at || null,
+      changes: { domains: changes.domains, tables: changes.changedTables },
+      calendarSync,
+    });
   } catch (error) {
     console.error("database PUT:", error);
     return json({ error: "No se pudo guardar la base de datos." }, 500);

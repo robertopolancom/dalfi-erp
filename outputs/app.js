@@ -868,6 +868,11 @@ function stateFromDatabase(db) {
       serviceId: reservation.servicioID,
       service: reservation.servicio,
       staff: reservation.colaboradorNombre,
+      staffId: reservation.colaboradorID || "",
+      endTime: reservation.horaFin || "",
+      status: reservation.estado || "Programada",
+      globalBlock: Boolean(reservation.bloqueoGlobal),
+      googleCalendarEventId: reservation.googleCalendarEventId || "",
       invoiceId: reservation.facturaID || "",
       note: reservation.observaciones || "",
     })),
@@ -16205,6 +16210,18 @@ function wireForms() {
       facturaID: currentReservation?.record?.facturaID || currentReservation?.record?.invoiceId || "",
       observaciones: reservationNote,
     };
+    // Una colaboradora que completa un bloqueo importado de Google convierte
+    // el bloqueo global provisional en una reserva asignada. Se conserva
+    // googleCalendarEventId al usar Object.assign sobre el registro existente.
+    if (editId && currentReservation?.record?.googleCalendarEventId) {
+      const assignedStaff = dbTable("colaboradores").find((person) =>
+        normalize(person?.nombreCompleto || person?.nombre) === normalize(staff)
+      );
+      dbPayload.colaboradorID = assignedStaff?.colaboradorID || assignedStaff?.id || "";
+      dbPayload.bloqueoGlobal = !dbPayload.colaboradorID;
+      dbPayload.googleCalendarEventId = currentReservation.record.googleCalendarEventId;
+      dbPayload.clienteProvisional = isProvisional;
+    }
     try {
       if (editId) {
         const stateIndex = state.reservations.findIndex((reservation) => reservation.id === editId);

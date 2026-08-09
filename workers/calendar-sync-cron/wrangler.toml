@@ -1,0 +1,14 @@
+name = "dalfi-erp-calendar-sync-cron"
+main = "worker.js"
+compatibility_date = "2026-07-09"
+
+[vars]
+APP_BASE_URL = "https://dalfi-erp.pages.dev"
+REQUEST_TIMEOUT_MS = "20000"
+
+# Configurar como Secret en Worker y Pages, nunca en este archivo:
+# wrangler secret put GOOGLE_CALENDAR_SYNC_SECRET
+
+[triggers]
+# Cada minuto: un evento nuevo en Google bloquea pronto su intervalo en ERP.
+crons = ["* * * * *"]

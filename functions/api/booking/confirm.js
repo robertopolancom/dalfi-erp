@@ -1,6 +1,7 @@
 // Endpoint seguro server-side para confirmar reservas y evitar doble reserva (HTTP 409 Conflict).
 
 import { insertAuditLog } from "../_lib/audit.js";
+import { syncAppointmentToGoogleCalendar } from "../_lib/google-calendar.js";
 import {
   calculateAvailableSlots,
   selectBestAvailableCollaborator,
@@ -92,20 +93,100 @@ export async function onRequestPost({ request, env }) {
         return json({ success: false, error: `Reserva '${targetResId}' no encontrada.` }, 404);
       }
 
-      const updatedApt = {
+      let updatedApt = {
         ...existingApt,
         estado: payload.status || "Confirmada",
         observaciones: payload.notes || existingApt.observaciones || "",
         updated_at: new Date().toISOString(),
       };
+      let completedClientRecord = null;
+
+      // Un bloqueo creado desde Google solo puede completarse después de
+      // validar nuevamente todos los datos contra el catálogo y el motor de
+      // disponibilidad. Nunca se confirma por el mero hecho de recibir un
+      // reservationId.
+      const isGooglePending = Boolean(existingApt.googleCalendarEventId)
+        && String(existingApt.estado || "").toLowerCase().includes("pendiente de completar");
+      if (isGooglePending) {
+        const completionDate = dateStr || existingApt.fecha;
+        const completionTime = timeStr || existingApt.hora;
+        const completionLines = Array.isArray(serviceLines) ? serviceLines : [];
+        const completionClient = client && typeof client === "object" ? client : null;
+        if (!completionDate || !completionTime || !completionLines.length || !completionClient) {
+          return json({ success: false, code: "PENDING_RESERVATION_INCOMPLETE", error: "Para completar esta reserva se requieren clienta, servicio, fecha y hora." }, 400);
+        }
+        const services = Array.isArray(docData.servicios) ? docData.servicios : [];
+        const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];
+        const weeklySchedules = Array.isArray(docData.staffWeeklySchedules) ? docData.staffWeeklySchedules : [];
+        const exceptions = Array.isArray(docData.staffScheduleExceptions) ? docData.staffScheduleExceptions : [];
+        const bSched = normalizeBusinessSchedule(docData.businessSchedule);
+        const requestedStaffId = collaboratorPreference?.collaboratorId || existingApt.colaboradorID;
+        const assigned = staffList.find((person) => String(person.colaboradorID || person.id || person.nombreCompleto) === String(requestedStaffId));
+        if (!assigned || !isCollaboratorEligibleForServiceLines(assigned, completionLines, services)) {
+          return json({ success: false, code: "SPECIALIST_REQUIRED_OR_NOT_ELIGIBLE", error: "Selecciona una manicurista válida para los servicios solicitados." }, 409);
+        }
+        const otherAppointments = appointments.filter((appointment) => String(appointment.reservaID) !== String(targetResId));
+        const availability = calculateAvailableSlots({
+          date: completionDate,
+          collaboratorId: String(assigned.colaboradorID || assigned.id),
+          serviceLines: completionLines,
+          businessSchedule: bSched,
+          weeklySchedules,
+          exceptions,
+          appointments: otherAppointments,
+          services,
+          now: new Date(),
+        });
+        if (!availability.available || !availability.slots.some((slot) => slot.time === completionTime)) {
+          return json({ success: false, code: "SLOT_NO_LONGER_AVAILABLE", error: "El horario ya no está disponible." }, 409);
+        }
+        const duration = calculateAppointmentDuration({ serviceLines: completionLines, services });
+        const startMinutes = parseTimeToMinutes(completionTime);
+        const endMinutes = startMinutes + (duration.totalServiceMinutes || 30);
+        const endTime = `${String(Math.floor(endMinutes / 60)).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`;
+        const clientProfile = resolveOrCreateClientProfile({
+          clientList: Array.isArray(docData.clientes) ? docData.clientes : [],
+          client: completionClient,
+          senderPhone: sourceConversationId || payload.senderPhone || null,
+          source: source || "chatbot_whatsapp",
+        });
+        completedClientRecord = clientProfile;
+        updatedApt = {
+          ...updatedApt,
+          fecha: completionDate,
+          hora: completionTime,
+          horaFin: endTime,
+          duracionMin: duration.totalServiceMinutes || 30,
+          clienteID: clientProfile.clientId,
+          clienteNombre: clientProfile.clientName,
+          telefono: clientProfile.clientRecord?.telefono || completionClient.phone || "",
+          correo: completionClient.email || "",
+          clienteProvisional: false,
+          colaboradorID: String(assigned.colaboradorID || assigned.id),
+          colaboradorNombre: assigned.nombreCompleto || assigned.nombre,
+          servicioID: completionLines[0]?.serviceId || completionLines[0]?.servicioID || "",
+          servicio: duration.evaluatedServices.map((line) => line.name).join(" + "),
+          servicios: duration.evaluatedServices.map((line) => ({ servicioID: line.id, servicio: line.name, duracionMin: line.durationMinutes })),
+          bloqueoGlobal: false,
+          estado: payload.status || "Confirmada",
+        };
+      }
 
       const updatedReservas = appointments.map((a) =>
         String(a.reservaID) === String(targetResId) ? updatedApt : a
       );
 
+      const nextData = { ...docData, reservas: updatedReservas };
+      if (completedClientRecord?.clientRecord) {
+        const clients = Array.isArray(docData.clientes) ? docData.clientes : [];
+        nextData.clientes = completedClientRecord.isNew
+          ? [...clients, completedClientRecord.clientRecord]
+          : clients.map((item) => String(item.clienteID || item.id) === String(completedClientRecord.clientId)
+            ? completedClientRecord.clientRecord : item);
+      }
       const updatedDoc = currentDoc.data
-        ? { ...currentDoc, data: { ...currentDoc.data, reservas: updatedReservas } }
-        : { ...currentDoc, reservas: updatedReservas };
+        ? { ...currentDoc, data: nextData }
+        : nextData;
 
       const saveRes = await safeFetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
         method: "POST",
@@ -120,9 +201,20 @@ export async function onRequestPost({ request, env }) {
 
       if (!saveRes.ok) return json({ error: "Fallo al actualizar el estado de la reserva." }, 500);
 
+      const calendarSync = await syncAppointmentToGoogleCalendar(
+        env,
+        updatedApt,
+        {
+          services: Array.isArray(docData.servicios) ? docData.servicios : [],
+          staff: Array.isArray(docData.colaboradores) ? docData.colaboradores : [],
+        },
+        { fetchImpl: env.fetch || fetch },
+      );
+
       return json({
         success: true,
         updated: true,
+        calendarSync,
         appointment: {
           appointmentId: updatedApt.reservaID,
           confirmationCode: updatedApt.reservaID,
@@ -135,9 +227,19 @@ export async function onRequestPost({ request, env }) {
     // 2b. Verificar idempotencia: si la idempotencyKey ya existe, devolver la cita guardada
     const existingKeyApt = appointments.find((a) => a.idempotencyKey === idempotencyKey);
     if (existingKeyApt) {
+      const calendarSync = await syncAppointmentToGoogleCalendar(
+        env,
+        existingKeyApt,
+        {
+          services: Array.isArray(docData.servicios) ? docData.servicios : [],
+          staff: Array.isArray(docData.colaboradores) ? docData.colaboradores : [],
+        },
+        { fetchImpl: env.fetch || fetch },
+      );
       return json({
         success: true,
         idempotent: true,
+        calendarSync,
         appointment: {
           appointmentId: existingKeyApt.reservaID,
           confirmationCode: existingKeyApt.reservaID,
@@ -369,8 +471,16 @@ export async function onRequestPost({ request, env }) {
       note: "Reserva confirmada con éxito por la API de reservas.",
     });
 
+    const calendarSync = await syncAppointmentToGoogleCalendar(
+      env,
+      newAppointment,
+      { services, staff: staffList },
+      { fetchImpl: env.fetch || fetch },
+    );
+
     return json({
       success: true,
+      calendarSync,
       appointment: {
         appointmentId: newReservaID,
         confirmationCode: newReservaID,

@@ -455,6 +455,7 @@ export function calculateAvailableSlots({
     // Verificar colaboradora
     const aptStaff = String(apt.colaboradorID || apt.collaboratorId || apt.colaboradorNombre || "");
     const targetStaff = String(collaboratorId);
+    if (apt.bloqueoGlobal === true || apt.globalBlock === true) return true;
     return aptStaff.includes(targetStaff) || targetStaff.includes(aptStaff);
   });
 
@@ -817,6 +818,7 @@ export function buildConsolidatedDailyMatrix({
       if (aptDate !== date) return false;
 
       const aptStaff = String(apt.colaboradorID || apt.collaboratorId || apt.colaboradorNombre || "");
+      if (apt.bloqueoGlobal === true || apt.globalBlock === true) return true;
       return aptStaff.includes(staff.id) || staff.id.includes(aptStaff);
     });
 

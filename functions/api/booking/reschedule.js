@@ -1,6 +1,7 @@
 // Endpoint server-side para reprogramar una reserva existente.
 
 import { insertAuditLog } from "../_lib/audit.js";
+import { syncAppointmentToGoogleCalendar } from "../_lib/google-calendar.js";
 import {
   calculateAvailableSlots,
   normalizeBusinessSchedule,
@@ -183,9 +184,17 @@ export async function onRequestPost({ request, env }) {
       note: "Reserva reprogramada exitosamente.",
     });
 
+    const calendarSync = await syncAppointmentToGoogleCalendar(
+      env,
+      updatedApt,
+      { services, staff: staffList },
+      { fetchImpl: env.fetch || fetch },
+    );
+
     return json({
       success: true,
       message: "Reserva reprogramada con éxito.",
+      calendarSync,
       appointment: {
         appointmentId,
         startAt: `${targetDate}T${targetTime}:00`,

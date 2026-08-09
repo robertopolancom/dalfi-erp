@@ -1,6 +1,7 @@
 // Endpoint server-side para cancelar una reserva.
 
 import { insertAuditLog } from "../_lib/audit.js";
+import { syncAppointmentToGoogleCalendar } from "../_lib/google-calendar.js";
 
 import { validateChatbotSecret } from "./_auth.js";
 
@@ -61,7 +62,16 @@ export async function onRequestPost({ request, env }) {
 
     const targetApt = appointments[targetIndex];
     if (targetApt.estado === "Cancelada") {
-      return json({ success: true, message: "La reserva ya se encontraba cancelada.", appointment: targetApt });
+      const calendarSync = await syncAppointmentToGoogleCalendar(
+        env,
+        targetApt,
+        {
+          services: Array.isArray(docData.servicios) ? docData.servicios : [],
+          staff: Array.isArray(docData.colaboradores) ? docData.colaboradores : [],
+        },
+        { fetchImpl: env.fetch || fetch },
+      );
+      return json({ success: true, message: "La reserva ya se encontraba cancelada.", appointment: targetApt, calendarSync });
     }
 
     const updatedApt = {
@@ -105,11 +115,22 @@ export async function onRequestPost({ request, env }) {
       note: "Reserva cancelada exitosamente.",
     });
 
+    const calendarSync = await syncAppointmentToGoogleCalendar(
+      env,
+      updatedApt,
+      {
+        services: Array.isArray(docData.servicios) ? docData.servicios : [],
+        staff: Array.isArray(docData.colaboradores) ? docData.colaboradores : [],
+      },
+      { fetchImpl: env.fetch || fetch },
+    );
+
     return json({
       success: true,
       message: "Reserva cancelada con éxito. El horario ha sido liberado.",
       appointmentId,
       status: "Cancelada",
+      calendarSync,
     });
   } catch (error) {
     console.error("booking/cancel POST:", error);
