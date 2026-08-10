@@ -11413,6 +11413,7 @@ function fillDataForm(type, id) {
     byId("account-number").value = account.numeroCuenta || "";
     byId("account-owner").value = account.titular || "";
     byId("account-owner-document").value = account.documentoTitular || "";
+    byId("account-owner-document-type").value = account.tipoDocumentoTitular || "Cedula";
     byId("account-currency").value = account.moneda || "DOP";
     byId("account-status").value = account.estado || "Activo";
     byId("account-opening-balance").value = Number(account.balanceInicial) || 0;
@@ -17431,6 +17432,7 @@ function wireForms() {
       numeroCuenta: byId("account-number").value.trim(),
       titular: byId("account-owner").value.trim(),
       documentoTitular: byId("account-owner-document").value.trim(),
+      tipoDocumentoTitular: byId("account-owner-document-type").value,
       moneda: byId("account-currency").value,
       balanceInicial: Number(byId("account-opening-balance").value) || 0,
       balanceMinimo: Number(byId("account-min-balance").value) || 0,
