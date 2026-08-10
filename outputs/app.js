@@ -4348,13 +4348,44 @@ function renderConsolidatedMatrix() {
       if (slot.status === "available") {
         html += `<td style="background:#f0fdf4;"><span class="slot-badge available">Disponible</span></td>`;
       } else if (slot.status === "booked") {
-        const isPre = slot.appointmentStatus === "Preaprobada";
-        const badgeClass = isPre ? "slot-badge exception" : "slot-badge booked";
+        // Colores por `estado` (dimensión principal) + notas pequeñas por
+        // `estadoConfirmacion`/`estadoDeposito` (dimensiones independientes) — ver
+        // outputs/lib/booking-engine.js y la leyenda estática en outputs/index.html.
+        const ESTADO_STYLE = {
+          preaprobada: { bg: "#eff6ff", badgeClass: "preaprobada", label: "Preaprobada" },
+          confirmada: { bg: "#f0fdf4", badgeClass: "confirmada", label: "Reservada hasta " + slot.busyUntil },
+          reprogramada: { bg: "#eef2ff", badgeClass: "reprogramada", label: "Reprogramada" },
+          completada: { bg: "#f8fafc", badgeClass: "completada", label: "Completada" },
+        };
+        const estadoKey = String(slot.appointmentStatus || "").toLowerCase();
+        const style = ESTADO_STYLE[estadoKey] || { bg: "#fef2f2", badgeClass: "booked", label: "Reservada hasta " + slot.busyUntil };
+        const isPre = estadoKey === "preaprobada";
+
+        const CONFIRM_NOTES = {
+          programada: { cls: "programada", text: "🕐 Recordatorio programado" },
+          pendienteconfirmarhora: { cls: "pendiente-confirmar", text: "⚠️ Esperando confirmación" },
+          horaconfirmada: { cls: "hora-confirmada", text: "✅ Asistencia confirmada" },
+          reagendada: { cls: "reagendada", text: "🔄 Reagendada" },
+        };
+        const confirmState = String(slot.appointment?.estadoConfirmacion || "").toLowerCase();
+        const confirmNote = CONFIRM_NOTES[confirmState];
+
+        const DEPOSIT_NOTES = {
+          comprobanterecibido: { cls: "comprobante-recibido", text: "📎 Comprobante recibido" },
+          pendienteverificacion: { cls: "pendiente-verificacion", text: "📎 Verificando comprobante" },
+          verificado: { cls: "verificado", text: "💰 Depósito verificado" },
+          rechazado: { cls: "rechazado", text: "🚫 Depósito rechazado" },
+        };
+        const depositState = String(slot.appointment?.estadoDeposito || "").toLowerCase();
+        const depositNote = DEPOSIT_NOTES[depositState];
+
         html += `
-          <td style="background:${isPre ? "#eff6ff" : "#fef2f2"};">
-            <span class="${badgeClass}">${isPre ? "Preaprobada" : "Reservada hasta " + slot.busyUntil}</span>
+          <td style="background:${style.bg};">
+            <span class="slot-badge ${style.badgeClass}">${style.label}</span>
             <div style="font-size:12px; font-weight:600; margin-top:2px;">${escapeHtml(slot.clientName)}</div>
             <div style="font-size:11px; color:#475569;">${escapeHtml(slot.service)}</div>
+            ${confirmNote ? `<div class="slot-confirm-note ${confirmNote.cls}">${confirmNote.text}</div>` : ""}
+            ${depositNote ? `<div class="slot-deposit-note ${depositNote.cls}">${depositNote.text}</div>` : ""}
             ${isPre ? `<button class="secondary-btn compact confirm-salon-reservation" data-reservation-id="${escapeHtml(slot.appointmentId)}" style="margin-top:4px; font-size:10px;" type="button">Confirmar</button>` : ""}
           </td>
         `;

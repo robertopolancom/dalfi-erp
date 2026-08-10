@@ -830,6 +830,81 @@ textarea:focus {
   color: #3730a3;
 }
 
+/* Estados de reserva (dimensión `estado`) en la Matriz Consolidada — ver
+   outputs/app.js renderConsolidatedMatrix() y outputs/lib/booking-engine.js
+   para el modelo de 3 dimensiones (estado/estadoDeposito/estadoConfirmacion). */
+.slot-badge.preaprobada {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.slot-badge.confirmada {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.slot-badge.reprogramada {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.slot-badge.completada {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+/* Indicadores pequeños de `estadoConfirmacion` (confirmación de asistencia)
+   y `estadoDeposito` (verificación de comprobante), mostrados dentro de la
+   celda junto al badge de estado principal — texto simple, no badges con
+   fondo, para no competir visualmente con el color de la celda. */
+.slot-confirm-note {
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.slot-confirm-note.programada { color: #64748b; }
+.slot-confirm-note.pendiente-confirmar { color: #b45309; }
+.slot-confirm-note.hora-confirmada { color: #166534; }
+.slot-confirm-note.reagendada { color: #3730a3; }
+
+.slot-deposit-note {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.slot-deposit-note.comprobante-recibido,
+.slot-deposit-note.pendiente-verificacion { color: #b45309; }
+.slot-deposit-note.verificado { color: #166534; }
+.slot-deposit-note.rechazado { color: #b91c1c; }
+
+/* Leyenda estática de la Matriz Consolidada */
+.matrix-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  align-items: center;
+  padding: 10px 12px;
+  margin: 10px 0;
+  background: #f8fafc;
+  border: 1px solid var(--line, #e2e8f0);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.matrix-legend-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.matrix-legend-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line, #e2e8f0);
+}
+
 .schedule-table {
   width: 100%;
   border-collapse: collapse;
