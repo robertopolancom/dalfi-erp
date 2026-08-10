@@ -78,55 +78,65 @@ test("buildConsolidatedDailyMatrix consolida disponibilidad y citas por hora par
   assert.equal(slot1200.staffSlots["COL-2"].status, "lunch");
 });
 
-test("checkPreapprovedConfirmationReminder detecta citas del chatbot pendientes 4h antes de la cita y genera ciclo horario", () => {
-  const oldDate = new Date(Date.now() - 2 * 3600 * 1000).toISOString(); // Hace 2 horas
-
-  const overdueApt = {
+test("checkPreapprovedConfirmationReminder: primer y segundo recordatorio según estadoConfirmacion (modelo de dos disparos exactos, no ciclo horario)", () => {
+  // "Programada" cuya cita cae dentro de las 4h laborales siguientes -> primer recordatorio.
+  const dueForFirst = {
     reservaID: "RES-CHAT-01",
     estado: "Preaprobada",
+    estadoConfirmacion: "Programada",
     canalOrigen: "chatbot_whatsapp",
-    created_at: oldDate,
+    fecha: "2026-08-04",
+    hora: "10:00",
   };
+  const firstCheck = checkPreapprovedConfirmationReminder(dueForFirst, "2026-08-04T13:00:00Z"); // 09:00 SD, cita a las 10:00 SD misma mañana
+  assert.equal(firstCheck.requiresFirstReminder, true);
+  assert.equal(firstCheck.requiresSecondReminder, false);
 
-  const freshApt = {
-    reservaID: "RES-ERP-01",
-    estado: "Confirmada",
-    canalOrigen: "ERP",
+  // "PendienteConfirmarHora" (primer recordatorio ya enviado hace más de 1h laboral) -> segundo recordatorio + liberación.
+  const dueForSecond = {
+    ...dueForFirst,
+    estadoConfirmacion: "PendienteConfirmarHora",
+    primerRecordatorioEnviadoEn: "2026-08-04T13:00:00Z", // 09:00 SD
   };
+  const secondCheck = checkPreapprovedConfirmationReminder(dueForSecond, "2026-08-04T14:30:00Z"); // 10:30 SD, 1.5h laboral después del primero
+  assert.equal(secondCheck.requiresFirstReminder, false);
+  assert.equal(secondCheck.requiresSecondReminder, true);
+  assert.equal(secondCheck.shouldRelease, true);
 
-  const reminderOverdue = checkPreapprovedConfirmationReminder(overdueApt);
-  assert.equal(reminderOverdue.requiresConfirmationAlert, true);
-  assert.equal(reminderOverdue.hourlyCycle, 2);
-  assert.ok(reminderOverdue.alertReason.includes("Recordatorio horario #2"));
-
+  // Una reserva ya confirmada por el ERP (estadoConfirmacion "NoRequerida") nunca necesita recordatorio.
+  const freshApt = { reservaID: "RES-ERP-01", estado: "Confirmada", estadoConfirmacion: "NoRequerida", canalOrigen: "ERP" };
   const reminderFresh = checkPreapprovedConfirmationReminder(freshApt);
-  assert.equal(reminderFresh.requiresConfirmationAlert, false);
+  assert.equal(reminderFresh.requiresFirstReminder, false);
+  assert.equal(reminderFresh.requiresSecondReminder, false);
 });
 
-test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 4h o menos de anticipación a la cita", () => {
+test("determineInitialBookingStatus confirma citas de chatbot solicitadas con 4h laborales o menos de anticipación a la cita", () => {
   const refTime = new Date("2026-08-03T10:00:00Z");
 
-  // 1. Cita del chatbot solicitada para dentro de 2 horas (12:00) -> Queda "Confirmada" automáticamente
-  const statusUrgent = determineInitialBookingStatus({
+  // 1. Cita del chatbot solicitada dentro de la ventana de 4h laborales -> Queda "Confirmada"/"NoRequerida" automáticamente
+  const resultUrgent = determineInitialBookingStatus({
     source: "chatbot_whatsapp",
     requestedStartAt: "2026-08-03T12:00:00Z",
     referenceTime: refTime,
   });
-  assert.equal(statusUrgent, "Confirmada");
+  assert.equal(resultUrgent.estado, "Confirmada");
+  assert.equal(resultUrgent.estadoConfirmacion, "NoRequerida");
 
-  // 2. Cita del chatbot solicitada para dentro de 24 horas (mañana 10:00) -> Queda "Preaprobada"
-  const statusFar = determineInitialBookingStatus({
+  // 2. Cita del chatbot solicitada con más de 4h laborales de anticipación -> Queda "Preaprobada"/"Programada"
+  const resultFar = determineInitialBookingStatus({
     source: "chatbot_whatsapp",
     requestedStartAt: "2026-08-04T10:00:00Z",
     referenceTime: refTime,
   });
-  assert.equal(statusFar, "Preaprobada");
+  assert.equal(resultFar.estado, "Preaprobada");
+  assert.equal(resultFar.estadoConfirmacion, "Programada");
 
-  // 3. Cita del ERP -> Queda "Confirmada" independientemente del tiempo
-  const statusErp = determineInitialBookingStatus({
+  // 3. Cita del ERP -> Queda "Confirmada"/"NoRequerida" independientemente del tiempo
+  const resultErp = determineInitialBookingStatus({
     source: "ERP",
     requestedStartAt: "2026-08-04T10:00:00Z",
     referenceTime: refTime,
   });
-  assert.equal(statusErp, "Confirmada");
+  assert.equal(resultErp.estado, "Confirmada");
+  assert.equal(resultErp.estadoConfirmacion, "NoRequerida");
 });

@@ -566,11 +566,15 @@ export function calculateAvailableSlots({
   // 2. Citas existentes activas
   const activeAppointments = appointments.filter((apt) => {
     const status = String(apt.estado || apt.status || "").toLowerCase();
-    // "No confirmada" (Preaprobada que llegó a su hora sin confirmarse, ver
-    // checkPreapprovedConfirmationReminder + send-reminders.js) libera el horario
-    // igual que una cancelación: no debe seguir bloqueando la agenda de la manicurista.
+    const confirmState = String(apt.estadoConfirmacion || "").toLowerCase();
+    // "EspacioLiberado" (Preaprobada que llegó al segundo recordatorio sin
+    // confirmarse, ver checkPreapprovedConfirmationReminder + send-reminders.js)
+    // y "Reemplazada" (otra reserva confirmada ya tomó ese horario, ver
+    // functions/api/booking/confirm.js) liberan el horario igual que una
+    // cancelación: no deben seguir bloqueando la agenda de la manicurista.
     const isCancelled = status.includes("cancelad") || status.includes("reprogramad")
-      || status.includes("no_asistio") || status.includes("no confirmada");
+      || status.includes("no_asistio") || status.includes("reemplazada")
+      || confirmState === "espacioliberado";
     if (isCancelled) return false;
     const aptDate = apt.fecha || (apt.startAt ? apt.startAt.slice(0, 10) : null);
     if (aptDate !== date) return false;
@@ -935,11 +939,12 @@ export function buildConsolidatedDailyMatrix({
 
     const staffApts = appointments.filter((apt) => {
       const status = String(apt.estado || apt.status || "").toLowerCase();
-      // "No confirmada" (Preaprobada que llegó a su hora sin confirmarse, ver
-      // checkPreapprovedConfirmationReminder + send-reminders.js) libera el horario
-      // igual que una cancelación: no debe seguir bloqueando la agenda de la manicurista.
+      const confirmState = String(apt.estadoConfirmacion || "").toLowerCase();
+      // "EspacioLiberado"/"Reemplazada" liberan el horario igual que una
+      // cancelación — ver el bloque equivalente en calculateAvailableSlots arriba.
       const isCancelled = status.includes("cancelad") || status.includes("reprogramad")
-        || status.includes("no_asistio") || status.includes("no confirmada");
+        || status.includes("no_asistio") || status.includes("reemplazada")
+        || confirmState === "espacioliberado";
       if (isCancelled) return false;
       const aptDate = apt.fecha || (apt.startAt ? apt.startAt.slice(0, 10) : null);
       if (aptDate !== date) return false;
@@ -1082,64 +1087,79 @@ export function buildConsolidatedDailyMatrix({
   };
 }
 
-// Verifica si una reserva creada vía Chatbot (estado "Preaprobada") está dentro de la ventana de 4 horas antes de la cita o requiere recordatorio horario.
-// businessSchedule: horario del negocio (ver normalizeBusinessSchedule) —
-// las "4 horas antes" se cuentan solo en horario laboral real (ver
-// businessMinutesUntil), no en horas de reloj puro, para no pedir
-// confirmación a horas en que el salón lleva cerrado.
+// Decide si toca enviar el primer/segundo recordatorio de confirmación de
+// asistencia, o liberar el horario — según estadoConfirmacion (dimensión
+// independiente de estado/estadoDeposito, ver determineInitialBookingStatus)
+// y horas laborales reales (businessMinutesUntil, nunca reloj puro).
+//
+// Regla (dos disparos exactos, no una cadencia horaria):
+// - "Programada" + faltan <=4h laborales para la cita -> requiresFirstReminder.
+// - "PendienteConfirmarHora" (primer recordatorio ya enviado, estampado en
+//   appointment.primerRecordatorioEnviadoEn) + ya pasó >=1h laboral desde
+//   ese envío sin que la clienta confirme/reagende -> requiresSecondReminder
+//   Y shouldRelease (el segundo recordatorio y la liberación del horario
+//   ocurren en el mismo evento, tal como pide el encargo).
+// - Cualquier otro estadoConfirmacion (NoRequerida, HoraConfirmada,
+//   EspacioLiberado, Reagendada) no necesita ninguna acción de este motor.
 export function checkPreapprovedConfirmationReminder(appointment, referenceDateStr = null, businessSchedule = {}) {
-  if (!appointment) return { requiresConfirmationAlert: false };
-  const status = String(appointment.estado || appointment.status || "");
-  const source = String(appointment.canalOrigen || appointment.source || "").toLowerCase();
-
-  const isPreapproved = status === "Preaprobada" || status === "Pendiente" || status.includes("Preaprobad");
-  const isChatbotSource = source.includes("chatbot") || source.includes("whatsapp") || source.includes("instagram");
-
-  if (!isPreapproved && !isChatbotSource) {
-    return { requiresConfirmationAlert: false };
-  }
+  const none = { requiresFirstReminder: false, requiresSecondReminder: false, shouldRelease: false, hoursUntilAppointment: null };
+  if (!appointment) return none;
+  const confirmState = String(appointment.estadoConfirmacion || "");
+  if (confirmState !== "Programada" && confirmState !== "PendienteConfirmarHora") return none;
 
   const refTime = referenceDateStr ? new Date(referenceDateStr).getTime() : Date.now();
-  const createdAt = appointment.created_at || appointment.createdAt;
-  const createdTime = createdAt ? new Date(createdAt).getTime() : refTime;
-
   const aptDateStr = appointment.fecha || (appointment.startAt ? appointment.startAt.slice(0, 10) : null);
   const aptTimeStr = appointment.hora || (appointment.startAt ? appointment.startAt.slice(11, 16) : null);
   let aptStartMs = null;
   if (aptDateStr && aptTimeStr) {
     aptStartMs = new Date(`${aptDateStr}T${aptTimeStr}:00`).getTime();
   }
+  if (!aptStartMs) return none;
 
-  const hoursUntilAppointment = aptStartMs ? businessMinutesUntil(refTime, aptStartMs, businessSchedule) / 60 : 99;
-  const elapsedHoursSinceBooking = Math.max(0, (refTime - createdTime) / (1000 * 3600));
+  const hoursUntilAppointment = Math.round((businessMinutesUntil(refTime, aptStartMs, businessSchedule) / 60) * 10) / 10;
 
-  // Alerta requerida si faltan 4 horas o menos para la cita, o si ya pasó 1 hora de solicitud sin confirmación manual en ERP
-  const inConfirmationWindow = hoursUntilAppointment <= 4 || elapsedHoursSinceBooking >= 1;
+  if (confirmState === "Programada") {
+    return {
+      requiresFirstReminder: hoursUntilAppointment <= 4,
+      requiresSecondReminder: false,
+      shouldRelease: false,
+      hoursUntilAppointment,
+    };
+  }
 
-  const hourlyCycle = Math.max(1, Math.floor(elapsedHoursSinceBooking));
-
+  // confirmState === "PendienteConfirmarHora"
+  const firstReminderAt = appointment.primerRecordatorioEnviadoEn;
+  if (!firstReminderAt) {
+    // No debería pasar (se estampa siempre al enviar el primero) — salvaguarda defensiva.
+    return { requiresFirstReminder: true, requiresSecondReminder: false, shouldRelease: false, hoursUntilAppointment };
+  }
+  const firstReminderMs = new Date(firstReminderAt).getTime();
+  const businessHoursSinceFirstReminder = businessMinutesUntil(firstReminderMs, refTime, businessSchedule) / 60;
+  const requiresSecondReminder = businessHoursSinceFirstReminder >= 1;
   return {
-    requiresConfirmationAlert: inConfirmationWindow,
-    hoursUntilAppointment: Math.round(hoursUntilAppointment * 10) / 10,
-    elapsedHoursSinceBooking: Math.round(elapsedHoursSinceBooking * 10) / 10,
-    hourlyCycle,
-    alertReason: inConfirmationWindow
-      ? `⏰ Cita preaprobada requiere confirmación (faltan ${Math.max(0, Math.round(hoursUntilAppointment * 10) / 10)}h para la cita). Recordatorio horario #${hourlyCycle}.`
-      : "Reserva preaprobada pendiente de confirmación.",
+    requiresFirstReminder: false,
+    requiresSecondReminder,
+    shouldRelease: requiresSecondReminder,
+    hoursUntilAppointment,
   };
 }
 
-// Determina el estado inicial de una reserva.
+// Determina el estado inicial de una reserva nueva, en sus 3 dimensiones
+// independientes (estado general / estadoDeposito / estadoConfirmacion —
+// ver el modelo documentado en el encargo de depósitos y confirmación).
 // Si se reservó vía chatbot con 4 horas laborales o menos de anticipación a
-// la cita, queda "Confirmada" automáticamente. De lo contrario (más de 4h
-// laborales de anticipación), queda "Preaprobada". Si es del ERP, queda
-// "Confirmada". businessSchedule: ver normalizeBusinessSchedule — las 4h se
-// cuentan solo en horario laboral real (ver businessMinutesUntil), no en
-// horas de reloj puro.
+// la cita, "estado" queda "Confirmada" automáticamente y "estadoConfirmacion"
+// nace "NoRequerida" (nunca se programan recordatorios para esa cita). De lo
+// contrario (más de 4h laborales de anticipación), "estado" queda
+// "Preaprobada" y "estadoConfirmacion" nace "Programada". Si es del ERP
+// (canal no-chatbot), "Confirmada" + "NoRequerida" siempre. "estadoDeposito"
+// siempre nace "Pendiente" — su transición la maneja el flujo de
+// comprobantes, no este motor. businessSchedule: ver normalizeBusinessSchedule
+// — las 4h se cuentan solo en horario laboral real (businessMinutesUntil).
 export function determineInitialBookingStatus({ source, requestedStartAt = null, date = null, time = null, referenceTime = new Date(), businessSchedule = {} }) {
   const src = String(source || "").toLowerCase();
   const isChatbot = src.includes("chatbot") || src.includes("whatsapp") || src.includes("instagram");
-  if (!isChatbot) return "Confirmada";
+  if (!isChatbot) return { estado: "Confirmada", estadoDeposito: "Pendiente", estadoConfirmacion: "NoRequerida" };
 
   let aptStartMs = null;
   if (requestedStartAt) {
@@ -1148,17 +1168,17 @@ export function determineInitialBookingStatus({ source, requestedStartAt = null,
     aptStartMs = new Date(`${date}T${time}:00`).getTime();
   }
 
-  if (!aptStartMs || isNaN(aptStartMs)) return "Preaprobada";
+  if (!aptStartMs || isNaN(aptStartMs)) return { estado: "Preaprobada", estadoDeposito: "Pendiente", estadoConfirmacion: "Programada" };
 
   const refMs = referenceTime instanceof Date ? referenceTime.getTime() : new Date(referenceTime).getTime();
   const hoursUntilAppointment = businessMinutesUntil(refMs, aptStartMs, businessSchedule) / 60;
 
   // Si quedan 4 horas laborales o menos para la cita (o cita inminente), queda "Confirmada" automáticamente
   if (hoursUntilAppointment <= 4) {
-    return "Confirmada";
+    return { estado: "Confirmada", estadoDeposito: "Pendiente", estadoConfirmacion: "NoRequerida" };
   }
 
-  return "Preaprobada";
+  return { estado: "Preaprobada", estadoDeposito: "Pendiente", estadoConfirmacion: "Programada" };
 }
 
 // Normaliza números de teléfono para comparar sin formato (espacios, guiones, extensión +1)
@@ -1423,6 +1443,24 @@ export function generateWhatsAppReceiptText({
 👩‍🎨 *Especialista:* ${staffName || "Manicurista"}
 ----------------------------------------
 Tu cita todavía está *pendiente de confirmación* del salón. Responde a este mensaje o llámanos para confirmarla. ¡Te esperamos! ✨`;
+  }
+
+  // Mismo texto para el primer y segundo recordatorio de confirmación de
+  // asistencia (el encargo pide reenviar exactamente el mismo menú la
+  // segunda vez) — la diferencia entre ambos la maneja el estado de la
+  // reserva (estadoConfirmacion), no el mensaje.
+  if (eventType === "booking.confirmation_reminder") {
+    return `Queremos confirmar tu asistencia a la cita reservada. 💖
+
+👤 *Cliente:* ${clientName}
+✨ *Servicio:* ${serviceName || "Servicio"}
+📅 *Fecha:* ${whenText}
+
+1. Confirmar mi hora
+
+2. Reagendar mi cita
+
+3. Menú principal`;
   }
 
   if (eventType === "booking.preapproved_escalation") {

@@ -93,11 +93,13 @@ export async function onRequestPost({ request, env }) {
         return json({ success: false, error: `Reserva '${targetResId}' no encontrada.` }, 404);
       }
 
-      // Una cita "No confirmada" (llegó a su hora sin confirmarse, ver
-      // send-reminders.js) libera su horario para que otra reserva lo tome. Si
-      // eso ya pasó (esta cita quedó "Reprogramada" o "Cancelada"), confirmarla
-      // ahora resucitaría una reserva cuyo horario ya es de otra clienta.
-      const alreadyReassignedStatuses = new Set(["reprogramada", "cancelada"]);
+      // Una cita en estadoConfirmacion "EspacioLiberado" (segundo recordatorio
+      // sin confirmar, ver send-reminders.js) libera su horario para que otra
+      // reserva lo tome. Si eso ya pasó (esta cita quedó "Reemplazada" —u
+      // "Reprogramada", cambio manual de fecha/hora por el staff— o
+      // "Cancelada"), confirmarla ahora resucitaría una reserva cuyo horario
+      // ya es de otra clienta.
+      const alreadyReassignedStatuses = new Set(["reemplazada", "reprogramada", "cancelada"]);
       if (alreadyReassignedStatuses.has(String(existingApt.estado || "").toLowerCase())) {
         return json({
           success: false,
@@ -106,11 +108,16 @@ export async function onRequestPost({ request, env }) {
         }, 409);
       }
 
+      const nextEstado = payload.status || "Confirmada";
       let updatedApt = {
         ...existingApt,
-        estado: payload.status || "Confirmada",
+        estado: nextEstado,
         observaciones: payload.notes || existingApt.observaciones || "",
         updated_at: new Date().toISOString(),
+        // Confirmar la reserva (por respuesta del chatbot o botón del salón)
+        // también confirma la asistencia — dimensión independiente de
+        // estadoDeposito, que esto NUNCA toca (ver checkPreapprovedConfirmationReminder).
+        ...(nextEstado === "Confirmada" ? { estadoConfirmacion: "HoraConfirmada" } : {}),
       };
       let completedClientRecord = null;
 
@@ -422,7 +429,7 @@ export async function onRequestPost({ request, env }) {
       idempotencyKey,
       selectedByClient: collaboratorPreference.mode === "specific",
       assignmentStrategy,
-      estado: determineInitialBookingStatus({
+      ...determineInitialBookingStatus({
         source,
         requestedStartAt,
         date: dateStr,
@@ -437,19 +444,22 @@ export async function onRequestPost({ request, env }) {
       updated_at: new Date().toISOString(),
     };
 
-    // Si esta manicurista y horario ya tenían una cita "No confirmada" (llegó a
-    // su hora sin confirmarse y liberó el espacio, ver send-reminders.js), esta
-    // nueva reserva confirmada la reemplaza: la vieja pasa a "Reprogramada" en
-    // vez de quedar fantasma bloqueando o compitiendo por el mismo horario.
-    const bumpedNote = "Reprogramada: su horario fue tomado por otra reserva confirmada tras no confirmarse a tiempo.";
+    // Si esta manicurista y horario ya tenían una cita con estadoConfirmacion
+    // "EspacioLiberado" (llegó al segundo recordatorio sin confirmarse y
+    // liberó el espacio, ver send-reminders.js), esta nueva reserva
+    // confirmada la reemplaza: la vieja pasa a estado "Reemplazada" en vez de
+    // quedar fantasma bloqueando o compitiendo por el mismo horario. El
+    // depósito de la vieja (si lo hubiera) NO se toca aquí — la política es
+    // que un reagendamiento nunca cobra depósito nuevo, y esto no es un
+    // reagendamiento de esa cliente sino que otra persona tomó el horario.
     const appointmentsWithBump = appointments.map((apt) => {
-      if (String(apt.estado || "").toLowerCase() !== "no confirmada") return apt;
+      if (String(apt.estadoConfirmacion || "").toLowerCase() !== "espacioliberado") return apt;
       if (String(apt.colaboradorID || "") !== String(targetCollaboratorId)) return apt;
       if (apt.fecha !== dateStr || apt.hora !== timeStr) return apt;
       return {
         ...apt,
-        estado: "Reprogramada",
-        observaciones: bumpedNote,
+        estado: "Reemplazada",
+        observaciones: "Reemplazada: su horario fue tomado por otra reserva confirmada tras no confirmarse a tiempo.",
         updated_at: new Date().toISOString(),
       };
     });

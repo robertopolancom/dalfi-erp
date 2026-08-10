@@ -45,15 +45,15 @@ test("businessMinutesUntil: reservada el lunes 2:30pm (3.5h reales de operación
   assert.equal(minutes, 3.5 * 60);
 });
 
-test("determineInitialBookingStatus: con 5h laborales de anticipación queda Preaprobada; con 3.5h queda Confirmada directo", () => {
+test("determineInitialBookingStatus: con 5h laborales de anticipación queda Preaprobada/Programada; con 3.5h queda Confirmada/NoRequerida directo", () => {
   const base = { source: "chatbot_whatsapp", date: "2026-08-11", time: "09:00", businessSchedule: DEFAULT_SCHEDULE };
-  assert.equal(
+  assert.deepEqual(
     determineInitialBookingStatus({ ...base, referenceTime: new Date(sdMs("2026-08-10", "13:00")) }),
-    "Preaprobada",
+    { estado: "Preaprobada", estadoDeposito: "Pendiente", estadoConfirmacion: "Programada" },
   );
-  assert.equal(
+  assert.deepEqual(
     determineInitialBookingStatus({ ...base, referenceTime: new Date(sdMs("2026-08-10", "14:30")) }),
-    "Confirmada",
+    { estado: "Confirmada", estadoDeposito: "Pendiente", estadoConfirmacion: "NoRequerida" },
   );
 });
 
@@ -68,14 +68,15 @@ test("businessMinutesUntil: Domingo (día cerrado por defecto) no cuenta minutos
 });
 
 test("determineInitialBookingStatus: reservar el sábado 5pm para el lunes 9am queda Confirmada directo (solo 1h laboral de margen, aunque falten ~40h de reloj)", () => {
-  const status = determineInitialBookingStatus({
+  const result = determineInitialBookingStatus({
     source: "chatbot_whatsapp",
     date: "2026-08-10",
     time: "09:00",
     referenceTime: new Date(sdMs("2026-08-08", "17:00")),
     businessSchedule: DEFAULT_SCHEDULE,
   });
-  assert.equal(status, "Confirmada");
+  assert.equal(result.estado, "Confirmada");
+  assert.equal(result.estadoConfirmacion, "NoRequerida");
 });
 
 test("scheduleExceptions: un feriado de día completo hace que ese día no cuente, aunque normalmente esté abierto", () => {
@@ -107,9 +108,10 @@ test("resolveBusinessDayWindow: Domingo sin excepciones devuelve null (cerrado)"
   assert.equal(resolveBusinessDayWindow("2026-08-09", schedule), null);
 });
 
-test("checkPreapprovedConfirmationReminder: usa businessSchedule para decidir si requiere alerta", () => {
+test("checkPreapprovedConfirmationReminder: usa businessSchedule para decidir si requiere el primer recordatorio", () => {
   const apt = {
     estado: "Preaprobada",
+    estadoConfirmacion: "Programada",
     canalOrigen: "chatbot_whatsapp",
     fecha: "2026-08-11",
     hora: "09:00",
@@ -117,9 +119,10 @@ test("checkPreapprovedConfirmationReminder: usa businessSchedule para decidir si
   };
   const farCheck = checkPreapprovedConfirmationReminder(apt, new Date(sdMs("2026-08-10", "13:00")).toISOString(), DEFAULT_SCHEDULE);
   assert.equal(farCheck.hoursUntilAppointment, 5);
+  assert.equal(farCheck.requiresFirstReminder, false);
   const closeCheck = checkPreapprovedConfirmationReminder(apt, new Date(sdMs("2026-08-10", "14:30")).toISOString(), DEFAULT_SCHEDULE);
   assert.equal(closeCheck.hoursUntilAppointment, 3.5);
-  assert.equal(closeCheck.requiresConfirmationAlert, true);
+  assert.equal(closeCheck.requiresFirstReminder, true);
 });
 
 test("Regresión: normalizeBusinessSchedule() sin weeklyHours explícito (documento legado) sigue derivando Lunes-Sábado 9-18, Domingo cerrado", () => {

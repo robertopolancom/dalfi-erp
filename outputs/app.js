@@ -4139,15 +4139,16 @@ function confirmSalonReservation(reservationId) {
     alert("No se encontró la reserva.");
     return;
   }
-  // Si esta cita "No confirmada" ya fue reasignada (otra reserva tomó su
-  // horario tras no confirmarse a tiempo, ver functions/api/booking/confirm.js
-  // ALLOWED_REASSIGNED), no se debe resucitar por encima de la nueva reserva.
-  const reassignedStatuses = new Set(["reprogramada", "cancelada"]);
+  // Si esta cita ya fue reasignada (otra reserva tomó su horario tras no
+  // confirmarse a tiempo, ver functions/api/booking/confirm.js
+  // ALREADY_REASSIGNED), no se debe resucitar por encima de la nueva reserva.
+  const reassignedStatuses = new Set(["reemplazada", "reprogramada", "cancelada"]);
   if (reassignedStatuses.has(String(dbRow.estado || "").toLowerCase())) {
     alert(`La cita ${reservationId} ya no está disponible: su horario fue reasignado (estado actual: ${dbRow.estado}).`);
     return;
   }
   dbRow.estado = "Confirmada";
+  dbRow.estadoConfirmacion = "HoraConfirmada";
   dbRow.needsReview = false;
   stampRecord(dbRow, "updated");
   logAudit("appointment_confirmed_salon", {
@@ -4213,15 +4214,11 @@ function renderConsolidatedMatrix() {
   const weeklySchedules = database.data?.staffWeeklySchedules || [];
   const exceptions = database.data?.staffScheduleExceptions || [];
 
-  // 1. Banner de Recordatorios de Reservas Preaprobadas / No confirmadas del Chatbot
-  const RESOLVED_BANNER_STATUSES = new Set(["confirmada", "cancelada", "reprogramada", "completada", "no asistió", "no asistio", "anulada"]);
-  const pendingPreapproved = appointments.filter((apt) => {
-    const status = String(apt.estado || "").toLowerCase();
-    const source = String(apt.canalOrigen || "").toLowerCase();
-    if (RESOLVED_BANNER_STATUSES.has(status)) return false;
-    return status.includes("preaprobad") || status.includes("pendiente") || status.includes("no confirmada")
-      || source.includes("chatbot") || source.includes("whatsapp") || source.includes("instagram");
-  });
+  // 1. Banner de confirmación de asistencia pendiente (estadoConfirmacion,
+  // dimensión independiente de estado — ver outputs/lib/booking-engine.js
+  // determineInitialBookingStatus/checkPreapprovedConfirmationReminder).
+  const PENDING_CONFIRMATION_STATES = new Set(["programada", "pendienteconfirmarhora", "espacioliberado"]);
+  const pendingPreapproved = appointments.filter((apt) => PENDING_CONFIRMATION_STATES.has(String(apt.estadoConfirmacion || "").toLowerCase()));
   const unreviewedClients = dbTable("clientes").filter((c) => c.needsReview);
   const unreviewedReservations = appointments.filter((apt) => apt.needsReview);
 
@@ -4233,19 +4230,22 @@ function renderConsolidatedMatrix() {
       if (pendingPreapproved.length) {
         reviewSections.push(`
           <div>
-            <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas Preaprobadas / No confirmadas por Chatbot pendientes de confirmación en salón (${pendingPreapproved.length})</h4>
+            <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas del Chatbot pendientes de confirmar asistencia (${pendingPreapproved.length})</h4>
             <p style="margin:0 0 10px; font-size: 13px; color: #1e3a8a;">
-              Las reservas del chatbot realizadas con más de 4h de anticipación entran en estado <strong>Preaprobada</strong>. El salón debe confirmarlas antes de la hora de la cita (recordatorios horarios activos). Si nadie la confirma a tiempo, pasa a <strong>No confirmada</strong> y su horario se libera para otra reserva — el salón aún puede confirmarla mientras nadie más lo haya tomado. Las citas agendadas dentro de las 4h previas quedan <strong>Confirmadas</strong> automáticamente.
+              Las reservas del chatbot realizadas con más de 4h laborales de anticipación reciben un recordatorio para que la clienta confirme su hora o reagende. Si no responde, 1 hora laboral después se le recuerda de nuevo y el horario queda <strong>liberado</strong> (rojo abajo) — el salón todavía puede confirmarla mientras nadie más lo haya tomado.
             </p>
             <div style="display:flex; flex-direction:column; gap:6px;">
               ${pendingPreapproved.map((apt) => {
-                const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt, null, businessSchedule) : { requiresConfirmationAlert: true, alertReason: "Pendiente de confirmación" };
+                const confirmState = String(apt.estadoConfirmacion || "").toLowerCase();
+                const isReleased = confirmState === "espacioliberado";
+                const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt, null, businessSchedule) : { hoursUntilAppointment: null };
+                const hoursNote = typeof check.hoursUntilAppointment === "number" ? `Faltan ${Math.max(0, check.hoursUntilAppointment)}h laborales para la cita.` : "";
                 return `
-                  <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #dbeafe;">
+                  <div style="display:flex; justify-content:space-between; align-items:center; background:${isReleased ? "#fef2f2" : "#ffffff"}; padding:8px 12px; border-radius:6px; border:1px solid ${isReleased ? "#fecaca" : "#dbeafe"};">
                     <div>
                       <strong>${escapeHtml(apt.clienteNombre || "Cliente")}</strong> · ${escapeHtml(apt.servicio || "Servicio")} (${escapeHtml(apt.fecha)} a las ${escapeHtml(apt.hora)})
-                      <span style="font-size:12px; color:#64748b;"> · Canal: ${escapeHtml(apt.canalOrigen || "Chatbot")} · Est: ${escapeHtml(apt.estado || "Preaprobada")}</span>
-                      ${check.requiresConfirmationAlert ? `<br/><span style="color:#b91c1c; font-size:12px; font-weight:600;">⏰ ${escapeHtml(check.alertReason)}</span>` : ""}
+                      <span style="font-size:12px; color:#64748b;"> · Canal: ${escapeHtml(apt.canalOrigen || "Chatbot")} · Est: ${escapeHtml(apt.estado || "")}</span>
+                      ${isReleased ? `<br/><span style="color:#b91c1c; font-size:12px; font-weight:600;">⏰ Hora no confirmada — espacio liberado</span>` : hoursNote ? `<br/><span style="color:#1e40af; font-size:12px;">${escapeHtml(hoursNote)}</span>` : ""}
                     </div>
                     <button class="primary-btn compact confirm-salon-reservation" data-reservation-id="${escapeHtml(apt.reservaID)}" type="button">Confirmar cita en salón</button>
                   </div>

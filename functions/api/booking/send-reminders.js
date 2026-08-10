@@ -1,13 +1,19 @@
 // Endpoint pensado para ser llamado por un Cloudflare Worker con Cron Trigger
 // (ver CRON.md en la raiz del proyecto). Envia por WhatsApp, via el Chatbot
-// Bridge, los recordatorios horarios de citas "Preaprobadas" del chatbot que
-// estan dentro de la ventana de 4h antes de la cita, y escala a un agente
-// humano las que llegaron a su hora sin haber sido confirmadas en el salon.
+// Bridge, los DOS recordatorios exactos de confirmación de asistencia de
+// citas "Preaprobadas" del chatbot (a 4h laborales de la cita, y de nuevo
+// 1h laboral después si sigue sin responder) — el segundo libera el
+// horario en el mismo paso (estadoConfirmacion -> "EspacioLiberado").
 //
-// No depende de que ningun navegador tenga la app abierta (antes este
-// recordatorio solo existia como un banner visual en la Matriz Consolidada,
-// que no dispara nada si nadie mira esa pantalla) — es un port del mismo
-// criterio de checkPreapprovedConfirmationReminder() usado ahi.
+// A diferencia del modelo anterior (recordatorio horario + escalación a un
+// humano), ambos recordatorios los sigue atendiendo el propio chatbot
+// (menú "1. Confirmar mi hora / 2. Reagendar mi cita / 3. Menú principal");
+// no hay pausa del bot aquí — un humano solo entra si el depósito necesita
+// verificarse (flujo de comprobantes, aparte).
+//
+// No depende de que ningun navegador tenga la app abierta — es un port del
+// mismo criterio de checkPreapprovedConfirmationReminder() que también usa
+// el banner de la Matriz Consolidada.
 //
 // Seguridad: requiere un header "x-cron-secret" que coincida con
 // BOOKING_REMINDER_CRON_SECRET (Cloudflare Pages, variable secreta). El envio
@@ -20,12 +26,12 @@ import { checkPreapprovedConfirmationReminder, generateWhatsAppReceiptText } fro
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-// Estados en los que una reserva ya no necesita recordatorio ni escalacion.
-// "No confirmada" ya fue escalada una vez (por eso llegó a este estado) y su
-// horario quedó liberado — seguir mandando recordatorios sobre ella no tiene
-// sentido; su resolución depende de que el salón la confirme a mano o de que
-// otra reserva tome el horario (ver confirm.js), no de este cron.
-const CLOSED_STATUSES = new Set(["Confirmada", "Cancelada", "Anulada", "Completada", "No asistió", "No asistio", "No confirmada"]);
+// Estados en los que una reserva ya no necesita recordatorio de confirmación.
+// checkPreapprovedConfirmationReminder ya filtra por estadoConfirmacion
+// (solo actúa sobre "Programada"/"PendienteConfirmarHora"), así que este
+// filtro por `estado` es una salvaguarda barata adicional para no perder
+// tiempo evaluando citas obviamente cerradas.
+const CLOSED_STATUSES = new Set(["Confirmada", "Cancelada", "Anulada", "Completada", "No asistió", "No asistio", "Reemplazada"]);
 
 async function loadDocument(supabaseUrl, serviceRoleKey) {
   const response = await fetch(`${supabaseUrl}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data,updated_at`, {
@@ -104,18 +110,20 @@ export async function onRequestPost({ request, env }) {
     if (CLOSED_STATUSES.has(status)) continue;
 
     const check = checkPreapprovedConfirmationReminder(apt, nowIso, businessSchedule);
-    if (!check.requiresConfirmationAlert) continue;
+    if (!check.requiresFirstReminder && !check.requiresSecondReminder) continue;
 
     const phoneDigits = String(apt.telefono || apt.phone || "").replace(/[^\d]/g, "");
     if (!phoneDigits) continue;
 
-    const shouldEscalate = check.hoursUntilAppointment <= 0 && !apt.escalatedAt;
-    const shouldRemind = !shouldEscalate && apt.lastReminderCycleSent !== check.hourlyCycle;
-    if (!shouldEscalate && !shouldRemind) continue;
+    // Idempotencia: el primer recordatorio se manda una sola vez
+    // (primerRecordatorioEnviadoEn se estampa al enviarlo); el segundo
+    // también una sola vez (queda marcado por el propio cambio de
+    // estadoConfirmacion a "EspacioLiberado", que saca a la reserva del
+    // filtro de arriba en la siguiente corrida del cron).
+    if (check.requiresFirstReminder && apt.primerRecordatorioEnviadoEn) continue;
 
-    const eventType = shouldEscalate ? "booking.preapproved_escalation" : "booking.preapproved_reminder";
     const receiptText = generateWhatsAppReceiptText({
-      eventType,
+      eventType: "booking.confirmation_reminder",
       clientName: apt.clienteNombre || "Cliente",
       date: apt.fecha,
       time: apt.hora,
@@ -125,8 +133,8 @@ export async function onRequestPost({ request, env }) {
 
     try {
       const result = await sendToBridge(bridgeUrl, env.ERP_WEBHOOK_SECRET, {
-        event: eventType,
-        actionRequired: shouldEscalate ? "escalate_to_human_agent" : "send_customer_reminder",
+        event: "booking.confirmation_reminder",
+        actionRequired: "await_customer_reply",
         reservationId: apt.reservaID,
         recipientPhone: phoneDigits,
         whatsappFormattedText: receiptText,
@@ -135,20 +143,22 @@ export async function onRequestPost({ request, env }) {
         failures.push({ reservaID: apt.reservaID, status: result.status, body: result.body });
         continue;
       }
-      if (shouldEscalate) {
-        apt.escalatedAt = nowIso;
-        // Nadie confirmó a tiempo: libera el horario (calculateAvailableSlots
-        // trata "No confirmada" igual que una cancelación) en vez de dejarlo
-        // bloqueado indefinidamente. Si el salón la confirma antes de que
-        // alguien más tome ese horario, vuelve a "Confirmada" (ver la guarda
-        // ALREADY_REASSIGNED en confirm.js); si alguien más lo toma primero,
-        // esta cita queda "Reprogramada" automáticamente en ese mismo momento.
-        apt.estado = "No confirmada";
-        escalationsSent += 1;
-      } else {
-        apt.lastReminderCycleSent = check.hourlyCycle;
-        apt.lastReminderSentAt = nowIso;
+      if (check.requiresFirstReminder) {
+        apt.estadoConfirmacion = "PendienteConfirmarHora";
+        apt.primerRecordatorioEnviadoEn = nowIso;
         remindersSent += 1;
+      } else {
+        // Segundo recordatorio sin respuesta: libera el horario en el mismo
+        // paso (calculateAvailableSlots trata "EspacioLiberado" igual que
+        // una cancelación) en vez de dejarlo bloqueado indefinidamente. Si
+        // el salón/la clienta confirma antes de que alguien más tome ese
+        // horario, vuelve a "HoraConfirmada" (ver la guarda
+        // ALREADY_REASSIGNED en confirm.js); si alguien más lo toma
+        // primero, esta cita queda "Reemplazada" automáticamente en ese
+        // mismo momento.
+        apt.estadoConfirmacion = "EspacioLiberado";
+        apt.segundoRecordatorioEnviadoEn = nowIso;
+        escalationsSent += 1;
       }
     } catch (error) {
       failures.push({ reservaID: apt.reservaID, error: error.message });
