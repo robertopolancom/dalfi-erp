@@ -3,13 +3,34 @@
 
 export const TIMEZONE = "America/Santo_Domingo";
 
+// Horario por día de semana (0=Domingo..6=Sábado): null = cerrado ese día.
+// Fuente de verdad única para "¿está abierto el negocio y a qué hora?" —
+// weekDays/closedDays/defaultOpeningTime/defaultClosingTime (abajo) quedan
+// solo por compatibilidad hacia atrás y se derivan de esto en
+// normalizeBusinessSchedule(), nunca al revés.
+export const DEFAULT_WEEKLY_HOURS = {
+  0: null,
+  1: { open: "09:00", close: "18:00" },
+  2: { open: "09:00", close: "18:00" },
+  3: { open: "09:00", close: "18:00" },
+  4: { open: "09:00", close: "18:00" },
+  5: { open: "09:00", close: "18:00" },
+  6: { open: "09:00", close: "18:00" },
+};
+
 export const DEFAULT_BUSINESS_SCHEDULE = {
   timezone: TIMEZONE,
   weekDays: [1, 2, 3, 4, 5, 6], // Lunes (1) a Sábado (6)
   defaultOpeningTime: "09:00",
   defaultClosingTime: "18:00",
   closedDays: [0], // Domingo cerrado por defecto
-  holidayClosures: [], // Array de fechas "YYYY-MM-DD"
+  holidayClosures: [], // Array de fechas "YYYY-MM-DD" (cierre total, legado — ver scheduleExceptions)
+  weeklyHours: DEFAULT_WEEKLY_HOURS,
+  // Excepciones puntuales por fecha: cierre total (open/close null) u
+  // horario especial (ej. cierre temprano en Nochebuena). Tiene prioridad
+  // sobre weeklyHours para esa fecha exacta. Editable desde el Dashboard
+  // ("Configuración General del Establecimiento").
+  scheduleExceptions: [], // [{ date: "YYYY-MM-DD", open, close, label }]
   minimumBookingNoticeMinutes: 30,
   maximumAdvanceBookingDays: 60,
   defaultSlotIntervalMinutes: 15,
@@ -78,26 +99,73 @@ export function diffCalendarDays(dateStr, baseDateStr) {
   return Math.round((parse(dateStr) - parse(baseDateStr)) / 86400000);
 }
 
-// Sanitiza y normaliza la configuración general del negocio.
+// Normaliza un único día de weeklyHours: {open,close} válido, o null (cerrado).
+function normalizeDayWindow(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const open = parseTimeToMinutes(entry.open) !== null ? entry.open : null;
+  const close = parseTimeToMinutes(entry.close) !== null ? entry.close : null;
+  if (open === null || close === null) return null;
+  if (parseTimeToMinutes(close) <= parseTimeToMinutes(open)) return null; // rango inválido, tratar como cerrado
+  return { open, close };
+}
+
+// Sanitiza y normaliza la configuración general del negocio. weeklyHours es
+// la fuente de verdad para "¿abierto y a qué hora, por día de semana?" —
+// weekDays/closedDays/defaultOpeningTime/defaultClosingTime quedan
+// derivados de ella al final (nunca al revés), para que documentos legados
+// (sin weeklyHours todavía) sigan funcionando igual que antes.
 export function normalizeBusinessSchedule(input) {
   const src = input && typeof input === "object" ? input : {};
-  const weekDays = Array.isArray(src.weekDays)
+  const legacyWeekDays = Array.isArray(src.weekDays)
     ? src.weekDays.map(Number).filter((d) => d >= 0 && d <= 6)
     : DEFAULT_BUSINESS_SCHEDULE.weekDays;
-  const closedDays = Array.isArray(src.closedDays)
+  const legacyClosedDays = Array.isArray(src.closedDays)
     ? src.closedDays.map(Number).filter((d) => d >= 0 && d <= 6)
     : DEFAULT_BUSINESS_SCHEDULE.closedDays;
+  const legacyOpen = parseTimeToMinutes(src.defaultOpeningTime) !== null ? src.defaultOpeningTime : "09:00";
+  const legacyClose = parseTimeToMinutes(src.defaultClosingTime) !== null ? src.defaultClosingTime : "18:00";
   const holidayClosures = Array.isArray(src.holidayClosures)
     ? src.holidayClosures.filter((f) => typeof f === "string" && /^\d{4}-\d{2}-\d{2}$/.test(f))
+    : [];
+
+  const weeklyHours = {};
+  for (let day = 0; day <= 6; day += 1) {
+    if (src.weeklyHours && typeof src.weeklyHours === "object") {
+      weeklyHours[day] = normalizeDayWindow(src.weeklyHours[day] ?? src.weeklyHours[String(day)]);
+    } else {
+      // Sin weeklyHours explícito: derivar de los campos legados (mismo
+      // resultado que el comportamiento anterior a esta función).
+      const openThatDay = legacyWeekDays.includes(day) && !legacyClosedDays.includes(day);
+      weeklyHours[day] = openThatDay ? { open: legacyOpen, close: legacyClose } : null;
+    }
+  }
+  const weekDays = [];
+  const closedDays = [];
+  for (let day = 0; day <= 6; day += 1) {
+    if (weeklyHours[day]) weekDays.push(day);
+    else closedDays.push(day);
+  }
+
+  const scheduleExceptions = Array.isArray(src.scheduleExceptions)
+    ? src.scheduleExceptions
+        .filter((exc) => exc && typeof exc === "object" && /^\d{4}-\d{2}-\d{2}$/.test(exc.date || ""))
+        .map((exc) => ({
+          date: exc.date,
+          open: parseTimeToMinutes(exc.open) !== null ? exc.open : null,
+          close: parseTimeToMinutes(exc.close) !== null ? exc.close : null,
+          label: typeof exc.label === "string" ? exc.label.slice(0, 120) : "",
+        }))
     : [];
 
   return {
     timezone: TIMEZONE,
     weekDays: weekDays.length ? weekDays : [1, 2, 3, 4, 5, 6],
-    defaultOpeningTime: parseTimeToMinutes(src.defaultOpeningTime) !== null ? src.defaultOpeningTime : "09:00",
-    defaultClosingTime: parseTimeToMinutes(src.defaultClosingTime) !== null ? src.defaultClosingTime : "18:00",
-    closedDays: Array.from(new Set(closedDays)),
+    defaultOpeningTime: legacyOpen,
+    defaultClosingTime: legacyClose,
+    closedDays,
     holidayClosures: Array.from(new Set(holidayClosures)),
+    weeklyHours,
+    scheduleExceptions,
     minimumBookingNoticeMinutes: Math.max(0, Number(src.minimumBookingNoticeMinutes) || 30),
     maximumAdvanceBookingDays: Math.max(1, Number(src.maximumAdvanceBookingDays) || 60),
     defaultSlotIntervalMinutes: Math.max(5, Number(src.defaultSlotIntervalMinutes) || 15),
@@ -108,6 +176,56 @@ export function normalizeBusinessSchedule(input) {
     updatedAt: src.updatedAt || null,
     updatedBy: src.updatedBy || null,
   };
+}
+
+// Ventana de apertura del negocio para una fecha exacta, o null si está
+// cerrado. Prioridad: scheduleExceptions (fecha exacta) > holidayClosures
+// (legado, cierre total) > weeklyHours[díaDeSemana]. Recibe un
+// businessSchedule YA normalizado (normalizeBusinessSchedule) — para no
+// re-normalizar en cada iteración de businessMinutesUntil.
+export function resolveBusinessDayWindow(dateStr, normalizedSchedule) {
+  const exception = normalizedSchedule.scheduleExceptions.find((exc) => exc.date === dateStr);
+  if (exception) {
+    if (exception.open === null || exception.close === null) return null;
+    return { openMinutes: parseTimeToMinutes(exception.open), closeMinutes: parseTimeToMinutes(exception.close) };
+  }
+  if (normalizedSchedule.holidayClosures.includes(dateStr)) return null;
+  const dayOfWeek = getDayOfWeekFromDateString(dateStr);
+  const window = dayOfWeek === null ? null : normalizedSchedule.weeklyHours[dayOfWeek];
+  if (!window) return null;
+  return { openMinutes: parseTimeToMinutes(window.open), closeMinutes: parseTimeToMinutes(window.close) };
+}
+
+// Minutos de horario laboral real entre dos instantes (fromMs, toMs),
+// saltando cierres nocturnos, días cerrados y excepciones — camina día por
+// día en America/Santo_Domingo. Usada para que "faltan N horas para la
+// cita" cuente solo horas en que el salón realmente puede atender/revisar
+// la reserva, en vez de horas de reloj puro (ver
+// determineInitialBookingStatus/checkPreapprovedConfirmationReminder).
+// Devuelve 0 si toMs <= fromMs (la cita ya pasó).
+export function businessMinutesUntil(fromMs, toMs, businessSchedule = {}) {
+  if (!(toMs > fromMs)) return 0;
+  const bSched = normalizeBusinessSchedule(businessSchedule);
+  let totalMinutes = 0;
+  let cursorMs = fromMs;
+  // Límite defensivo: nunca camina más allá de ~2 años de días, para que un
+  // businessSchedule corrupto (todo cerrado) nunca cause un bucle largo.
+  for (let guard = 0; guard < 730 && cursorMs < toMs; guard += 1) {
+    const cursorSD = resolveSantoDomingoNow(new Date(cursorMs));
+    const window = resolveBusinessDayWindow(cursorSD.date, bSched);
+    // Medianoche (America/Santo_Domingo, UTC-4 fijo) del día del cursor, en ms UTC.
+    const [y, m, d] = cursorSD.date.split("-").map(Number);
+    const dayStartMs = Date.UTC(y, m - 1, d, 4, 0, 0); // 00:00 SD == 04:00 UTC
+    if (window) {
+      const openMs = dayStartMs + window.openMinutes * 60000;
+      const closeMs = dayStartMs + window.closeMinutes * 60000;
+      const segStart = Math.max(cursorMs, openMs);
+      const segEnd = Math.min(toMs, closeMs);
+      if (segEnd > segStart) totalMinutes += (segEnd - segStart) / 60000;
+    }
+    cursorMs = dayStartMs + 24 * 3600000; // medianoche del día siguiente
+  }
+  return totalMinutes;
 }
 
 // Normaliza el horario semanal individual de una colaboradora.
@@ -159,6 +277,7 @@ export function resolveEffectiveStaffSchedule({
 }) {
   const bSched = normalizeBusinessSchedule(businessSchedule);
   const dayOfWeek = getDayOfWeekFromDateString(date);
+  const dayWindow = date ? resolveBusinessDayWindow(date, bSched) : null;
 
   const result = {
     collaboratorId,
@@ -166,8 +285,8 @@ export function resolveEffectiveStaffSchedule({
     dayOfWeek,
     isBusinessOpen: true,
     isStaffWorking: true,
-    entryTime: bSched.defaultOpeningTime,
-    exitTime: bSched.defaultClosingTime,
+    entryTime: dayWindow ? formatMinutesToTime(dayWindow.openMinutes) : bSched.defaultOpeningTime,
+    exitTime: dayWindow ? formatMinutesToTime(dayWindow.closeMinutes) : bSched.defaultClosingTime,
     lunchStartTime: DEFAULT_LUNCH_START,
     lunchEndTime: DEFAULT_LUNCH_END,
     lunchDurationMinutes: DEFAULT_LUNCH_DURATION_MINUTES,
@@ -181,8 +300,8 @@ export function resolveEffectiveStaffSchedule({
     return result;
   }
 
-  // 1. Validar si el negocio abre
-  if (bSched.closedDays.includes(dayOfWeek) || bSched.holidayClosures.includes(date)) {
+  // 1. Validar si el negocio abre (weeklyHours/scheduleExceptions/holidayClosures, ver resolveBusinessDayWindow)
+  if (!dayWindow) {
     result.isBusinessOpen = false;
     result.isStaffWorking = false;
     result.reason = "El establecimiento está cerrado este día.";
@@ -964,7 +1083,11 @@ export function buildConsolidatedDailyMatrix({
 }
 
 // Verifica si una reserva creada vía Chatbot (estado "Preaprobada") está dentro de la ventana de 4 horas antes de la cita o requiere recordatorio horario.
-export function checkPreapprovedConfirmationReminder(appointment, referenceDateStr = null) {
+// businessSchedule: horario del negocio (ver normalizeBusinessSchedule) —
+// las "4 horas antes" se cuentan solo en horario laboral real (ver
+// businessMinutesUntil), no en horas de reloj puro, para no pedir
+// confirmación a horas en que el salón lleva cerrado.
+export function checkPreapprovedConfirmationReminder(appointment, referenceDateStr = null, businessSchedule = {}) {
   if (!appointment) return { requiresConfirmationAlert: false };
   const status = String(appointment.estado || appointment.status || "");
   const source = String(appointment.canalOrigen || appointment.source || "").toLowerCase();
@@ -987,7 +1110,7 @@ export function checkPreapprovedConfirmationReminder(appointment, referenceDateS
     aptStartMs = new Date(`${aptDateStr}T${aptTimeStr}:00`).getTime();
   }
 
-  const hoursUntilAppointment = aptStartMs ? (aptStartMs - refTime) / (1000 * 3600) : 99;
+  const hoursUntilAppointment = aptStartMs ? businessMinutesUntil(refTime, aptStartMs, businessSchedule) / 60 : 99;
   const elapsedHoursSinceBooking = Math.max(0, (refTime - createdTime) / (1000 * 3600));
 
   // Alerta requerida si faltan 4 horas o menos para la cita, o si ya pasó 1 hora de solicitud sin confirmación manual en ERP
@@ -1007,9 +1130,13 @@ export function checkPreapprovedConfirmationReminder(appointment, referenceDateS
 }
 
 // Determina el estado inicial de una reserva.
-// Si se reservó vía chatbot con 4 horas o menos de anticipación a la cita, queda "Confirmada" automáticamente.
-// De lo contrario (más de 4h de anticipación), queda "Preaprobada". Si es del ERP, queda "Confirmada".
-export function determineInitialBookingStatus({ source, requestedStartAt = null, date = null, time = null, referenceTime = new Date() }) {
+// Si se reservó vía chatbot con 4 horas laborales o menos de anticipación a
+// la cita, queda "Confirmada" automáticamente. De lo contrario (más de 4h
+// laborales de anticipación), queda "Preaprobada". Si es del ERP, queda
+// "Confirmada". businessSchedule: ver normalizeBusinessSchedule — las 4h se
+// cuentan solo en horario laboral real (ver businessMinutesUntil), no en
+// horas de reloj puro.
+export function determineInitialBookingStatus({ source, requestedStartAt = null, date = null, time = null, referenceTime = new Date(), businessSchedule = {} }) {
   const src = String(source || "").toLowerCase();
   const isChatbot = src.includes("chatbot") || src.includes("whatsapp") || src.includes("instagram");
   if (!isChatbot) return "Confirmada";
@@ -1024,9 +1151,9 @@ export function determineInitialBookingStatus({ source, requestedStartAt = null,
   if (!aptStartMs || isNaN(aptStartMs)) return "Preaprobada";
 
   const refMs = referenceTime instanceof Date ? referenceTime.getTime() : new Date(referenceTime).getTime();
-  const hoursUntilAppointment = (aptStartMs - refMs) / (1000 * 3600);
+  const hoursUntilAppointment = businessMinutesUntil(refMs, aptStartMs, businessSchedule) / 60;
 
-  // Si se reservó dentro de las 4 horas previas a la cita (o cita inminente), queda "Confirmada" automáticamente
+  // Si quedan 4 horas laborales o menos para la cita (o cita inminente), queda "Confirmada" automáticamente
   if (hoursUntilAppointment <= 4) {
     return "Confirmada";
   }

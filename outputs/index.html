@@ -797,33 +797,60 @@
             <div class="panel-head">
               <h3>Configuración General del Negocio</h3>
             </div>
-            <form id="business-schedule-form" class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px;">
-              <label>
-                Apertura general
-                <input id="biz-opening-time" type="time" value="09:00" required />
-              </label>
-              <label>
-                Cierre general
-                <input id="biz-closing-time" type="time" value="18:00" required />
-              </label>
-              <label>
-                Aviso mínimo (minutos)
-                <input id="biz-notice-minutes" type="number" min="0" value="30" required />
-              </label>
-              <label>
-                Máximo días de anticipación
-                <input id="biz-max-days" type="number" min="1" value="60" required />
-              </label>
-              <label>
-                Intervalo de slots (minutos)
-                <input id="biz-slot-interval" type="number" min="5" value="15" required />
-              </label>
-              <label>
-                Buffer predeterminado (minutos)
-                <input id="biz-buffer-after" type="number" min="0" value="0" />
-              </label>
-              <div style="grid-column: 1 / -1;">
+            <form id="business-schedule-form">
+              <h4 style="margin: 0 0 8px;">Horario por día de la semana</h4>
+              <p class="panel-note" style="margin: 0 0 12px;">
+                Este horario define cuándo el salón está abierto para reservar citas, y también cuántas horas de anticipación laboral tiene el salón para revisar una reserva del chatbot antes de que se auto-confirme.
+              </p>
+              <div id="business-weekly-hours" style="display:flex; flex-direction:column; gap:8px; margin-bottom:20px;"></div>
+
+              <h4 style="margin: 0 0 8px;">Excepciones por fecha (feriados u horario especial)</h4>
+              <p class="panel-note" style="margin: 0 0 12px;">
+                Para un feriado completo, deja las horas en blanco. Para un horario especial (ej. cierre temprano en Nochebuena), indica la hora de apertura y cierre de ese día.
+              </p>
+              <div id="business-exceptions-list" class="simple-list" style="margin-bottom:12px;"></div>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; align-items:end; margin-bottom:20px;">
+                <label>
+                  Fecha
+                  <input id="biz-exception-date" type="date" />
+                </label>
+                <label>
+                  Apertura (vacío = cerrado)
+                  <input id="biz-exception-open" type="time" />
+                </label>
+                <label>
+                  Cierre (vacío = cerrado)
+                  <input id="biz-exception-close" type="time" />
+                </label>
+                <label>
+                  Motivo
+                  <input id="biz-exception-label" type="text" maxlength="120" placeholder="Ej. Día de las Mercedes" />
+                </label>
+                <button class="secondary-btn compact" type="button" id="biz-exception-add-btn">Agregar excepción</button>
+              </div>
+
+              <h4 style="margin: 0 0 8px;">Otras reglas</h4>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px;">
+                <label>
+                  Aviso mínimo (minutos)
+                  <input id="biz-notice-minutes" type="number" min="0" value="30" required />
+                </label>
+                <label>
+                  Máximo días de anticipación
+                  <input id="biz-max-days" type="number" min="1" value="60" required />
+                </label>
+                <label>
+                  Intervalo de slots (minutos)
+                  <input id="biz-slot-interval" type="number" min="5" value="15" required />
+                </label>
+                <label>
+                  Buffer predeterminado (minutos)
+                  <input id="biz-buffer-after" type="number" min="0" value="0" />
+                </label>
+              </div>
+              <div style="grid-column: 1 / -1; margin-top:16px;">
                 <button class="primary-btn inline" type="submit">Guardar configuración del negocio</button>
+                <span id="business-schedule-message" class="form-message"></span>
               </div>
             </form>
           </div>

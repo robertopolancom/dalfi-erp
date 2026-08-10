@@ -4239,7 +4239,7 @@ function renderConsolidatedMatrix() {
             </p>
             <div style="display:flex; flex-direction:column; gap:6px;">
               ${pendingPreapproved.map((apt) => {
-                const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt) : { requiresConfirmationAlert: true, alertReason: "Pendiente de confirmación" };
+                const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt, null, businessSchedule) : { requiresConfirmationAlert: true, alertReason: "Pendiente de confirmación" };
                 return `
                   <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #dbeafe;">
                     <div>
@@ -4369,6 +4369,134 @@ function renderConsolidatedMatrix() {
 
   html += `</tbody></table>`;
   container.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------
+// Configuración General del Establecimiento (horario por día de semana +
+// excepciones puntuales) — alimenta tanto la disponibilidad de citas como
+// la ventana de "4 horas antes" de confirmación de reservas del chatbot
+// (ver outputs/lib/booking-engine.js resolveBusinessDayWindow /
+// businessMinutesUntil, y functions/api/booking/confirm.js / send-reminders.js).
+// ---------------------------------------------------------------------
+
+const WEEKDAY_LABELS_ES = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+
+// Excepciones en edición en esta sesión del formulario — no se guardan en
+// `database` hasta que se envía el formulario (igual que los demás campos).
+let pendingScheduleExceptions = [];
+
+function businessWeeklyHoursRowHtml(dayIndex, dayWindow) {
+  const isOpen = Boolean(dayWindow);
+  return `
+    <div class="row-actions" style="align-items:center; gap:12px;">
+      <label style="display:flex; align-items:center; gap:6px; min-width:160px;">
+        <input type="checkbox" class="biz-day-enabled" data-day="${dayIndex}" ${isOpen ? "checked" : ""} />
+        ${WEEKDAY_LABELS_ES[dayIndex]}
+      </label>
+      <input type="time" class="biz-day-open" data-day="${dayIndex}" value="${isOpen ? dayWindow.open : "09:00"}" ${isOpen ? "" : "disabled"} />
+      <span>a</span>
+      <input type="time" class="biz-day-close" data-day="${dayIndex}" value="${isOpen ? dayWindow.close : "18:00"}" ${isOpen ? "" : "disabled"} />
+    </div>
+  `;
+}
+
+function renderBusinessWeeklyHours(weeklyHours) {
+  const container = byId("business-weekly-hours");
+  if (!container) return;
+  container.innerHTML = [1, 2, 3, 4, 5, 6, 0] // Lunes primero, Domingo al final, más natural para leer
+    .map((day) => businessWeeklyHoursRowHtml(day, weeklyHours[day]))
+    .join("");
+}
+
+function businessExceptionRowHtml(exc, index) {
+  const hours = exc.open && exc.close ? `${exc.open} - ${exc.close}` : "Cerrado todo el día";
+  return `
+    <div class="row-actions" style="justify-content:space-between;">
+      <div><strong>${escapeHtml(exc.date)}</strong> · ${escapeHtml(hours)}${exc.label ? ` · ${escapeHtml(exc.label)}` : ""}</div>
+      <button class="secondary-btn compact biz-exception-delete" data-index="${index}" type="button">Eliminar</button>
+    </div>
+  `;
+}
+
+function renderBusinessExceptionsList() {
+  const container = byId("business-exceptions-list");
+  if (!container) return;
+  if (!pendingScheduleExceptions.length) {
+    container.innerHTML = `<p class="panel-note">Sin excepciones registradas.</p>`;
+    return;
+  }
+  container.innerHTML = pendingScheduleExceptions
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((exc) => businessExceptionRowHtml(exc, pendingScheduleExceptions.indexOf(exc)))
+    .join("");
+}
+
+function renderBusinessScheduleForm() {
+  const schedule = typeof DalfiBookingEngine !== "undefined"
+    ? DalfiBookingEngine.normalizeBusinessSchedule(database.data?.businessSchedule || {})
+    : database.data?.businessSchedule || {};
+  renderBusinessWeeklyHours(schedule.weeklyHours || {});
+  pendingScheduleExceptions = Array.isArray(schedule.scheduleExceptions) ? schedule.scheduleExceptions.map((e) => ({ ...e })) : [];
+  renderBusinessExceptionsList();
+  if (byId("biz-notice-minutes")) byId("biz-notice-minutes").value = schedule.minimumBookingNoticeMinutes ?? 30;
+  if (byId("biz-max-days")) byId("biz-max-days").value = schedule.maximumAdvanceBookingDays ?? 60;
+  if (byId("biz-slot-interval")) byId("biz-slot-interval").value = schedule.defaultSlotIntervalMinutes ?? 15;
+  if (byId("biz-buffer-after")) byId("biz-buffer-after").value = schedule.defaultBufferAfterMinutes ?? 0;
+  const message = byId("business-schedule-message");
+  if (message) { message.textContent = ""; message.className = "form-message"; }
+}
+
+function saveBusinessSchedule(event) {
+  event.preventDefault();
+  const message = byId("business-schedule-message");
+  const setMessage = (text, kind = "") => {
+    if (!message) return;
+    message.textContent = text;
+    message.className = kind ? `form-message ${kind}` : "form-message";
+  };
+
+  const weeklyHours = {};
+  for (let day = 0; day <= 6; day += 1) {
+    const enabled = document.querySelector(`.biz-day-enabled[data-day="${day}"]`)?.checked;
+    if (!enabled) { weeklyHours[day] = null; continue; }
+    const open = document.querySelector(`.biz-day-open[data-day="${day}"]`)?.value || "09:00";
+    const close = document.querySelector(`.biz-day-close[data-day="${day}"]`)?.value || "18:00";
+    if (open >= close) {
+      setMessage(`${WEEKDAY_LABELS_ES[day]}: la hora de cierre debe ser posterior a la de apertura.`, "error");
+      return;
+    }
+    weeklyHours[day] = { open, close };
+  }
+
+  const noticeMinutes = Number(byId("biz-notice-minutes")?.value);
+  const maxDays = Number(byId("biz-max-days")?.value);
+  const slotInterval = Number(byId("biz-slot-interval")?.value);
+  const bufferAfter = Number(byId("biz-buffer-after")?.value);
+
+  const existing = database.data.businessSchedule || {};
+  database.data.businessSchedule = {
+    ...existing,
+    weeklyHours,
+    scheduleExceptions: pendingScheduleExceptions,
+    minimumBookingNoticeMinutes: noticeMinutes,
+    maximumAdvanceBookingDays: maxDays,
+    defaultSlotIntervalMinutes: slotInterval,
+    defaultBufferAfterMinutes: bufferAfter,
+    updatedAt: new Date().toISOString(),
+    updatedBy: currentUserEmail(),
+  };
+  logAudit("business_schedule_updated", {
+    entity: "businessSchedule",
+    entityId: "app",
+    newData: database.data.businessSchedule,
+    note: "Horario del establecimiento actualizado desde el Dashboard.",
+    success: true,
+  });
+  state = stateFromDatabase(database);
+  saveState();
+  setMessage("Horario guardado correctamente.", "success");
+  renderBusinessScheduleForm();
 }
 
 function payrollPeriodRange(period, cut) {
@@ -16187,7 +16315,45 @@ function wireForms() {
       if (panel === "booking-panel-matrix") {
         renderConsolidatedMatrix();
       }
+      if (panel === "booking-panel-business") {
+        renderBusinessScheduleForm();
+      }
     });
+  });
+
+  byId("business-schedule-form")?.addEventListener("submit", saveBusinessSchedule);
+
+  byId("biz-exception-add-btn")?.addEventListener("click", () => {
+    const dateInput = byId("biz-exception-date");
+    const date = dateInput?.value;
+    const message = byId("business-schedule-message");
+    if (!date) {
+      if (message) { message.textContent = "Selecciona una fecha para la excepción."; message.className = "form-message error"; }
+      return;
+    }
+    const open = byId("biz-exception-open")?.value || null;
+    const close = byId("biz-exception-close")?.value || null;
+    if ((open && !close) || (!open && close)) {
+      if (message) { message.textContent = "Para horario especial, indica tanto la apertura como el cierre (o deja ambos vacíos para cerrar todo el día)."; message.className = "form-message error"; }
+      return;
+    }
+    pendingScheduleExceptions = pendingScheduleExceptions.filter((e) => e.date !== date);
+    pendingScheduleExceptions.push({ date, open, close, label: byId("biz-exception-label")?.value?.slice(0, 120) || "" });
+    renderBusinessExceptionsList();
+    if (dateInput) dateInput.value = "";
+    if (byId("biz-exception-open")) byId("biz-exception-open").value = "";
+    if (byId("biz-exception-close")) byId("biz-exception-close").value = "";
+    if (byId("biz-exception-label")) byId("biz-exception-label").value = "";
+    if (message) { message.textContent = ""; message.className = "form-message"; }
+  });
+
+  document.addEventListener("change", (event) => {
+    if (event.target.classList.contains("biz-day-enabled")) {
+      const day = event.target.dataset.day;
+      const enabled = event.target.checked;
+      document.querySelector(`.biz-day-open[data-day="${day}"]`)?.toggleAttribute("disabled", !enabled);
+      document.querySelector(`.biz-day-close[data-day="${day}"]`)?.toggleAttribute("disabled", !enabled);
+    }
   });
 
   byId("matrix-date-input")?.addEventListener("change", () => {
@@ -16213,6 +16379,13 @@ function wireForms() {
     const reviewClientBtn = event.target.closest(".mark-client-reviewed");
     if (reviewClientBtn) {
       markClientReviewed(reviewClientBtn.dataset.clientId);
+      return;
+    }
+    const deleteExceptionBtn = event.target.closest(".biz-exception-delete");
+    if (deleteExceptionBtn) {
+      const index = Number(deleteExceptionBtn.dataset.index);
+      pendingScheduleExceptions.splice(index, 1);
+      renderBusinessExceptionsList();
     }
   });
 

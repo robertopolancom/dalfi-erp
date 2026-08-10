@@ -427,6 +427,7 @@ export async function onRequestPost({ request, env }) {
         requestedStartAt,
         date: dateStr,
         time: timeStr,
+        businessSchedule: bSched,
       }),
       observaciones: notes || clientProfile.note || "",
       // Reservas creadas por el chatbot (sin un miembro del salón presente)

@@ -92,6 +92,7 @@ export async function onRequestPost({ request, env }) {
 
   const data = document.data;
   const appointments = Array.isArray(data.reservas) ? data.reservas : [];
+  const businessSchedule = data.businessSchedule || {};
   const nowIso = new Date().toISOString();
 
   let remindersSent = 0;
@@ -102,7 +103,7 @@ export async function onRequestPost({ request, env }) {
     const status = String(apt.estado || "").trim();
     if (CLOSED_STATUSES.has(status)) continue;
 
-    const check = checkPreapprovedConfirmationReminder(apt, nowIso);
+    const check = checkPreapprovedConfirmationReminder(apt, nowIso, businessSchedule);
     if (!check.requiresConfirmationAlert) continue;
 
     const phoneDigits = String(apt.telefono || apt.phone || "").replace(/[^\d]/g, "");
