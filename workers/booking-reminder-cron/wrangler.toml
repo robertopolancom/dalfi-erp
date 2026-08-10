@@ -1,0 +1,27 @@
+# Worker independiente (NO Cloudflare Pages) para disparar los recordatorios
+# horarios y la escalacion/liberacion de horario de citas "Preaprobadas" del
+# chatbot que no se confirman a tiempo. Ver workers/booking-reminder-cron/README.md
+# para el paso a paso de configuracion y despliegue (ninguno de esos pasos se
+# ejecuto como parte de esta tarea).
+name = "dalfi-erp-booking-reminder-cron"
+main = "worker.js"
+compatibility_date = "2026-07-09"
+
+# Variable NO secreta: el dominio publico de Cloudflare Pages al que este
+# Worker le hace fetch().
+[vars]
+APP_BASE_URL = "https://dalfi-erp.pages.dev"
+
+# BOOKING_REMINDER_CRON_SECRET se configura por separado como Secret (nunca
+# en este archivo ni en Git): "wrangler secret put BOOKING_REMINDER_CRON_SECRET".
+# Debe ser EXACTAMENTE el mismo valor que env.BOOKING_REMINDER_CRON_SECRET en
+# Cloudflare Pages (el que ya usa functions/api/booking/send-reminders.js).
+
+# Una vez por hora. Cloudflare Cron Triggers usan UTC; da igual la hora exacta
+# porque checkPreapprovedConfirmationReminder() en outputs/lib/booking-engine.js
+# decide internamente, con cada disparo, si hace falta enviar recordatorio o
+# escalar segun cuanto falte para cada cita — este Worker solo necesita
+# ejecutarse con frecuencia suficiente (cada hora) para que esa ventana nunca
+# se salte un ciclo.
+[triggers]
+crons = ["0 * * * *"]

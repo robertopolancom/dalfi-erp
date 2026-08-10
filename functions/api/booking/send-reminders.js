@@ -21,7 +21,11 @@ const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 // Estados en los que una reserva ya no necesita recordatorio ni escalacion.
-const CLOSED_STATUSES = new Set(["Confirmada", "Cancelada", "Anulada", "Completada", "No asistió", "No asistio"]);
+// "No confirmada" ya fue escalada una vez (por eso llegó a este estado) y su
+// horario quedó liberado — seguir mandando recordatorios sobre ella no tiene
+// sentido; su resolución depende de que el salón la confirme a mano o de que
+// otra reserva tome el horario (ver confirm.js), no de este cron.
+const CLOSED_STATUSES = new Set(["Confirmada", "Cancelada", "Anulada", "Completada", "No asistió", "No asistio", "No confirmada"]);
 
 async function loadDocument(supabaseUrl, serviceRoleKey) {
   const response = await fetch(`${supabaseUrl}/rest/v1/erp_records?table_name=eq.app&record_key=eq.database&select=data,updated_at`, {
@@ -132,6 +136,13 @@ export async function onRequestPost({ request, env }) {
       }
       if (shouldEscalate) {
         apt.escalatedAt = nowIso;
+        // Nadie confirmó a tiempo: libera el horario (calculateAvailableSlots
+        // trata "No confirmada" igual que una cancelación) en vez de dejarlo
+        // bloqueado indefinidamente. Si el salón la confirma antes de que
+        // alguien más tome ese horario, vuelve a "Confirmada" (ver la guarda
+        // ALREADY_REASSIGNED en confirm.js); si alguien más lo toma primero,
+        // esta cita queda "Reprogramada" automáticamente en ese mismo momento.
+        apt.estado = "No confirmada";
         escalationsSent += 1;
       } else {
         apt.lastReminderCycleSent = check.hourlyCycle;

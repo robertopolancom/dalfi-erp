@@ -447,7 +447,11 @@ export function calculateAvailableSlots({
   // 2. Citas existentes activas
   const activeAppointments = appointments.filter((apt) => {
     const status = String(apt.estado || apt.status || "").toLowerCase();
-    const isCancelled = status.includes("cancelad") || status.includes("reprogramad") || status.includes("no_asistio");
+    // "No confirmada" (Preaprobada que llegó a su hora sin confirmarse, ver
+    // checkPreapprovedConfirmationReminder + send-reminders.js) libera el horario
+    // igual que una cancelación: no debe seguir bloqueando la agenda de la manicurista.
+    const isCancelled = status.includes("cancelad") || status.includes("reprogramad")
+      || status.includes("no_asistio") || status.includes("no confirmada");
     if (isCancelled) return false;
     const aptDate = apt.fecha || (apt.startAt ? apt.startAt.slice(0, 10) : null);
     if (aptDate !== date) return false;
@@ -812,7 +816,11 @@ export function buildConsolidatedDailyMatrix({
 
     const staffApts = appointments.filter((apt) => {
       const status = String(apt.estado || apt.status || "").toLowerCase();
-      const isCancelled = status.includes("cancelad") || status.includes("reprogramad") || status.includes("no_asistio");
+      // "No confirmada" (Preaprobada que llegó a su hora sin confirmarse, ver
+      // checkPreapprovedConfirmationReminder + send-reminders.js) libera el horario
+      // igual que una cancelación: no debe seguir bloqueando la agenda de la manicurista.
+      const isCancelled = status.includes("cancelad") || status.includes("reprogramad")
+        || status.includes("no_asistio") || status.includes("no confirmada");
       if (isCancelled) return false;
       const aptDate = apt.fecha || (apt.startAt ? apt.startAt.slice(0, 10) : null);
       if (aptDate !== date) return false;
@@ -1214,6 +1222,9 @@ export function resolveOrCreateClientProfile({
     lineasContactoVinculadas: linkedLines,
     origenRegistro: source,
     estado: "Activo",
+    // Clientas creadas por el chatbot (sin un miembro del salón validando los
+    // datos en el momento) quedan marcadas para revisión en el Dashboard.
+    needsReview: true,
     created_at: nowISO,
     updated_at: nowISO,
   };

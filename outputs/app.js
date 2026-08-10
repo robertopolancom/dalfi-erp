@@ -4139,7 +4139,16 @@ function confirmSalonReservation(reservationId) {
     alert("No se encontró la reserva.");
     return;
   }
+  // Si esta cita "No confirmada" ya fue reasignada (otra reserva tomó su
+  // horario tras no confirmarse a tiempo, ver functions/api/booking/confirm.js
+  // ALLOWED_REASSIGNED), no se debe resucitar por encima de la nueva reserva.
+  const reassignedStatuses = new Set(["reprogramada", "cancelada"]);
+  if (reassignedStatuses.has(String(dbRow.estado || "").toLowerCase())) {
+    alert(`La cita ${reservationId} ya no está disponible: su horario fue reasignado (estado actual: ${dbRow.estado}).`);
+    return;
+  }
   dbRow.estado = "Confirmada";
+  dbRow.needsReview = false;
   stampRecord(dbRow, "updated");
   logAudit("appointment_confirmed_salon", {
     entity: "reservas",
@@ -4152,6 +4161,40 @@ function confirmSalonReservation(reservationId) {
   saveState();
   renderAll();
   alert(`Cita ${reservationId} confirmada exitosamente en el salón.`);
+}
+
+function markReservationReviewed(reservationId) {
+  const dbRow = dbTable("reservas").find((row) => String(row.reservaID || row.id) === String(reservationId));
+  if (!dbRow) return;
+  dbRow.needsReview = false;
+  stampRecord(dbRow, "updated");
+  logAudit("appointment_marked_reviewed", {
+    entity: "reservas",
+    entityId: reservationId,
+    newData: { needsReview: false },
+    note: `Reserva ${reservationId} (creada por el chatbot) marcada como revisada.`,
+    success: true,
+  });
+  state = stateFromDatabase(database);
+  saveState();
+  renderAll();
+}
+
+function markClientReviewed(clientId) {
+  const dbRow = dbTable("clientes").find((row) => String(row.clienteID || row.id) === String(clientId));
+  if (!dbRow) return;
+  dbRow.needsReview = false;
+  stampRecord(dbRow, "updated");
+  logAudit("client_marked_reviewed", {
+    entity: "clientes",
+    entityId: clientId,
+    newData: { needsReview: false },
+    note: `Clienta ${clientId} (creada por el chatbot) marcada como revisada.`,
+    success: true,
+  });
+  state = stateFromDatabase(database);
+  saveState();
+  renderAll();
 }
 
 function renderConsolidatedMatrix() {
@@ -4170,40 +4213,79 @@ function renderConsolidatedMatrix() {
   const weeklySchedules = database.data?.staffWeeklySchedules || [];
   const exceptions = database.data?.staffScheduleExceptions || [];
 
-  // 1. Banner de Recordatorios de Reservas Preaprobadas del Chatbot (4h)
+  // 1. Banner de Recordatorios de Reservas Preaprobadas / No confirmadas del Chatbot
+  const RESOLVED_BANNER_STATUSES = new Set(["confirmada", "cancelada", "reprogramada", "completada", "no asistió", "no asistio", "anulada"]);
   const pendingPreapproved = appointments.filter((apt) => {
     const status = String(apt.estado || "").toLowerCase();
     const source = String(apt.canalOrigen || "").toLowerCase();
-    return status.includes("preaprobad") || status.includes("pendiente") || source.includes("chatbot") || source.includes("whatsapp") || source.includes("instagram");
+    if (RESOLVED_BANNER_STATUSES.has(status)) return false;
+    return status.includes("preaprobad") || status.includes("pendiente") || status.includes("no confirmada")
+      || source.includes("chatbot") || source.includes("whatsapp") || source.includes("instagram");
   });
+  const unreviewedClients = dbTable("clientes").filter((c) => c.needsReview);
+  const unreviewedReservations = appointments.filter((apt) => apt.needsReview);
 
   if (banner) {
-    if (pendingPreapproved.length === 0) {
+    if (pendingPreapproved.length === 0 && unreviewedClients.length === 0 && unreviewedReservations.length === 0) {
       banner.innerHTML = "";
     } else {
-      banner.innerHTML = `
-        <div class="panel" style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px; border-radius: 8px; margin-bottom: 12px;">
-          <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas Preaprobadas por Chatbot pendientes de confirmación en salón (${pendingPreapproved.length})</h4>
-          <p style="margin:0 0 10px; font-size: 13px; color: #1e3a8a;">
-            Las reservas del chatbot realizadas con más de 4h de anticipación entran en estado <strong>Preaprobada</strong>. El salón debe confirmarlas 4 horas antes de la cita (recordatorios horarios activos). Las citas agendadas dentro de las 4h previas quedan <strong>Confirmadas</strong> automáticamente.
-          </p>
-          <div style="display:flex; flex-direction:column; gap:6px;">
-            ${pendingPreapproved.map((apt) => {
-              const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt) : { requiresConfirmationAlert: true, alertReason: "Pendiente de confirmación" };
-              return `
-                <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #dbeafe;">
-                  <div>
-                    <strong>${escapeHtml(apt.clienteNombre || "Cliente")}</strong> · ${escapeHtml(apt.servicio || "Servicio")} (${escapeHtml(apt.fecha)} a las ${escapeHtml(apt.hora)})
-                    <span style="font-size:12px; color:#64748b;"> · Canal: ${escapeHtml(apt.canalOrigen || "Chatbot")} · Est: ${escapeHtml(apt.estado || "Preaprobada")}</span>
-                    ${check.requiresConfirmationAlert ? `<br/><span style="color:#b91c1c; font-size:12px; font-weight:600;">⏰ ${escapeHtml(check.alertReason)}</span>` : ""}
+      const reviewSections = [];
+      if (pendingPreapproved.length) {
+        reviewSections.push(`
+          <div>
+            <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas Preaprobadas / No confirmadas por Chatbot pendientes de confirmación en salón (${pendingPreapproved.length})</h4>
+            <p style="margin:0 0 10px; font-size: 13px; color: #1e3a8a;">
+              Las reservas del chatbot realizadas con más de 4h de anticipación entran en estado <strong>Preaprobada</strong>. El salón debe confirmarlas antes de la hora de la cita (recordatorios horarios activos). Si nadie la confirma a tiempo, pasa a <strong>No confirmada</strong> y su horario se libera para otra reserva — el salón aún puede confirmarla mientras nadie más lo haya tomado. Las citas agendadas dentro de las 4h previas quedan <strong>Confirmadas</strong> automáticamente.
+            </p>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              ${pendingPreapproved.map((apt) => {
+                const check = typeof DalfiBookingEngine !== "undefined" ? DalfiBookingEngine.checkPreapprovedConfirmationReminder(apt) : { requiresConfirmationAlert: true, alertReason: "Pendiente de confirmación" };
+                return `
+                  <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #dbeafe;">
+                    <div>
+                      <strong>${escapeHtml(apt.clienteNombre || "Cliente")}</strong> · ${escapeHtml(apt.servicio || "Servicio")} (${escapeHtml(apt.fecha)} a las ${escapeHtml(apt.hora)})
+                      <span style="font-size:12px; color:#64748b;"> · Canal: ${escapeHtml(apt.canalOrigen || "Chatbot")} · Est: ${escapeHtml(apt.estado || "Preaprobada")}</span>
+                      ${check.requiresConfirmationAlert ? `<br/><span style="color:#b91c1c; font-size:12px; font-weight:600;">⏰ ${escapeHtml(check.alertReason)}</span>` : ""}
+                    </div>
+                    <button class="primary-btn compact confirm-salon-reservation" data-reservation-id="${escapeHtml(apt.reservaID)}" type="button">Confirmar cita en salón</button>
                   </div>
-                  <button class="primary-btn compact confirm-salon-reservation" data-reservation-id="${escapeHtml(apt.reservaID)}" type="button">Confirmar cita en salón</button>
-                </div>
-              `;
-            }).join("")}
+                `;
+              }).join("")}
+            </div>
           </div>
-        </div>
-      `;
+        `);
+      }
+      if (unreviewedReservations.length) {
+        reviewSections.push(`
+          <div>
+            <h4 style="margin:0 0 6px; color: #92400e;">🆕 Reservas nuevas del chatbot sin revisar (${unreviewedReservations.length})</h4>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              ${unreviewedReservations.map((apt) => `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #fde68a;">
+                  <div><strong>${escapeHtml(apt.clienteNombre || "Cliente")}</strong> · ${escapeHtml(apt.servicio || "Servicio")} (${escapeHtml(apt.fecha)} a las ${escapeHtml(apt.hora)}) · Est: ${escapeHtml(apt.estado || "")}</div>
+                  <button class="secondary-btn compact mark-reservation-reviewed" data-reservation-id="${escapeHtml(apt.reservaID)}" type="button">Marcar como revisado</button>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `);
+      }
+      if (unreviewedClients.length) {
+        reviewSections.push(`
+          <div>
+            <h4 style="margin:0 0 6px; color: #92400e;">🆕 Clientas nuevas del chatbot sin revisar (${unreviewedClients.length})</h4>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+              ${unreviewedClients.map((c) => `
+                <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #fde68a;">
+                  <div><strong>${escapeHtml(c.nombreCompleto || "Clienta")}</strong> · ${escapeHtml(c.telefono || "")}</div>
+                  <button class="secondary-btn compact mark-client-reviewed" data-client-id="${escapeHtml(c.clienteID)}" type="button">Marcar como revisado</button>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `);
+      }
+      banner.innerHTML = `<div class="panel" style="background: #eff6ff; border: 1px solid #bfdbfe; padding: 12px; border-radius: 8px; margin-bottom: 12px; display:flex; flex-direction:column; gap:14px;">${reviewSections.join("")}</div>`;
     }
   }
 
@@ -16121,6 +16203,16 @@ function wireForms() {
     const confirmBtn = event.target.closest(".confirm-salon-reservation");
     if (confirmBtn) {
       confirmSalonReservation(confirmBtn.dataset.reservationId);
+      return;
+    }
+    const reviewResBtn = event.target.closest(".mark-reservation-reviewed");
+    if (reviewResBtn) {
+      markReservationReviewed(reviewResBtn.dataset.reservationId);
+      return;
+    }
+    const reviewClientBtn = event.target.closest(".mark-client-reviewed");
+    if (reviewClientBtn) {
+      markClientReviewed(reviewClientBtn.dataset.clientId);
     }
   });
 

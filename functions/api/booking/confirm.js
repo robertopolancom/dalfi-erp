@@ -93,6 +93,19 @@ export async function onRequestPost({ request, env }) {
         return json({ success: false, error: `Reserva '${targetResId}' no encontrada.` }, 404);
       }
 
+      // Una cita "No confirmada" (llegó a su hora sin confirmarse, ver
+      // send-reminders.js) libera su horario para que otra reserva lo tome. Si
+      // eso ya pasó (esta cita quedó "Reprogramada" o "Cancelada"), confirmarla
+      // ahora resucitaría una reserva cuyo horario ya es de otra clienta.
+      const alreadyReassignedStatuses = new Set(["reprogramada", "cancelada"]);
+      if (alreadyReassignedStatuses.has(String(existingApt.estado || "").toLowerCase())) {
+        return json({
+          success: false,
+          code: "ALREADY_REASSIGNED",
+          error: `La reserva '${targetResId}' ya no está disponible: su horario fue reasignado (estado actual: ${existingApt.estado}).`,
+        }, 409);
+      }
+
       let updatedApt = {
         ...existingApt,
         estado: payload.status || "Confirmada",
@@ -416,14 +429,34 @@ export async function onRequestPost({ request, env }) {
         time: timeStr,
       }),
       observaciones: notes || clientProfile.note || "",
+      // Reservas creadas por el chatbot (sin un miembro del salón presente)
+      // quedan marcadas para revisión en el Dashboard.
+      needsReview: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
+    // Si esta manicurista y horario ya tenían una cita "No confirmada" (llegó a
+    // su hora sin confirmarse y liberó el espacio, ver send-reminders.js), esta
+    // nueva reserva confirmada la reemplaza: la vieja pasa a "Reprogramada" en
+    // vez de quedar fantasma bloqueando o compitiendo por el mismo horario.
+    const bumpedNote = "Reprogramada: su horario fue tomado por otra reserva confirmada tras no confirmarse a tiempo.";
+    const appointmentsWithBump = appointments.map((apt) => {
+      if (String(apt.estado || "").toLowerCase() !== "no confirmada") return apt;
+      if (String(apt.colaboradorID || "") !== String(targetCollaboratorId)) return apt;
+      if (apt.fecha !== dateStr || apt.hora !== timeStr) return apt;
+      return {
+        ...apt,
+        estado: "Reprogramada",
+        observaciones: bumpedNote,
+        updated_at: new Date().toISOString(),
+      };
+    });
+
     // 5. Guardar atómicamente en erp_records usando save_erp_record_if_current
     const updatedDoc = currentDoc.data
-      ? { ...currentDoc, data: { ...currentDoc.data, reservas: [...appointments, newAppointment], clientes: updatedClients } }
-      : { ...currentDoc, reservas: [...appointments, newAppointment], clientes: updatedClients };
+      ? { ...currentDoc, data: { ...currentDoc.data, reservas: [...appointmentsWithBump, newAppointment], clientes: updatedClients } }
+      : { ...currentDoc, reservas: [...appointmentsWithBump, newAppointment], clientes: updatedClients };
 
     const saveResponse = await safeFetch(`${env.SUPABASE_URL}/rest/v1/rpc/save_erp_record_if_current`, {
       method: "POST",
