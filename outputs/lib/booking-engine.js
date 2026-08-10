@@ -572,7 +572,12 @@ export function calculateAvailableSlots({
     // y "Reemplazada" (otra reserva confirmada ya tomó ese horario, ver
     // functions/api/booking/confirm.js) liberan el horario igual que una
     // cancelación: no deben seguir bloqueando la agenda de la manicurista.
-    const isCancelled = status.includes("cancelad") || status.includes("reprogramad")
+    // "Reprogramada" ya NO se trata como cancelada: hoy significa que la
+    // clienta reagendó su propia cita (vía el chatbot) o el staff le cambió
+    // fecha/hora — sigue siendo su reserva activa y debe seguir bloqueando
+    // el horario nuevo que ocupa. Solo "Reemplazada" (otra reserva confirmada
+    // ya tomó ese horario) y "EspacioLiberado" liberan la agenda.
+    const isCancelled = status.includes("cancelad")
       || status.includes("no_asistio") || status.includes("reemplazada")
       || confirmState === "espacioliberado";
     if (isCancelled) return false;
@@ -942,7 +947,10 @@ export function buildConsolidatedDailyMatrix({
       const confirmState = String(apt.estadoConfirmacion || "").toLowerCase();
       // "EspacioLiberado"/"Reemplazada" liberan el horario igual que una
       // cancelación — ver el bloque equivalente en calculateAvailableSlots arriba.
-      const isCancelled = status.includes("cancelad") || status.includes("reprogramad")
+      // Ver el comentario equivalente en calculateAvailableSlots más arriba:
+      // "Reprogramada" es un estado activo (la clienta o el staff reagendó),
+      // no una cancelación — no se excluye aquí.
+      const isCancelled = status.includes("cancelad")
         || status.includes("no_asistio") || status.includes("reemplazada")
         || confirmState === "espacioliberado";
       if (isCancelled) return false;

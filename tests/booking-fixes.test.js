@@ -122,6 +122,69 @@ test("Bug de anidación: reschedule.js encuentra y reprograma una cita real (doc
   assert.equal(env.getDoc().data.reservas[0].fecha, "2026-08-11");
 });
 
+test("reschedule.js: nunca cobra un depósito nuevo (estadoDeposito se conserva tal cual, sea Pendiente o Verificado)", async () => {
+  const doc = {
+    ...BASE_DOC,
+    reservas: [
+      {
+        reservaID: "RES-DEP-1", fecha: "2026-08-10", hora: "10:00", horaFin: "11:00", duracionMin: 60,
+        servicioID: "SRV-1", colaboradorID: "COL-1", colaboradorNombre: "Ana Pérez",
+        estado: "No asistió", estadoConfirmacion: "EspacioLiberado", estadoDeposito: "Verificado",
+        canalOrigen: "chatbot_whatsapp",
+      },
+    ],
+  };
+  const env = createNestedMockEnv(doc);
+  const futureDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10); // +5 días, de sobra >4h laborales
+  const req = new Request("https://localhost/api/booking/reschedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ appointmentId: "RES-DEP-1", date: futureDate, time: "11:00", reason: "No asistió, reagenda" }),
+  });
+  const res = await reschedulePost({ request: req, env });
+  const data = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(data.success, true);
+  assert.equal(env.getDoc().data.reservas[0].estadoDeposito, "Verificado", "el depósito ya verificado no debe resetearse a Pendiente");
+});
+
+test("reschedule.js: recalcula estadoConfirmacion para el NUEVO horario (una cita con EspacioLiberado deja de estar EspacioLiberado tras reagendar)", async () => {
+  const doc = {
+    ...BASE_DOC,
+    reservas: [
+      {
+        reservaID: "RES-RESET-1", fecha: "2026-08-10", hora: "10:00", horaFin: "11:00", duracionMin: 60,
+        servicioID: "SRV-1", colaboradorID: "COL-1", colaboradorNombre: "Ana Pérez",
+        estado: "Preaprobada", estadoConfirmacion: "EspacioLiberado", estadoDeposito: "Pendiente",
+        canalOrigen: "chatbot_whatsapp", primerRecordatorioEnviadoEn: "2026-08-09T13:00:00.000Z",
+        segundoRecordatorioEnviadoEn: "2026-08-09T14:00:00.000Z",
+      },
+    ],
+  };
+  const env = createNestedMockEnv(doc);
+  const futureDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const req = new Request("https://localhost/api/booking/reschedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ appointmentId: "RES-RESET-1", date: futureDate, time: "11:00" }),
+  });
+  const res = await reschedulePost({ request: req, env });
+  const data = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(data.appointment.estadoConfirmacion, "Programada");
+  const saved = env.getDoc().data.reservas[0];
+  assert.equal(saved.estadoConfirmacion, "Programada");
+  assert.equal(saved.estado, "Reprogramada");
+  assert.equal(saved.primerRecordatorioEnviadoEn, null);
+  assert.equal(saved.segundoRecordatorioEnviadoEn, null);
+
+  // Y la nueva franja horaria SÍ bloquea la disponibilidad (a diferencia de EspacioLiberado)
+  const availReq = new Request(`https://localhost/api/booking/availability?serviceId=SRV-1&date=${futureDate}&collaboratorId=COL-1`);
+  const availRes = await availabilityGet({ request: availReq, env });
+  const availData = await availRes.json();
+  assert.ok(!availData.slots.some((s) => s.time === "11:00"), "el horario nuevo debe quedar ocupado por la cita reagendada");
+});
+
 test("Elegibilidad: GET /availability rechaza una colaboradora no capacitada para el servicio pedido", async () => {
   const env = createNestedMockEnv(BASE_DOC);
   // SRV-2 (Pedicura Clínica) solo lo puede hacer COL-2, pedimos COL-1

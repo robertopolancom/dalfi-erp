@@ -8,6 +8,7 @@ import {
   calculateAppointmentDuration,
   parseTimeToMinutes,
   isCollaboratorEligibleForServiceLines,
+  determineInitialBookingStatus,
 } from "../../../outputs/lib/booking-engine.js";
 
 import { validateChatbotSecret } from "./_auth.js";
@@ -138,6 +139,21 @@ export async function onRequestPost({ request, env }) {
     const endM = String(endMin % 60).padStart(2, "0");
     const endTimeStr = `${endH}:${endM}`;
 
+    // Recalcula estadoConfirmacion para el NUEVO horario (mismo criterio que una reserva
+    // nueva del chatbot: si quedan ≤4h laborales, no hace falta recordatorio de asistencia).
+    // Sin esto, una cita reagendada desde "EspacioLiberado" seguiría marcada así y
+    // calculateAvailableSlots/buildConsolidatedDailyMatrix tratarían su propio horario nuevo
+    // como libre. estadoDeposito NUNCA se toca aquí (se conserva vía el spread de abajo):
+    // reagendar, sea por no-show o por espacio liberado, no cobra un depósito nuevo.
+    const initialStatus = determineInitialBookingStatus({
+      source: currentApt.canalOrigen || "chatbot_whatsapp",
+      date: targetDate,
+      time: targetTime,
+      referenceTime: new Date(),
+      businessSchedule: bSched,
+    });
+    const newEstado = initialStatus.estadoConfirmacion === "NoRequerida" ? "Confirmada" : "Reprogramada";
+
     const updatedApt = {
       ...currentApt,
       fecha: targetDate,
@@ -146,7 +162,10 @@ export async function onRequestPost({ request, env }) {
       duracionMin: durationMin,
       colaboradorID: collabId,
       colaboradorNombre: staffMember?.nombreCompleto || currentApt.colaboradorNombre,
-      estado: "Reprogramada",
+      estado: newEstado,
+      estadoConfirmacion: initialStatus.estadoConfirmacion,
+      primerRecordatorioEnviadoEn: null,
+      segundoRecordatorioEnviadoEn: null,
       observaciones: reason ? `Reprogramada: ${reason}. ${currentApt.observaciones || ""}`.trim() : currentApt.observaciones,
       updated_at: new Date().toISOString(),
     };
@@ -201,7 +220,8 @@ export async function onRequestPost({ request, env }) {
         endAt: `${targetDate}T${endTimeStr}:00`,
         collaboratorId: collabId,
         collaboratorName: updatedApt.colaboradorNombre,
-        status: "Reprogramada",
+        status: updatedApt.estado,
+        estadoConfirmacion: updatedApt.estadoConfirmacion,
       },
     });
   } catch (error) {

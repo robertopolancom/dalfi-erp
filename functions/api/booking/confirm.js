@@ -95,11 +95,13 @@ export async function onRequestPost({ request, env }) {
 
       // Una cita en estadoConfirmacion "EspacioLiberado" (segundo recordatorio
       // sin confirmar, ver send-reminders.js) libera su horario para que otra
-      // reserva lo tome. Si eso ya pasó (esta cita quedó "Reemplazada" —u
-      // "Reprogramada", cambio manual de fecha/hora por el staff— o
-      // "Cancelada"), confirmarla ahora resucitaría una reserva cuyo horario
-      // ya es de otra clienta.
-      const alreadyReassignedStatuses = new Set(["reemplazada", "reprogramada", "cancelada"]);
+      // reserva lo tome. Si eso ya pasó (esta cita quedó "Reemplazada" por
+      // otra reserva que sí tomó el horario, o "Cancelada"), confirmarla
+      // ahora resucitaría una reserva cuyo horario ya es de otra clienta.
+      // "Reprogramada" NO cuenta aquí: es la propia cita, reagendada a un
+      // horario nuevo por la clienta (ver reschedule.js) o el staff — sigue
+      // siendo válida y debe poder confirmarse normalmente.
+      const alreadyReassignedStatuses = new Set(["reemplazada", "cancelada"]);
       if (alreadyReassignedStatuses.has(String(existingApt.estado || "").toLowerCase())) {
         return json({
           success: false,

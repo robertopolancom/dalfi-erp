@@ -4142,7 +4142,9 @@ function confirmSalonReservation(reservationId) {
   // Si esta cita ya fue reasignada (otra reserva tomó su horario tras no
   // confirmarse a tiempo, ver functions/api/booking/confirm.js
   // ALREADY_REASSIGNED), no se debe resucitar por encima de la nueva reserva.
-  const reassignedStatuses = new Set(["reemplazada", "reprogramada", "cancelada"]);
+  // "Reprogramada" no cuenta como reasignada: es la cita reagendada a un
+  // horario nuevo, sigue siendo válida (ver el mismo criterio en confirm.js).
+  const reassignedStatuses = new Set(["reemplazada", "cancelada"]);
   if (reassignedStatuses.has(String(dbRow.estado || "").toLowerCase())) {
     alert(`La cita ${reservationId} ya no está disponible: su horario fue reasignado (estado actual: ${dbRow.estado}).`);
     return;
