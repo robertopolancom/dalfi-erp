@@ -1,9 +1,11 @@
 const $ = (id) => document.getElementById(id);
 const state = { catalog: null, client: null, mode: "customer", token: "", selectedSlot: null };
+const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
+const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 const api = async (path, options = {}) => {
   const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(`${apiBase}${path}`, { ...options, headers });
   const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
   if (!response.ok) throw Object.assign(new Error(body.error || "No se pudo completar la solicitud."), { status: response.status, body });
   return body;
@@ -134,7 +136,7 @@ $("close-login").addEventListener("click", () => $("login-dialog").close());
 
 $("login-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const config = window.DALFI_SUPABASE_CONFIG || {};
+  const config = reservappConfig.supabase || window.DALFI_SUPABASE_CONFIG || {};
   if (!window.supabase || !config.url || !config.publishableKey) return message($("login-message"), "Acceso del equipo no disponible.");
   message($("login-message"), "Entrando…", true);
   const client = window.supabase.createClient(config.url, config.publishableKey, { auth: { persistSession: false } });
@@ -196,5 +198,5 @@ $("booking-form").addEventListener("submit", async (event) => {
 
 $("new-booking").addEventListener("click", () => location.reload());
 ["service", "staff", "date"].forEach((id) => $(id).addEventListener("change", loadAvailability));
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/reservar/sw.js").catch(() => {});
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 loadCatalog();
