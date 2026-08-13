@@ -129,7 +129,8 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     if (!bridgeSecret) return { status: "pending_configuration" };
     const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
     try {
-      const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
+      // El bridge ya procesa este canal autenticado y envía whatsappFormattedText.
+      const response = await fetchImpl(`${bridgeBase}/webhook/overdue-reminders`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
         body: JSON.stringify({
