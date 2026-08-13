@@ -1,0 +1,109 @@
+name: Activate booking reminder cron
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cloudflare-booking-reminder.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-booking-reminder-production
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PAGES_PROJECT: dalfi-erp
+      WORKER_NAME: dalfi-erp-booking-reminder-cron
+      WRANGLER_VERSION: 4.122.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Validate required GitHub secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Falta CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Falta CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+
+      - name: Install and test
+        run: |
+          npm ci
+          node --test workers/booking-reminder-cron/tests/worker.test.js
+          node --check functions/api/booking/send-reminders.js
+          node --check workers/booking-reminder-cron/worker.js
+
+      - name: Generate ephemeral shared secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          value="$(openssl rand -hex 32)"
+          echo "::add-mask::$value"
+          {
+            echo "BOOKING_REMINDER_CRON_SECRET<<DALFI_SECRET_EOF"
+            echo "$value"
+            echo "DALFI_SECRET_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Update Pages secret and deploy production
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
+            npx --yes wrangler@"$WRANGLER_VERSION" pages secret put BOOKING_REMINDER_CRON_SECRET --project-name "$PAGES_PROJECT"
+          npx --yes wrangler@"$WRANGLER_VERSION" pages deploy outputs             --project-name "$PAGES_PROJECT"             --branch main
+
+      - name: Deploy Worker and activate Cron Trigger
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@"$WRANGLER_VERSION" deploy             --config workers/booking-reminder-cron/wrangler.toml
+          printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
+            npx --yes wrangler@"$WRANGLER_VERSION" secret put BOOKING_REMINDER_CRON_SECRET               --config workers/booking-reminder-cron/wrangler.toml
+
+      - name: Verify endpoint contract and deployed secret names
+        shell: bash
+        run: |
+          set -euo pipefail
+          unauthorized_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}'             --request POST https://dalfi-erp.pages.dev/api/booking/send-reminders)"
+          test "$unauthorized_status" = "401"
+
+          response_file="$(mktemp)"
+          authenticated_status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}'             --request POST https://dalfi-erp.pages.dev/api/booking/send-reminders             --header "x-cron-secret: $BOOKING_REMINDER_CRON_SECRET")"
+          test "$authenticated_status" = "200"
+          node -e '
+            const fs = require("fs");
+            const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (body.ok !== true || !Array.isArray(body.failures)) {
+              throw new Error("Respuesta inesperada del endpoint de recordatorios.");
+            }
+            console.log(JSON.stringify({
+              ok: body.ok,
+              remindersSent: body.remindersSent,
+              escalationsSent: body.escalationsSent,
+              failureCount: body.failures.length
+            }));
+          ' "$response_file"
+
+          npx --yes wrangler@"$WRANGLER_VERSION" secret list             --config workers/booking-reminder-cron/wrangler.toml |
+            grep -q BOOKING_REMINDER_CRON_SECRET
+
+      - name: Remove secret from runner environment
+        if: always()
+        shell: bash
+        run: |
+          unset BOOKING_REMINDER_CRON_SECRET || true
