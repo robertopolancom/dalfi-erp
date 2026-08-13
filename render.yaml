@@ -22,6 +22,18 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+      - key: FAST_BOOKING_ORIGIN
+        value: https://reservapp.sebengroup.com
+      - key: FAST_BOOKING_HOST
+        value: reservapp.sebengroup.com
+      - key: SEBEN_SUITE_HOST
+        value: ssc.sebengroup.com
+      - key: RESERVAPP_PUBLIC_URL
+        value: https://reservapp.sebengroup.com
+      - key: CHATBOT_BRIDGE_URL
+        value: https://bot.sebengroup.com
+      - key: ERP_WEBHOOK_SECRET
+        sync: false
       - key: GOOGLE_CALENDAR_ID
         sync: false
       - key: GOOGLE_SERVICE_ACCOUNT_EMAIL
