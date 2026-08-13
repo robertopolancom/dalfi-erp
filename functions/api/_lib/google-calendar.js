@@ -196,11 +196,40 @@ function appointmentDuration(appointment, services = []) {
     : 30;
 }
 
+function staffId(person) {
+  return String(person?.colaboradorID || person?.id || "");
+}
+
+function staffIsActive(person) {
+  return normalize(person?.estado || "Activo") === "activo";
+}
+
+export function resolveStaffCalendarColorId(appointment, staff = []) {
+  const appointmentId = String(appointment?.colaboradorID || appointment?.collaboratorId || "");
+  const appointmentName = normalize(appointment?.colaboradorNombre || appointment?.staff);
+  const assigned = staff.find((person) =>
+    (appointmentId && staffId(person) === appointmentId) ||
+    (appointmentName && normalize(person?.nombreCompleto || person?.nombre) === appointmentName)
+  );
+  const explicit = Number.parseInt(String(
+    appointment?.googleCalendarColorId || assigned?.googleCalendarColorId || ""
+  ), 10);
+  if (explicit >= 1 && explicit <= 11) return String(explicit);
+  if (!assigned) return null;
+  const ordered = staff
+    .filter(staffIsActive)
+    .slice()
+    .sort((left, right) => staffId(left).localeCompare(staffId(right)) ||
+      normalize(left?.nombreCompleto || left?.nombre).localeCompare(normalize(right?.nombreCompleto || right?.nombre)));
+  const index = ordered.findIndex((person) => staffId(person) === staffId(assigned));
+  return String((Math.max(0, index) % 11) + 1);
+}
+
 function resolveStaffName(appointment, staff = []) {
   const direct = cleanText(appointment?.colaboradorNombre || appointment?.staff, 120);
   if (direct) return direct;
   const id = String(appointment?.colaboradorID || appointment?.collaboratorId || "");
-  const match = staff.find((person) => String(person?.colaboradorID || person?.id || "") === id);
+  const match = staff.find((person) => staffId(person) === id);
   return cleanText(match?.nombreCompleto || match?.nombre, 120) || "Sin asignar";
 }
 
@@ -239,6 +268,7 @@ export function buildGoogleCalendarEvent(appointment, context = {}) {
   const status = cleanText(appointment?.estado || appointment?.status, 60) || "Programada";
   const timeZone = cleanText(context.timeZone, 80) || DEFAULT_TIME_ZONE;
   const summary = cleanText(`Cita: ${clientName} — ${staffName}`, 180);
+  const colorId = resolveStaffCalendarColorId(appointment, context.staff || []);
   const description = [
     `Clienta: ${clientName}`,
     `Manicurista: ${staffName}`,
@@ -254,6 +284,7 @@ export function buildGoogleCalendarEvent(appointment, context = {}) {
     event: {
       summary,
       description,
+      ...(colorId ? { colorId } : {}),
       visibility: "private",
       start: { dateTime: `${date}T${time}:00`, timeZone },
       end: { dateTime: `${endDate}T${endTime}:00`, timeZone },
