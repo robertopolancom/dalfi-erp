@@ -6,6 +6,7 @@ import {
   getGoogleAccessToken,
   googleCalendarConfig,
   googleEventIdForReservation,
+  resolveStaffCalendarColorId,
   syncAppointmentToGoogleCalendar,
   syncChangedAppointmentsToGoogleCalendar,
 } from "../functions/api/_lib/google-calendar.js";
@@ -56,6 +57,21 @@ test("buildGoogleCalendarEvent incluye clienta, manicurista y horario de inicio 
   assert.match(built.event.description, /Horario: 15:00–16:15/);
   assert.match(built.event.description, /Servicio: Manicura de prueba/);
   assert.equal(built.event.visibility, "private");
+});
+
+
+test("cada manicurista activa recibe un color estable y la cita lo lleva a Google", () => {
+  const staff = [
+    { colaboradorID: "COL-2", nombreCompleto: "Zoila", estado: "Activo" },
+    { colaboradorID: "COL-1", nombreCompleto: "Ana", estado: "Activo" },
+  ];
+  assert.equal(resolveStaffCalendarColorId({ colaboradorID: "COL-1" }, staff), "1");
+  assert.equal(resolveStaffCalendarColorId({ colaboradorID: "COL-2" }, staff), "2");
+  const built = buildGoogleCalendarEvent(
+    fakeAppointment({ colaboradorID: "COL-2", colaboradorNombre: "Zoila" }),
+    { staff },
+  );
+  assert.equal(built.event.colorId, "2");
 });
 
 test("la duración se obtiene del catálogo cuando la cita no tiene horaFin ni duracionMin", () => {
