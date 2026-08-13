@@ -32,6 +32,14 @@ test("Apps Script soporta listar eventos externos y reclamar el evento importado
   assert.match(source, /Reserva ERP:/);
 });
 
+
+test("Apps Script transmite el color al listar y lo aplica al crear o actualizar", async () => {
+  const source = await readFile(codePath, "utf8");
+  assert.match(source, /candidate\.getColor\(\)/);
+  assert.match(source, /existingEvent\.setColor\(input\.colorId\)/);
+  assert.match(source, /colorId: \/\^/);
+});
+
 test("Apps Script no registra payloads ni datos personales", async () => {
   const source = await readFile(codePath, "utf8");
   assert.doesNotMatch(source, /console\.(?:log|error)\([^\n]*(?:payload|description|client|secret)/i);

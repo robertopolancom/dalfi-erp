@@ -29,6 +29,24 @@ test("un nombre exacto asigna una sola manicurista y elimina el bloqueo global",
   assert.equal(reservation.bloqueoGlobal, false);
 });
 
+
+test("el color del evento asigna la manicurista aunque no se escriba su nombre", () => {
+  const reservation = parseGoogleEvent({
+    eventId: "google-event-color",
+    summary: "Cita de calendario",
+    description: "Clienta: Elena",
+    colorId: "2",
+    start: "2026-08-12T19:00:00.000Z",
+    end: "2026-08-12T20:00:00.000Z",
+  }, [
+    { colaboradorID: "COL-1", nombreCompleto: "Ana", estado: "Activo" },
+    { colaboradorID: "COL-2", nombreCompleto: "María", estado: "Activo" },
+  ]);
+  assert.equal(reservation.colaboradorID, "COL-2");
+  assert.equal(reservation.colaboradorNombre, "María");
+  assert.equal(reservation.bloqueoGlobal, false);
+});
+
 test("el identificador derivado es estable y no usa datos de clienta", () => {
   assert.equal(reservationIdForEvent("google/event ficticio"), "GCAL-google_event_ficticio");
   assert.equal(reservationIdForEvent("google/event ficticio"), reservationIdForEvent("google/event ficticio"));
