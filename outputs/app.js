@@ -2046,7 +2046,16 @@ function startReservationEdit(reservationId) {
   byId("reservation-service-search").value = record.service || record.servicio || "";
   byId("reservation-date").value = record.date || record.fecha || today;
   byId("reservation-time").value = record.time || record.hora || "";
-  byId("reservation-staff").value = record.staff || record.colaboradorNombre || "";
+  availableReservationStaff({ preserveSelection: false });
+  const editingStaffId = String(record.staffId || record.colaboradorID || "");
+  const editingStaffName = record.staff || record.colaboradorNombre || "";
+  const staffSelect = byId("reservation-staff");
+  if (editingStaffId && Array.from(staffSelect.options).some((option) => option.value === editingStaffId)) {
+    staffSelect.value = editingStaffId;
+  } else if (editingStaffName) {
+    const matchingOption = Array.from(staffSelect.options).find((option) => normalize(option.textContent) === normalize(editingStaffName));
+    if (matchingOption) staffSelect.value = matchingOption.value;
+  }
   byId("reservation-status").value = reservationStatus(record);
   byId("reservation-note").value = record.note || record.observaciones || "";
   const title = form.querySelector(".panel-head h3");
@@ -2059,6 +2068,73 @@ function startReservationEdit(reservationId) {
     message.className = "form-message";
   }
   revealFormAtTop(form, { focusSelector: "#reservation-client-search" });
+}
+
+function reservationServiceLine(serviceRecord) {
+  if (!serviceRecord) return [];
+  return [{
+    serviceId: serviceRecord.servicioID || serviceRecord.id || serviceRecord.servicio,
+    servicioID: serviceRecord.servicioID || serviceRecord.id || "",
+    name: serviceRecord.servicio || serviceRecord.nombre || "",
+    quantity: 1,
+  }];
+}
+
+function addMinutesToClock(time, minutes) {
+  const [hour, minute] = String(time || "00:00").split(":").map(Number);
+  const total = Math.max(0, hour * 60 + minute + Number(minutes || 0));
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function availableReservationStaff({ preserveSelection = true } = {}) {
+  const select = byId("reservation-staff");
+  const note = byId("reservation-staff-availability");
+  if (!select) return [];
+  const previousId = preserveSelection ? select.value : "";
+  const previousName = preserveSelection ? select.selectedOptions?.[0]?.textContent?.trim() : "";
+  const date = byId("reservation-date")?.value || "";
+  const time = byId("reservation-time")?.value || "";
+  const serviceRecord = findServiceByName(byId("reservation-service-search")?.value || "");
+  const editId = byId("reservation-edit-id")?.value || "";
+  const options = [];
+
+  if (date && time && serviceRecord && typeof DalfiBookingEngine !== "undefined") {
+    const appointments = dbTable("reservas").filter((item) =>
+      String(item.reservaID || item.id || "") !== String(editId)
+    );
+    for (const person of activeManicuristas()) {
+      const collaboratorId = String(person.colaboradorID || person.id || "");
+      const availability = DalfiBookingEngine.calculateAvailableSlots({
+        date,
+        collaboratorId,
+        serviceLines: reservationServiceLine(serviceRecord),
+        businessSchedule: database.data?.businessSchedule || {},
+        weeklySchedules: database.data?.staffWeeklySchedules || [],
+        exceptions: database.data?.staffScheduleExceptions || [],
+        appointments,
+        services: dbTable("servicios"),
+      });
+      if (availability.slots?.some((slot) => slot.time === time)) {
+        options.push({
+          id: collaboratorId,
+          name: person.nombreCompleto || person.nombre || collaboratorId,
+        });
+      }
+    }
+  }
+
+  select.innerHTML = `<option value="">${date && time && serviceRecord ? "Selecciona una manicurista" : "Selecciona servicio, fecha y hora"}</option>` +
+    options.map((person) => `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}</option>`).join("");
+  const matching = options.find((person) => person.id === previousId || normalize(person.name) === normalize(previousName));
+  if (matching) select.value = matching.id;
+  if (note) {
+    note.textContent = !date || !time || !serviceRecord
+      ? "Selecciona un servicio existente, fecha y hora para calcular disponibilidad."
+      : options.length
+        ? `${options.length} manicurista(s) disponible(s) para completar el servicio a esa hora.`
+        : "No hay manicuristas disponibles a esa hora según sus horarios, ausencias y citas existentes.";
+  }
+  return options;
 }
 
 function fillReservationClientFromRecord(client) {
@@ -16423,6 +16499,11 @@ function wireForms() {
     }
   });
 
+  ["reservation-service-search", "reservation-date", "reservation-time"].forEach((fieldId) => {
+    byId(fieldId)?.addEventListener("change", () => availableReservationStaff());
+    byId(fieldId)?.addEventListener("input", () => availableReservationStaff());
+  });
+
   byId("reservation-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const formMessage = byId("reservation-form-message");
@@ -16437,14 +16518,16 @@ function wireForms() {
     }
     let client = byId("reservation-client-search").value.trim();
     const service = byId("reservation-service-search").value.trim();
-    const staff = byId("reservation-staff").value.trim();
+    const staffSelect = byId("reservation-staff");
+    const staffId = staffSelect.value.trim();
+    const staff = staffSelect.selectedOptions?.[0]?.textContent?.trim() || "";
     const phone = byId("reservation-client-phone").value.trim();
     const email = byId("reservation-client-email").value.trim();
     const source = byId("reservation-source").value;
     const status = byId("reservation-status")?.value || "Programada";
     const reservationDateValue = byId("reservation-date").value;
     const reservationTimeValue = byId("reservation-time").value;
-    if (!client || !service || !staff || !reservationDateValue || !reservationTimeValue) {
+    if (!client || !service || !staffId || !staff || !reservationDateValue || !reservationTimeValue) {
       setMessage("Completa cliente, servicio, técnico/a, fecha y hora antes de guardar.", "error");
       return;
     }
@@ -16460,6 +16543,13 @@ function wireForms() {
       if (email && !clientRecord.correo) clientRecord.correo = email;
     }
     ensureService(service, servicePrice(service));
+    const selectedStaff = activeManicuristas().find((person) =>
+      String(person.colaboradorID || person.id || "") === staffId
+    );
+    if (!selectedStaff || !availableReservationStaff().some((person) => person.id === staffId)) {
+      setMessage("La manicurista seleccionada ya no está disponible para completar ese servicio a esa hora.", "error");
+      return;
+    }
     if (staff && !state.staff.includes(staff)) state.staff.push(staff);
     const isProvisional = !clientRecord;
     const serviceRecord = findServiceByName(service);
@@ -16475,6 +16565,8 @@ function wireForms() {
     const reservationDate = reservationDateValue;
     const reservationTime = reservationTimeValue;
     const reservationNote = byId("reservation-note").value.trim();
+    const durationMin = Math.max(1, Number(serviceRecord?.duracionMin || serviceRecord?.durationMinutes) || 30);
+    const endTime = addMinutesToClock(reservationTime, durationMin);
     const statePayload = {
       id: reservationId,
       date: reservationDate,
@@ -16487,7 +16579,10 @@ function wireForms() {
       source,
       serviceId: serviceRecord?.servicioID || "",
       service,
+      staffId,
       staff,
+      durationMin,
+      endTime,
       status,
       note: reservationNote,
       invoiceId: currentReservation?.record?.invoiceId || currentReservation?.record?.facturaID || "",
@@ -16504,7 +16599,17 @@ function wireForms() {
       canalOrigen: source,
       servicioID: serviceRecord?.servicioID || "",
       servicio: service,
+      servicios: reservationServiceLine(serviceRecord).map((line) => ({
+        servicioID: line.servicioID,
+        nombre: line.name,
+        cantidad: 1,
+        duracionMin: durationMin,
+      })),
+      colaboradorID: staffId,
       colaboradorNombre: staff,
+      duracionMin: durationMin,
+      horaFin: endTime,
+      bloqueoGlobal: false,
       estado: status,
       facturaID: currentReservation?.record?.facturaID || currentReservation?.record?.invoiceId || "",
       observaciones: reservationNote,
@@ -16513,11 +16618,8 @@ function wireForms() {
     // el bloqueo global provisional en una reserva asignada. Se conserva
     // googleCalendarEventId al usar Object.assign sobre el registro existente.
     if (editId && currentReservation?.record?.googleCalendarEventId) {
-      const assignedStaff = dbTable("colaboradores").find((person) =>
-        normalize(person?.nombreCompleto || person?.nombre) === normalize(staff)
-      );
-      dbPayload.colaboradorID = assignedStaff?.colaboradorID || assignedStaff?.id || "";
-      dbPayload.bloqueoGlobal = !dbPayload.colaboradorID;
+      dbPayload.colaboradorID = staffId;
+      dbPayload.bloqueoGlobal = false;
       dbPayload.googleCalendarEventId = currentReservation.record.googleCalendarEventId;
       dbPayload.clienteProvisional = isProvisional;
     }
