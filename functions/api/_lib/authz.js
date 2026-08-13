@@ -140,7 +140,8 @@ export async function fetchAuthUser(request, env) {
   const publishableKey = env.SUPABASE_PUBLISHABLE_KEY;
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (!token || !supabaseUrl || !publishableKey) return null;
-  const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+  const fetchImpl = env.fetch || fetch;
+  const response = await fetchImpl(`${supabaseUrl}/auth/v1/user`, {
     headers: { apikey: publishableKey, Authorization: `Bearer ${token}` },
   });
   if (!response.ok) return null;
@@ -156,7 +157,8 @@ export async function fetchErpProfile(env, userId) {
   const supabaseUrl = env.SUPABASE_URL;
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceRoleKey || !userId) return null;
-  const response = await fetch(`${supabaseUrl}/rest/v1/erp_user_profiles?user_id=eq.${encodeURIComponent(userId)}&select=*`, {
+  const fetchImpl = env.fetch || fetch;
+  const response = await fetchImpl(`${supabaseUrl}/rest/v1/erp_user_profiles?user_id=eq.${encodeURIComponent(userId)}&select=*`, {
     headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
   });
   if (!response.ok) return null;

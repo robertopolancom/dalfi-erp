@@ -20,18 +20,17 @@ El ID del evento se deriva de forma estable del ID de la reserva. Por eso:
 
 Un fallo de Google no revierte una cita ya guardada en el ERP. La respuesta del servidor incluye un resumen `calendarSync` sin datos personales y el endpoint de sincronización permite reparar citas pendientes.
 
-## Eventos creados en Google (dos vías)
+## Flujo estrictamente unidireccional
 
-El Worker `workers/calendar-sync-cron/` ejecuta cada minuto `POST /api/calendar/google-pull`. Los eventos manuales de Google se importan con un `reservaID` estable `GCAL-*` y estado **Pendiente de completar**. Así el intervalo queda ocupado en el ERP aunque aún falten clienta, servicio o profesional.
+La ERP y la aplicación de agenda son los únicos lugares autorizados para crear,
+editar, reprogramar o cancelar citas. Google Calendar recibe una copia de solo
+consulta. Los eventos creados o modificados manualmente en Google **no se leen,
+no bloquean horarios y no escriben datos en la ERP**.
 
-- Con una manicurista identificada exactamente, el bloqueo se asigna a ella.
-- Sin profesional o con coincidencia ambigua, `bloqueoGlobal=true` ocupa el intervalo para todas las manicuristas.
-- El evento eliminado de Google cancela el bloqueo provisional en el ERP.
-- Editar fecha u hora en Google actualiza la misma reserva provisional.
-- Una reserva ya completada por una colaboradora no se degrada ni se sobreescribe con datos provisionales.
-- Al importar, Apps Script reclama el evento con `claim`; esto evita duplicados en las siguientes ejecuciones.
-
-La finalización por chatbot o por una colaboradora debe conservar el mismo `reservaID` y `googleCalendarEventId`. Al asignarse una profesional se debe retirar `bloqueoGlobal`; la disponibilidad real siempre la valida el motor del ERP.
+`POST /api/calendar/google-pull` permanece únicamente como ruta retirada y
+responde `410 CALENDAR_IMPORT_DISABLED`. Esto detiene de forma segura cualquier
+invocación residual de un Worker antiguo mientras se elimina ese Worker de
+Cloudflare.
 
 ## Credenciales y permisos
 
@@ -65,7 +64,6 @@ GOOGLE_CALENDAR_ID=dalfistudionails@gmail.com
 GOOGLE_CALENDAR_TIME_ZONE=America/Santo_Domingo
 GOOGLE_CALENDAR_TIMEOUT_MS=8000
 GOOGLE_CALENDAR_MAX_SYNC_PER_SAVE=25
-GOOGLE_CALENDAR_SYNC_SECRET=CONFIGURAR_COMO_SECRETO_EN_CLOUDFLARE
 ```
 
 Secretos que deben configurarse únicamente con el administrador de secretos de Cloudflare:
@@ -74,7 +72,6 @@ Secretos que deben configurarse únicamente con el administrador de secretos de 
 GOOGLE_APPS_SCRIPT_WEBHOOK_URL
 GOOGLE_APPS_SCRIPT_WEBHOOK_SECRET
 
-`GOOGLE_CALENDAR_SYNC_SECRET` también debe configurarse como secreto en Pages y en el Worker de `workers/calendar-sync-cron/`. Nunca se coloca en `wrangler.toml`.
 ```
 
 No pegar el secreto en `wrangler.toml`, archivos `.env`, código, documentación, GitHub, registros ni conversaciones.
@@ -121,14 +118,8 @@ Luego, con datos ficticios verificados, ejecutar:
 
 El endpoint no devuelve nombres, correos ni teléfonos; solo conteos, IDs internos y estados técnicos.
 
-La importación bidireccional protegida es:
-
-```text
-POST /api/calendar/google-pull
-Header opcional para el Worker: x-calendar-sync-secret: <secreto>
-```
-
-Los eventos ERP se reconocen por la marca `Reserva ERP:` y se excluyen del listado de entrada para no crear bucles.
+No existe importación desde Google Calendar. La ruta histórica
+`POST /api/calendar/google-pull` está deshabilitada permanentemente.
 
 ## Datos enviados a Google
 

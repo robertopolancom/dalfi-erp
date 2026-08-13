@@ -55,6 +55,14 @@ const BASE_DOC = {
   reservas: [],
 };
 
+function futureBusinessDate(minimumDays = 3) {
+  for (let offset = minimumDays; offset < minimumDays + 7; offset += 1) {
+    const date = new Date(Date.now() + offset * 86400000);
+    if (date.getUTCDay() !== 0) return date.toISOString().slice(0, 10);
+  }
+  throw new Error("No se pudo resolver una fecha laborable futura.");
+}
+
 test("Bug de anidación: cancel.js encuentra y cancela una cita real (documento doblemente anidado)", async () => {
   const doc = {
     ...BASE_DOC,
@@ -90,6 +98,7 @@ test("cancel.js responde 404 (no falso-negativo silencioso) cuando la cita realm
 });
 
 test("Bug de anidación: reschedule.js encuentra y reprograma una cita real (documento doblemente anidado)", async () => {
+  const targetDate = futureBusinessDate();
   const doc = {
     ...BASE_DOC,
     reservas: [
@@ -111,7 +120,7 @@ test("Bug de anidación: reschedule.js encuentra y reprograma una cita real (doc
   const req = new Request("https://localhost/api/booking/reschedule", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ appointmentId: "RES-2", date: "2026-08-11", time: "11:00" }),
+    body: JSON.stringify({ appointmentId: "RES-2", date: targetDate, time: "11:00" }),
   });
 
   const res = await reschedulePost({ request: req, env });
@@ -119,7 +128,7 @@ test("Bug de anidación: reschedule.js encuentra y reprograma una cita real (doc
   assert.equal(res.status, 200);
   assert.equal(data.success, true);
   assert.equal(data.appointment.status, "Reprogramada");
-  assert.equal(env.getDoc().data.reservas[0].fecha, "2026-08-11");
+  assert.equal(env.getDoc().data.reservas[0].fecha, targetDate);
 });
 
 test("reschedule.js: nunca cobra un depósito nuevo (estadoDeposito se conserva tal cual, sea Pendiente o Verificado)", async () => {
@@ -256,8 +265,9 @@ test("Bloque continuo: GET /availability con múltiples serviceId devuelve horar
     ],
   };
   const env2 = createNestedMockEnv(doc2);
+  const targetDate = futureBusinessDate();
   const req = new Request(
-    "https://localhost/api/booking/availability?serviceId=SRV-1&serviceId=SRV-3&date=2026-08-10&collaboratorId=COL-1"
+    `https://localhost/api/booking/availability?serviceId=SRV-1&serviceId=SRV-3&date=${targetDate}&collaboratorId=COL-1`
   );
   const res = await availabilityGet({ request: req, env: env2 });
   const data = await res.json();
