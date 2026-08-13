@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#123c3a" />
+  <meta name="description" content="Reserva rápida en Dalfi Studio Nails." />
+  <link rel="manifest" href="/reservar/manifest.webmanifest" />
+  <link rel="stylesheet" href="/reservar/styles.css" />
+  <title>Reserva rápida · Dalfi Studio Nails</title>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand">
+      <div class="brand-mark" aria-hidden="true">DS</div>
+      <div>
+        <p>Dalfi Studio Nails</p>
+        <h1>Reserva tu cita</h1>
+      </div>
+      <button class="staff-link" id="staff-mode" type="button">Soy del equipo</button>
+    </header>
+
+    <section class="card" id="booking-card">
+      <div class="progress" aria-label="Progreso"><span id="progress-bar"></span></div>
+      <p class="kicker" id="mode-label">Reserva personal</p>
+      <h2>Elige los detalles</h2>
+      <p class="intro">Solo toma un minuto. Los horarios mostrados están disponibles en tiempo real.</p>
+
+      <form id="booking-form">
+        <div class="field-grid">
+          <label>Servicio
+            <select id="service" required><option value="">Selecciona un servicio</option></select>
+          </label>
+          <label>Especialista
+            <select id="staff" required><option value="">Selecciona una especialista</option></select>
+          </label>
+        </div>
+
+        <label>Fecha
+          <input id="date" type="date" required />
+        </label>
+
+        <fieldset id="time-field" disabled>
+          <legend>Hora disponible</legend>
+          <div class="slots" id="slots"><p class="empty">Selecciona servicio, especialista y fecha.</p></div>
+          <input id="time" type="hidden" required />
+        </fieldset>
+
+        <section class="client-box" id="customer-self">
+          <div>
+            <span class="step-dot">1</span>
+            <div><strong>Identifica tu cuenta</strong><small>Usaremos tu teléfono para encontrar tu ficha.</small></div>
+          </div>
+          <div class="inline-fields">
+            <label>Teléfono
+              <input id="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="809 000 0000" />
+            </label>
+            <label>Correo <span>(opcional)</span>
+              <input id="email" type="email" autocomplete="email" placeholder="tu@correo.com" />
+            </label>
+          </div>
+          <button class="secondary" id="find-client" type="button">Buscar cliente</button>
+        </section>
+
+        <section class="client-box hidden" id="employee-client">
+          <div>
+            <span class="step-dot">1</span>
+            <div><strong>Cliente de la cita</strong><small>Busca por nombre o teléfono.</small></div>
+          </div>
+          <label>Buscar cliente
+            <input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" />
+          </label>
+          <div class="search-results" id="client-results"></div>
+        </section>
+
+        <div class="selected-client hidden" id="selected-client" aria-live="polite"></div>
+        <button class="new-client" id="open-client" type="button"><span>＋</span> Crear cliente nuevo</button>
+
+        <label>Nota <span>(opcional)</span>
+          <textarea id="notes" rows="3" maxlength="500" placeholder="Diseño, preferencia o información importante"></textarea>
+        </label>
+        <label class="trap" aria-hidden="true">Sitio web<input id="website" tabindex="-1" autocomplete="off" /></label>
+
+        <div class="message" id="booking-message" role="status"></div>
+        <button class="primary" id="submit-booking" type="submit">Confirmar reserva</button>
+        <p class="policy">Para separar tu espacio se requiere un depósito de <strong>RD$500</strong>. Recibirás las instrucciones después de reservar.</p>
+      </form>
+    </section>
+
+    <section class="card success hidden" id="success-card" aria-live="polite">
+      <div class="success-icon">✓</div>
+      <p class="kicker">Solicitud registrada</p>
+      <h2>Tu espacio está reservado</h2>
+      <p id="success-summary"></p>
+      <div class="deposit"><span>Depósito para separar</span><strong>RD$500</strong></div>
+      <p>Dalfi Studio confirmará la recepción del depósito y tu cita.</p>
+      <button class="secondary" id="new-booking" type="button">Hacer otra reserva</button>
+    </section>
+  </main>
+
+  <dialog id="client-dialog">
+    <form id="client-form" method="dialog">
+      <div class="dialog-head">
+        <div><p class="kicker">Cliente nuevo</p><h2>Crear ficha</h2></div>
+        <button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button>
+      </div>
+      <p>Verificaremos el teléfono y el correo para evitar clientes duplicados.</p>
+      <div class="field-grid">
+        <label>Nombre<input id="first-name" autocomplete="given-name" required /></label>
+        <label>Apellido<input id="last-name" autocomplete="family-name" required /></label>
+      </div>
+      <label>Teléfono<input id="new-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+      <label>Correo <span>(opcional)</span><input id="new-email" type="email" autocomplete="email" /></label>
+      <div class="message" id="client-message" role="status"></div>
+      <button class="primary" type="submit">Guardar cliente</button>
+    </form>
+  </dialog>
+
+  <dialog id="login-dialog">
+    <form id="login-form" method="dialog">
+      <div class="dialog-head"><div><p class="kicker">Acceso del equipo</p><h2>Iniciar sesión</h2></div><button class="icon-button" id="close-login" type="button">×</button></div>
+      <label>Correo<input id="login-email" type="email" autocomplete="username" required /></label>
+      <label>Contraseña<input id="login-password" type="password" autocomplete="current-password" required /></label>
+      <div class="message" id="login-message"></div>
+      <button class="primary" type="submit">Entrar</button>
+    </form>
+  </dialog>
+
+  <script src="/supabase-config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/reservar/app.js" defer></script>
+</body>
+</html>
