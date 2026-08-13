@@ -2,6 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
   "name": "seben-reservapp",
   "compatibility_date": "2026-08-13",
+  // SPA routing is handled here; do not add a catch-all _redirects rule.
   "assets": {
     "directory": ".",
     "not_found_handling": "single-page-application",
