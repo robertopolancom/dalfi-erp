@@ -1,0 +1,94 @@
+name: Deploy ERP and activate Google Calendar sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cloudflare-calendar-sync.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-calendar-sync-production
+  cancel-in-progress: false
+
+jobs:
+  test-deploy-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PAGES_PROJECT: dalfi-erp
+      WRANGLER_VERSION: 4.122.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate Cloudflare credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+
+      - name: Test booking and calendar flows
+        run: |
+          npm ci
+          node --test tests/google-calendar-sync.test.js tests/google-calendar-pull.test.js tests/google-calendar-apps-script.test.js tests/reservation-side-form-availability.test.js
+          node --check outputs/app.js
+          node --check functions/api/calendar/google-pull.js
+          node --check workers/calendar-sync-cron/worker.js
+
+      - name: Generate shared Calendar pull secret
+        shell: bash
+        run: |
+          set -euo pipefail
+          value="$(openssl rand -hex 32)"
+          echo "::add-mask::$value"
+          {
+            echo "GOOGLE_CALENDAR_SYNC_SECRET<<DALFI_SECRET_EOF"
+            echo "$value"
+            echo "DALFI_SECRET_EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Update Pages secret and deploy ERP
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$GOOGLE_CALENDAR_SYNC_SECRET" |
+            npx --yes wrangler@"$WRANGLER_VERSION" pages secret put GOOGLE_CALENDAR_SYNC_SECRET --project-name "$PAGES_PROJECT"
+          npx --yes wrangler@"$WRANGLER_VERSION" pages deploy outputs --project-name "$PAGES_PROJECT" --branch main
+
+      - name: Deploy one-minute Calendar pull Worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@"$WRANGLER_VERSION" deploy --config workers/calendar-sync-cron/wrangler.toml
+          printf '%s' "$GOOGLE_CALENDAR_SYNC_SECRET" |
+            npx --yes wrangler@"$WRANGLER_VERSION" secret put GOOGLE_CALENDAR_SYNC_SECRET --config workers/calendar-sync-cron/wrangler.toml
+
+      - name: Verify live bidirectional endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          unauthorized="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --request POST https://dalfi-erp.pages.dev/api/calendar/google-pull)"
+          test "$unauthorized" = "401"
+
+          response_file="$(mktemp)"
+          status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}' --request POST https://dalfi-erp.pages.dev/api/calendar/google-pull --header "x-calendar-sync-secret: $GOOGLE_CALENDAR_SYNC_SECRET")"
+          test "$status" = "200"
+          node -e '
+            const fs = require("fs");
+            const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (body.success !== true) throw new Error("Calendar pull did not succeed");
+            console.log(JSON.stringify({ success: body.success, imported: body.imported, changed: body.changed }));
+          ' "$response_file"
+          npx --yes wrangler@"$WRANGLER_VERSION" secret list --config workers/calendar-sync-cron/wrangler.toml | grep -q GOOGLE_CALENDAR_SYNC_SECRET
