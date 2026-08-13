@@ -33,6 +33,21 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     next();
   });
   app.use(express.json({ limit: MAX_BODY_BYTES }));
+  app.use("/api/fast-booking", (req, res, next) => {
+    const allowedOrigin = String(env.FAST_BOOKING_ORIGIN || "https://reservapp.sebengroup.com").replace(/\/$/, "");
+    const origin = String(req.get("origin") || "").replace(/\/$/, "");
+    if (origin && origin === allowedOrigin) {
+      res.set("Access-Control-Allow-Origin", allowedOrigin);
+      res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      res.set("Access-Control-Allow-Headers", "Authorization,Content-Type,Idempotency-Key");
+      res.set("Access-Control-Max-Age", "86400");
+      res.vary("Origin");
+    }
+    if (req.method === "OPTIONS") {
+      return origin === allowedOrigin ? res.status(204).end() : res.status(403).end();
+    }
+    next();
+  });
   app.use((req, res, next) => {
     const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.sebengroup.com").toLowerCase();
     const suiteHost = String(env.SEBEN_SUITE_HOST || "ssc.sebengroup.com").toLowerCase();
