@@ -13,6 +13,20 @@ function serviceHeaders(env) {
   return { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}` };
 }
 
+function normalizePhoneDigits(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length === 10 ? `1${digits}` : digits;
+}
+
+function matchesPhone(client, phone) {
+  const target = normalizePhoneDigits(phone);
+  if (!target) return false;
+  if (normalizePhoneDigits(client.phone) === target) return true;
+  return client.linkedContactLines.some((line) =>
+    normalizePhoneDigits(line?.phone || line?.telefono) === target
+  );
+}
+
 export async function onRequestGet({ request, env }) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
     return json({ error: "Persistencia no configurada." }, 500);
@@ -43,6 +57,16 @@ export async function onRequestGet({ request, env }) {
         email: c.correo || "",
         linkedContactLines: Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [],
       }));
+
+    const requestedPhone = new URL(request.url).searchParams.get("phone");
+    if (requestedPhone) {
+      const client = activeClients.find((item) => matchesPhone(item, requestedPhone)) || null;
+      return json({
+        success: true,
+        found: Boolean(client),
+        client,
+      });
+    }
 
     return json({
       success: true,
