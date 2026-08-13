@@ -1,4 +1,4 @@
-var DALFI_CALENDAR_VERSION = "1.0.0";
+var DALFI_CALENDAR_VERSION = "1.1.0";
 var DALFI_SECRET_PROPERTY = "DALFI_WEBHOOK_SECRET";
 var DALFI_CALENDAR_PROPERTY = "DALFI_CALENDAR_ID";
 
@@ -95,7 +95,8 @@ function validatePayload_(payload) {
     title: title,
     description: description,
     start: start,
-    end: end
+    end: end,
+    colorId: /^(?:[1-9]|1[01])$/.test(String(event.colorId || "")) ? String(event.colorId) : ""
   };
 }
 
@@ -140,6 +141,7 @@ function doPost(e) {
           description: description,
           start: candidate.getStartTime().toISOString(),
           end: candidate.getEndTime().toISOString(),
+          colorId: clean_(candidate.getColor(), 2),
           origin: "google"
         });
       }
@@ -172,12 +174,14 @@ function doPost(e) {
         .setDescription(input.description)
         .setTime(input.start, input.end)
         .setVisibility(CalendarApp.Visibility.PRIVATE);
+      if (input.colorId) existingEvent.setColor(input.colorId);
       action = "updated";
     } else {
       existingEvent = calendar.createEvent(input.title, input.start, input.end, {
         description: input.description
       });
       existingEvent.setVisibility(CalendarApp.Visibility.PRIVATE);
+      if (input.colorId) existingEvent.setColor(input.colorId);
       properties.setProperty(key, existingEvent.getId());
       properties.setProperty(key + "_meta", JSON.stringify({ origin: "erp", eventId: existingEvent.getId() }));
       action = "created";
