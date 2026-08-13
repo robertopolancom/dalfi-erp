@@ -3,6 +3,7 @@ import {
   claimGoogleCalendarEvent,
   googleCalendarConfig,
   listGoogleCalendarEvents,
+  resolveStaffCalendarColorId,
 } from "../_lib/google-calendar.js";
 
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
@@ -43,9 +44,23 @@ function parseGoogleEvent(event, staff = [], timeZone = "America/Santo_Domingo")
   const requestedStaff = clean(staffLine || titleStaff, 120);
   const candidates = staff.filter((person) => {
     const name = normalize(person?.nombreCompleto || person?.nombre);
-    return name && requestedStaff && (name === normalize(requestedStaff) || normalize(requestedStaff) === name);
+    return name && requestedStaff && name === normalize(requestedStaff);
   });
-  const assigned = candidates.length === 1 ? candidates[0] : null;
+  const colorId = String(event?.colorId || "");
+  const colorCandidates = colorId
+    ? staff.filter((person) =>
+        normalize(person?.estado || "Activo") === "activo" &&
+        resolveStaffCalendarColorId({
+          colaboradorID: person?.colaboradorID || person?.id,
+          colaboradorNombre: person?.nombreCompleto || person?.nombre,
+        }, staff) === colorId
+      )
+    : [];
+  const assigned = candidates.length === 1
+    ? candidates[0]
+    : colorCandidates.length === 1
+      ? colorCandidates[0]
+      : null;
   const clientFromDescription = description.match(/(?:^|\n)\s*Clienta:\s*([^\n]+)/i)?.[1];
   const clientName = clean(clientFromDescription || title.replace(/^Cita:\s*/i, "").split(/[—–]/)[0], 120) || "Pendiente de completar";
   return {
