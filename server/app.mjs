@@ -3,6 +3,17 @@ import { resolveErpIdentity } from "../functions/api/_lib/authz.js";
 import { authorizeDatabaseChanges, detectDatabaseChanges } from "../functions/api/_lib/database-authz.js";
 import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
+import {
+  RESERVAPP_ROLES,
+  hashPassword,
+  hashToken,
+  normalizePhone,
+  parseCookies,
+  publicAccount,
+  secureToken,
+  sessionCookie,
+  verifyPassword,
+} from "./reservapp-auth.mjs";
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const BOOKING_LIMIT_WINDOW_MS = 10 * 60 * 1000;
@@ -33,13 +44,14 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     next();
   });
   app.use(express.json({ limit: MAX_BODY_BYTES }));
-  app.use("/api/fast-booking", (req, res, next) => {
+  app.use(["/api/fast-booking", "/api/reservapp"], (req, res, next) => {
     const allowedOrigin = String(env.FAST_BOOKING_ORIGIN || "https://reservapp.sebengroup.com").replace(/\/$/, "");
     const origin = String(req.get("origin") || "").replace(/\/$/, "");
     if (origin && origin === allowedOrigin) {
       res.set("Access-Control-Allow-Origin", allowedOrigin);
       res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
       res.set("Access-Control-Allow-Headers", "Authorization,Content-Type,Idempotency-Key");
+      res.set("Access-Control-Allow-Credentials", "true");
       res.set("Access-Control-Max-Age", "86400");
       res.vary("Origin");
     }
@@ -87,7 +99,9 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     const digits = String(value || "").replace(/[^0-9]/g, "");
     return digits.length === 10 || (digits.length === 11 && digits.startsWith("1"));
   };
+  const validPassword = (value) => String(value || "").length >= 8 && /[A-Za-zÁÉÍÓÚáéíóúÑñ]/.test(value) && /[0-9]/.test(value);
   const cleanText = (value, max = 160) => String(value || "").trim().slice(0, max);
+  const cleanServiceIds = (value) => [...new Set((Array.isArray(value) ? value : String(value || "").split(",")).map((item) => cleanText(item, 64)).filter(Boolean))].slice(0, 12);
   const authorizeEmployeeBooking = async (req) => {
     if (req.body?.actorType !== "employee") return null;
     const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
@@ -95,18 +109,223 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     return identity;
   };
 
+  const reservappSession = async (req) => {
+    const token = parseCookies(req.get("cookie")).reservapp_session;
+    if (!token) return null;
+    const account = await bookingStore?.sessionAccount(hashToken(token));
+    return account ? { account, token } : null;
+  };
+  const requireReservapp = async (req, res, next) => {
+    try {
+      const session = await reservappSession(req);
+      if (!session) return res.status(401).json({ error: "Inicia sesión para continuar." });
+      req.reservapp = session;
+      next();
+    } catch (error) { next(error); }
+  };
+
+  const sendSetupWhatsApp = async ({ outboxId, phone, setupUrl, name }) => {
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!bridgeSecret) return { status: "pending_configuration" };
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          event: "reservapp.account_setup",
+          actionRequired: "send_activation_link",
+          recipientPhone: normalizePhone(phone),
+          clientName: name || "Cliente",
+          setupUrl,
+          whatsappFormattedText: `Hola ${name || ""}. Crea tu contraseña para confirmar tu cita en Dalfi Studio Nails: ${setupUrl}`.trim(),
+        }),
+      });
+      if (!response.ok) throw new Error(`Bridge ${response.status}`);
+      await bookingStore.markWhatsApp({ outboxId, status: "sent" });
+      return { status: "sent" };
+    } catch (error) {
+      await bookingStore.markWhatsApp({ outboxId, status: "failed", error: cleanText(error.message, 300) });
+      return { status: "failed" };
+    }
+  };
+
   if (bookingStore) {
+    app.post("/api/reservapp/auth/request-setup", bookingRateLimit, async (req, res, next) => {
+      if (req.body?.website) return res.status(204).end();
+      const firstName = cleanText(req.body?.firstName, 80);
+      const lastName = cleanText(req.body?.lastName, 80);
+      const phone = cleanText(req.body?.phone, 30);
+      const email = cleanText(req.body?.email, 160).toLowerCase();
+      const serviceIds = cleanServiceIds(req.body?.serviceIds);
+      const draft = {
+        serviceIds,
+        staffId: cleanText(req.body?.staffId, 64),
+        date: cleanText(req.body?.date, 10),
+        time: cleanText(req.body?.time, 5),
+        notes: cleanText(req.body?.notes, 500),
+        idempotencyKey: cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120) || crypto.randomUUID(),
+      };
+      if (!firstName || !lastName || !validPhone(phone)) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
+      if (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time)) {
+        return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora antes de crear tu acceso." });
+      }
+      try {
+        const availability = await bookingStore.availability({ ...draft, serviceIds });
+        if (!availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
+          return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
+        }
+        let customer = await bookingStore.resolveClient({ phone });
+        if (!customer) {
+          const id = `CLI-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+          const legacyPayload = {
+            clienteID: id, nombre: firstName, apellido: lastName, nombreCompleto: `${firstName} ${lastName}`,
+            telefono: phone, correo: email, estado: "Activo", origenRegistro: "RESERVAPP_CLIENTE",
+            fechaRegistro: new Date().toISOString(), observaciones: "Creado al solicitar credenciales de ReservApp.",
+          };
+          const created = await bookingStore.createClient({ firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source: "RESERVAPP_CLIENTE", legacyPayload });
+          if (created.duplicate) customer = await bookingStore.resolveClient({ phone });
+          else customer = created.client;
+        }
+        if (!customer) return res.status(409).json({ error: "No pudimos vincular el teléfono con una ficha de cliente." });
+        const existing = await bookingStore.accountByPhone(phone);
+        if (existing?.status === "active") return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true });
+        const account = await bookingStore.ensureClientAccount({ clientId: customer.id, phone });
+        const rawToken = secureToken();
+        const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+        const publicUrl = String(env.RESERVAPP_PUBLIC_URL || "https://reservapp.sebengroup.com").replace(/\/$/, "");
+        const setupUrl = `${publicUrl}/?setup=${encodeURIComponent(rawToken)}`;
+        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(rawToken), expiresAt, recipientPhone: phone, setupUrl, draft });
+        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, setupUrl, name: `${firstName} ${lastName}` });
+        res.status(202).json({
+          pendingConfirmation: true,
+          deliveryStatus: delivery.status,
+          message: "Te enviamos por WhatsApp el enlace para crear tu contraseña y confirmar la cita.",
+          ...(String(env.RESERVAPP_EXPOSE_SETUP_LINK || "") === "true" ? { setupUrl } : {}),
+        });
+      } catch (error) {
+        if (error?.code === "PHONE_ACCOUNT_CONFLICT") return res.status(409).json({ error: error.message });
+        next(error);
+      }
+    });
+
+    app.post("/api/reservapp/auth/complete-setup", bookingRateLimit, async (req, res, next) => {
+      const token = cleanText(req.body?.token, 180);
+      const password = String(req.body?.password || "");
+      if (!token || !validPassword(password)) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres, una letra y un número." });
+      try {
+        const sessionToken = secureToken();
+        const sessionExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+        const account = await bookingStore.activateWithToken({ tokenHash: hashToken(token), passwordHash: await hashPassword(password), sessionTokenHash: hashToken(sessionToken), sessionExpiresAt });
+        if (!account) return res.status(410).json({ error: "El enlace venció o ya fue utilizado. Solicita uno nuevo." });
+        let appointment = null;
+        let bookingError = null;
+        if (account.draft) {
+          const input = {
+            clientId: account.client_id,
+            serviceIds: account.draft.service_ids,
+            staffId: account.draft.staff_id,
+            date: String(account.draft.appointment_date).slice(0, 10),
+            time: String(account.draft.appointment_time).slice(0, 5),
+            notes: account.draft.notes || "",
+            source: "RESERVAPP_CLIENTE",
+            idempotencyKey: account.draft.idempotency_key,
+          };
+          const availability = await bookingStore.availability(input);
+          if (availability.slots?.some((slot) => slot.staffId === input.staffId && slot.time === input.time)) {
+            input.endTime = new Date(new Date(`2000-01-01T${input.time}:00Z`).getTime() + availability.durationMinutes * 60_000).toISOString().slice(11, 16);
+            const created = await bookingStore.createAppointment(input);
+            if (!created.conflict && !created.missing) {
+              appointment = { id: created.appointment.id, reference: created.appointment.legacy_id };
+              await bookingStore.markDraftConfirmed(account.draft.id, created.appointment.id);
+              if (!created.idempotent) await syncChangedAppointmentsToGoogleCalendar(env, created.previousDocument, created.document, { fetchImpl });
+            } else bookingError = "Tu cuenta quedó activa, pero el horario se ocupó. Inicia sesión y elige otro.";
+          } else bookingError = "Tu cuenta quedó activa, pero el horario se ocupó. Inicia sesión y elige otro.";
+        }
+        res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
+        res.json({ account: publicAccount(account), appointment, bookingError });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/auth/login", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      const password = String(req.body?.password || "");
+      if (!validPhone(phone) || !password) return res.status(400).json({ error: "Escribe tu teléfono y contraseña." });
+      try {
+        const account = await bookingStore.accountByPhone(phone);
+        const correct = account?.status === "active" && await verifyPassword(password, account.password_hash);
+        if (!correct) return res.status(401).json({ error: "Teléfono o contraseña incorrectos." });
+        const sessionToken = secureToken();
+        const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+        await bookingStore.createSession({ accountId: account.id, tokenHash: hashToken(sessionToken), expiresAt });
+        res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
+        res.json({ account: publicAccount(account) });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/auth/logout", async (req, res, next) => {
+      try {
+        const token = parseCookies(req.get("cookie")).reservapp_session;
+        if (token) await bookingStore.revokeSession(hashToken(token));
+        res.set("Set-Cookie", sessionCookie("", 0));
+        res.status(204).end();
+      } catch (error) { next(error); }
+    });
+
+    app.get("/api/reservapp/auth/me", requireReservapp, (req, res) => {
+      res.json({ account: publicAccount(req.reservapp.account) });
+    });
+
+    app.get("/api/reservapp/agenda", requireReservapp, async (req, res, next) => {
+      const date = cleanText(req.query.date, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Fecha inválida." });
+      try { res.json(await bookingStore.agenda({ date, account: req.reservapp.account })); }
+      catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/admin/accounts", bookingRateLimit, async (req, res, next) => {
+      const role = cleanText(req.body?.role, 32);
+      const staffId = cleanText(req.body?.staffId, 64);
+      const phone = cleanText(req.body?.phone, 30);
+      if (!RESERVAPP_ROLES.includes(role) || role === "clienta" || !staffId || !validPhone(phone)) {
+        return res.status(400).json({ error: "Selecciona colaboradora, rol y teléfono válidos." });
+      }
+      try {
+        const session = await reservappSession(req);
+        let allowed = session && ["administradora", "superadministrador"].includes(session.account.role);
+        if (role === "superadministrador" && session && session.account.role !== "superadministrador") allowed = false;
+        if (!allowed && !session) {
+          const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
+          allowed = !identity.error && Boolean(identity.permissions?.can_manage_users);
+        }
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede crear credenciales del equipo." });
+        const account = await bookingStore.createEmployeeAccount({ staffId, phone, role, createdByAccountId: session?.account.id || null });
+        const rawToken = secureToken();
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
+        const publicUrl = String(env.RESERVAPP_PUBLIC_URL || "https://reservapp.sebengroup.com").replace(/\/$/, "");
+        const setupUrl = `${publicUrl}/?setup=${encodeURIComponent(rawToken)}`;
+        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(rawToken), expiresAt, recipientPhone: phone, setupUrl });
+        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, setupUrl, name: "Equipo Dalfi" });
+        res.status(201).json({ account: publicAccount(account), deliveryStatus: delivery.status });
+      } catch (error) {
+        if (error?.code === "23505") return res.status(409).json({ error: "Ese teléfono o colaboradora ya tiene credenciales." });
+        if (error?.code === "23503") return res.status(400).json({ error: "La colaboradora seleccionada no existe." });
+        next(error);
+      }
+    });
+
     app.get("/api/fast-booking/catalog", bookingRateLimit, async (_req, res, next) => {
       try { res.json(await bookingStore.catalog()); } catch (error) { next(error); }
     });
 
     app.get("/api/fast-booking/availability", bookingRateLimit, async (req, res, next) => {
-      const serviceId = cleanText(req.query.serviceId, 64);
+      const serviceIds = cleanServiceIds(req.query.serviceIds || req.query.serviceId);
       const staffId = cleanText(req.query.staffId, 64);
       const date = cleanText(req.query.date, 10);
-      if (!serviceId || !staffId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Servicio, colaboradora y fecha son obligatorios." });
+      if (!serviceIds.length || !staffId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Servicios, colaboradora y fecha son obligatorios." });
       try {
-        const result = await bookingStore.availability({ serviceId, staffId, date });
+        const result = await bookingStore.availability({ serviceIds, staffId, date });
         if (result.missing) return res.status(404).json({ error: "Servicio o colaboradora no disponible." });
         res.json(result);
       } catch (error) { next(error); }
@@ -147,28 +366,40 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
-    app.get("/api/fast-booking/clients", authenticate, async (req, res, next) => {
-      if (!req.erpIdentity.permissions?.can_manage_reservations) return res.status(403).json({ error: "No tienes permiso para reservar citas." });
-      const query = cleanText(req.query.q, 80);
-      if (query.length < 2) return res.json({ clients: [] });
-      try { res.json({ clients: await bookingStore.searchClients(query) }); } catch (error) { next(error); }
+    app.get("/api/fast-booking/clients", async (req, res, next) => {
+      try {
+        const session = await reservappSession(req);
+        if (!session || !["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) {
+          const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
+          if (identity.error || !identity.permissions?.can_manage_reservations) return res.status(403).json({ error: "No tienes permiso para reservar citas." });
+        }
+        const query = cleanText(req.query.q, 80);
+        res.json({ clients: query.length < 2 ? [] : await bookingStore.searchClients(query) });
+      } catch (error) { next(error); }
     });
 
     app.post("/api/fast-booking/appointments", bookingRateLimit, async (req, res, next) => {
       if (req.body?.website) return res.status(204).end();
       const input = {
-        clientId: cleanText(req.body?.clientId, 64), serviceId: cleanText(req.body?.serviceId, 64),
+        clientId: cleanText(req.body?.clientId, 64), serviceIds: cleanServiceIds(req.body?.serviceIds || req.body?.serviceId),
         staffId: cleanText(req.body?.staffId, 64), date: cleanText(req.body?.date, 10),
         time: cleanText(req.body?.time, 5), notes: cleanText(req.body?.notes, 500),
         source: req.body?.actorType === "employee" ? "PWA_EMPLEADO" : "PWA_CLIENTE",
         idempotencyKey: cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120),
       };
-      if (!input.clientId || !input.serviceId || !input.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !/^\d{2}:\d{2}$/.test(input.time) || !input.idempotencyKey) {
+      if (!input.clientId || !input.serviceIds.length || !input.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !/^\d{2}:\d{2}$/.test(input.time) || !input.idempotencyKey) {
         return res.status(400).json({ error: "Completa todos los datos de la cita." });
       }
       try {
-        const employee = await authorizeEmployeeBooking(req);
-        if (employee === false) return res.status(403).json({ error: "Inicia sesión con una cuenta autorizada para reservar como empleado." });
+        const appSession = await reservappSession(req);
+        if (req.body?.actorType === "employee") {
+          if (!appSession || appSession.account.role === "clienta") {
+            const employee = await authorizeEmployeeBooking(req);
+            if (employee === false) return res.status(403).json({ error: "Inicia sesión con una cuenta autorizada para reservar como empleado." });
+          }
+        } else if (!appSession || appSession.account.role !== "clienta" || appSession.account.client_id !== input.clientId) {
+          return res.status(401).json({ error: "Inicia sesión con tu teléfono y contraseña para reservar." });
+        }
         const availability = await bookingStore.availability(input);
         if (!availability.slots?.some((slot) => slot.staffId === input.staffId && slot.time === input.time)) return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
         input.endTime = new Date(`2000-01-01T${input.time}:00Z`);
