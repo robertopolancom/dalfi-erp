@@ -664,8 +664,11 @@
                 </label>
               </div>
               <label>
-                Técnico/a
-                <input id="reservation-staff" list="staff-list" placeholder="Buscar técnico/a" required />
+                Manicurista disponible
+                <select id="reservation-staff" required>
+                  <option value="">Selecciona servicio, fecha y hora</option>
+                </select>
+                <small id="reservation-staff-availability" class="muted">Se mostrarán únicamente las manicuristas activas cuyo horario y agenda permitan completar el servicio.</small>
               </label>
               <label>
                 Estado de la cita
