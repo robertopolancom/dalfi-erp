@@ -33,6 +33,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     next();
   });
   app.use(express.json({ limit: MAX_BODY_BYTES }));
+  app.use((req, res, next) => {
+    const bookingHost = String(env.FAST_BOOKING_HOST || "reservaap.sebengroup.com").toLowerCase();
+    const requestHost = String(req.hostname || "").toLowerCase();
+    if (requestHost === bookingHost && req.path === "/") return res.redirect(302, "/reservar/");
+    next();
+  });
 
   const authenticate = async (req, res, next) => {
     try {
