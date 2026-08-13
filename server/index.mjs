@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { createApp } from "./app.mjs";
-import { NeonDocumentStore } from "./store.mjs";
+import { NeonBookingStore, NeonDocumentStore } from "./store.mjs";
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL es obligatoria.");
 for (const name of ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY"]) {
@@ -19,7 +19,11 @@ const pool = new pg.Pool({
 pool.on("error", (error) => console.error("postgres pool:", error));
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
-const app = createApp({ store: new NeonDocumentStore(pool), staticDir: path.resolve(currentDir, "../outputs") });
+const app = createApp({
+  store: new NeonDocumentStore(pool),
+  bookingStore: new NeonBookingStore(pool),
+  staticDir: path.resolve(currentDir, "../outputs"),
+});
 const port = Number(process.env.PORT || 3000);
 const server = app.listen(port, "0.0.0.0", () => console.log(`Dalfi ERP escuchando en puerto ${port}.`));
 
