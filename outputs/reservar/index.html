@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#123c3a" />
+  <meta name="description" content="Reservas y agenda de Dalfi Studio Nails." />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./styles.css" />
+  <title>ReservApp · Dalfi Studio Nails</title>
+</head>
+<body>
+  <main class="shell">
+    <header class="brand">
+      <div class="brand-mark" aria-hidden="true">DS</div>
+      <div class="brand-copy"><p>Dalfi Studio Nails</p><h1>ReservApp</h1><small>Seben Suite Connect</small></div>
+      <button class="account-button" id="account-button" type="button">Entrar</button>
+    </header>
+
+    <nav class="app-nav" aria-label="Secciones">
+      <button class="active" id="booking-tab" type="button">Nueva reserva</button>
+      <button id="agenda-tab" type="button">Agenda</button>
+    </nav>
+
+    <section class="card" id="booking-card">
+      <div class="progress" aria-label="Progreso"><span id="progress-bar"></span></div>
+      <p class="kicker" id="mode-label">Reserva rápida</p>
+      <h2>Elige tus servicios</h2>
+      <p class="intro">Puedes combinar varios servicios. Calculamos automáticamente el tiempo total.</p>
+
+      <form id="booking-form">
+        <fieldset class="service-field">
+          <legend>Servicios</legend>
+          <div class="service-list" id="service-list"><p class="empty">Cargando servicios…</p></div>
+          <div class="service-summary" id="service-summary"><span>Selecciona uno o más servicios</span><strong>0 min · RD$0</strong></div>
+        </fieldset>
+
+        <div class="field-grid">
+          <label>Manicurista
+            <select id="staff" required><option value="">Selecciona una especialista</option></select>
+          </label>
+          <label>Fecha
+            <input id="date" type="date" required />
+          </label>
+        </div>
+
+        <fieldset id="time-field" disabled>
+          <legend>Hora disponible</legend>
+          <div class="slots" id="slots"><p class="empty">Selecciona servicios, manicurista y fecha.</p></div>
+          <input id="time" type="hidden" required />
+        </fieldset>
+
+        <section class="client-box" id="guest-access">
+          <div><span class="step-dot">1</span><div><strong>Identifícate para reservar</strong><small>Puedes revisar horarios como invitada. Para confirmar necesitas credenciales.</small></div></div>
+          <div class="access-actions"><button class="secondary" id="open-login" type="button">Ya tengo cuenta</button><button class="new-client" id="open-client" type="button">Es mi primera vez</button></div>
+        </section>
+
+        <section class="client-box hidden" id="employee-client">
+          <div><span class="step-dot">1</span><div><strong>Cliente de la cita</strong><small>Todo el equipo puede reservar para una clienta registrada.</small></div></div>
+          <label>Buscar por nombre o teléfono<input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" /></label>
+          <div class="search-results" id="client-results"></div>
+          <button class="new-client compact" id="employee-new-client" type="button">Es su primera vez</button>
+        </section>
+
+        <div class="selected-client hidden" id="selected-client" aria-live="polite"></div>
+        <label>Nota <span>(opcional)</span><textarea id="notes" rows="3" maxlength="500" placeholder="Diseño, preferencia o información importante"></textarea></label>
+        <label class="trap" aria-hidden="true">Sitio web<input id="website" tabindex="-1" autocomplete="off" /></label>
+        <div class="message" id="booking-message" role="status"></div>
+        <button class="primary" id="submit-booking" type="submit">Confirmar reserva</button>
+        <p class="policy">Se requiere un depósito de <strong>RD$500</strong>. La cita se crea en Dalfi y se publica en Google Calendar sin permitir cambios desde Google.</p>
+      </form>
+    </section>
+
+    <section class="card agenda-card hidden" id="agenda-card">
+      <div class="agenda-head">
+        <div><p class="kicker">Ocupación del equipo</p><h2 id="agenda-title">Agenda</h2></div>
+        <div class="date-controls"><button id="agenda-prev" type="button" aria-label="Día anterior">‹</button><input id="agenda-date" type="date" /><button id="agenda-next" type="button" aria-label="Día siguiente">›</button></div>
+      </div>
+      <p class="intro" id="agenda-intro">Inicia sesión para consultar la agenda.</p>
+      <div class="message" id="agenda-message"></div><div class="agenda-board" id="agenda-board"></div>
+
+      <section class="admin-panel hidden" id="admin-panel">
+        <p class="kicker">Administración</p><h3>Crear credenciales del equipo</h3>
+        <p>La colaboradora recibirá por WhatsApp un enlace para crear su contraseña.</p>
+        <div class="field-grid three">
+          <label>Colaboradora<select id="account-staff"><option value="">Selecciona</option></select></label>
+          <label>Rol<select id="account-role"><option value="manicurista">Manicurista</option><option value="asistente">Asistente</option><option value="administradora">Administradora</option><option value="superadministrador">Superadministrador</option></select></label>
+          <label>Teléfono<input id="account-phone" type="tel" inputmode="tel" /></label>
+        </div>
+        <div class="message" id="account-message"></div><button class="secondary" id="create-account" type="button">Enviar credenciales</button>
+      </section>
+    </section>
+
+    <section class="card success hidden" id="success-card" aria-live="polite">
+      <div class="success-icon">✓</div><p class="kicker">Cita registrada</p><h2>Tu espacio está reservado</h2>
+      <p id="success-summary"></p><div class="deposit"><span>Depósito para separar</span><strong>RD$500</strong></div>
+      <button class="secondary" id="new-booking" type="button">Hacer otra reserva</button>
+    </section>
+  </main>
+
+  <dialog id="client-dialog"><form id="client-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2>Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
+    <p>Enviaremos un enlace a tu WhatsApp. Allí crearás tu contraseña y se confirmará el horario elegido.</p>
+    <div class="field-grid"><label>Nombre<input id="first-name" autocomplete="given-name" required /></label><label>Apellido<input id="last-name" autocomplete="family-name" required /></label></div>
+    <label>Teléfono de WhatsApp<input id="new-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <label>Correo <span>(opcional)</span><input id="new-email" type="email" autocomplete="email" /></label>
+    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit">Enviarme el enlace por WhatsApp</button>
+  </form></dialog>
+
+  <dialog id="login-dialog"><form id="login-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Acceso seguro</p><h2>Iniciar sesión</h2></div><button class="icon-button" id="close-login" type="button" aria-label="Cerrar">×</button></div>
+    <label>Teléfono<input id="login-phone" type="tel" inputmode="tel" autocomplete="username" required /></label>
+    <label>Contraseña<input id="login-password" type="password" autocomplete="current-password" required /></label>
+    <div class="message" id="login-message"></div><button class="primary" type="submit">Entrar</button>
+  </form></dialog>
+
+  <dialog id="setup-dialog"><form id="setup-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Confirmación de WhatsApp</p><h2>Crea tu contraseña</h2></div></div>
+    <p>Debe tener 8 caracteres o más, al menos una letra y un número.</p>
+    <label>Nueva contraseña<input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label>Repetir contraseña<input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <div class="message" id="setup-message"></div><button class="primary" type="submit">Activar y confirmar cita</button>
+  </form></dialog>
+
+  <script src="./config.js"></script><script src="./app.js" defer></script>
+</body>
+</html>

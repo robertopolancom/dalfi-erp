@@ -90,6 +90,25 @@ export function resolveSantoDomingoNow(now) {
   return { date: shifted.toISOString().slice(0, 10), time: shifted.toISOString().slice(11, 16) };
 }
 
+// Convierte una fecha/hora civil del negocio a un instante real. Santo
+// Domingo usa UTC-4 todo el año; hacerlo explícito evita que Node/Render
+// interprete "YYYY-MM-DDTHH:MM" en la zona horaria propia del servidor.
+export function santoDomingoDateTimeToMs(dateStr, timeStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr || ""))) return NaN;
+  const minutes = parseTimeToMinutes(String(timeStr || ""));
+  if (minutes === null) return NaN;
+  const [year, month, day] = dateStr.split("-").map(Number);
+  return Date.UTC(year, month - 1, day, 4 + Math.floor(minutes / 60), minutes % 60, 0);
+}
+
+function bookingDateTimeToMs(value, fallbackDate = null, fallbackTime = null) {
+  const raw = String(value || "");
+  const naive = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d{1,3})?)?$/);
+  if (naive) return santoDomingoDateTimeToMs(naive[1], naive[2]);
+  if (raw) return new Date(raw).getTime();
+  return santoDomingoDateTimeToMs(fallbackDate, fallbackTime);
+}
+
 // Diferencia en días de calendario (dateStr - baseDateStr), ambos "YYYY-MM-DD".
 export function diffCalendarDays(dateStr, baseDateStr) {
   const parse = (s) => {
@@ -1120,7 +1139,7 @@ export function checkPreapprovedConfirmationReminder(appointment, referenceDateS
   const aptTimeStr = appointment.hora || (appointment.startAt ? appointment.startAt.slice(11, 16) : null);
   let aptStartMs = null;
   if (aptDateStr && aptTimeStr) {
-    aptStartMs = new Date(`${aptDateStr}T${aptTimeStr}:00`).getTime();
+    aptStartMs = santoDomingoDateTimeToMs(aptDateStr, aptTimeStr);
   }
   if (!aptStartMs) return none;
 
@@ -1171,9 +1190,9 @@ export function determineInitialBookingStatus({ source, requestedStartAt = null,
 
   let aptStartMs = null;
   if (requestedStartAt) {
-    aptStartMs = new Date(requestedStartAt).getTime();
+    aptStartMs = bookingDateTimeToMs(requestedStartAt);
   } else if (date && time) {
-    aptStartMs = new Date(`${date}T${time}:00`).getTime();
+    aptStartMs = santoDomingoDateTimeToMs(date, time);
   }
 
   if (!aptStartMs || isNaN(aptStartMs)) return { estado: "Preaprobada", estadoDeposito: "Pendiente", estadoConfirmacion: "Programada" };

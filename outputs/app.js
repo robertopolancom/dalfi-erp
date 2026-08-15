@@ -3765,7 +3765,7 @@ function openRecordReport(title, bodyHtml) {
         </div>
         <section class="record-report">
           <h1>Dalfi Studio Nails</h1>
-          <p>SeBen ERP</p>
+          <p>Seben Suite Connect</p>
           <hr />
           ${bodyHtml}
         </section>

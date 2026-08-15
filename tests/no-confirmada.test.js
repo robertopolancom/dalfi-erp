@@ -61,15 +61,24 @@ const BASE_DOC = {
   reservas: [],
 };
 
+function futureBusinessDate(minimumDays = 3) {
+  for (let offset = minimumDays; offset < minimumDays + 7; offset += 1) {
+    const date = new Date(Date.now() + offset * 86400000);
+    if (date.getUTCDay() !== 0) return date.toISOString().slice(0, 10);
+  }
+  throw new Error("No se pudo resolver una fecha laborable futura.");
+}
+
 test("EspacioLiberado: no bloquea la disponibilidad (GET /availability la trata igual que Cancelada)", async () => {
+  const targetDate = futureBusinessDate();
   const doc = {
     ...BASE_DOC,
     reservas: [
-      { reservaID: "RES-NC-1", fecha: "2026-08-11", hora: "10:00", horaFin: "11:00", duracionMin: 60, colaboradorID: "COL-1", estado: "Preaprobada", estadoConfirmacion: "EspacioLiberado" },
+      { reservaID: "RES-NC-1", fecha: targetDate, hora: "10:00", horaFin: "11:00", duracionMin: 60, colaboradorID: "COL-1", estado: "Preaprobada", estadoConfirmacion: "EspacioLiberado" },
     ],
   };
   const env = createNestedMockEnv(doc);
-  const req = new Request("https://localhost/api/booking/availability?serviceId=SRV-1&date=2026-08-11&collaboratorId=COL-1");
+  const req = new Request(`https://localhost/api/booking/availability?serviceId=SRV-1&date=${targetDate}&collaboratorId=COL-1`);
   const res = await availabilityGet({ request: req, env });
   const data = await res.json();
   assert.equal(res.status, 200);
@@ -77,11 +86,12 @@ test("EspacioLiberado: no bloquea la disponibilidad (GET /availability la trata 
 });
 
 test("confirm.js: reservar el mismo horario de una cita con EspacioLiberado la deja Reemplazada automáticamente (bump)", async () => {
+  const targetDate = futureBusinessDate();
   const doc = {
     ...BASE_DOC,
     reservas: [
       {
-        reservaID: "RES-NC-2", fecha: "2026-08-11", hora: "10:00", horaFin: "11:00", duracionMin: 60,
+        reservaID: "RES-NC-2", fecha: targetDate, hora: "10:00", horaFin: "11:00", duracionMin: 60,
         colaboradorID: "COL-1", colaboradorNombre: "Ana Pérez", estado: "Preaprobada", estadoConfirmacion: "EspacioLiberado",
         clienteNombre: "Clienta Original", telefono: "8095550000",
       },
@@ -95,7 +105,7 @@ test("confirm.js: reservar el mismo horario de una cita con EspacioLiberado la d
       idempotencyKey: "IDEM-BUMP-1",
       client: { name: "Clienta Nueva", phone: "8095551111" },
       serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
-      requestedStartAt: "2026-08-11T10:00:00",
+      requestedStartAt: `${targetDate}T10:00:00`,
       collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
     }),
   });
@@ -156,6 +166,7 @@ test("confirm.js: confirmar una reserva todavía con EspacioLiberado (nadie más
 });
 
 test("needsReview: una reserva nueva del chatbot queda marcada para revisión en el Dashboard", async () => {
+  const targetDate = futureBusinessDate();
   const env = createNestedMockEnv(BASE_DOC);
   const req = new Request("https://localhost/api/booking/confirm", {
     method: "POST",
@@ -164,7 +175,7 @@ test("needsReview: una reserva nueva del chatbot queda marcada para revisión en
       idempotencyKey: "IDEM-REVIEW-1",
       client: { name: "Clienta Review", phone: "8095552222" },
       serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
-      requestedStartAt: "2026-08-11T09:00:00",
+      requestedStartAt: `${targetDate}T09:00:00`,
       collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
     }),
   });

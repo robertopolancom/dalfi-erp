@@ -1,9 +1,14 @@
 {
   "scripts": {
     "build": "node scripts/write-supabase-config.mjs",
+    "start": "node server/index.mjs",
     "test": "node --test",
     "test:e2e": "node --test tests/e2e-browser.e2e.js tests/e2e-business-flows.test.js",
     "test:load": "node scripts/load-test.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "playwright": "^1.62.0"
