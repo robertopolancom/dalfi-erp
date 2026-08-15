@@ -36,13 +36,21 @@ function hasValidExpectedUpdatedAt(payload) {
   return payload?.expectedUpdatedAt === undefined || payload?.expectedUpdatedAt === null || typeof payload.expectedUpdatedAt === "string";
 }
 
+// Dominios habilitados solo para lectura (GET). Los mismos permisos que ya
+// aplica resolveErpIdentity/authorizeDatabaseChanges deciden que puede
+// escribir cada usuario; leer un dominio no requiere permiso adicional al
+// de tener sesion activa, igual que "inventario". "reservas" se agrego para
+// que apps externas autenticadas (ej. seben-reservas) puedan mostrar la
+// agenda por manicurista/admin sin exponer el documento monolitico.
+// Los demas dominios (facturacion, nomina, cuentas, configuracion) siguen
+// sin contrato propio: no exponerlos aun.
+const READABLE_DOMAINS = new Set(["inventario", "reservas"]);
+
 export async function onRequestGet({ request, env }) {
   const identity = await resolveErpIdentity(request, env);
   if (identity.error) return identityError(identity);
   const domain = new URL(request.url).searchParams.get("domain") || "";
-  // Primer corte de la migracion: solo inventario. No exponer aun servicios,
-  // facturacion ni otros dominios hasta completar sus contratos propios.
-  if (domain !== "inventario") return json({ error: "Dominio no disponible." }, 400);
+  if (!READABLE_DOMAINS.has(domain)) return json({ error: "Dominio no disponible." }, 400);
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return json({ error: "Persistencia no configurada." }, 500);
   try {
     const response = await fetch(
