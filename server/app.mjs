@@ -105,8 +105,26 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   const authorizeEmployeeBooking = async (req) => {
     if (req.body?.actorType !== "employee") return null;
     const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
-    if (identity.error || !identity.permissions?.can_manage_reservations) return false;
+    if (identity.error || !identity.permissions?.canManageReservations) return false;
     return identity;
+  };
+
+  // El flujo público definitivo para crear/vincular una clienta es
+  // /api/reservapp/auth/request-setup (crea la ficha internamente y siempre termina en el
+  // envío del enlace de credenciales por WhatsApp). client/resolve y clients (POST) no los usa
+  // ningún flujo público real — dejarlos accesibles sin autenticación permite enumerar
+  // teléfonos/nombres de clientas existentes y llenar la ERP de fichas huérfanas sin pasar por
+  // ese flujo. Solo personal autorizado (misma regla que la búsqueda GET /clients) puede
+  // usarlos, para herramientas administrativas internas.
+  const requireBookingStaff = async (req, res) => {
+    const session = await reservappSession(req);
+    if (session && ["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) return true;
+    const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
+    if (identity.error || !identity.permissions?.canManageReservations) {
+      res.status(403).json({ error: "No tienes permiso para gestionar clientas." });
+      return false;
+    }
+    return true;
   };
 
   const reservappSession = async (req) => {
@@ -344,6 +362,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const email = cleanText(req.body?.email, 160).toLowerCase();
       if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
       try {
+        if (!(await requireBookingStaff(req, res))) return;
         const customer = await bookingStore.resolveClient({ phone, email });
         res.json(customer ? { found: true, client: { id: customer.id, firstName: customer.full_name.split(/\s+/)[0] } } : { found: false });
       } catch (error) { next(error); }
@@ -365,8 +384,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         fechaRegistro: new Date().toISOString(), observaciones: "Creado desde reserva rápida.",
       };
       try {
-        const employee = await authorizeEmployeeBooking(req);
-        if (employee === false) return res.status(403).json({ error: "Inicia sesión con una cuenta autorizada para reservar como empleado." });
+        if (!(await requireBookingStaff(req, res))) return;
         const result = await bookingStore.createClient({ firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source, legacyPayload });
         if (result.duplicate) return res.status(409).json({ error: `Ya existe un cliente con ese ${result.matchedBy === "email" ? "correo" : "teléfono"}.`, duplicate: true, matchedBy: result.matchedBy });
         const calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, result.previousDocument, result.document, { fetchImpl });
@@ -376,11 +394,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
 
     app.get("/api/fast-booking/clients", async (req, res, next) => {
       try {
-        const session = await reservappSession(req);
-        if (!session || !["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) {
-          const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
-          if (identity.error || !identity.permissions?.can_manage_reservations) return res.status(403).json({ error: "No tienes permiso para reservar citas." });
-        }
+        if (!(await requireBookingStaff(req, res))) return;
         const query = cleanText(req.query.q, 80);
         res.json({ clients: query.length < 2 ? [] : await bookingStore.searchClients(query) });
       } catch (error) { next(error); }

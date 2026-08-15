@@ -30,6 +30,16 @@ function bookingStore() {
   };
 }
 
+function staffFetch(url) {
+  if (String(url).includes("/auth/v1/user")) {
+    return Promise.resolve(new Response(JSON.stringify({ id: "staff-1", email: "staff@example.test" }), { status: 200 }));
+  }
+  if (String(url).includes("erp_user_profiles")) {
+    return Promise.resolve(new Response(JSON.stringify([{ user_id: "staff-1", email: "staff@example.test", role: "administradora", is_active: true, can_manage_reservations: true }]), { status: 200 }));
+  }
+  return Promise.resolve(new Response("{}", { status: 401 }));
+}
+
 async function withServer(run, fetchImpl = async () => new Response("{}", { status: 401 })) {
   const app = createApp({
     store: documentStore(), bookingStore: bookingStore(), fetchImpl,
@@ -52,12 +62,29 @@ test("PWA publica catálogo y disponibilidad", async () => {
   });
 });
 
-test("PWA evita cliente duplicado por teléfono", async () => {
+test("PWA evita cliente duplicado por teléfono (personal autorizado)", async () => {
   await withServer(async (base) => {
-    const response = await fetch(`${base}/api/fast-booking/clients`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8090001111" }) });
+    const response = await fetch(`${base}/api/fast-booking/clients`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer staff-token" }, body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8090001111" }) });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).duplicate, true);
+  }, staffFetch);
+});
+
+test("client/resolve y clients (POST) rechazan acceso anónimo — no se puede enumerar teléfonos ni crear fichas huérfanas sin autorización", async () => {
+  await withServer(async (base) => {
+    const resolve = await fetch(`${base}/api/fast-booking/client/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8090001111" }) });
+    assert.equal(resolve.status, 403);
+    const create = await fetch(`${base}/api/fast-booking/clients`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8090009999" }) });
+    assert.equal(create.status, 403);
   });
+});
+
+test("client/resolve funciona para personal autorizado", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/client/resolve`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer staff-token" }, body: JSON.stringify({ phone: "8090001111" }) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).found, true);
+  }, staffFetch);
 });
 
 test("PWA crea una cita autenticada idempotente y devuelve depósito", async () => {
