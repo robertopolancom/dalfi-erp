@@ -452,27 +452,33 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
       if (!relayOtpRequestLimit(session.account.id)) return res.status(429).json({ error: "Demasiados códigos solicitados. Espera unos minutos." });
       try {
+        // Respuesta idéntica exista o no la clienta -- este endpoint NO debe
+        // servir para enumerar teléfonos ya registrados. La consulta explícita
+        // de "¿esta clienta ya existe?" es responsabilidad de
+        // POST /api/fast-booking/client/resolve (mismo nivel de autorización);
+        // el frontend lo llama primero y solo llega aquí si no encontró nada.
+        // Si de todos modos llega un teléfono ya existente, no se crea un OTP
+        // ni se manda WhatsApp -- responde igual que si sí se hubiera enviado.
         const existing = await bookingStore.resolveClient({ phone });
-        if (existing) {
-          return res.status(409).json({
-            error: "Esa clienta ya existe. Búscala por nombre o teléfono en vez de crearla de nuevo.",
-            code: "CLIENT_ALREADY_EXISTS",
-            client: { id: existing.id, name: existing.full_name },
+        let deliveryStatus = "sent";
+        let exposedCode;
+        if (!existing) {
+          const code = generateOtpCode();
+          const expiresAt = new Date(Date.now() + RELAY_OTP_TTL_MS).toISOString();
+          const prepared = await bookingStore.createRelayOtp({
+            requestedByAccountId: session.account.id, phone, firstName, lastName, email,
+            codeHash: hashToken(code), expiresAt, maxAttempts: RELAY_OTP_MAX_ATTEMPTS,
           });
+          const delivery = await sendRelayOtpWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: `${firstName} ${lastName}`.trim() });
+          deliveryStatus = delivery.status;
+          exposedCode = code;
         }
-        const code = generateOtpCode();
-        const expiresAt = new Date(Date.now() + RELAY_OTP_TTL_MS).toISOString();
-        const prepared = await bookingStore.createRelayOtp({
-          requestedByAccountId: session.account.id, phone, firstName, lastName, email,
-          codeHash: hashToken(code), expiresAt, maxAttempts: RELAY_OTP_MAX_ATTEMPTS,
-        });
-        const delivery = await sendRelayOtpWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: `${firstName} ${lastName}`.trim() });
         res.status(202).json({
           pendingConfirmation: true,
-          deliveryStatus: delivery.status,
+          deliveryStatus,
           expiresInSeconds: Math.floor(RELAY_OTP_TTL_MS / 1000),
-          message: "Pídele a la clienta el código de 6 dígitos que le llegó por WhatsApp.",
-          ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {}),
+          message: "Si el teléfono no tiene ya una clienta registrada, le enviamos un código de WhatsApp para confirmar.",
+          ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" && exposedCode ? { code: exposedCode } : {}),
         });
       } catch (error) { next(error); }
     });

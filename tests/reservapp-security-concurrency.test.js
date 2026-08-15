@@ -190,3 +190,70 @@ test("rate limit: relay-otp/request corta en el sexto intento de la misma manicu
     assert.deepEqual(statuses, [202, 202, 202, 202, 202, 429]);
   }, { env: { ERP_WEBHOOK_SECRET: "shared-secret", CHATBOT_BRIDGE_URL: "https://bridge.test" }, fetchImpl: async () => new Response(JSON.stringify({ status: "SENT" }), { status: 200 }) });
 });
+
+// A diferencia del rate limit de arriba (Map en memoria, igual que
+// bookingRateLimit ya usado en todo server/app.mjs -- se resetea si el
+// proceso reinicia, no se comparte entre instancias de Render), el conteo
+// de intentos por código SÍ vive en Postgres (app.reservapp_relay_otps.
+// attempt_count), así que sobrevive reinicios y es el mismo dato para
+// cualquier instancia. Este mock replica exactamente esa lógica (ver
+// server/store.mjs verifyRelayOtp) para probar la transición real
+// intento-a-intento, no solo un estado "locked" ya fabricado de antemano.
+function statefulRelayOtpStore(maxAttempts = 5) {
+  const correctHash = hashToken("123456");
+  let attemptCount = 0;
+  let consumed = false;
+  return {
+    async sessionAccount(tokenHash) {
+      return tokenHash === hashToken(MANICURISTA_TOKEN) ? { id: "manicurista-1", role: "manicurista" } : null;
+    },
+    async verifyRelayOtp({ codeHash }) {
+      if (consumed) return { notFound: true };
+      if (attemptCount >= maxAttempts) return { locked: true };
+      if (codeHash !== correctHash) {
+        attemptCount += 1;
+        return { invalid: true, attemptsRemaining: Math.max(0, maxAttempts - attemptCount) };
+      }
+      consumed = true;
+      return { ok: true, row: { id: "otp-1", first_name: "Ana", last_name: "Pérez", email: "", requested_by_account_id: "manicurista-1" } };
+    },
+    async resolveClient() { return null; },
+    async createClient(input) { return { client: { id: "new-client-1", full_name: input.fullName }, previousDocument: {}, document: {} }; },
+    async markRelayOtpClient() {},
+  };
+}
+
+function confirmOtp(base, code) {
+  return fetch(`${base}/api/reservapp/clients/relay-otp/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: `reservapp_session=${MANICURISTA_TOKEN}` },
+    body: JSON.stringify({ phone: "8095551234", code }),
+  });
+}
+
+test("fuerza bruta del código de 6 dígitos: se bloquea tras 5 intentos fallidos, incluso si el 6to intento es el código correcto", async () => {
+  const store = statefulRelayOtpStore(5);
+  await withServer(store, async (base) => {
+    for (let i = 0; i < 5; i += 1) {
+      const response = await confirmOtp(base, "000000");
+      assert.equal(response.status, 401, `intento ${i + 1} debía ser rechazado como código incorrecto`);
+      assert.equal((await response.json()).code, "OTP_INVALID");
+    }
+    // El código correcto de verdad es "123456" -- ya no debe importar,
+    // el candado por intentos agotados gana.
+    const lockedAttempt = await confirmOtp(base, "123456");
+    assert.equal(lockedAttempt.status, 429);
+    assert.equal((await lockedAttempt.json()).code, "OTP_LOCKED");
+  });
+});
+
+test("el código correcto SÍ funciona si se usa antes de agotar los intentos", async () => {
+  const store = statefulRelayOtpStore(5);
+  await withServer(store, async (base) => {
+    const wrong = await confirmOtp(base, "999999");
+    assert.equal(wrong.status, 401);
+    const right = await confirmOtp(base, "123456");
+    assert.equal(right.status, 200);
+    assert.equal((await right.json()).verified, true);
+  });
+});

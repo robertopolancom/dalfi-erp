@@ -95,18 +95,37 @@ test("relay-otp/request: expone el código solo si RESERVAPP_EXPOSE_OTP_CODE=tru
   }, { env: { RESERVAPP_EXPOSE_OTP_CODE: "true" } });
 });
 
-test("relay-otp/request: rechaza si la clienta ya existe, sin crear un código", async () => {
+test("relay-otp/request: si la clienta ya existe, no crea código ni manda WhatsApp -- pero responde IGUAL que si sí lo hiciera (anti-enumeración)", async () => {
   const store = bookingStore({ existingClient: { id: "existing-1", full_name: "Ana Pérez" } });
+  const notFoundStore = bookingStore();
+  let existingResponseBody;
+  let notFoundResponseBody;
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/clients/relay-otp/request`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...withCookie(MANICURISTA_TOKEN) },
       body: JSON.stringify({ phone: "8095551234", firstName: "Ana", lastName: "Pérez" }),
     });
-    assert.equal(response.status, 409);
-    assert.equal((await response.json()).code, "CLIENT_ALREADY_EXISTS");
-    assert.equal(store.relayOtps.length, 0);
+    assert.equal(response.status, 202);
+    existingResponseBody = await response.json();
+    assert.equal(store.relayOtps.length, 0, "no debe crear un código para un teléfono ya registrado");
   });
+  await withServer(notFoundStore, async (base) => {
+    const response = await fetch(`${base}/api/reservapp/clients/relay-otp/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...withCookie(MANICURISTA_TOKEN) },
+      body: JSON.stringify({ phone: "8095559999", firstName: "Bea", lastName: "Gómez" }),
+    });
+    assert.equal(response.status, 202);
+    notFoundResponseBody = await response.json();
+    assert.equal(notFoundStore.relayOtps.length, 1);
+  });
+  // Misma forma, mismo status, mismo mensaje -- un atacante no puede
+  // distinguir "el teléfono ya era clienta" de "se mandó un código nuevo".
+  assert.deepEqual(Object.keys(existingResponseBody).sort(), Object.keys(notFoundResponseBody).sort());
+  assert.equal(existingResponseBody.message, notFoundResponseBody.message);
+  assert.equal(existingResponseBody.deliveryStatus, notFoundResponseBody.deliveryStatus);
+  assert.equal(existingResponseBody.pendingConfirmation, notFoundResponseBody.pendingConfirmation);
 });
 
 test("relay-otp/request: sin sesión válida de staff se rechaza", async () => {
