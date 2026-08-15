@@ -20,3 +20,17 @@ corte final reversible.
 3. Ejecutar el importador en `migration-staging`.
 4. Reconciliar y probar ERP, API, agenda y chatbot.
 5. Repetir la importación final durante una ventana sin escrituras.
+
+## Primera cuenta superadministrador de ReservApp
+
+`POST /api/reservapp/admin/accounts` exige ya tener una sesión administradora/
+superadministrador (o un admin ERP, que nunca puede crear un
+superadministrador) — a propósito no hay bootstrap por HTTP. Con la
+colaboradora ya creada en `app.staff` y `DATABASE_URL` apuntando a Neon:
+
+```bash
+DATABASE_URL=postgres://... node scripts/bootstrap-reservapp-admin.mjs \
+  --staff-id <uuid-de-app.staff> --phone 8095551234
+```
+
+Imprime una contraseña temporal una sola vez si no se pasa `--password`.
