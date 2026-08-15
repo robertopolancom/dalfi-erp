@@ -129,8 +129,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     if (!bridgeSecret) return { status: "pending_configuration" };
     const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
     try {
-      // El bridge ya procesa este canal autenticado y envía whatsappFormattedText.
-      const response = await fetchImpl(`${bridgeBase}/webhook/overdue-reminders`, {
+      // Endpoint dedicado (no /webhook/overdue-reminders, que solo entiende
+      // booking.confirmation_reminder y devuelve 200 IGNORED/UNKNOWN_EVENT para cualquier otro
+      // evento). Con un endpoint compartido, un 200 no confirmaba que el WhatsApp se hubiera
+      // enviado de verdad, así que hay que leer el cuerpo y solo marcar "sent" si el bridge
+      // confirma status: "SENT" explícitamente.
+      const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
         body: JSON.stringify({
@@ -142,7 +146,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           whatsappFormattedText: `Hola ${name || ""}. Crea tu contraseña para confirmar tu cita en Dalfi Studio Nails: ${setupUrl}`.trim(),
         }),
       });
-      if (!response.ok) throw new Error(`Bridge ${response.status}`);
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.status !== "SENT") {
+        throw new Error(`Bridge did not confirm delivery: ${payload?.status || payload?.reason || `HTTP_${response.status}`}`);
+      }
       await bookingStore.markWhatsApp({ outboxId, status: "sent" });
       return { status: "sent" };
     } catch (error) {
