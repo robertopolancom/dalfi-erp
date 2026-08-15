@@ -319,12 +319,19 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
       try {
         const session = await reservappSession(req);
-        let allowed = session && ["administradora", "superadministrador"].includes(session.account.role);
-        if (role === "superadministrador" && session && session.account.role !== "superadministrador") allowed = false;
+        const sessionRole = session?.account.role;
+        let allowed = sessionRole && ["administradora", "superadministrador"].includes(sessionRole);
+        // Solo una cuenta ReservApp que YA es superadministrador puede crear otra. El personal
+        // del ERP legado (autenticado vía Supabase, sin cookie reservapp_session) nunca cuenta
+        // como superadministrador aquí, sin importar sus permisos del lado ERP — de lo
+        // contrario cualquier administradora del ERP podría autoelevarse creando una cuenta
+        // superadministrador de ReservApp.
+        let actingAsSuperadmin = sessionRole === "superadministrador";
         if (!allowed && !session) {
           const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
-          allowed = !identity.error && Boolean(identity.permissions?.can_manage_users);
+          allowed = !identity.error && Boolean(identity.permissions?.canManageUsers);
         }
+        if (role === "superadministrador" && !actingAsSuperadmin) allowed = false;
         if (!allowed) return res.status(403).json({ error: "Solo administración puede crear credenciales del equipo." });
         const account = await bookingStore.createEmployeeAccount({ staffId, phone, role, createdByAccountId: session?.account.id || null });
         const rawToken = secureToken();
@@ -392,7 +399,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
-    app.get("/api/fast-booking/clients", async (req, res, next) => {
+    app.get("/api/fast-booking/clients", bookingRateLimit, async (req, res, next) => {
       try {
         if (!(await requireBookingStaff(req, res))) return;
         const query = cleanText(req.query.q, 80);
