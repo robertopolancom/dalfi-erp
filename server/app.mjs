@@ -3,6 +3,7 @@ import { resolveErpIdentity } from "../functions/api/_lib/authz.js";
 import { authorizeDatabaseChanges, detectDatabaseChanges } from "../functions/api/_lib/database-authz.js";
 import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
+import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import {
   RESERVAPP_ROLES,
   hashPassword,
@@ -523,6 +524,8 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       next(error);
     }
   });
+
+  registerLegacyBookingApi(app, { store, env, fetchImpl });
 
   if (staticDir) {
     app.use("/reservar", express.static(`${staticDir}/reservar`, { extensions: ["html"] }));
