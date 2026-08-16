@@ -6,14 +6,17 @@ corte final reversible.
 
 ## ⚠️ NO activar `reservapp.sebengroup.com` todavía
 
-`server/app.mjs` (Render) hoy solo cubre `/api/reservapp/*` y
-`/api/fast-booking/*` — el backend de ReservApp. NO tiene
+`server/app.mjs` (Render) ya cubre `GET`/`PUT /api/database` (el
+personal SÍ puede leer y guardar — facturación, citas, nómina, cierres —
+mismo lock optimista, autorización por dominio y sync a Google Calendar
+que la versión de Cloudflare) y `/api/reservapp/*` +
+`/api/fast-booking/*` (ReservApp). Lo que SÍ falta:
 `booking/availability`, `confirm`, `cancel`, `reschedule`, `clients`,
-`staff`, `services`, `bank-accounts`, `POST /api/database` (lo que usa
-`outputs/app.js`, la pantalla del personal), `users`/`create-user`,
-`run-closing-catchup`, ni `audit-log`. Esas rutas siguen existiendo solo
-en `functions/api/**` (Cloudflare Pages + Supabase), y el chatbot
-(`ERP_BASE_URL` en `dalfi-chatbot-n8n`) las necesita para funcionar.
+`staff`, `services`, `bank-accounts` — el chatbot (`ERP_BASE_URL` en
+`dalfi-chatbot-n8n`) depende de esas rutas y no puede hablar con Render
+sin ellas — y `users`/`create-user`, `run-closing-catchup`,
+`audit-log`, `calendar/google-sync` (administrativas, no bloquean el
+uso diario del personal).
 
 Neon (`app.appointments`) y Supabase (documento único vía `erp_records`)
 **no se sincronizan entre sí**. Una cita creada en ReservApp hoy es
