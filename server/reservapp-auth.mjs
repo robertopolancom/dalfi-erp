@@ -21,6 +21,13 @@ export function secureToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString("base64url");
 }
 
+// Código corto de 6 dígitos para el relay de manicurista (ver reservapp_relay_otps).
+// crypto.randomInt es criptográficamente seguro y no tiene el sesgo de módulo
+// de Math.random() -- no reutilizar Math.random() para esto.
+export function generateOtpCode() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, "0");
+}
+
 export function hashToken(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }

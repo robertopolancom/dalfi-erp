@@ -439,6 +439,88 @@ export class NeonBookingStore {
     );
   }
 
+  // Código de relay (ver 0011_reservapp_relay_otp.sql): una manicurista
+  // solicita un código de 6 dígitos para verificar el teléfono de una
+  // clienta nueva antes de registrarla. Cualquier código activo anterior
+  // para ese mismo teléfono se invalida -- solo el más reciente es válido.
+  async createRelayOtp({ requestedByAccountId, phone, firstName, lastName, email, codeHash, expiresAt, maxAttempts = 5 }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const normalizedPhone = await client.query("select app.normalize_phone($1) value", [phone]);
+      await client.query(
+        `update app.reservapp_relay_otps set consumed_at=now()
+          where phone_normalized=$1 and consumed_at is null`,
+        [normalizedPhone.rows[0].value],
+      );
+      const inserted = await client.query(
+        `insert into app.reservapp_relay_otps
+          (requested_by_account_id,phone_normalized,first_name,last_name,email,code_hash,max_attempts,expires_at)
+         values ($1,$2,$3,$4,nullif($5,''),$6,$7,$8)
+         returning id`,
+        [requestedByAccountId, normalizedPhone.rows[0].value, firstName, lastName || "", email || "", codeHash, maxAttempts, expiresAt],
+      );
+      const outbox = await client.query(
+        `insert into app.reservapp_whatsapp_outbox
+          (account_id,recipient_phone,event_type,payload)
+         values ($1,$2,'reservapp.relay_otp',$3::jsonb)
+         returning id,status`,
+        [requestedByAccountId, normalizedPhone.rows[0].value, JSON.stringify({ otpId: inserted.rows[0].id, expiresAt })],
+      );
+      await client.query("commit");
+      return { otpId: inserted.rows[0].id, outbox: outbox.rows[0] };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Verifica un código de relay. Retorna exactamente uno de:
+  // { notFound: true } -- no hay código activo (vencido/no solicitado/ya usado)
+  // { locked: true } -- se agotaron los intentos, hace falta solicitar uno nuevo
+  // { invalid: true, attemptsRemaining } -- código incorrecto, aún quedan intentos
+  // { ok: true, row } -- válido; ya quedó marcado consumido (uso único)
+  async verifyRelayOtp({ phone, codeHash }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const found = await client.query(
+        `select * from app.reservapp_relay_otps
+          where phone_normalized=app.normalize_phone($1) and consumed_at is null and expires_at>now()
+          order by created_at desc limit 1 for update`,
+        [phone],
+      );
+      if (!found.rowCount) {
+        await client.query("rollback");
+        return { notFound: true };
+      }
+      const row = found.rows[0];
+      if (row.attempt_count >= row.max_attempts) {
+        await client.query("rollback");
+        return { locked: true };
+      }
+      if (row.code_hash !== codeHash) {
+        await client.query("update app.reservapp_relay_otps set attempt_count=attempt_count+1 where id=$1", [row.id]);
+        await client.query("commit");
+        return { invalid: true, attemptsRemaining: Math.max(0, row.max_attempts - row.attempt_count - 1) };
+      }
+      await client.query("update app.reservapp_relay_otps set consumed_at=now() where id=$1", [row.id]);
+      await client.query("commit");
+      return { ok: true, row };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markRelayOtpClient(otpId, clientId) {
+    await this.pool.query("update app.reservapp_relay_otps set created_client_id=$2 where id=$1", [otpId, clientId]);
+  }
+
   async activateWithToken({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt }) {
     const client = await this.pool.connect();
     try {
