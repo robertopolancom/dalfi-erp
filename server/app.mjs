@@ -6,6 +6,7 @@ import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/g
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import {
   RESERVAPP_ROLES,
+  generateOtpCode,
   hashPassword,
   hashToken,
   normalizePhone,
@@ -19,6 +20,10 @@ import {
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const BOOKING_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const BOOKING_LIMIT_MAX = 25;
+const RELAY_OTP_TTL_MS = 10 * 60 * 1000;
+const RELAY_OTP_MAX_ATTEMPTS = 5;
+const RELAY_OTP_REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const RELAY_OTP_REQUEST_LIMIT_MAX = 5;
 
 function identityStatus(identity) {
   if (identity.error === "unauthenticated") return [401, "Sesion requerida."];
@@ -128,6 +133,49 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     return true;
   };
 
+  // A diferencia de requireBookingStaff: crear una clienta NUEVA es la única
+  // operación que la MANICURISTA no puede hacer directamente -- debe pasar
+  // primero por /api/reservapp/clients/relay-otp/{request,confirm} para
+  // comprobar que la clienta controla ese teléfono. Buscar una clienta ya
+  // existente (client/resolve, GET clients) sigue abierto para manicurista
+  // sin restricción adicional, igual que reservar para ella una vez resuelta.
+  const requireBookingStaffCanCreateClients = async (req, res) => {
+    const session = await reservappSession(req);
+    if (session) {
+      if (["asistente", "administradora", "superadministrador"].includes(session.account.role)) return true;
+      if (session.account.role === "manicurista") {
+        res.status(403).json({
+          error: "Verifica el teléfono de la clienta con el código de WhatsApp antes de crearla.",
+          code: "OTP_REQUIRED_FOR_MANICURISTA",
+        });
+        return false;
+      }
+    }
+    const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
+    if (identity.error || !identity.permissions?.canManageReservations) {
+      res.status(403).json({ error: "No tienes permiso para gestionar clientas." });
+      return false;
+    }
+    return true;
+  };
+
+  const relayOtpHits = new Map();
+  const relayOtpRequestLimit = (accountId) => {
+    const now = Date.now();
+    const recent = (relayOtpHits.get(accountId) || []).filter((time) => now - time < RELAY_OTP_REQUEST_LIMIT_WINDOW_MS);
+    if (recent.length >= RELAY_OTP_REQUEST_LIMIT_MAX) return false;
+    recent.push(now);
+    relayOtpHits.set(accountId, recent);
+    return true;
+  };
+
+  const requireManicuristaOrAbove = async (req, res) => {
+    const session = await reservappSession(req);
+    if (session && ["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) return session;
+    res.status(403).json({ error: "No tienes permiso para esta acción." });
+    return null;
+  };
+
   const reservappSession = async (req) => {
     const token = parseCookies(req.get("cookie")).reservapp_session;
     if (!token) return null;
@@ -177,6 +225,38 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     }
   };
 
+  // Mismo contrato de entrega que sendSetupWhatsApp (solo marca "sent" si el
+  // bridge confirma status:"SENT" explícitamente) pero para el código de 6
+  // dígitos del relay de manicurista, no el enlace de autorregistro.
+  const sendRelayOtpWhatsApp = async ({ outboxId, phone, code, name }) => {
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!bridgeSecret) return { status: "pending_configuration" };
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          event: "reservapp.relay_otp",
+          actionRequired: "send_relay_code",
+          recipientPhone: normalizePhone(phone),
+          clientName: name || "Cliente",
+          code,
+          whatsappFormattedText: `Hola ${name || ""}. Tu código para confirmar tu cita en Dalfi Studio Nails es: ${code}. Vence en 10 minutos.`.trim(),
+        }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || payload?.status !== "SENT") {
+        throw new Error(`Bridge did not confirm delivery: ${payload?.status || payload?.reason || `HTTP_${response.status}`}`);
+      }
+      await bookingStore.markWhatsApp({ outboxId, status: "sent" });
+      return { status: "sent" };
+    } catch (error) {
+      await bookingStore.markWhatsApp({ outboxId, status: "failed", error: cleanText(error.message, 300) });
+      return { status: "failed" };
+    }
+  };
+
   if (bookingStore) {
     app.post("/api/reservapp/auth/request-setup", bookingRateLimit, async (req, res, next) => {
       if (req.body?.website) return res.status(204).end();
@@ -195,13 +275,19 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       };
       if (!firstName || !lastName || !validPhone(phone)) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
-      if (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time)) {
-        return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora antes de crear tu acceso." });
+      // Registrarse (crear cuenta) no requiere tener ya un horario elegido --
+      // solo si la clienta arrancó desde el wizard de reserva vendrá un
+      // borrador adjunto, y en ese caso sí debe venir completo.
+      const hasDraftIntent = Boolean(serviceIds.length || draft.staffId || draft.date || draft.time);
+      if (hasDraftIntent && (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time))) {
+        return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora, o deja todo vacío para solo crear tu cuenta." });
       }
       try {
-        const availability = await bookingStore.availability({ ...draft, serviceIds });
-        if (!availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
-          return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
+        if (hasDraftIntent) {
+          const availability = await bookingStore.availability({ ...draft, serviceIds });
+          if (!availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
+            return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
+          }
         }
         let customer = await bookingStore.resolveClient({ phone });
         if (!customer) {
@@ -223,7 +309,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
         const publicUrl = String(env.RESERVAPP_PUBLIC_URL || "https://reservapp.sebengroup.com").replace(/\/$/, "");
         const setupUrl = `${publicUrl}/?setup=${encodeURIComponent(rawToken)}`;
-        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(rawToken), expiresAt, recipientPhone: phone, setupUrl, draft });
+        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(rawToken), expiresAt, recipientPhone: phone, setupUrl, draft: hasDraftIntent ? draft : null });
         const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, setupUrl, name: `${firstName} ${lastName}` });
         res.status(202).json({
           pendingConfirmation: true,
@@ -349,6 +435,92 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
     });
 
+    // Relay OTP: cuando una MANICURISTA quiere agendar a una clienta que
+    // todavía no existe en el sistema, primero debe comprobar que controla
+    // ese teléfono con un código de 6 dígitos enviado por WhatsApp -- no
+    // puede simplemente inventar un número y convertirlo en identidad
+    // verificada (a diferencia de asistente/administradora, que sí pueden
+    // crear clientas directamente vía POST /api/fast-booking/clients).
+    app.post("/api/reservapp/clients/relay-otp/request", bookingRateLimit, async (req, res, next) => {
+      const session = await requireManicuristaOrAbove(req, res);
+      if (!session) return;
+      const phone = cleanText(req.body?.phone, 30);
+      const firstName = cleanText(req.body?.firstName, 80);
+      const lastName = cleanText(req.body?.lastName, 80);
+      const email = cleanText(req.body?.email, 160).toLowerCase();
+      if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
+      if (!firstName) return res.status(400).json({ error: "El nombre de la clienta es obligatorio." });
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
+      if (!relayOtpRequestLimit(session.account.id)) return res.status(429).json({ error: "Demasiados códigos solicitados. Espera unos minutos." });
+      try {
+        // Respuesta idéntica exista o no la clienta -- este endpoint NO debe
+        // servir para enumerar teléfonos ya registrados. La consulta explícita
+        // de "¿esta clienta ya existe?" es responsabilidad de
+        // POST /api/fast-booking/client/resolve (mismo nivel de autorización);
+        // el frontend lo llama primero y solo llega aquí si no encontró nada.
+        // Si de todos modos llega un teléfono ya existente, no se crea un OTP
+        // ni se manda WhatsApp -- responde igual que si sí se hubiera enviado.
+        const existing = await bookingStore.resolveClient({ phone });
+        let deliveryStatus = "sent";
+        let exposedCode;
+        if (!existing) {
+          const code = generateOtpCode();
+          const expiresAt = new Date(Date.now() + RELAY_OTP_TTL_MS).toISOString();
+          const prepared = await bookingStore.createRelayOtp({
+            requestedByAccountId: session.account.id, phone, firstName, lastName, email,
+            codeHash: hashToken(code), expiresAt, maxAttempts: RELAY_OTP_MAX_ATTEMPTS,
+          });
+          const delivery = await sendRelayOtpWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: `${firstName} ${lastName}`.trim() });
+          deliveryStatus = delivery.status;
+          exposedCode = code;
+        }
+        res.status(202).json({
+          pendingConfirmation: true,
+          deliveryStatus,
+          expiresInSeconds: Math.floor(RELAY_OTP_TTL_MS / 1000),
+          message: "Si el teléfono no tiene ya una clienta registrada, le enviamos un código de WhatsApp para confirmar.",
+          ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" && exposedCode ? { code: exposedCode } : {}),
+        });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/clients/relay-otp/confirm", bookingRateLimit, async (req, res, next) => {
+      const session = await requireManicuristaOrAbove(req, res);
+      if (!session) return;
+      const phone = cleanText(req.body?.phone, 30);
+      const code = cleanText(req.body?.code, 6);
+      if (!validPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "Código inválido." });
+      try {
+        const result = await bookingStore.verifyRelayOtp({ phone, codeHash: hashToken(code) });
+        if (result.locked) return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
+        if (result.notFound) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
+        if (result.invalid) {
+          return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
+        }
+        const otp = result.row;
+        let customer = await bookingStore.resolveClient({ phone });
+        if (!customer) {
+          const id = `CLI-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+          const fullName = `${otp.first_name} ${otp.last_name || ""}`.trim();
+          const legacyPayload = {
+            clienteID: id, nombre: otp.first_name, apellido: otp.last_name || "", nombreCompleto: fullName,
+            telefono: phone, correo: otp.email || "", estado: "Activo", origenRegistro: "RESERVAPP_MANICURISTA_OTP",
+            fechaRegistro: new Date().toISOString(),
+            observaciones: `Teléfono verificado por WhatsApp; registrada por manicurista (cuenta ${otp.requested_by_account_id}).`,
+          };
+          const created = await bookingStore.createClient({
+            firstName: otp.first_name, lastName: otp.last_name || "", fullName, phone, email: otp.email || "",
+            source: "RESERVAPP_MANICURISTA_OTP", legacyPayload,
+          });
+          if (created.duplicate) customer = await bookingStore.resolveClient({ phone });
+          else customer = created.client;
+        }
+        if (!customer) return res.status(409).json({ error: "No pudimos vincular el teléfono con una ficha de cliente." });
+        if (bookingStore.markRelayOtpClient) await bookingStore.markRelayOtpClient(otp.id, customer.id);
+        res.json({ verified: true, client: { id: customer.id, name: customer.full_name } });
+      } catch (error) { next(error); }
+    });
+
     app.get("/api/fast-booking/catalog", bookingRateLimit, async (_req, res, next) => {
       try { res.json(await bookingStore.catalog()); } catch (error) { next(error); }
     });
@@ -392,7 +564,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         fechaRegistro: new Date().toISOString(), observaciones: "Creado desde reserva rápida.",
       };
       try {
-        if (!(await requireBookingStaff(req, res))) return;
+        if (!(await requireBookingStaffCanCreateClients(req, res))) return;
         const result = await bookingStore.createClient({ firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source, legacyPayload });
         if (result.duplicate) return res.status(409).json({ error: `Ya existe un cliente con ese ${result.matchedBy === "email" ? "correo" : "teléfono"}.`, duplicate: true, matchedBy: result.matchedBy });
         const calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, result.previousDocument, result.document, { fetchImpl });

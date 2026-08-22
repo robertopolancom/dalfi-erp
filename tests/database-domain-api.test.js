@@ -70,6 +70,21 @@ test("database-domain: inventario devuelve solo su slice y nunca facturas", asyn
   }
 });
 
+test("database-domain: reservas devuelve su slice y nunca facturas ni inventario", async () => {
+  const { onRequestGet } = await import(moduleUrl);
+  const fake = fakeFetch();
+  try {
+    const response = await onRequestGet({ request: request("GET", "jwt", "reservas"), env: ENV });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.domain, "reservas");
+    assert.equal(Object.prototype.hasOwnProperty.call(body.data, "facturas"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(body.data, "inventario"), false);
+  } finally {
+    fake.restore();
+  }
+});
+
 test("database-domain: dominios no habilitados y metodos de escritura no se exponen", async () => {
   const module = await import(moduleUrl);
   const fake = fakeFetch();
