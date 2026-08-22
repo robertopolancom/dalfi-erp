@@ -269,7 +269,7 @@ export class NeonBookingStore {
         reservaID: id, fecha: input.date, hora: input.time, horaFin: input.endTime,
         clienteID: customer.legacy_id, clienteNombre: customer.full_name,
         telefono: customer.phone_original || "", correo: customer.email || "",
-        clienteProvisional: false, canalOrigen: input.source,
+        clienteProvisional: false, canalOrigen: input.source, creadoPor: input.createdBy || null,
         servicioID: services[0].legacy_id, servicio: services.map((item) => item.name).join(", "),
         servicios: services.map((item) => ({ servicioID: item.legacy_id, nombre: item.name, cantidad: 1, duracionMin: Number(item.duration_minutes), precio: Number(item.base_price) })),
         colaboradorID: staff.legacy_id, colaboradorNombre: staff.full_name,

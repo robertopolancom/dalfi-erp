@@ -202,7 +202,7 @@ test("relay-otp/confirm: intentos agotados responde 429 (OTP_LOCKED)", async () 
   });
 });
 
-test("POST /api/fast-booking/clients: manicurista NO puede crear clienta directamente (debe usar relay-otp)", async () => {
+test("POST /api/fast-booking/clients: manicurista SÍ puede crear clienta directamente, sin OTP", async () => {
   const store = bookingStore();
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/fast-booking/clients`, {
@@ -210,9 +210,8 @@ test("POST /api/fast-booking/clients: manicurista NO puede crear clienta directa
       headers: { "Content-Type": "application/json", ...withCookie(MANICURISTA_TOKEN) },
       body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234" }),
     });
-    assert.equal(response.status, 403);
-    assert.equal((await response.json()).code, "OTP_REQUIRED_FOR_MANICURISTA");
-    assert.equal(store.createdClients.length, 0);
+    assert.equal(response.status, 201);
+    assert.equal(store.createdClients.length, 1);
   });
 });
 
