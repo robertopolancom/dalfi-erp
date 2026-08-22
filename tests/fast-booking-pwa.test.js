@@ -3,13 +3,19 @@ import { once } from "node:events";
 import http from "node:http";
 import test from "node:test";
 import { createApp } from "../server/app.mjs";
+import { hashToken } from "../server/reservapp-auth.mjs";
 
 function documentStore() {
   return { async read() { return { data: {}, updatedAt: "2026-08-13T00:00:00.000Z", version: 1 }; } };
 }
 
+const MANICURISTA_TOKEN = "manicurista-session-token";
+const ASISTENTE_TOKEN = "asistente-session-token";
+
 function bookingStore() {
+  const createdAppointments = [];
   return {
+    createdAppointments,
     async catalog() {
       return { services: [{ id: "11111111-1111-4111-8111-111111111111", name: "Manicura", price: 900, durationMinutes: 60 }], staff: [{ id: "22222222-2222-4222-8222-222222222222", name: "Dalfina" }], schedule: { timezone: "America/Santo_Domingo", settings: {} } };
     },
@@ -22,8 +28,13 @@ function bookingStore() {
       return { client: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" }, previousDocument: {}, document: {} };
     },
     async searchClients() { return [{ id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez", phone: "8090002222" }]; },
-    async sessionAccount() { return { id: "55555555-5555-4555-8555-555555555555", role: "clienta", client_id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" }; },
+    async sessionAccount(tokenHash) {
+      if (tokenHash === hashToken(MANICURISTA_TOKEN)) return { id: "manicurista-1", role: "manicurista" };
+      if (tokenHash === hashToken(ASISTENTE_TOKEN)) return { id: "asistente-1", role: "asistente" };
+      return { id: "55555555-5555-4555-8555-555555555555", role: "clienta", client_id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" };
+    },
     async createAppointment(input) {
+      createdAppointments.push(input);
       if (input.time === "11:00") return { conflict: true };
       return { appointment: { id: "44444444-4444-4444-8444-444444444444", legacy_id: "RES-TEST" }, previousDocument: {}, document: {} };
     },
@@ -40,9 +51,9 @@ function staffFetch(url) {
   return Promise.resolve(new Response("{}", { status: 401 }));
 }
 
-async function withServer(run, fetchImpl = async () => new Response("{}", { status: 401 })) {
+async function withServer(run, fetchImpl = async () => new Response("{}", { status: 401 }), store = bookingStore()) {
   const app = createApp({
-    store: documentStore(), bookingStore: bookingStore(), fetchImpl,
+    store: documentStore(), bookingStore: store, fetchImpl,
     env: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_PUBLISHABLE_KEY: "test", SUPABASE_SERVICE_ROLE_KEY: "test" },
   });
   const server = app.listen(0, "127.0.0.1");
@@ -95,6 +106,46 @@ test("PWA crea una cita autenticada idempotente y devuelve depósito", async () 
     assert.equal(body.appointment.reference, "RES-TEST");
     assert.equal(body.depositAmount, 500);
   });
+});
+
+test("POST /api/fast-booking/appointments creada por clienta registra canalOrigen y creadoPor", async () => {
+  const store = bookingStore();
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "clienta-test-1", Cookie: "reservapp_session=test-session" }, body: JSON.stringify({ clientId: "33333333-3333-4333-8333-333333333333", serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" }) });
+    assert.equal(response.status, 201);
+    assert.equal(store.createdAppointments[0].source, "RESERVAPP_CLIENTE");
+    assert.deepEqual(store.createdAppointments[0].createdBy, { role: "clienta", accountId: "55555555-5555-4555-8555-555555555555" });
+  }, undefined, store);
+});
+
+test("POST /api/fast-booking/appointments creada por manicurista registra su rol en canalOrigen y creadoPor", async () => {
+  const store = bookingStore();
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "manicurista-test-1", Cookie: `reservapp_session=${MANICURISTA_TOKEN}` }, body: JSON.stringify({ actorType: "employee", clientId: "33333333-3333-4333-8333-333333333333", serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" }) });
+    assert.equal(response.status, 201);
+    assert.equal(store.createdAppointments[0].source, "RESERVAPP_MANICURISTA");
+    assert.deepEqual(store.createdAppointments[0].createdBy, { role: "manicurista", accountId: "manicurista-1" });
+  }, undefined, store);
+});
+
+test("POST /api/fast-booking/appointments creada por asistente registra su rol en canalOrigen y creadoPor", async () => {
+  const store = bookingStore();
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "asistente-test-1", Cookie: `reservapp_session=${ASISTENTE_TOKEN}` }, body: JSON.stringify({ actorType: "employee", clientId: "33333333-3333-4333-8333-333333333333", serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" }) });
+    assert.equal(response.status, 201);
+    assert.equal(store.createdAppointments[0].source, "RESERVAPP_ASISTENTE");
+    assert.deepEqual(store.createdAppointments[0].createdBy, { role: "asistente", accountId: "asistente-1" });
+  }, undefined, store);
+});
+
+test("POST /api/fast-booking/appointments creada por empleado ERP legado (sin sesión ReservApp) registra su rol", async () => {
+  const store = bookingStore();
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "erp-staff-test-1", Authorization: "Bearer staff-token" }, body: JSON.stringify({ actorType: "employee", clientId: "33333333-3333-4333-8333-333333333333", serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" }) });
+    assert.equal(response.status, 201);
+    assert.equal(store.createdAppointments[0].source, "ERP_ADMINISTRADORA");
+    assert.deepEqual(store.createdAppointments[0].createdBy, { role: "administradora", email: "staff@example.test" });
+  }, staffFetch, store);
 });
 
 test("modo empleado exige sesión con permiso de reservas", async () => {

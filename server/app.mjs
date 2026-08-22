@@ -133,31 +133,13 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     return true;
   };
 
-  // A diferencia de requireBookingStaff: crear una clienta NUEVA es la única
-  // operación que la MANICURISTA no puede hacer directamente -- debe pasar
-  // primero por /api/reservapp/clients/relay-otp/{request,confirm} para
-  // comprobar que la clienta controla ese teléfono. Buscar una clienta ya
-  // existente (client/resolve, GET clients) sigue abierto para manicurista
-  // sin restricción adicional, igual que reservar para ella una vez resuelta.
-  const requireBookingStaffCanCreateClients = async (req, res) => {
-    const session = await reservappSession(req);
-    if (session) {
-      if (["asistente", "administradora", "superadministrador"].includes(session.account.role)) return true;
-      if (session.account.role === "manicurista") {
-        res.status(403).json({
-          error: "Verifica el teléfono de la clienta con el código de WhatsApp antes de crearla.",
-          code: "OTP_REQUIRED_FOR_MANICURISTA",
-        });
-        return false;
-      }
-    }
-    const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
-    if (identity.error || !identity.permissions?.canManageReservations) {
-      res.status(403).json({ error: "No tienes permiso para gestionar clientas." });
-      return false;
-    }
-    return true;
-  };
+  // La manicurista puede crear una clienta nueva directamente con solo su
+  // teléfono, igual que asistente/administradora -- la verificación real ya
+  // no ocurre aquí. Se mueve al punto donde la clienta usa esa identidad de
+  // verdad: crear sus credenciales de ReservApp (código de WhatsApp + luego
+  // contraseña) o confirmar una cita agendada por el chatbot (código de
+  // WhatsApp en la misma conversación). relay-otp/{request,confirm} sigue
+  // existiendo como mecanismo disponible, pero ya no es obligatorio aquí.
 
   const relayOtpHits = new Map();
   const relayOtpRequestLimit = (accountId) => {
@@ -343,6 +325,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             time: String(account.draft.appointment_time).slice(0, 5),
             notes: account.draft.notes || "",
             source: "RESERVAPP_CLIENTE",
+            createdBy: { role: "clienta", accountId: account.account_id },
             idempotencyKey: account.draft.idempotency_key,
           };
           const availability = await bookingStore.availability(input);
@@ -564,7 +547,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         fechaRegistro: new Date().toISOString(), observaciones: "Creado desde reserva rápida.",
       };
       try {
-        if (!(await requireBookingStaffCanCreateClients(req, res))) return;
+        if (!(await requireBookingStaff(req, res))) return;
         const result = await bookingStore.createClient({ firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source, legacyPayload });
         if (result.duplicate) return res.status(409).json({ error: `Ya existe un cliente con ese ${result.matchedBy === "email" ? "correo" : "teléfono"}.`, duplicate: true, matchedBy: result.matchedBy });
         const calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, result.previousDocument, result.document, { fetchImpl });
@@ -586,7 +569,6 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         clientId: cleanText(req.body?.clientId, 64), serviceIds: cleanServiceIds(req.body?.serviceIds || req.body?.serviceId),
         staffId: cleanText(req.body?.staffId, 64), date: cleanText(req.body?.date, 10),
         time: cleanText(req.body?.time, 5), notes: cleanText(req.body?.notes, 500),
-        source: req.body?.actorType === "employee" ? "PWA_EMPLEADO" : "PWA_CLIENTE",
         idempotencyKey: cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120),
       };
       if (!input.clientId || !input.serviceIds.length || !input.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !/^\d{2}:\d{2}$/.test(input.time) || !input.idempotencyKey) {
@@ -594,13 +576,26 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
       try {
         const appSession = await reservappSession(req);
+        // canalOrigen/creadoPor identifican con precisión quién agendó la cita (clienta,
+        // manicurista, asistente o administradora) -- no un genérico "PWA_EMPLEADO" que no
+        // distinguía el rol real de quien la creó.
         if (req.body?.actorType === "employee") {
-          if (!appSession || appSession.account.role === "clienta") {
+          if (appSession && appSession.account.role !== "clienta") {
+            input.source = `RESERVAPP_${appSession.account.role.toUpperCase()}`;
+            input.createdBy = { role: appSession.account.role, accountId: appSession.account.id };
+          } else {
             const employee = await authorizeEmployeeBooking(req);
             if (employee === false) return res.status(403).json({ error: "Inicia sesión con una cuenta autorizada para reservar como empleado." });
+            const erpRole = employee?.role || "administradora";
+            input.source = `ERP_${erpRole.toUpperCase()}`;
+            input.createdBy = { role: erpRole, email: employee?.email || null };
           }
-        } else if (!appSession || appSession.account.role !== "clienta" || appSession.account.client_id !== input.clientId) {
-          return res.status(401).json({ error: "Inicia sesión con tu teléfono y contraseña para reservar." });
+        } else {
+          if (!appSession || appSession.account.role !== "clienta" || appSession.account.client_id !== input.clientId) {
+            return res.status(401).json({ error: "Inicia sesión con tu teléfono y contraseña para reservar." });
+          }
+          input.source = "RESERVAPP_CLIENTE";
+          input.createdBy = { role: "clienta", accountId: appSession.account.id };
         }
         const availability = await bookingStore.availability(input);
         if (!availability.slots?.some((slot) => slot.staffId === input.staffId && slot.time === input.time)) return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
