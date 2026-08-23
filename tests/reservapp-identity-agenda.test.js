@@ -36,6 +36,16 @@ test("la PWA permite varios servicios y agenda sin depender de Supabase", () => 
   assert.doesNotMatch(html + config, /supabase/i);
 });
 
+test("la PWA activa la cuenta en dos pasos (código de WhatsApp, luego contraseña), no con enlace mágico en la URL", () => {
+  const html = read("outputs/reservar/index.html");
+  const app = read("outputs/reservar/app.js");
+  assert.match(html, /verify-code-dialog/);
+  assert.match(html, /verify-code-code/);
+  assert.match(app, /api\/reservapp\/setup\/verify-code/);
+  assert.match(app, /state\.activationTicket/);
+  assert.doesNotMatch(app, /URLSearchParams\(location\.search\)\.get\("setup"\)/);
+});
+
 test("la API exige credenciales para confirmar citas de clientas", () => {
   const source = read("server/app.mjs");
   assert.match(source, /Inicia sesión con tu teléfono y contraseña para reservar/);

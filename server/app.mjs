@@ -173,7 +173,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     } catch (error) { next(error); }
   };
 
-  const sendSetupWhatsApp = async ({ outboxId, phone, setupUrl, name }) => {
+  const sendSetupWhatsApp = async ({ outboxId, phone, code, name }) => {
     const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
     if (!bridgeSecret) return { status: "pending_configuration" };
     const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
@@ -183,16 +183,20 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       // evento). Con un endpoint compartido, un 200 no confirmaba que el WhatsApp se hubiera
       // enviado de verdad, así que hay que leer el cuerpo y solo marcar "sent" si el bridge
       // confirma status: "SENT" explícitamente.
+      //
+      // Código de 6 dígitos, no enlace mágico: la clienta lo escribe en la app para probar que
+      // controla ese teléfono (POST /api/reservapp/setup/verify-code) y solo después se le pide
+      // definir una contraseña -- dos pasos separados, ver activateWithToken/verifySetupOtp.
       const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
         body: JSON.stringify({
           event: "reservapp.account_setup",
-          actionRequired: "send_activation_link",
+          actionRequired: "send_activation_code",
           recipientPhone: normalizePhone(phone),
           clientName: name || "Cliente",
-          setupUrl,
-          whatsappFormattedText: `Hola ${name || ""}. Crea tu contraseña para confirmar tu cita en Dalfi Studio Nails: ${setupUrl}`.trim(),
+          code,
+          whatsappFormattedText: `Hola ${name || ""}. Tu código para crear tu contraseña en Dalfi Studio Nails es: ${code}. Vence en 10 minutos.`.trim(),
         }),
       });
       const payload = await response.json().catch(() => null);
@@ -287,22 +291,48 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const existing = await bookingStore.accountByPhone(phone);
         if (existing?.status === "active") return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true });
         const account = await bookingStore.ensureClientAccount({ clientId: customer.id, phone });
-        const rawToken = secureToken();
-        const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
-        const publicUrl = String(env.RESERVAPP_PUBLIC_URL || "https://reservapp.sebengroup.com").replace(/\/$/, "");
-        const setupUrl = `${publicUrl}/?setup=${encodeURIComponent(rawToken)}`;
-        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(rawToken), expiresAt, recipientPhone: phone, setupUrl, draft: hasDraftIntent ? draft : null });
-        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, setupUrl, name: `${firstName} ${lastName}` });
+        const code = generateOtpCode();
+        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
+        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: `${firstName} ${lastName}` });
         res.status(202).json({
           pendingConfirmation: true,
           deliveryStatus: delivery.status,
-          message: "Te enviamos por WhatsApp el enlace para crear tu contraseña y confirmar la cita.",
-          ...(String(env.RESERVAPP_EXPOSE_SETUP_LINK || "") === "true" ? { setupUrl } : {}),
+          expiresInSeconds: 600,
+          message: "Te enviamos por WhatsApp un código para crear tu contraseña y confirmar la cita.",
+          ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {}),
         });
       } catch (error) {
         if (error?.code === "PHONE_ACCOUNT_CONFLICT") return res.status(409).json({ error: error.message });
         next(error);
       }
+    });
+
+    // Primer paso del setup en dos pasos: probar que la clienta/colaboradora controla el
+    // teléfono con el código de 6 dígitos que le llegó por WhatsApp. Si es correcto, rota el
+    // token en reservapp_setup_tokens a un secreto nuevo largo (el "activationTicket") que
+    // /api/reservapp/auth/complete-setup consume para fijar la contraseña -- ese endpoint no
+    // cambia, sigue esperando el mismo tipo de token que siempre consumió.
+    app.post("/api/reservapp/setup/verify-code", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      const code = cleanText(req.body?.code, 6);
+      if (!validPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "Código inválido." });
+      try {
+        const account = await bookingStore.accountByPhone(phone);
+        if (!account) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
+        const activationTicket = secureToken();
+        const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        const result = await bookingStore.verifySetupOtp({
+          accountId: account.id,
+          codeHash: hashToken(code),
+          newTokenHash: hashToken(activationTicket),
+          newExpiresAt,
+        });
+        if (result.locked) return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
+        if (result.notFound) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
+        if (result.invalid) return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
+        res.json({ verified: true, activationTicket });
+      } catch (error) { next(error); }
     });
 
     app.post("/api/reservapp/auth/complete-setup", bookingRateLimit, async (req, res, next) => {
@@ -404,12 +434,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         if (role === "superadministrador" && !actingAsSuperadmin) allowed = false;
         if (!allowed) return res.status(403).json({ error: "Solo administración puede crear credenciales del equipo." });
         const account = await bookingStore.createEmployeeAccount({ staffId, phone, role, createdByAccountId: session?.account.id || null });
-        const rawToken = secureToken();
-        const expiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString();
-        const publicUrl = String(env.RESERVAPP_PUBLIC_URL || "https://reservapp.sebengroup.com").replace(/\/$/, "");
-        const setupUrl = `${publicUrl}/?setup=${encodeURIComponent(rawToken)}`;
-        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(rawToken), expiresAt, recipientPhone: phone, setupUrl });
-        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, setupUrl, name: "Equipo Dalfi" });
+        const code = generateOtpCode();
+        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone });
+        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: "Equipo Dalfi" });
         res.status(201).json({ account: publicAccount(account), deliveryStatus: delivery.status });
       } catch (error) {
         if (error?.code === "23505") return res.status(409).json({ error: "Ese teléfono o colaboradora ya tiene credenciales." });

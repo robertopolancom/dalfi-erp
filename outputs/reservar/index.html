@@ -100,11 +100,11 @@
 
   <dialog id="client-dialog"><form id="client-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2>Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
-    <p>Enviaremos un enlace a tu WhatsApp. Allí crearás tu contraseña y se confirmará el horario elegido.</p>
+    <p>Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido.</p>
     <div class="field-grid"><label>Nombre<input id="first-name" autocomplete="given-name" required /></label><label>Apellido<input id="last-name" autocomplete="family-name" required /></label></div>
     <label>Teléfono de WhatsApp<input id="new-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <label>Correo <span>(opcional)</span><input id="new-email" type="email" autocomplete="email" /></label>
-    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit">Enviarme el enlace por WhatsApp</button>
+    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit">Enviarme el código por WhatsApp</button>
   </form></dialog>
 
   <dialog id="login-dialog"><form id="login-form" method="dialog">
@@ -112,10 +112,19 @@
     <label>Teléfono<input id="login-phone" type="tel" inputmode="tel" autocomplete="username" required /></label>
     <label>Contraseña<input id="login-password" type="password" autocomplete="current-password" required /></label>
     <div class="message" id="login-message"></div><button class="primary" type="submit">Entrar</button>
+    <button class="secondary" id="open-verify-code" type="button">¿Recibiste un código de activación por WhatsApp?</button>
+  </form></dialog>
+
+  <dialog id="verify-code-dialog"><form id="verify-code-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Confirmación de WhatsApp</p><h2>Escribe tu código</h2></div><button class="icon-button" id="close-verify-code" type="button" aria-label="Cerrar">×</button></div>
+    <p>Te llegó un código de 6 dígitos por WhatsApp. Vence en 10 minutos.</p>
+    <label>Teléfono de WhatsApp<input id="verify-code-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <label>Código de 6 dígitos<input id="verify-code-code" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="one-time-code" required /></label>
+    <div class="message" id="verify-code-message"></div><button class="primary" type="submit">Verificar código</button>
   </form></dialog>
 
   <dialog id="setup-dialog"><form id="setup-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Confirmación de WhatsApp</p><h2>Crea tu contraseña</h2></div></div>
+    <div class="dialog-head"><div><p class="kicker">Teléfono verificado</p><h2>Crea tu contraseña</h2></div></div>
     <p>Debe tener 8 caracteres o más, al menos una letra y un número.</p>
     <label>Nueva contraseña<input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
     <label>Repetir contraseña<input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
