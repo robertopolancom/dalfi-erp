@@ -388,7 +388,7 @@ export class NeonBookingStore {
     return result.rows[0];
   }
 
-  async prepareSetup({ accountId, tokenHash, expiresAt, recipientPhone, setupUrl, draft = null }) {
+  async prepareSetup({ accountId, tokenHash, expiresAt, recipientPhone, draft = null }) {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
@@ -417,7 +417,7 @@ export class NeonBookingStore {
           (account_id,recipient_phone,event_type,payload)
          values ($1,app.normalize_phone($2),'reservapp.account_setup',$3::jsonb)
          returning id,status`,
-        [accountId, recipientPhone, JSON.stringify({ setupUrl, expiresAt, draftId: bookingDraft?.id || null })],
+        [accountId, recipientPhone, JSON.stringify({ expiresAt, draftId: bookingDraft?.id || null })],
       );
       await client.query("commit");
       return { tokenId: token.rows[0].id, draft: bookingDraft, outbox: outbox.rows[0] };
@@ -519,6 +519,50 @@ export class NeonBookingStore {
 
   async markRelayOtpClient(otpId, clientId) {
     await this.pool.query("update app.reservapp_relay_otps set created_client_id=$2 where id=$1", [otpId, clientId]);
+  }
+
+  // Verifica el código de 6 dígitos del setup en dos pasos. Si coincide, ROTA el token_hash de
+  // la misma fila a un secreto nuevo (newTokenHash) en vez de marcarla consumida -- así
+  // activateWithToken (que ya existía, sin cambios) sirve igual para el segundo paso
+  // (fijar contraseña) sin tener que reescribirlo ni añadir una tabla nueva.
+  async verifySetupOtp({ accountId, codeHash, newTokenHash, newExpiresAt }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const found = await client.query(
+        `select id, token_hash, attempt_count, max_attempts
+           from app.reservapp_setup_tokens
+          where account_id=$1 and consumed_at is null and expires_at>now()
+          order by created_at desc limit 1
+          for update`,
+        [accountId],
+      );
+      if (!found.rowCount) {
+        await client.query("rollback");
+        return { notFound: true };
+      }
+      const row = found.rows[0];
+      if (row.attempt_count >= row.max_attempts) {
+        await client.query("rollback");
+        return { locked: true };
+      }
+      if (row.token_hash !== codeHash) {
+        await client.query("update app.reservapp_setup_tokens set attempt_count=attempt_count+1 where id=$1", [row.id]);
+        await client.query("commit");
+        return { invalid: true, attemptsRemaining: Math.max(0, row.max_attempts - row.attempt_count - 1) };
+      }
+      await client.query(
+        "update app.reservapp_setup_tokens set token_hash=$2, expires_at=$3, attempt_count=0 where id=$1",
+        [row.id, newTokenHash, newExpiresAt],
+      );
+      await client.query("commit");
+      return { ok: true };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async activateWithToken({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt }) {

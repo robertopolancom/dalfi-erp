@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 const money = new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP", maximumFractionDigits: 0 });
@@ -166,14 +166,30 @@ $("employee-new-client").addEventListener("click", () => { message($("client-mes
 
 $("client-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!requireBookingSelection($("client-message"))) return;
-  const button = event.submitter; button.disabled = true; message($("client-message"), "Enviando enlace…", true);
+  const button = event.submitter; button.disabled = true; message($("client-message"), "Enviando código…", true);
   try {
     const result = await api("/api/reservapp/auth/request-setup", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(setupPayload()) });
     $("client-dialog").close(); message($("booking-message"), result.message, true); $("submit-booking").disabled = true;
+    $("verify-code-phone").value = $("new-phone").value; $("verify-code-code").value = "";
+    message($("verify-code-message")); $("verify-code-dialog").showModal();
   } catch (error) {
     message($("client-message"), error.message);
     if (error.body?.accountExists) { $("client-dialog").close(); $("login-phone").value = $("new-phone").value; $("login-dialog").showModal(); }
   } finally { button.disabled = false; }
+});
+
+$("open-verify-code").addEventListener("click", () => { $("login-dialog").close(); message($("verify-code-message")); $("verify-code-dialog").showModal(); });
+$("close-verify-code").addEventListener("click", () => $("verify-code-dialog").close());
+
+$("verify-code-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("verify-code-message"), "Verificando…", true);
+  try {
+    const result = await api("/api/reservapp/setup/verify-code", { method: "POST", body: JSON.stringify({ phone: $("verify-code-phone").value, code: $("verify-code-code").value }) });
+    state.activationTicket = result.activationTicket; $("verify-code-dialog").close();
+    $("setup-password").value = ""; $("setup-password-confirm").value = ""; message($("setup-message"));
+    $("setup-dialog").showModal();
+  } catch (error) { message($("verify-code-message"), error.message); }
+  finally { button.disabled = false; }
 });
 
 $("login-form").addEventListener("submit", async (event) => {
@@ -232,9 +248,8 @@ $("setup-form").addEventListener("submit", async (event) => {
   if (password !== $("setup-password-confirm").value) return message($("setup-message"), "Las contraseñas no coinciden.");
   const button = event.submitter; button.disabled = true; message($("setup-message"), "Activando…", true);
   try {
-    const token = new URLSearchParams(location.search).get("setup");
-    const result = await api("/api/reservapp/auth/complete-setup", { method: "POST", body: JSON.stringify({ token, password }) });
-    history.replaceState({}, "", location.pathname); applyAccount(result.account); $("setup-dialog").close();
+    const result = await api("/api/reservapp/auth/complete-setup", { method: "POST", body: JSON.stringify({ token: state.activationTicket, password }) });
+    state.activationTicket = null; applyAccount(result.account); $("setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = `Cita confirmada. Referencia: ${result.appointment.reference}`;
@@ -260,7 +275,6 @@ $("new-booking").addEventListener("click", () => location.reload());
 
 async function boot() {
   await Promise.all([loadCatalog(), loadSession()]);
-  if (new URLSearchParams(location.search).get("setup")) $("setup-dialog").showModal();
 }
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 boot();
