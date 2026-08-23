@@ -368,7 +368,12 @@ $("client-form").addEventListener("submit", async (event) => {
   message($("client-message"), "Enviando código…", true);
   try {
     const result = await api("/api/reservapp/auth/request-setup", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(setupPayload()) });
-    $("client-dialog").close(); message($("booking-message"), result.message, true); $("submit-booking").disabled = true;
+    $("client-dialog").close(); message($("booking-message"), result.message, true);
+    // TEMPORAL: ver comentario en server/app.mjs junto a RESERVAPP_SKIP_PHONE_VERIFICATION --
+    // mientras Meta no apruebe la plantilla de activación, el backend puede saltarse el paso de
+    // WhatsApp y mandar el activationTicket directo aquí.
+    if (result.activationTicket) { openSetupDialog(result.activationTicket); return; }
+    $("submit-booking").disabled = true;
     $("verify-code-phone").value = $("new-phone").value; $("verify-code-code").value = "";
     message($("verify-code-message")); $("verify-code-dialog").showModal();
   } catch (error) {
@@ -394,15 +399,19 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
   finally { button.disabled = false; }
 });
 
+function openSetupDialog(activationTicket) {
+  state.activationTicket = activationTicket; $("verify-code-dialog").close();
+  $("setup-password").value = ""; $("setup-password-confirm").value = ""; message($("setup-message"));
+  $("setup-dialog-title").textContent = state.passwordResetFlow ? "Elige tu nueva contraseña" : "Crea tu contraseña";
+  $("setup-form").querySelector("button[type=submit]").textContent = state.passwordResetFlow ? "Guardar nueva contraseña" : "Activar y confirmar cita";
+  $("setup-dialog").showModal();
+}
+
 $("verify-code-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; message($("verify-code-message"), "Verificando…", true);
   try {
     const result = await api("/api/reservapp/setup/verify-code", { method: "POST", body: JSON.stringify({ phone: $("verify-code-phone").value, code: $("verify-code-code").value }) });
-    state.activationTicket = result.activationTicket; $("verify-code-dialog").close();
-    $("setup-password").value = ""; $("setup-password-confirm").value = ""; message($("setup-message"));
-    $("setup-dialog-title").textContent = state.passwordResetFlow ? "Elige tu nueva contraseña" : "Crea tu contraseña";
-    $("setup-form").querySelector("button[type=submit]").textContent = state.passwordResetFlow ? "Guardar nueva contraseña" : "Activar y confirmar cita";
-    $("setup-dialog").showModal();
+    openSetupDialog(result.activationTicket);
   } catch (error) { message($("verify-code-message"), error.message); }
   finally { button.disabled = false; }
 });

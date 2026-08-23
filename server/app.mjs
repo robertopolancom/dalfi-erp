@@ -300,6 +300,29 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const code = generateOtpCode();
         const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
         const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
+        // TEMPORAL (quitar cuando Meta apruebe WHATSAPP_ACTIVATION_TEMPLATE_NAME en el bridge de
+        // WhatsApp -- dalfi-chatbot-n8n): sin esa plantilla aprobada, el bridge no puede iniciar
+        // conversación con una clienta nueva (fuera de la ventana de 24h) y el código de
+        // verificación nunca llega, dejando el autorregistro completamente bloqueado. Con
+        // RESERVAPP_SKIP_PHONE_VERIFICATION=true nos "autoverificamos" el mismo código que
+        // acabamos de generar (mismo verifySetupOtp que usa /setup/verify-code, mismas reglas de
+        // expiración/consumo de un solo uso) y devolvemos el activationTicket directo, sin pasar
+        // por WhatsApp. La clienta sigue eligiendo su propia contraseña -- lo único que se salta
+        // es la prueba de que controla ese teléfono. Para revertir: borrar esta rama `if` y la
+        // env var en Render, no hace falta tocar nada más.
+        if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
+          const activationTicket = secureToken();
+          const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+          const verify = await bookingStore.verifySetupOtp({ accountId: account.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
+          if (!verify.notFound && !verify.locked && !verify.invalid) {
+            return res.status(202).json({
+              pendingConfirmation: false,
+              bypassedPhoneVerification: true,
+              activationTicket,
+              message: "Verificación de WhatsApp deshabilitada temporalmente. Crea tu contraseña para confirmar la cita.",
+            });
+          }
+        }
         const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: `${firstName} ${lastName}` });
         res.status(202).json({
           pendingConfirmation: true,

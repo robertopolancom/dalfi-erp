@@ -72,6 +72,38 @@ test("request-setup NO marca sent si el bridge responde 200 pero IGNORED/UNKNOWN
   });
 });
 
+// TEMPORAL: cubre RESERVAPP_SKIP_PHONE_VERIFICATION (ver comentario junto a su uso en
+// server/app.mjs) -- mientras Meta no apruebe la plantilla de activación, este flag permite
+// omitir el envío/verificación de WhatsApp y devolver el activationTicket directo.
+test("request-setup con RESERVAPP_SKIP_PHONE_VERIFICATION=true devuelve activationTicket sin llamar al bridge de WhatsApp", async () => {
+  let bridgeCalled = false;
+  const fetchImpl = async () => { bridgeCalled = true; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); };
+  const store = bookingStore();
+  store.verifySetupOtp = async () => ({});
+  const app = createApp({
+    store: documentStore(), bookingStore: store, fetchImpl,
+    env: {
+      SUPABASE_URL: "https://example.supabase.co", SUPABASE_PUBLISHABLE_KEY: "test", SUPABASE_SERVICE_ROLE_KEY: "test",
+      ERP_WEBHOOK_SECRET: "shared-secret", CHATBOT_BRIDGE_URL: "https://bridge.test",
+      RESERVAPP_SKIP_PHONE_VERIFICATION: "true",
+    },
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestSetupBody()),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 202);
+    assert.equal(body.bypassedPhoneVerification, true);
+    assert.equal(body.pendingConfirmation, false);
+    assert.equal(typeof body.activationTicket, "string");
+    assert.ok(body.activationTicket.length > 10);
+    assert.equal(bridgeCalled, false, "no debe llamar al bridge de WhatsApp cuando el bypass está activo");
+  } finally { server.close(); await once(server, "close"); }
+});
+
 test("request-setup marca failed si el bridge responde un HTTP de error", async () => {
   const fetchImpl = async () => new Response(JSON.stringify({ status: "UNAUTHORIZED" }), { status: 401 });
   await withServer(fetchImpl, async (base, store) => {
