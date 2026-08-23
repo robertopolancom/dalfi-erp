@@ -30,12 +30,19 @@ function setClient(client) {
 function applyAccount(account) {
   state.account = account;
   state.client = account?.role === "clienta" ? { id: account.clientId, name: account.name } : null;
-  $("account-button").textContent = account ? `${account.name} · Salir` : "Entrar";
+  $("account-button").textContent = account ? account.name : "Entrar";
+  $("logout-link").classList.toggle("hidden", !account);
   $("guest-access").classList.toggle("hidden", Boolean(account));
   $("employee-client").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
-  $("admin-panel").classList.toggle("hidden", !account || !["administradora", "superadministrador"].includes(account.role));
+  const isAdmin = Boolean(account) && ["administradora", "superadministrador"].includes(account.role);
+  $("open-user-management").classList.toggle("hidden", !isAdmin);
+  $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
+  $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Agenda";
   $("mode-label").textContent = !account ? "Reserva rápida" : account.role === "clienta" ? "Mi reserva" : "Reserva del equipo";
   if (state.client) setClient(state.client); else $("selected-client").classList.add("hidden");
+  // Cuentas de personal aterrizan directo en el panel de colaboradores (agenda) -- ya no en el
+  // wizard de reserva de la clienta -- pedido explícito de diseño.
+  if (account && employeeRoles.has(account.role)) showAgenda();
 }
 
 function updateServiceSummary() {
@@ -109,6 +116,15 @@ async function loadCatalog() {
     $("date").min = min;
     $("date").max = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(max);
     $("date").value = min; $("agenda-date").value = min;
+    // Sin banner publicado, el elemento se queda oculto y la página se ve exactamente igual que
+    // antes de que existiera esta función -- requisito explícito de diseño.
+    if (state.catalog.banner) {
+      const banner = $("promo-banner");
+      banner.textContent = state.catalog.banner.text;
+      banner.style.background = state.catalog.banner.bgColor;
+      banner.style.color = state.catalog.banner.textColor;
+      banner.classList.remove("hidden");
+    }
   } catch { message($("booking-message"), "No pudimos cargar la agenda. Intenta nuevamente."); }
 }
 
@@ -259,10 +275,101 @@ function openAppointmentDetail(item) {
   $("appointment-detail-dialog").showModal();
 }
 
+// Vista de calendario del día: una columna por manicurista, citas posicionadas por hora real en
+// vez de apiladas en una lista -- pedido explícito de diseño ("vista de calendario del día...
+// si aparece uno dándole click se vea los detalles, si está vacío se vea el día así vacío").
+// El rango de horas sale de la configuración real del negocio (catalog.schedule.settings), con
+// respaldo 09:00-19:00 si todavía no cargó.
+function timeToMinutes(value) {
+  const [h, m] = String(value).split(":").map(Number);
+  return h * 60 + m;
+}
+
+function renderAgendaCalendar(groups, appointments) {
+  const settings = state.catalog?.schedule?.settings || {};
+  const openMin = timeToMinutes(settings.defaultOpeningTime || "09:00");
+  const closeMin = timeToMinutes(settings.defaultClosingTime || "19:00");
+  const totalMin = Math.max(60, closeMin - openMin);
+  const pxPerMin = 1; // 1 hora = 60px, mismo alto que las etiquetas de hora y las líneas de la grilla
+  const bodyHeight = totalMin * pxPerMin;
+
+  const hours = [];
+  for (let m = openMin; m <= closeMin; m += 60) hours.push(m);
+  const hourGutter = document.createElement("div");
+  hourGutter.className = "agenda-hours";
+  hourGutter.style.height = `${bodyHeight + 34}px`;
+  hourGutter.append(...hours.map((m) => {
+    const label = document.createElement("div");
+    label.className = "agenda-hour-label";
+    label.style.height = "60px";
+    label.textContent = new Date(`2000-01-01T${String(Math.floor(m / 60)).padStart(2, "0")}:00`).toLocaleTimeString("es-DO", { hour: "numeric" });
+    return label;
+  }));
+
+  const columns = document.createElement("div");
+  columns.className = "agenda-columns";
+  columns.id = "agenda-columns-wrap";
+  columns.style.gridTemplateColumns = `repeat(${groups.length}, minmax(170px,1fr))`;
+  columns.append(...groups.map((group) => {
+    const column = document.createElement("section");
+    column.className = "agenda-cal-column";
+    column.dataset.staffId = group.id;
+    const head = document.createElement("div");
+    head.className = "agenda-cal-column-head";
+    head.textContent = group.name;
+    const body = document.createElement("div");
+    body.className = "agenda-cal-body";
+    body.style.height = `${bodyHeight}px`;
+    body.style.setProperty("--hour-px", "60px");
+    const items = appointments.filter((item) => group.client ? true : item.staff_id === group.id);
+    for (const item of items) {
+      const start = timeToMinutes(item.start_time);
+      const end = timeToMinutes(item.end_time);
+      const block = document.createElement("button");
+      block.type = "button";
+      block.className = `agenda-cal-block status-${item.status}`;
+      block.style.top = `${Math.max(0, (start - openMin) * pxPerMin)}px`;
+      block.style.height = `${Math.max(18, (end - start) * pxPerMin - 2)}px`;
+      const strong = document.createElement("strong");
+      strong.textContent = `${item.start_time} · ${item.client_name || "Cliente"}`;
+      const span = document.createElement("span");
+      span.textContent = item.services;
+      block.append(strong, span);
+      block.addEventListener("click", () => openAppointmentDetail(item));
+      body.append(block);
+    }
+    column.append(head, body);
+    return column;
+  }));
+
+  return { hourGutter, columns };
+}
+
+function renderAgendaFilters(groups) {
+  const filters = $("agenda-filters");
+  if (groups.length < 2) { filters.replaceChildren(); return; }
+  filters.replaceChildren(...groups.map((group) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "agenda-filter-chip active";
+    chip.textContent = group.name;
+    chip.addEventListener("click", () => {
+      chip.classList.toggle("active");
+      const column = $("agenda-columns-wrap")?.querySelector(`[data-staff-id="${group.id}"]`);
+      if (column) column.classList.toggle("hidden", !chip.classList.contains("active"));
+    });
+    return chip;
+  }));
+}
+
 async function showAgenda() {
   $("booking-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("agenda-card").classList.remove("hidden");
   $("booking-tab").classList.remove("active"); $("agenda-tab").classList.add("active");
   if (!state.account) { $("login-dialog").showModal(); return; }
+  // applyAccount() puede llamar aquí antes de que loadCatalog() (en paralelo) termine de poner
+  // la fecha de hoy por defecto -- sin esto, una cuenta de personal que aterriza directo en la
+  // agenda al iniciar sesión dispararía la primera consulta con date="" (400 del servidor).
+  if (!$("agenda-date").value) $("agenda-date").value = todayLocal();
   message($("agenda-message"), "Cargando agenda…", true);
   try {
     const result = await api(`/api/reservapp/agenda?date=${$("agenda-date").value}`);
@@ -270,22 +377,9 @@ async function showAgenda() {
     $("agenda-title").textContent = new Date(`${result.date}T12:00:00`).toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long" });
     $("agenda-intro").textContent = result.visibility === "team" ? "Todo el equipo puede ver clientes, servicios y ocupación de cada manicurista. Toca una cita para ver el detalle." : "Solo se muestran tus propias citas. Toca una cita para ver el detalle.";
     const groups = result.visibility === "team" ? result.staff.map((person) => ({ id: person.id, name: person.full_name })) : [{ id: state.account.clientId, name: "Mis citas", client: true }];
-    $("agenda-board").replaceChildren(...groups.map((group) => {
-      const column = document.createElement("section"); column.className = "agenda-column";
-      const heading = document.createElement("h3"); heading.textContent = group.name; column.append(heading);
-      const appointments = result.appointments.filter((item) => group.client ? true : item.staff_id === group.id);
-      if (!appointments.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Disponible"; column.append(empty); }
-      for (const item of appointments) {
-        const block = document.createElement("button"); block.type = "button"; block.className = `appointment-block status-${item.status}`;
-        const time = document.createElement("strong"); time.textContent = `${item.start_time}–${item.end_time}`;
-        const client = document.createElement("span"); client.textContent = item.client_name || "Cliente";
-        const service = document.createElement("small"); service.textContent = item.services;
-        block.append(time, client, service);
-        block.addEventListener("click", () => openAppointmentDetail(item));
-        column.append(block);
-      }
-      return column;
-    }));
+    renderAgendaFilters(groups);
+    const { hourGutter, columns } = renderAgendaCalendar(groups, result.appointments);
+    $("agenda-board").replaceChildren(hourGutter, columns);
   } catch (error) { message($("agenda-message"), error.message); }
 }
 $("close-appointment-detail").addEventListener("click", () => $("appointment-detail-dialog").close());
@@ -309,6 +403,12 @@ $("step2-next").addEventListener("click", () => {
   goToStep(3);
 });
 $("step3-back").addEventListener("click", () => goToStep(2));
+// Botones duplicados arriba de cada paso -- mismo comportamiento que el de abajo, solo evita
+// tener que bajar todo el listado para avanzar (pedido explícito de diseño).
+$("step1-back-top").addEventListener("click", () => $("step1-back").click());
+$("step1-next-top").addEventListener("click", () => $("step1-next").click());
+$("step2-back-top").addEventListener("click", () => $("step2-back").click());
+$("step2-next-top").addEventListener("click", () => $("step2-next").click());
 $("step4-back").addEventListener("click", () => goToStep(3));
 
 $("open-login").addEventListener("click", () => $("login-dialog").showModal());
@@ -426,9 +526,13 @@ $("login-form").addEventListener("submit", async (event) => {
   finally { button.disabled = false; }
 });
 
-$("account-button").addEventListener("click", async () => {
-  if (!state.account) return $("login-dialog").showModal();
-  await api("/api/reservapp/auth/logout", { method: "POST" }).catch(() => {}); applyAccount(null); showBooking();
+// Antes un solo botón hacía doble función (login/logout, texto "{nombre} · Salir") -- ahora
+// "cerrar sesión" es una acción explícita y separada, pedido de diseño para que no se confunda
+// con solo ver el nombre de la cuenta.
+$("account-button").addEventListener("click", () => { if (!state.account) $("login-dialog").showModal(); });
+$("logout-link").addEventListener("click", async () => {
+  await api("/api/reservapp/auth/logout", { method: "POST" }).catch(() => {});
+  applyAccount(null); showBooking();
 });
 
 let searchTimer;
@@ -501,7 +605,132 @@ $("create-account").addEventListener("click", async () => {
   try {
     const result = await api("/api/reservapp/admin/accounts", { method: "POST", body: JSON.stringify({ staffId: $("account-staff").value, role: $("account-role").value, phone: $("account-phone").value }) });
     message($("account-message"), result.deliveryStatus === "sent" ? "Credenciales enviadas por WhatsApp." : "Cuenta creada; el envío de WhatsApp quedó pendiente.", true);
+    loadEmployeesTable();
   } catch (error) { message($("account-message"), error.message); }
+});
+
+// ---------- Configuración de usuarios (Fase 5) ----------
+const EMPLOYEE_STATUS_LABEL = { active: "Activa", suspended: "Suspendida", pending: "Pendiente" };
+const CLIENT_STATUS_LABEL = { active: "Activa", blocked: "Bloqueada" };
+
+$("open-user-management").addEventListener("click", () => {
+  $("admin-panel").classList.remove("hidden");
+  loadEmployeesTable();
+  loadClientsAdmin();
+  // Si ya hay un banner publicado de una sesión anterior, reflejarlo aquí también (si no, el
+  // botón "Quitar" solo aparecería después de generar y publicar uno nuevo en esta sesión).
+  if (state.catalog?.banner) { generatedBanner = state.catalog.banner; renderBannerPreview(generatedBanner); $("banner-remove").classList.remove("hidden"); }
+});
+$("close-user-management").addEventListener("click", () => $("admin-panel").classList.add("hidden"));
+
+async function loadEmployeesTable() {
+  message($("employees-message"), "Cargando…", true);
+  try {
+    const { accounts } = await api("/api/reservapp/admin/accounts");
+    message($("employees-message"));
+    $("employees-body").replaceChildren(...accounts.map((account) => {
+      const row = document.createElement("tr");
+      const name = document.createElement("td"); name.textContent = account.full_name;
+      const role = document.createElement("td"); role.textContent = account.role;
+      const status = document.createElement("td");
+      const badge = document.createElement("span"); badge.className = `admin-status ${account.status}`; badge.textContent = EMPLOYEE_STATUS_LABEL[account.status] || account.status;
+      status.append(badge);
+      const actions = document.createElement("td");
+      const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "admin-row-action";
+      toggle.textContent = account.status === "suspended" ? "Reactivar" : "Suspender";
+      toggle.addEventListener("click", async () => {
+        toggle.disabled = true;
+        try {
+          await api(`/api/reservapp/admin/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify({ status: account.status === "suspended" ? "active" : "suspended" }) });
+          loadEmployeesTable();
+        } catch (error) { message($("employees-message"), error.message); toggle.disabled = false; }
+      });
+      actions.append(toggle);
+      row.append(name, role, status, actions);
+      return row;
+    }));
+  } catch (error) { message($("employees-message"), error.message); }
+}
+
+let clientsAdminSearchTimer;
+async function loadClientsAdmin(query = "") {
+  message($("clients-admin-message"), "Cargando…", true);
+  try {
+    const { clients } = await api(`/api/reservapp/admin/clients${query ? `?q=${encodeURIComponent(query)}` : ""}`);
+    message($("clients-admin-message"));
+    $("clients-admin-body").replaceChildren(...clients.map((client) => {
+      const row = document.createElement("tr");
+      const name = document.createElement("td"); name.textContent = client.full_name;
+      const phone = document.createElement("td"); phone.textContent = client.client_phone || "—";
+      const status = document.createElement("td");
+      const badge = document.createElement("span"); badge.className = `admin-status ${client.status}`; badge.textContent = CLIENT_STATUS_LABEL[client.status] || client.status;
+      status.append(badge);
+      const actions = document.createElement("td");
+      const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "admin-row-action";
+      toggle.textContent = client.status === "blocked" ? "Desbloquear" : "Bloquear";
+      toggle.addEventListener("click", async () => {
+        toggle.disabled = true;
+        try {
+          await api(`/api/reservapp/admin/clients/${client.id}`, { method: "PATCH", body: JSON.stringify({ status: client.status === "blocked" ? "active" : "blocked" }) });
+          loadClientsAdmin($("clients-admin-search").value.trim());
+        } catch (error) { message($("clients-admin-message"), error.message); toggle.disabled = false; }
+      });
+      actions.append(toggle);
+      row.append(name, phone, status, actions);
+      return row;
+    }));
+  } catch (error) { message($("clients-admin-message"), error.message); }
+}
+$("clients-admin-search").addEventListener("input", () => {
+  clearTimeout(clientsAdminSearchTimer);
+  clientsAdminSearchTimer = setTimeout(() => loadClientsAdmin($("clients-admin-search").value.trim()), 300);
+});
+
+// ---------- Banner promocional con IA (Fase 6) ----------
+let generatedBanner = null;
+function renderBannerPreview(banner) {
+  const preview = $("banner-preview");
+  if (!banner) { preview.classList.add("hidden"); return; }
+  preview.textContent = banner.text;
+  preview.style.background = banner.bgColor;
+  preview.style.color = banner.textColor;
+  preview.classList.remove("hidden");
+}
+$("banner-generate").addEventListener("click", async () => {
+  const instructions = $("banner-instructions").value.trim();
+  if (!instructions) return message($("banner-message"), "Escribe qué quieres anunciar.");
+  const button = $("banner-generate"); button.disabled = true; message($("banner-message"), "Generando con IA…", true);
+  try {
+    const result = await api("/api/reservapp/admin/banner/generate", { method: "POST", body: JSON.stringify({ instructions }) });
+    generatedBanner = result.banner;
+    renderBannerPreview(generatedBanner);
+    $("banner-publish").classList.remove("hidden");
+    message($("banner-message"), "Vista previa lista. Publícalo si te gusta.", true);
+  } catch (error) { message($("banner-message"), error.message); }
+  finally { button.disabled = false; }
+});
+$("banner-publish").addEventListener("click", async () => {
+  if (!generatedBanner) return;
+  const button = $("banner-publish"); button.disabled = true;
+  try {
+    await api("/api/reservapp/admin/banner", { method: "POST", body: JSON.stringify(generatedBanner) });
+    message($("banner-message"), "Banner publicado.", true);
+    $("banner-remove").classList.remove("hidden");
+  } catch (error) { message($("banner-message"), error.message); }
+  finally { button.disabled = false; }
+});
+$("banner-remove").addEventListener("click", async () => {
+  const button = $("banner-remove"); button.disabled = true;
+  try {
+    await api("/api/reservapp/admin/banner", { method: "DELETE" });
+    generatedBanner = null;
+    renderBannerPreview(null);
+    $("promo-banner").classList.add("hidden");
+    $("banner-publish").classList.add("hidden");
+    $("banner-remove").classList.add("hidden");
+    message($("banner-message"), "Banner quitado.", true);
+  } catch (error) { message($("banner-message"), error.message); }
+  finally { button.disabled = false; }
 });
 
 $("booking-tab").addEventListener("click", showBooking); $("agenda-tab").addEventListener("click", showAgenda);

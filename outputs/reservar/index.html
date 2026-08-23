@@ -12,10 +12,15 @@
 <body>
   <main class="shell">
     <header class="brand">
-      <div class="brand-mark" aria-hidden="true">DS</div>
-      <div class="brand-copy"><p>Dalfi Studio Nails</p><h1>ReservApp</h1><small>Seben Suite Connect</small></div>
-      <button class="account-button" id="account-button" type="button">Entrar</button>
+      <img class="brand-mark" src="./assets/dalfi-icon.png" alt="Dalfi Studio Nails &amp; Academy" />
+      <div class="brand-copy"><h1>Dalfi Studio</h1><p>ReservApp <span class="dot">·</span> Seben Suite Connect</p></div>
+      <div class="account-group">
+        <button class="account-button" id="account-button" type="button">Entrar</button>
+        <button class="logout-link hidden" id="logout-link" type="button">Cerrar sesión</button>
+      </div>
     </header>
+
+    <p class="promo-banner hidden" id="promo-banner"></p>
 
     <nav class="app-nav" aria-label="Secciones">
       <button class="active" id="booking-tab" type="button">Nueva reserva</button>
@@ -39,6 +44,7 @@
         <div class="wizard-step hidden" data-step="1">
           <h2>Paso 1 · Elige tus servicios</h2>
           <p class="intro">Puedes combinar varios servicios. Calculamos automáticamente el tiempo total.</p>
+          <div class="step-actions-top"><button class="secondary" id="step1-back-top" type="button">Atrás</button><button class="primary" id="step1-next-top" type="button">Siguiente: elegir día</button></div>
           <fieldset class="service-field">
             <legend>Servicios</legend>
             <div class="service-list" id="service-list"><p class="empty">Cargando servicios…</p></div>
@@ -49,6 +55,7 @@
 
         <div class="wizard-step hidden" data-step="2">
           <h2>Paso 2 · Elige el día</h2>
+          <div class="step-actions-top"><button class="secondary" id="step2-back-top" type="button">Atrás</button><button class="primary" id="step2-next-top" type="button">Siguiente: ver horarios</button></div>
           <label class="hidden">Manicurista<select id="staff"><option value="">Cualquiera</option></select></label>
           <label>Fecha<input id="date" type="date" required /></label>
           <div class="step-actions"><button class="secondary" id="step2-back" type="button">Atrás</button><button class="primary" id="step2-next" type="button">Siguiente: ver horarios</button></div>
@@ -94,10 +101,19 @@
         <div class="date-controls"><button id="agenda-prev" type="button" aria-label="Día anterior">‹</button><input id="agenda-date" type="date" /><button id="agenda-next" type="button" aria-label="Día siguiente">›</button></div>
       </div>
       <p class="intro" id="agenda-intro">Inicia sesión para consultar la agenda.</p>
-      <div class="message" id="agenda-message"></div><div class="agenda-board" id="agenda-board"></div>
+      <button class="secondary hidden" id="open-user-management" type="button">Configuración de usuarios</button>
+      <div class="agenda-filters" id="agenda-filters"></div>
+      <div class="message" id="agenda-message"></div>
+      <div class="agenda-board" id="agenda-board"></div>
 
       <section class="admin-panel hidden" id="admin-panel">
-        <p class="kicker">Administración</p><h3>Crear credenciales del equipo</h3>
+        <div class="dialog-head"><p class="kicker">Configuración de usuarios</p><button class="icon-button" id="close-user-management" type="button" aria-label="Cerrar">×</button></div>
+
+        <h3>Personal</h3>
+        <div class="message" id="employees-message"></div>
+        <div class="admin-table-wrap"><table class="admin-table" id="employees-table"><thead><tr><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr></thead><tbody id="employees-body"></tbody></table></div>
+
+        <h4>Agregar colaboradora</h4>
         <p>La colaboradora recibirá por WhatsApp un enlace para crear su contraseña.</p>
         <div class="field-grid three">
           <label>Colaboradora<select id="account-staff"><option value="">Selecciona</option></select></label>
@@ -105,6 +121,19 @@
           <label>Teléfono<input id="account-phone" type="tel" inputmode="tel" /></label>
         </div>
         <div class="message" id="account-message"></div><button class="secondary" id="create-account" type="button">Enviar credenciales</button>
+
+        <h3>Clientas</h3>
+        <label>Buscar por nombre o teléfono<input id="clients-admin-search" type="search" autocomplete="off" placeholder="Escribe para filtrar" /></label>
+        <div class="message" id="clients-admin-message"></div>
+        <div class="admin-table-wrap"><table class="admin-table" id="clients-admin-table"><thead><tr><th>Nombre</th><th>Teléfono</th><th>Estado</th><th></th></tr></thead><tbody id="clients-admin-body"></tbody></table></div>
+
+        <h3>Banner promocional</h3>
+        <p>Describe qué quieres anunciar y la IA redacta el texto y elige el estilo. Sin banner publicado, ReservApp se ve igual que siempre.</p>
+        <label>Instrucciones<textarea id="banner-instructions" rows="2" placeholder="Ej. 2x1 en manicura los lunes, tono festivo"></textarea></label>
+        <div class="message" id="banner-message"></div>
+        <div class="step-actions"><button class="secondary" id="banner-generate" type="button">Generar con IA</button><button class="primary hidden" id="banner-publish" type="button">Publicar</button></div>
+        <p class="banner-preview hidden" id="banner-preview"></p>
+        <button class="secondary hidden" id="banner-remove" type="button">Quitar banner activo</button>
       </section>
     </section>
 

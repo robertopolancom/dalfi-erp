@@ -97,7 +97,27 @@ export class NeonBookingStore {
       })),
       staff: staff.rows.map((row) => ({ id: row.id, name: row.full_name })),
       schedule: settings.rows[0] || { timezone: "America/Santo_Domingo", settings: {} },
+      // Banner promocional configurable (Fase 6) -- null si nunca se publicó ninguno, para que
+      // ReservApp se vea exactamente igual que antes de que existiera esta función.
+      banner: settings.rows[0]?.settings?.banner || null,
     };
+  }
+
+  // Panel "Configuración de usuarios" -- guarda/quita el banner promocional dentro de la misma
+  // columna jsonb que ya existe para configuración del negocio, sin tabla nueva.
+  async setBanner(banner) {
+    const result = await this.pool.query(
+      `update app.business_settings
+          set settings = settings || jsonb_build_object('banner', $1::jsonb), updated_at = now()
+        where id = true
+        returning settings->'banner' banner`,
+      [JSON.stringify(banner)],
+    );
+    return result.rows[0]?.banner || null;
+  }
+
+  async clearBanner() {
+    await this.pool.query("update app.business_settings set settings = settings - 'banner', updated_at = now() where id = true");
   }
 
   async availability({ serviceId, serviceIds, staffId, date }) {
@@ -415,6 +435,81 @@ export class NeonBookingStore {
       [phone, staffId, role, createdByAccountId],
     );
     return result.rows[0];
+  }
+
+  // Panel "Configuración de usuarios" (solo administradora/superadministrador) -- lista todo el
+  // personal con cuenta de ReservApp, staff.status aparte de reservapp_accounts.status porque
+  // una ficha de staff inactiva (ej. la del superadministrador de desarrollo, que no debe salir
+  // como manicurista reservable) no implica que su cuenta de acceso esté suspendida.
+  async listEmployeeAccounts() {
+    const result = await this.pool.query(
+      `select ra.id, ra.role, ra.status, ra.phone_normalized, ra.last_login_at, ra.created_at,
+              s.id staff_id, s.full_name, s.status staff_status
+         from app.reservapp_accounts ra
+         join app.staff s on s.id = ra.staff_id
+        where ra.role <> 'clienta'
+        order by s.full_name`,
+    );
+    return result.rows;
+  }
+
+  async listClientsForAdmin({ query = "", limit = 200 } = {}) {
+    const search = `%${query.trim()}%`;
+    const result = await this.pool.query(
+      `select c.id, c.full_name, c.status, c.email, p.phone_original client_phone,
+              ra.id account_id, ra.status account_status
+         from app.clients c
+         left join app.client_phones p on p.client_id = c.id and p.is_primary
+         left join app.reservapp_accounts ra on ra.client_id = c.id
+        where ($1 = '' or c.full_name ilike $2 or p.phone_original ilike $2)
+        order by c.full_name
+        limit $3`,
+      [query.trim(), search, limit],
+    );
+    return result.rows;
+  }
+
+  // role=null deja el rol sin tocar (solo cambia status) -- separar los dos casos evita mandar
+  // el rol actual de vuelta desde el frontend solo para no perderlo por accidente.
+  async updateEmployeeAccount({ id, role = null, status = null }) {
+    const result = await this.pool.query(
+      `update app.reservapp_accounts
+          set role = coalesce($2, role), status = coalesce($3, status), updated_at = now()
+        where id = $1 and role <> 'clienta'
+        returning id, role, status, staff_id`,
+      [id, role, status],
+    );
+    return result.rows[0] || null;
+  }
+
+  // "Bloquear" tiene que impedir el login de verdad, no solo marcar la ficha -- el login
+  // (POST /auth/login) exige reservapp_accounts.status='active', que es una tabla aparte de
+  // app.clients. Si la clienta ya tiene cuenta de ReservApp, se suspende/reactiva junto con el
+  // bloqueo del cliente en la misma transacción; solo se toca una cuenta que estaba
+  // active/suspended (nunca una 'pending' que todavía no completó su setup).
+  async updateClientStatus({ id, status }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const updated = await client.query(
+        "update app.clients set status=$2, updated_at=now() where id=$1 returning id, status",
+        [id, status],
+      );
+      if (!updated.rowCount) { await client.query("rollback"); return null; }
+      await client.query(
+        `update app.reservapp_accounts
+            set status = $2, updated_at = now()
+          where client_id = $1 and role = 'clienta' and status in ('active','suspended')`,
+        [id, status === "blocked" ? "suspended" : "active"],
+      );
+      await client.query("commit");
+      return updated.rows[0];
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async prepareSetup({ accountId, tokenHash, expiresAt, recipientPhone, draft = null }) {

@@ -54,14 +54,9 @@ textarea {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
   width: 44px;
   height: 44px;
-  border-radius: 8px;
-  background: #f3c677;
-  color: #26302f;
-  font-weight: 800;
+  object-fit: contain;
 }
 
 .brand h1,

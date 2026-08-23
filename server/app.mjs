@@ -508,6 +508,23 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       catch (error) { next(error); }
     });
 
+    // Compartido por todos los endpoints de "Configuración de usuarios" -- misma regla que ya
+    // usaba POST /admin/accounts: administradora/superadministrador de ReservApp, o personal
+    // del ERP legado con canManageUsers, pero SOLO un superadministrador de ReservApp puede
+    // tocar cuentas con rol superadministrador (evita que una administradora del ERP se
+    // autoeleve creando/editando una cuenta superadministrador de ReservApp).
+    const resolveAdminAuthority = async (req) => {
+      const session = await reservappSession(req);
+      const sessionRole = session?.account.role;
+      let allowed = sessionRole && ["administradora", "superadministrador"].includes(sessionRole);
+      const actingAsSuperadmin = sessionRole === "superadministrador";
+      if (!allowed && !session) {
+        const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
+        allowed = !identity.error && Boolean(identity.permissions?.canManageUsers);
+      }
+      return { allowed, actingAsSuperadmin, session };
+    };
+
     app.post("/api/reservapp/admin/accounts", bookingRateLimit, async (req, res, next) => {
       const role = cleanText(req.body?.role, 32);
       const staffId = cleanText(req.body?.staffId, 64);
@@ -516,20 +533,8 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         return res.status(400).json({ error: "Selecciona colaboradora, rol y teléfono válidos." });
       }
       try {
-        const session = await reservappSession(req);
-        const sessionRole = session?.account.role;
-        let allowed = sessionRole && ["administradora", "superadministrador"].includes(sessionRole);
-        // Solo una cuenta ReservApp que YA es superadministrador puede crear otra. El personal
-        // del ERP legado (autenticado vía Supabase, sin cookie reservapp_session) nunca cuenta
-        // como superadministrador aquí, sin importar sus permisos del lado ERP — de lo
-        // contrario cualquier administradora del ERP podría autoelevarse creando una cuenta
-        // superadministrador de ReservApp.
-        let actingAsSuperadmin = sessionRole === "superadministrador";
-        if (!allowed && !session) {
-          const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
-          allowed = !identity.error && Boolean(identity.permissions?.canManageUsers);
-        }
-        if (role === "superadministrador" && !actingAsSuperadmin) allowed = false;
+        const { allowed, actingAsSuperadmin, session } = await resolveAdminAuthority(req);
+        if (role === "superadministrador" && !actingAsSuperadmin) return res.status(403).json({ error: "Solo administración puede crear credenciales del equipo." });
         if (!allowed) return res.status(403).json({ error: "Solo administración puede crear credenciales del equipo." });
         const account = await bookingStore.createEmployeeAccount({ staffId, phone, role, createdByAccountId: session?.account.id || null });
         const code = generateOtpCode();
@@ -542,6 +547,108 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         if (error?.code === "23503") return res.status(400).json({ error: "La colaboradora seleccionada no existe." });
         next(error);
       }
+    });
+
+    app.get("/api/reservapp/admin/accounts", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver el equipo." });
+        res.json({ accounts: await bookingStore.listEmployeeAccounts() });
+      } catch (error) { next(error); }
+    });
+
+    app.patch("/api/reservapp/admin/accounts/:id", bookingRateLimit, async (req, res, next) => {
+      const role = req.body?.role != null ? cleanText(req.body.role, 32) : null;
+      const status = req.body?.status != null ? cleanText(req.body.status, 20) : null;
+      if (role && (!RESERVAPP_ROLES.includes(role) || role === "clienta")) return res.status(400).json({ error: "Rol inválido." });
+      if (status && !["pending", "active", "suspended"].includes(status)) return res.status(400).json({ error: "Estado inválido." });
+      if (!role && !status) return res.status(400).json({ error: "Nada que actualizar." });
+      try {
+        const { allowed, actingAsSuperadmin } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar el equipo." });
+        if ((role === "superadministrador" || status) && !actingAsSuperadmin) {
+          // Una administradora (no superadmin) puede editar personal normal, pero tocar una
+          // cuenta que YA es (o pasaría a ser) superadministrador exige ser superadmin -- mismo
+          // candado de autoelevación que la creación de cuentas.
+          const target = await bookingStore.listEmployeeAccounts();
+          const current = target.find((row) => row.id === req.params.id);
+          if (current?.role === "superadministrador" || role === "superadministrador") {
+            return res.status(403).json({ error: "Solo un superadministrador puede editar esta cuenta." });
+          }
+        }
+        const updated = await bookingStore.updateEmployeeAccount({ id: req.params.id, role, status });
+        if (!updated) return res.status(404).json({ error: "Cuenta no encontrada." });
+        res.json({ account: updated });
+      } catch (error) { next(error); }
+    });
+
+    app.get("/api/reservapp/admin/clients", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver clientas." });
+        res.json({ clients: await bookingStore.listClientsForAdmin({ query: cleanText(req.query.q, 120) }) });
+      } catch (error) { next(error); }
+    });
+
+    app.patch("/api/reservapp/admin/clients/:id", bookingRateLimit, async (req, res, next) => {
+      const status = cleanText(req.body?.status, 20);
+      if (!["active", "blocked"].includes(status)) return res.status(400).json({ error: "Estado inválido." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar clientas." });
+        const updated = await bookingStore.updateClientStatus({ id: req.params.id, status });
+        if (!updated) return res.status(404).json({ error: "Clienta no encontrada." });
+        res.json({ client: updated });
+      } catch (error) { next(error); }
+    });
+
+    // Banner promocional (Fase 6) -- generar solo redacta una propuesta con Gemini (bridge de
+    // WhatsApp, ver banner-generator.js del chatbot), publicar/quitar es lo único que de verdad
+    // cambia lo que ve ReservApp (GET /api/fast-booking/catalog).
+    app.post("/api/reservapp/admin/banner/generate", bookingRateLimit, async (req, res, next) => {
+      const instructions = cleanText(req.body?.instructions, 500);
+      if (!instructions) return res.status(400).json({ error: "Escribe qué quieres anunciar." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede generar el banner." });
+        const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+        const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+        const response = await fetchImpl(`${bridgeBase}/webhook/generate-banner`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+          body: JSON.stringify({ instructions }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || payload?.status !== "OK") {
+          return res.status(502).json({ error: payload?.error || "No se pudo generar el banner." });
+        }
+        res.json({ banner: payload.banner });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/admin/banner", bookingRateLimit, async (req, res, next) => {
+      const text = cleanText(req.body?.text, 140);
+      const theme = cleanText(req.body?.theme, 20);
+      const bgColor = cleanText(req.body?.bgColor, 10);
+      const textColor = cleanText(req.body?.textColor, 10);
+      if (!text || !theme || !/^#[0-9a-fA-F]{6}$/.test(bgColor) || !/^#[0-9a-fA-F]{6}$/.test(textColor)) {
+        return res.status(400).json({ error: "Datos de banner inválidos." });
+      }
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede publicar el banner." });
+        const banner = await bookingStore.setBanner({ text, theme, bgColor, textColor });
+        res.json({ banner });
+      } catch (error) { next(error); }
+    });
+
+    app.delete("/api/reservapp/admin/banner", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede quitar el banner." });
+        await bookingStore.clearBanner();
+        res.status(204).end();
+      } catch (error) { next(error); }
     });
 
     // Relay OTP: cuando una MANICURISTA quiere agendar a una clienta que
