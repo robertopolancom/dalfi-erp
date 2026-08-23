@@ -79,6 +79,53 @@ test("GET /api/booking/availability calcula slots reales para la colaboradora", 
   });
 });
 
+// Fecha de lunes a sábado, nunca domingo (el negocio cierra domingos por defecto) — a
+// diferencia de FUTURE_DATE arriba, no puede ser flaky.
+function nextOpenWeekday(daysAhead = 8) {
+  let d = new Date(Date.now() + daysAhead * 24 * 3600 * 1000);
+  while (d.getUTCDay() === 0) d = new Date(d.getTime() + 24 * 3600 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+test("GET /api/booking/availability sin includeUnavailable no trae allSlots (comportamiento de siempre)", async () => {
+  await withServer(baseDoc(), async (base) => {
+    const res = await fetch(`${base}/api/booking/availability?serviceId=SRV-1&date=${nextOpenWeekday()}&collaboratorId=COL-1`);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(body.allSlots, undefined);
+  });
+});
+
+test("GET /api/booking/availability?includeUnavailable=true agrega allSlots con disponibles y ocupados/pasados", async () => {
+  const doc = baseDoc();
+  const date = nextOpenWeekday();
+  doc.reservas = [{ reservaID: "RES-1", fecha: date, hora: "10:00", duracionMin: 60, colaboradorID: "COL-1", estado: "Confirmada" }];
+  await withServer(doc, async (base) => {
+    const res = await fetch(`${base}/api/booking/availability?serviceId=SRV-1&date=${date}&collaboratorId=COL-1&includeUnavailable=true`);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(body.allSlots) && body.allSlots.length > 0);
+    const occupied = body.allSlots.find((s) => s.time === "10:00");
+    assert.equal(occupied.available, false);
+    assert.equal(occupied.reason, "OCUPADO");
+    const free = body.allSlots.find((s) => s.available === true);
+    assert.ok(free, "debe haber al menos un horario libre en allSlots");
+    // `slots` (comportamiento de siempre) sigue siendo solo los libres.
+    assert.ok(body.slots.every((s) => s.time !== "10:00"));
+  });
+});
+
+test("GET /api/booking/availability?includeUnavailable=true sin collaboratorId (auto-selección) también trae allSlots", async () => {
+  const doc = baseDoc();
+  const date = nextOpenWeekday();
+  await withServer(doc, async (base) => {
+    const res = await fetch(`${base}/api/booking/availability?serviceId=SRV-1&date=${date}&includeUnavailable=true`);
+    const body = await res.json();
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(body.allSlots) && body.allSlots.length > 0);
+  });
+});
+
 test("endpoints que exponen datos sensibles rechazan sin CHATBOT_SECRET configurado (falla cerrado)", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/bank-accounts`, { headers: { "x-chatbot-secret": "cualquiera" } });

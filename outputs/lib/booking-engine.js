@@ -494,6 +494,12 @@ export function calculateAvailableSlots({
   slotIntervalMinutes = null,
   referenceTime = null, // "HH:MM" si es para la fecha de hoy
   now = null, // Date | ISO string | {date,time} — si se provee, aplica fecha pasada + anticipación mín/máx
+  // Aditivo y desactivado por defecto: cuando es true, además de `slots` (solo los libres,
+  // comportamiento de siempre, sin cambios) se devuelve `allSlotsWithAvailability` con TODOS
+  // los intervalos del día (libres, ocupados y ya pasados) marcados con `available`/`reason`.
+  // Pensado para el chatbot de WhatsApp (mostrar horarios tachados como percepción de demanda),
+  // no cambia nada para quien no pida esto explícitamente (personal, ReservApp).
+  includeUnavailable = false,
 }) {
   const bSched = normalizeBusinessSchedule(businessSchedule);
   const interval = slotIntervalMinutes || bSched.defaultSlotIntervalMinutes;
@@ -645,12 +651,23 @@ export function calculateAvailableSlots({
   }
 
   const slots = [];
+  const allSlotsWithAvailability = includeUnavailable ? [] : null;
 
   // Recorrer el día en incrementos de `interval`
   for (let slotStart = entryMin; slotStart + totalServiceMin <= exitMin; slotStart += interval) {
-    if (slotStart < minAllowedStart) continue;
-
     const slotEnd = slotStart + totalServiceMin;
+    const baseEntry = {
+      startAt: `${date}T${formatMinutesToTime(slotStart)}:00`,
+      endAt: `${date}T${formatMinutesToTime(slotEnd)}:00`,
+      time: formatMinutesToTime(slotStart),
+      endTime: formatMinutesToTime(slotEnd),
+    };
+
+    if (slotStart < minAllowedStart) {
+      if (includeUnavailable) allSlotsWithAvailability.push({ ...baseEntry, available: false, reason: 'PAST' });
+      continue;
+    }
+
     const blockedStart = slotStart - bufBefore;
     const blockedEnd = slotEnd + bufAfter;
 
@@ -661,16 +678,17 @@ export function calculateAvailableSlots({
     const hasConflict = busyIntervals.some((busy) => intervalsOverlap(blockedStart, blockedEnd, busy.start, busy.end));
 
     if (!hasConflict) {
-      slots.push({
-        startAt: `${date}T${formatMinutesToTime(slotStart)}:00`,
-        endAt: `${date}T${formatMinutesToTime(slotEnd)}:00`,
-        time: formatMinutesToTime(slotStart),
-        endTime: formatMinutesToTime(slotEnd),
+      const entry = {
+        ...baseEntry,
         collaboratorId,
         serviceDurationMinutes: totalServiceMin,
         bufferBeforeMinutes: bufBefore,
         bufferAfterMinutes: bufAfter,
-      });
+      };
+      slots.push(entry);
+      if (includeUnavailable) allSlotsWithAvailability.push({ ...entry, available: true });
+    } else if (includeUnavailable) {
+      allSlotsWithAvailability.push({ ...baseEntry, available: false, reason: 'OCUPADO' });
     }
   }
 
@@ -679,6 +697,7 @@ export function calculateAvailableSlots({
     collaboratorId,
     available: slots.length > 0,
     slots,
+    ...(includeUnavailable ? { allSlotsWithAvailability } : {}),
     reason: slots.length > 0 ? "" : "No hay horarios disponibles para esta manicurista en la fecha seleccionada.",
     warnings: [],
   };
@@ -772,6 +791,11 @@ export function selectBestAvailableCollaborator({
   requestedTime = null,
   seed = "default",
   now = null,
+  // Ver el comentario equivalente en calculateAvailableSlots: aditivo, no cambia nada para
+  // quien no lo pida. Aquí solo se recalcula (una vez más) para la colaboradora que termina
+  // ganando la selección automática — no tendría sentido calcularlo para cada candidata
+  // descartada.
+  includeUnavailable = false,
 }) {
   const candidates = [];
 
@@ -848,12 +872,22 @@ export function selectBestAvailableCollaborator({
   });
 
   const best = candidates[0];
+  let allSlotsWithAvailability = null;
+  if (includeUnavailable) {
+    const bestStaffId = String(best.collaborator.colaboradorID || best.collaborator.id || best.collaborator.nombreCompleto);
+    const fullAvail = calculateAvailableSlots({
+      date, collaboratorId: bestStaffId, serviceLines, businessSchedule, weeklySchedules,
+      exceptions, appointments, services, referenceTime: null, now, includeUnavailable: true,
+    });
+    allSlotsWithAvailability = fullAvail.allSlotsWithAvailability;
+  }
 
   return {
     selected: best.collaborator,
     selectedScore: best.score,
     scoreBreakdown: best.scoreData.breakdown,
     availableSlots: best.availableSlots,
+    ...(includeUnavailable ? { allSlotsWithAvailability } : {}),
     reason: `Selección automática asignó a '${best.collaborator.nombreCompleto || best.collaborator.id}' con puntuación ${best.score}.`,
     evaluatedCount: candidates.length,
     candidates: candidates.map((c) => ({
@@ -877,6 +911,10 @@ export function buildAvailabilityResponseForChatbot({
   cancellationPolicy = null,
   errorCode = null,
   errorMessage = null,
+  // Aditivo: solo aparece en la respuesta cuando quien llama pidió includeUnavailable (hoy,
+  // únicamente el chatbot de WhatsApp para mostrar horarios ocupados/pasados tachados). El
+  // personal y ReservApp nunca lo piden, así que nunca ven este campo.
+  allSlotsWithAvailability = null,
 }) {
   if (!success) {
     return {
@@ -912,6 +950,14 @@ export function buildAvailabilityResponseForChatbot({
       endTime: s.endTime,
       collaboratorId: s.collaboratorId,
     })),
+    ...(allSlotsWithAvailability
+      ? {
+          allSlots: allSlotsWithAvailability.map((s) => ({
+            startAt: s.startAt, endAt: s.endAt, time: s.time, endTime: s.endTime,
+            available: s.available, reason: s.reason || null,
+          })),
+        }
+      : {}),
     policies: {
       cancellation: cancellationPolicy || DEFAULT_BUSINESS_SCHEDULE.cancellationPolicy,
     },

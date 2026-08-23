@@ -156,6 +156,67 @@ test("calculateAvailableSlots genera slots excluyendo almuerzo (12:00-14:00) y c
   assert.ok(times.includes("14:00"));
 });
 
+test("calculateAvailableSlots con includeUnavailable=true agrega allSlotsWithAvailability sin tocar `slots`", () => {
+  const services = [{ servicioID: "SRV-1", servicio: "Uñas Acrílicas", duracionMin: 60 }];
+  const baseParams = {
+    date: "2026-08-03", // Lunes
+    collaboratorId: "STAFF-1",
+    serviceLines: [{ serviceId: "SRV-1" }],
+    services,
+    businessSchedule: DEFAULT_BUSINESS_SCHEDULE,
+    weeklySchedules: [
+      {
+        collaboratorId: "STAFF-1",
+        dayOfWeek: 1,
+        working: true,
+        entryTime: "09:00",
+        exitTime: "18:00",
+        lunchStartTime: "12:00",
+        lunchEndTime: "14:00",
+      },
+    ],
+    appointments: [
+      { reservaID: "RES-100", fecha: "2026-08-03", hora: "10:00", duracionMin: 60, colaboradorID: "STAFF-1", estado: "Confirmada" },
+    ],
+  };
+
+  const withoutFlag = calculateAvailableSlots(baseParams);
+  assert.equal(withoutFlag.allSlotsWithAvailability, undefined, "sin el flag, no debe aparecer el campo nuevo");
+
+  const withFlag = calculateAvailableSlots({ ...baseParams, includeUnavailable: true });
+  assert.deepEqual(withFlag.slots, withoutFlag.slots, "`slots` (comportamiento de siempre) no cambia con el flag");
+  assert.ok(Array.isArray(withFlag.allSlotsWithAvailability));
+
+  const byTime = Object.fromEntries(withFlag.allSlotsWithAvailability.map((s) => [s.time, s]));
+  assert.equal(byTime["09:00"].available, true);
+  assert.equal(byTime["10:00"].available, false);
+  assert.equal(byTime["10:00"].reason, "OCUPADO");
+  assert.equal(byTime["12:00"].available, false);
+  assert.equal(byTime["12:00"].reason, "OCUPADO"); // almuerzo también se modela como intervalo ocupado
+  assert.equal(byTime["14:00"].available, true);
+});
+
+test("calculateAvailableSlots con includeUnavailable=true marca como PAST los horarios ya pasados hoy", () => {
+  const services = [{ servicioID: "SRV-1", servicio: "Uñas Acrílicas", duracionMin: 60 }];
+  const result = calculateAvailableSlots({
+    date: "2026-08-03",
+    collaboratorId: "STAFF-1",
+    serviceLines: [{ serviceId: "SRV-1" }],
+    services,
+    businessSchedule: DEFAULT_BUSINESS_SCHEDULE,
+    weeklySchedules: [
+      { collaboratorId: "STAFF-1", dayOfWeek: 1, working: true, entryTime: "09:00", exitTime: "18:00", lunchStartTime: "12:00", lunchEndTime: "14:00" },
+    ],
+    appointments: [],
+    referenceTime: "11:00",
+    includeUnavailable: true,
+  });
+  const byTime = Object.fromEntries(result.allSlotsWithAvailability.map((s) => [s.time, s]));
+  assert.equal(byTime["09:00"].available, false);
+  assert.equal(byTime["09:00"].reason, "PAST");
+  assert.equal(byTime["14:00"].available, true);
+});
+
 test("selectBestAvailableCollaborator selecciona determinísticamente por puntuación", () => {
   const staff = [
     { colaboradorID: "STAFF-1", nombreCompleto: "Ana Pérez" },

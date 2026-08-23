@@ -127,6 +127,7 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
       const serviceId = serviceIds[0] || null;
       const date = req.query.date;
       const collaboratorId = req.query.collaboratorId;
+      const includeUnavailable = req.query.includeUnavailable === "true";
       if (!serviceIds.length || !date) return res.status(400).json({ success: false, error: "Parámetros 'serviceId' y 'date' son requeridos." });
 
       const current = await readDocument(store);
@@ -156,18 +157,19 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
         if (!staffMember || !isCollaboratorEligibleForServiceLines(staffMember, serviceLines, services)) {
           return res.status(409).json(buildAvailabilityResponseForChatbot({ success: false, date, serviceId, errorCode: "SPECIALIST_NOT_ELIGIBLE", errorMessage: "La colaboradora seleccionada no está capacitada para uno o más de los servicios solicitados." }));
         }
-        const avail = calculateAvailableSlots({ date, collaboratorId, serviceLines, businessSchedule: bSched, weeklySchedules, exceptions, appointments, services, now: new Date() });
+        const avail = calculateAvailableSlots({ date, collaboratorId, serviceLines, businessSchedule: bSched, weeklySchedules, exceptions, appointments, services, now: new Date(), includeUnavailable });
         return res.json(buildAvailabilityResponseForChatbot({
           success: avail.available, date, serviceId,
           serviceName: combinedServiceName || targetService.servicio || targetService.name,
           durationMinutes: combinedDurationMinutes || targetService.duracionMin || targetService.durationMinutes || 30,
           collaboratorId, collaboratorName: staffMember?.nombreCompleto || staffMember?.nombre || collaboratorId,
           slots: avail.slots, cancellationPolicy: bSched.cancellationPolicy, errorMessage: avail.reason,
+          allSlotsWithAvailability: avail.allSlotsWithAvailability,
         }));
       }
 
       const eligibleStaff = staffList.filter((s) => String(s.estado || "Activo").toLowerCase() === "activo" && isCollaboratorEligibleForServiceLines(s, serviceLines, services));
-      const bestSelection = selectBestAvailableCollaborator({ eligibleCollaborators: eligibleStaff, date, serviceLines, services, businessSchedule: bSched, weeklySchedules, exceptions, appointments, now: new Date() });
+      const bestSelection = selectBestAvailableCollaborator({ eligibleCollaborators: eligibleStaff, date, serviceLines, services, businessSchedule: bSched, weeklySchedules, exceptions, appointments, now: new Date(), includeUnavailable });
       if (!bestSelection.selected) {
         return res.json(buildAvailabilityResponseForChatbot({ success: false, date, serviceId, serviceName: combinedServiceName || targetService.servicio || targetService.name, durationMinutes: combinedDurationMinutes || targetService.duracionMin || targetService.durationMinutes || 30, errorMessage: bestSelection.reason }));
       }
@@ -178,6 +180,7 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
         collaboratorId: bestSelection.selected.colaboradorID || bestSelection.selected.id,
         collaboratorName: bestSelection.selected.nombreCompleto,
         slots: bestSelection.availableSlots, cancellationPolicy: bSched.cancellationPolicy,
+        allSlotsWithAvailability: bestSelection.allSlotsWithAvailability,
       }));
     } catch (error) { next(error); }
   });
