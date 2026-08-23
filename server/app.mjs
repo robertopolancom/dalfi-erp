@@ -173,10 +173,16 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     } catch (error) { next(error); }
   };
 
-  const sendSetupWhatsApp = async ({ outboxId, phone, code, name }) => {
+  const sendSetupWhatsApp = async ({ outboxId, phone, code, name, purpose = "setup" }) => {
     const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
     if (!bridgeSecret) return { status: "pending_configuration" };
     const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    // El siguiente paso (verify-code -> complete-setup) es idéntico para setup y reset -- solo
+    // cambia este texto para no confundir a alguien restableciendo su contraseña con el
+    // mensaje de "primera vez".
+    const bodyText = purpose === "reset"
+      ? `Hola ${name || ""}. Tu código para restablecer tu contraseña en Dalfi Studio Nails es: ${code}. Vence en 10 minutos.`.trim()
+      : `Hola ${name || ""}. Tu código para crear tu contraseña en Dalfi Studio Nails es: ${code}. Vence en 10 minutos.`.trim();
     try {
       // Endpoint dedicado (no /webhook/overdue-reminders, que solo entiende
       // booking.confirmation_reminder y devuelve 200 IGNORED/UNKNOWN_EVENT para cualquier otro
@@ -196,7 +202,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           recipientPhone: normalizePhone(phone),
           clientName: name || "Cliente",
           code,
-          whatsappFormattedText: `Hola ${name || ""}. Tu código para crear tu contraseña en Dalfi Studio Nails es: ${code}. Vence en 10 minutos.`.trim(),
+          whatsappFormattedText: bodyText,
         }),
       });
       const payload = await response.json().catch(() => null);
@@ -387,6 +393,31 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         await bookingStore.createSession({ accountId: account.id, tokenHash: hashToken(sessionToken), expiresAt });
         res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
         res.json({ account: publicAccount(account) });
+      } catch (error) { next(error); }
+    });
+
+    // Reutiliza el mismo pipeline de OTP que el setup de cuenta nueva (prepareSetup ->
+    // /setup/verify-code -> /auth/complete-setup) -- verify-code y complete-setup no necesitan
+    // saber si vinieron de aquí o de request-setup, solo consumen el token/OTP que sea. La
+    // única diferencia real es que aquí NO se crea una clienta nueva ni se adjunta un draft de
+    // cita, y solo procede si la cuenta ya existe y está activa.
+    app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
+      try {
+        const account = await bookingStore.accountByPhone(phone);
+        // Misma respuesta exista o no la cuenta -- este endpoint no debe servir para enumerar
+        // qué teléfonos tienen cuenta activa en ReservApp.
+        if (account?.status === "active") {
+          const code = generateOtpCode();
+          const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+          const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone });
+          await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: account.full_name || "", purpose: "reset" });
+        }
+        res.status(202).json({
+          pendingConfirmation: true,
+          message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",
+        });
       } catch (error) { next(error); }
     });
 

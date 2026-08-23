@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -161,12 +161,45 @@ function showBooking() {
 $("open-login").addEventListener("click", () => $("login-dialog").showModal());
 $("close-login").addEventListener("click", () => $("login-dialog").close());
 $("close-client").addEventListener("click", () => $("client-dialog").close());
-$("open-client").addEventListener("click", () => { message($("client-message")); if (requireBookingSelection($("booking-message"))) $("client-dialog").showModal(); });
-$("employee-new-client").addEventListener("click", () => { message($("client-message")); if (requireBookingSelection($("booking-message"))) $("client-dialog").showModal(); });
+
+// Dos entradas distintas al MISMO diálogo de "primera vez", con comportamiento distinto al
+// enviarlo (ver client-form submit abajo): la clienta que se registra sola (open-client)
+// necesita verificar su teléfono por WhatsApp antes de que exista su ficha -- nadie del salón
+// está validando esos datos. El personal (employee-new-client) SÍ está presente validando a
+// la clienta en persona, así que no tiene sentido hacerla esperar un código; crea la ficha al
+// instante contra /api/fast-booking/clients (mismo endpoint que ya usa la búsqueda existente).
+function openClientDialog({ forEmployee }) {
+  state.clientDialogForEmployee = forEmployee;
+  $("client-dialog-title").textContent = forEmployee ? "Registrar clienta" : "Crear mi acceso";
+  $("client-dialog-intro").textContent = forEmployee
+    ? "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp."
+    : "Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido.";
+  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar clienta" : "Enviarme el código por WhatsApp";
+  message($("client-message"));
+  if (requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
+}
+$("open-client").addEventListener("click", () => openClientDialog({ forEmployee: false }));
+$("employee-new-client").addEventListener("click", () => openClientDialog({ forEmployee: true }));
 
 $("client-form").addEventListener("submit", async (event) => {
   event.preventDefault(); if (!requireBookingSelection($("client-message"))) return;
-  const button = event.submitter; button.disabled = true; message($("client-message"), "Enviando código…", true);
+  const button = event.submitter; button.disabled = true;
+  if (state.clientDialogForEmployee) {
+    message($("client-message"), "Registrando…", true);
+    try {
+      const result = await api("/api/fast-booking/clients", {
+        method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ firstName: $("first-name").value, lastName: $("last-name").value, phone: $("new-phone").value, email: $("new-email").value, actorType: "employee" }),
+      });
+      setClient(result.client);
+      $("client-dialog").close();
+      message($("booking-message"), `Clienta ${result.client.name} registrada. Ya puedes confirmar la reserva.`, true);
+    } catch (error) {
+      message($("client-message"), error.body?.duplicate ? "Ya existe una clienta con ese teléfono o correo." : error.message);
+    } finally { button.disabled = false; }
+    return;
+  }
+  message($("client-message"), "Enviando código…", true);
   try {
     const result = await api("/api/reservapp/auth/request-setup", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(setupPayload()) });
     $("client-dialog").close(); message($("booking-message"), result.message, true); $("submit-booking").disabled = true;
@@ -178,8 +211,22 @@ $("client-form").addEventListener("submit", async (event) => {
   } finally { button.disabled = false; }
 });
 
-$("open-verify-code").addEventListener("click", () => { $("login-dialog").close(); message($("verify-code-message")); $("verify-code-dialog").showModal(); });
+$("open-verify-code").addEventListener("click", () => { state.passwordResetFlow = false; $("login-dialog").close(); message($("verify-code-message")); $("verify-code-dialog").showModal(); });
 $("close-verify-code").addEventListener("click", () => $("verify-code-dialog").close());
+
+$("open-forgot-password").addEventListener("click", () => { $("login-dialog").close(); message($("forgot-password-message")); $("forgot-password-phone").value = $("login-phone").value; $("forgot-password-dialog").showModal(); });
+$("close-forgot-password").addEventListener("click", () => $("forgot-password-dialog").close());
+
+$("forgot-password-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), "Enviando…", true);
+  try {
+    const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
+    state.passwordResetFlow = true; $("forgot-password-dialog").close(); message($("booking-message"), result.message, true);
+    $("verify-code-phone").value = $("forgot-password-phone").value; $("verify-code-code").value = "";
+    message($("verify-code-message")); $("verify-code-dialog").showModal();
+  } catch (error) { message($("forgot-password-message"), error.message); }
+  finally { button.disabled = false; }
+});
 
 $("verify-code-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; message($("verify-code-message"), "Verificando…", true);
@@ -187,6 +234,8 @@ $("verify-code-form").addEventListener("submit", async (event) => {
     const result = await api("/api/reservapp/setup/verify-code", { method: "POST", body: JSON.stringify({ phone: $("verify-code-phone").value, code: $("verify-code-code").value }) });
     state.activationTicket = result.activationTicket; $("verify-code-dialog").close();
     $("setup-password").value = ""; $("setup-password-confirm").value = ""; message($("setup-message"));
+    $("setup-dialog-title").textContent = state.passwordResetFlow ? "Elige tu nueva contraseña" : "Crea tu contraseña";
+    $("setup-form").querySelector("button[type=submit]").textContent = state.passwordResetFlow ? "Guardar nueva contraseña" : "Activar y confirmar cita";
     $("setup-dialog").showModal();
   } catch (error) { message($("verify-code-message"), error.message); }
   finally { button.disabled = false; }
@@ -249,10 +298,13 @@ $("setup-form").addEventListener("submit", async (event) => {
   const button = event.submitter; button.disabled = true; message($("setup-message"), "Activando…", true);
   try {
     const result = await api("/api/reservapp/auth/complete-setup", { method: "POST", body: JSON.stringify({ token: state.activationTicket, password }) });
-    state.activationTicket = null; applyAccount(result.account); $("setup-dialog").close();
+    const wasPasswordReset = state.passwordResetFlow;
+    state.activationTicket = null; state.passwordResetFlow = false; applyAccount(result.account); $("setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = `Cita confirmada. Referencia: ${result.appointment.reference}`;
+    } else if (wasPasswordReset) {
+      message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
     } else message($("booking-message"), result.bookingError || "Cuenta activada. Ya puedes reservar.", !result.bookingError);
   } catch (error) { message($("setup-message"), error.message); }
   finally { button.disabled = false; }
