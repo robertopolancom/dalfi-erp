@@ -282,10 +282,10 @@ export class NeonBookingStore {
       const inserted = await client.query(
         `insert into app.appointments
           (legacy_id,idempotency_key,client_id,staff_id,starts_at,ends_at,status,confirmation_status,
-           deposit_status,deposit_amount,source_channel,notes,legacy_payload)
-         values ($1,$2,$3,$4,$5,$6,'scheduled','Pendiente','Pendiente',500,$7,$8,$9::jsonb)
+           deposit_status,deposit_amount,source_channel,notes,legacy_payload,group_id)
+         values ($1,$2,$3,$4,$5,$6,'scheduled','Pendiente','Pendiente',500,$7,$8,$9::jsonb,$10)
          returning id, legacy_id, starts_at, ends_at`,
-        [id, input.idempotencyKey, customer.id, staff.id, startsAt, endsAt, input.source, input.notes || "", JSON.stringify(legacyPayload)],
+        [id, input.idempotencyKey, customer.id, staff.id, startsAt, endsAt, input.source, input.notes || "", JSON.stringify(legacyPayload), input.groupId || null],
       );
       for (const [index, service] of services.entries()) {
         await client.query(
@@ -317,6 +317,35 @@ export class NeonBookingStore {
     } finally {
       client.release();
     }
+  }
+
+  // Servicios combinados con distinta manicurista por servicio (ej. servicio 1 con Ana,
+  // servicio 2 con Jaimely porque Ana no tenía espacio para el segundo). app.appointments solo
+  // admite una colaboradora por fila, así que esto crea VARIAS citas -- una por segmento -- y
+  // las vincula con un group_id compartido para que el personal las vea como una sola visita.
+  // Cada segmento reutiliza exactamente createAppointment() (misma lógica de negocio, mismo
+  // documento legado, mismo appointment_services) -- lo único nuevo es la coordinación entre
+  // segmentos: si uno falla, se cancelan los ya creados antes de reportar el error, para no
+  // dejar una visita a medias cobrando un depósito por un servicio que nunca se agendó.
+  async createComboAppointment({ clientId, segments, notes, source, createdBy, idempotencyKey }) {
+    const groupId = crypto.randomUUID();
+    const created = [];
+    for (const [index, segment] of segments.entries()) {
+      const result = await this.createAppointment({
+        clientId, serviceIds: segment.serviceIds, staffId: segment.staffId,
+        date: segment.date, time: segment.time, endTime: segment.endTime,
+        notes, source, createdBy, groupId,
+        idempotencyKey: `${idempotencyKey}-${index + 1}`,
+      });
+      if (result.conflict || result.missing) {
+        for (const done of created) {
+          await this.pool.query("update app.appointments set status='cancelled', updated_at=clock_timestamp() where id=$1", [done.appointment.id]).catch(() => {});
+        }
+        return result;
+      }
+      created.push(result);
+    }
+    return { appointments: created, groupId };
   }
 
   async accountByPhone(phone) {

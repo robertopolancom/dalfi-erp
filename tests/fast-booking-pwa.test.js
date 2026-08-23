@@ -19,8 +19,26 @@ function bookingStore() {
     async catalog() {
       return { services: [{ id: "11111111-1111-4111-8111-111111111111", name: "Manicura", price: 900, durationMinutes: 60 }], staff: [{ id: "22222222-2222-4222-8222-222222222222", name: "Dalfina" }], schedule: { timezone: "America/Santo_Domingo", settings: {} } };
     },
-    async availability() {
-      return { durationMinutes: 60, slots: [{ staffId: "22222222-2222-4222-8222-222222222222", staffName: "Dalfina", time: "10:00" }] };
+    async availability(params) {
+      const allSlots = [
+        { staffId: "22222222-2222-4222-8222-222222222222", staffName: "Dalfina", time: "10:00" },
+        { staffId: "77777777-7777-4777-8777-777777777777", staffName: "Jaimely", time: "10:00" },
+      ];
+      const slots = params?.staffId ? allSlots.filter((s) => s.staffId === params.staffId) : allSlots;
+      return { durationMinutes: 60, slots };
+    },
+    // Combo de servicios repartidos entre distintas manicuristas: cada segmento reutiliza
+    // createAppointment() de este mismo mock -- si uno falla (conflict/missing), no sigue con
+    // los demás. groupId fijo para que las pruebas lo puedan comparar sin generar uno real.
+    async createComboAppointment({ clientId, segments, notes, source, createdBy, idempotencyKey }) {
+      const groupId = "88888888-8888-4888-8888-888888888888";
+      const created = [];
+      for (const [index, segment] of segments.entries()) {
+        const result = await this.createAppointment({ clientId, ...segment, notes, source, createdBy, groupId, idempotencyKey: `${idempotencyKey}-${index + 1}` });
+        if (result.conflict || result.missing) return result;
+        created.push(result);
+      }
+      return { appointments: created, groupId };
     },
     async resolveClient({ phone }) { return phone.includes("1111") ? { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" } : null; },
     async createClient({ phone }) {
@@ -125,6 +143,61 @@ test("PWA crea una cita autenticada idempotente y devuelve depósito", async () 
     const body = await response.json();
     assert.equal(body.appointment.reference, "RES-TEST");
     assert.equal(body.depositAmount, 500);
+  });
+});
+
+test("POST /api/fast-booking/appointments con segments crea una cita por manicurista y las vincula con groupId", async () => {
+  const store = bookingStore();
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "combo-test-1", Cookie: "reservapp_session=test-session" },
+      body: JSON.stringify({
+        clientId: "33333333-3333-4333-8333-333333333333",
+        segments: [
+          { serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" },
+          { serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "77777777-7777-4777-8777-777777777777", date: "2026-08-15", time: "10:00" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 201);
+    const body = await response.json();
+    assert.equal(body.appointments.length, 2);
+    assert.equal(body.groupId, "88888888-8888-4888-8888-888888888888");
+    assert.equal(store.createdAppointments[0].staffId, "22222222-2222-4222-8222-222222222222");
+    assert.equal(store.createdAppointments[1].staffId, "77777777-7777-4777-8777-777777777777");
+    assert.equal(store.createdAppointments[0].groupId, "88888888-8888-4888-8888-888888888888");
+    assert.equal(store.createdAppointments[1].groupId, "88888888-8888-4888-8888-888888888888");
+  }, undefined, store);
+});
+
+test("POST /api/fast-booking/appointments con segments: si un segmento choca, no confirma ninguno", async () => {
+  const store = bookingStore();
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "combo-test-2", Cookie: "reservapp_session=test-session" },
+      body: JSON.stringify({
+        clientId: "33333333-3333-4333-8333-333333333333",
+        segments: [
+          { serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" },
+          { serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "77777777-7777-4777-8777-777777777777", date: "2026-08-15", time: "11:00" },
+        ],
+      }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).conflict, true);
+  }, undefined, store);
+});
+
+test("POST /api/fast-booking/appointments con segments vacío responde 400", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/appointments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": "combo-test-3", Cookie: "reservapp_session=test-session" },
+      body: JSON.stringify({ clientId: "33333333-3333-4333-8333-333333333333", segments: [] }),
+    });
+    assert.equal(response.status, 400);
   });
 });
 

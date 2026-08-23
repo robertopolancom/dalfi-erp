@@ -54,7 +54,7 @@
         </div>
 
         <div class="wizard-step hidden" data-step="3">
-          <h2>Paso 3 · Elige horario y manicurista</h2>
+          <h2 id="step3-heading">Paso 3 · Elige horario y manicurista</h2>
           <p class="intro">Estos son los horarios libres de cada manicurista ese día para lo que elegiste.</p>
           <input id="time" type="hidden" required />
           <div class="message" id="availability-message"></div>
@@ -64,6 +64,7 @@
 
         <div class="wizard-step hidden" data-step="4">
           <h2>Último paso · Confirma tu cita</h2>
+          <p class="intro" id="booking-selection-summary"></p>
           <section class="client-box" id="guest-access">
             <div><span class="step-dot">1</span><div><strong>Identifícate para reservar</strong><small>Puedes revisar horarios como invitada. Para confirmar necesitas credenciales.</small></div></div>
             <div class="access-actions"><button class="secondary" id="open-login" type="button">Ya tengo cuenta</button><button class="new-client" id="open-client" type="button">Es mi primera vez</button></div>

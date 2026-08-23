@@ -628,38 +628,82 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
 
     app.post("/api/fast-booking/appointments", bookingRateLimit, async (req, res, next) => {
       if (req.body?.website) return res.status(204).end();
-      const input = {
-        clientId: cleanText(req.body?.clientId, 64), serviceIds: cleanServiceIds(req.body?.serviceIds || req.body?.serviceId),
-        staffId: cleanText(req.body?.staffId, 64), date: cleanText(req.body?.date, 10),
-        time: cleanText(req.body?.time, 5), notes: cleanText(req.body?.notes, 500),
-        idempotencyKey: cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120),
-      };
-      if (!input.clientId || !input.serviceIds.length || !input.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !/^\d{2}:\d{2}$/.test(input.time) || !input.idempotencyKey) {
-        return res.status(400).json({ error: "Completa todos los datos de la cita." });
+      const clientId = cleanText(req.body?.clientId, 64);
+      const notes = cleanText(req.body?.notes, 500);
+      const idempotencyKey = cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120);
+      // Servicios combinados repartidos entre distintas manicuristas (ej. servicio 1 con Ana,
+      // servicio 2 con Jaimely porque Ana no tenía espacio) -- ver createComboAppointment en
+      // store.mjs. Cada segmento del arreglo ya viene con su propia manicurista/horario
+      // elegidos en el paso 3 del wizard (uno por servicio); no son intercambiables entre sí.
+      const rawSegments = Array.isArray(req.body?.segments) ? req.body.segments : null;
+      if (!clientId || !idempotencyKey) return res.status(400).json({ error: "Completa todos los datos de la cita." });
+      let input = null;
+      let segments = null;
+      if (!rawSegments) {
+        input = {
+          clientId, serviceIds: cleanServiceIds(req.body?.serviceIds || req.body?.serviceId),
+          staffId: cleanText(req.body?.staffId, 64), date: cleanText(req.body?.date, 10),
+          time: cleanText(req.body?.time, 5), notes, idempotencyKey,
+        };
+        if (!input.serviceIds.length || !input.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(input.date) || !/^\d{2}:\d{2}$/.test(input.time)) {
+          return res.status(400).json({ error: "Completa todos los datos de la cita." });
+        }
+      } else {
+        segments = rawSegments.map((seg) => ({
+          serviceIds: cleanServiceIds(seg?.serviceIds || seg?.serviceId),
+          staffId: cleanText(seg?.staffId, 64), date: cleanText(seg?.date, 10), time: cleanText(seg?.time, 5),
+        }));
+        if (!segments.length || segments.some((seg) => !seg.serviceIds.length || !seg.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(seg.date) || !/^\d{2}:\d{2}$/.test(seg.time))) {
+          return res.status(400).json({ error: "Completa todos los datos de la cita." });
+        }
       }
       try {
         const appSession = await reservappSession(req);
         // canalOrigen/creadoPor identifican con precisión quién agendó la cita (clienta,
         // manicurista, asistente o administradora) -- no un genérico "PWA_EMPLEADO" que no
         // distinguía el rol real de quien la creó.
+        let source, createdBy;
         if (req.body?.actorType === "employee") {
           if (appSession && appSession.account.role !== "clienta") {
-            input.source = `RESERVAPP_${appSession.account.role.toUpperCase()}`;
-            input.createdBy = { role: appSession.account.role, accountId: appSession.account.id };
+            source = `RESERVAPP_${appSession.account.role.toUpperCase()}`;
+            createdBy = { role: appSession.account.role, accountId: appSession.account.id };
           } else {
             const employee = await authorizeEmployeeBooking(req);
             if (employee === false) return res.status(403).json({ error: "Inicia sesión con una cuenta autorizada para reservar como empleado." });
             const erpRole = employee?.role || "administradora";
-            input.source = `ERP_${erpRole.toUpperCase()}`;
-            input.createdBy = { role: erpRole, email: employee?.email || null };
+            source = `ERP_${erpRole.toUpperCase()}`;
+            createdBy = { role: erpRole, email: employee?.email || null };
           }
         } else {
-          if (!appSession || appSession.account.role !== "clienta" || appSession.account.client_id !== input.clientId) {
+          if (!appSession || appSession.account.role !== "clienta" || appSession.account.client_id !== clientId) {
             return res.status(401).json({ error: "Inicia sesión con tu teléfono y contraseña para reservar." });
           }
-          input.source = "RESERVAPP_CLIENTE";
-          input.createdBy = { role: "clienta", accountId: appSession.account.id };
+          source = "RESERVAPP_CLIENTE";
+          createdBy = { role: "clienta", accountId: appSession.account.id };
         }
+
+        if (rawSegments) {
+          for (const seg of segments) {
+            const availability = await bookingStore.availability(seg);
+            if (!availability.slots?.some((slot) => slot.staffId === seg.staffId && slot.time === seg.time)) {
+              return res.status(409).json({ error: "Uno de los horarios elegidos acaba de ocuparse. Vuelve a elegir.", conflict: true });
+            }
+            seg.endTime = new Date(new Date(`2000-01-01T${seg.time}:00Z`).getTime() + availability.durationMinutes * 60_000).toISOString().slice(11, 16);
+          }
+          const result = await bookingStore.createComboAppointment({ clientId, segments, notes, source, createdBy, idempotencyKey });
+          if (result.conflict) return res.status(409).json({ error: "Uno de los horarios elegidos acaba de ocuparse. Vuelve a elegir.", conflict: true });
+          if (result.missing) return res.status(404).json({ error: "Cliente, servicio o colaboradora no disponible." });
+          let calendarSync = { skipped: true, reason: "combo" };
+          for (const appt of result.appointments) {
+            if (!appt.idempotent) calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, appt.previousDocument, appt.document, { fetchImpl });
+          }
+          return res.status(201).json({
+            appointments: result.appointments.map((a) => ({ id: a.appointment.id, reference: a.appointment.legacy_id })),
+            groupId: result.groupId, depositAmount: 500, calendarSync,
+          });
+        }
+
+        input.source = source; input.createdBy = createdBy;
         const availability = await bookingStore.availability(input);
         if (!availability.slots?.some((slot) => slot.staffId === input.staffId && slot.time === input.time)) return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
         input.endTime = new Date(`2000-01-01T${input.time}:00Z`);

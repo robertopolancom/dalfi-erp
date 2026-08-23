@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0 };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -59,6 +59,30 @@ function goToStep(step) {
   $("progress-bar").style.width = `${WIZARD_STEP_PROGRESS[step] ?? 8}%`;
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (step === 3) loadAvailability();
+  if (step === 4) renderBookingSelectionSummary();
+}
+
+function formatSlotTime(time) {
+  return new Date(`2000-01-01T${time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
+}
+
+// Antes de pedir identificación, recuerda a la clienta exactamente qué eligió -- imprescindible
+// en modo combo, donde eligió manicurista y hora una vez por cada servicio en pantallas
+// separadas y podría no recordar el resultado final.
+function renderBookingSelectionSummary() {
+  const target = $("booking-selection-summary");
+  if (Array.isArray(state.comboSegments) && state.comboSegments.length) {
+    target.textContent = state.comboSegments
+      .map((segment) => `${segment.serviceName} con ${segment.staffName} a las ${formatSlotTime(segment.time)}`)
+      .join(" · ");
+    return;
+  }
+  if (state.selectedSlot) {
+    const names = selectedServices().map((item) => item.name).join(", ");
+    target.textContent = `${names} con ${state.selectedSlot.staffName} a las ${formatSlotTime(state.selectedSlot.time)}`;
+    return;
+  }
+  target.textContent = "";
 }
 
 async function loadCatalog() {
@@ -93,23 +117,41 @@ async function loadSession() {
   catch { applyAccount(null); }
 }
 
-// Paso 3: consulta /api/fast-booking/availability SIN staffId -- el motor ya devuelve, en un
-// solo llamado, los horarios libres de TODAS las manicuristas elegibles para los servicios
-// pedidos (cada slot trae su propio staffId/staffName). Se agrupan en una columna por
-// manicurista para que la clienta compare y elija directamente cuál y a qué hora, en vez de
-// tener que elegir una manicurista a ciegas antes de ver si tiene espacio.
-async function loadAvailability() {
-  const serviceIds = selectedServiceIds();
-  const date = $("date").value;
-  state.selectedSlot = null; $("time").value = ""; $("staff").value = "";
+// Agrupa los slots devueltos por /api/fast-booking/availability en una columna por
+// manicurista, para que la clienta compare y elija directamente cuál y a qué hora, en vez de
+// tener que elegir una manicurista a ciegas antes de ver si tiene espacio. onPick(staffId,
+// slot) decide qué pasa después (avanzar de paso, o pasar al siguiente servicio del combo).
+function renderStaffSlotsBoard(slots, onPick) {
   const board = $("staff-slots-board");
-  if (!serviceIds.length || !date) {
-    message($("availability-message"), "Selecciona servicios y una fecha antes de este paso.");
-    board.replaceChildren();
-    return;
+  const byStaff = new Map();
+  for (const slot of slots) {
+    if (!byStaff.has(slot.staffId)) byStaff.set(slot.staffId, { staffName: slot.staffName, slots: [] });
+    byStaff.get(slot.staffId).slots.push(slot);
   }
+  board.replaceChildren(...[...byStaff.entries()].map(([staffId, group]) => {
+    const column = document.createElement("section"); column.className = "staff-slots-column";
+    const heading = document.createElement("h3"); heading.textContent = group.staffName; column.append(heading);
+    const list = document.createElement("div"); list.className = "slots"; column.append(list);
+    for (const slot of group.slots) {
+      const button = document.createElement("button"); button.type = "button"; button.className = "slot";
+      button.textContent = new Date(`2000-01-01T${slot.time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".slot").forEach((item) => item.classList.remove("selected"));
+        button.classList.add("selected");
+        onPick(staffId, slot);
+      });
+      list.append(button);
+    }
+    return column;
+  }));
+}
+
+// Paso 3, un solo servicio: consulta /api/fast-booking/availability SIN staffId -- el motor ya
+// devuelve, en un solo llamado, los horarios libres de TODAS las manicuristas elegibles.
+async function loadSingleAvailability(serviceIds, date) {
+  $("step3-heading").textContent = "Paso 3 · Elige horario y manicurista";
   message($("availability-message"), "Consultando agenda…", true);
-  board.replaceChildren();
+  $("staff-slots-board").replaceChildren();
   try {
     const result = await api(`/api/fast-booking/availability?serviceIds=${encodeURIComponent(serviceIds.join(","))}&date=${date}`);
     if (!result.slots.length) {
@@ -117,33 +159,68 @@ async function loadAvailability() {
       return;
     }
     message($("availability-message"));
-    const byStaff = new Map();
-    for (const slot of result.slots) {
-      if (!byStaff.has(slot.staffId)) byStaff.set(slot.staffId, { staffName: slot.staffName, slots: [] });
-      byStaff.get(slot.staffId).slots.push(slot);
-    }
-    board.replaceChildren(...[...byStaff.entries()].map(([staffId, group]) => {
-      const column = document.createElement("section"); column.className = "staff-slots-column";
-      const heading = document.createElement("h3"); heading.textContent = group.staffName; column.append(heading);
-      const list = document.createElement("div"); list.className = "slots"; column.append(list);
-      for (const slot of group.slots) {
-        const button = document.createElement("button"); button.type = "button"; button.className = "slot";
-        button.textContent = new Date(`2000-01-01T${slot.time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
-        button.addEventListener("click", () => {
-          document.querySelectorAll(".slot").forEach((item) => item.classList.remove("selected"));
-          button.classList.add("selected");
-          state.selectedSlot = slot; $("time").value = slot.time; $("staff").value = staffId;
-          goToStep(4);
-        });
-        list.append(button);
-      }
-      return column;
-    }));
+    renderStaffSlotsBoard(result.slots, (staffId, slot) => {
+      state.selectedSlot = slot; $("time").value = slot.time; $("staff").value = staffId;
+      goToStep(4);
+    });
   } catch (error) { message($("availability-message"), error.message); }
+}
+
+// Paso 3, servicios combinados: se elige manicurista y hora POR SERVICIO, uno a la vez -- así,
+// si la manicurista del primer servicio no tiene espacio para el segundo, la clienta elige otra
+// distinta para ese segundo servicio en vez de quedar atascada. Cada servicio termina siendo
+// una cita independiente en el backend (createComboAppointment), vinculadas por un groupId
+// compartido para que el personal las vea como una sola visita.
+async function loadComboAvailabilityStep() {
+  const serviceIds = selectedServiceIds();
+  const date = $("date").value;
+  const index = state.comboIndex;
+  const serviceId = serviceIds[index];
+  const service = state.catalog?.services.find((item) => item.id === serviceId);
+  $("step3-heading").textContent = `Paso 3 · Servicio ${index + 1} de ${serviceIds.length}: ${service?.name || ""}`;
+  message($("availability-message"), "Consultando agenda…", true);
+  $("staff-slots-board").replaceChildren();
+  try {
+    const result = await api(`/api/fast-booking/availability?serviceIds=${encodeURIComponent(serviceId)}&date=${date}`);
+    if (!result.slots.length) {
+      message($("availability-message"), `No quedan horarios para "${service?.name ?? "este servicio"}" ese día con ninguna manicurista. Prueba otra fecha.`);
+      return;
+    }
+    message($("availability-message"));
+    renderStaffSlotsBoard(result.slots, (staffId, slot) => {
+      state.comboSegments.push({ serviceIds: [serviceId], staffId, date, time: slot.time, staffName: slot.staffName, serviceName: service?.name ?? "" });
+      if (index + 1 < serviceIds.length) {
+        state.comboIndex += 1;
+        loadComboAvailabilityStep();
+      } else {
+        goToStep(4);
+      }
+    });
+  } catch (error) { message($("availability-message"), error.message); }
+}
+
+async function loadAvailability() {
+  const serviceIds = selectedServiceIds();
+  const date = $("date").value;
+  state.selectedSlot = null; $("time").value = ""; $("staff").value = ""; state.comboSegments = null; state.comboIndex = 0;
+  if (!serviceIds.length || !date) {
+    message($("availability-message"), "Selecciona servicios y una fecha antes de este paso.");
+    $("staff-slots-board").replaceChildren();
+    return;
+  }
+  if (serviceIds.length > 1) {
+    state.comboSegments = [];
+    return loadComboAvailabilityStep();
+  }
+  return loadSingleAvailability(serviceIds, date);
 }
 
 function requireBookingSelection(targetMessage) {
   if (!selectedServiceIds().length) { message(targetMessage, "Selecciona al menos un servicio."); return false; }
+  if (Array.isArray(state.comboSegments)) {
+    if (state.comboSegments.length !== selectedServiceIds().length) { message(targetMessage, "Elige manicurista y hora para cada servicio."); return false; }
+    return true;
+  }
   if (!$("staff").value || !$("date").value || !$("time").value) { message(targetMessage, "Selecciona manicurista, fecha y hora."); return false; }
   return true;
 }
@@ -219,6 +296,14 @@ $("close-client").addEventListener("click", () => $("client-dialog").close());
 // la clienta en persona, así que no tiene sentido hacerla esperar un código; crea la ficha al
 // instante contra /api/fast-booking/clients (mismo endpoint que ya usa la búsqueda existente).
 function openClientDialog({ forEmployee }) {
+  // El registro-invitada por WhatsApp (auto-servicio) guarda un borrador de UNA sola cita
+  // (staff_id/appointment_date/appointment_time en una fila) -- no soporta todavía varias citas
+  // vinculadas por groupId. En combo, solo el registro hecho por el personal funciona (crea la
+  // ficha al instante y la reserva combinada se confirma después, ya con sesión iniciada).
+  if (!forEmployee && Array.isArray(state.comboSegments) && state.comboSegments.length) {
+    message($("booking-message"), "Para servicios combinados con distinta manicurista, pide a una asesora que registre tu cita.");
+    return;
+  }
   state.clientDialogForEmployee = forEmployee;
   $("client-dialog-title").textContent = forEmployee ? "Registrar clienta" : "Crear mi acceso";
   $("client-dialog-intro").textContent = forEmployee
@@ -329,14 +414,22 @@ $("booking-form").addEventListener("submit", async (event) => {
   if (!state.account) return $("login-dialog").showModal();
   if (!state.client) return message($("booking-message"), "Selecciona la clienta de la cita.");
   const button = $("submit-booking"); button.disabled = true; button.textContent = "Reservando…";
+  const isCombo = Array.isArray(state.comboSegments) && state.comboSegments.length > 0;
   try {
     const result = await api("/api/fast-booking/appointments", {
       method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: state.account.role === "clienta" ? "customer" : "employee", website: $("website").value }),
+      body: JSON.stringify(isCombo
+        ? { clientId: state.client.id, segments: state.comboSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: state.account.role === "clienta" ? "customer" : "employee", website: $("website").value }
+        : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: state.account.role === "clienta" ? "customer" : "employee", website: $("website").value }),
     });
-    const names = selectedServices().map((item) => item.name).join(", ");
-    const person = state.catalog.staff.find((item) => item.id === $("staff").value)?.name;
-    $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
+    if (isCombo) {
+      const details = state.comboSegments.map((segment) => `${segment.serviceName} con ${segment.staffName} a las ${formatSlotTime(segment.time)}`).join(" · ");
+      $("success-summary").textContent = `${details}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })}. Referencia: ${result.appointments.map((item) => item.reference).join(", ")}`;
+    } else {
+      const names = selectedServices().map((item) => item.name).join(", ");
+      const person = state.catalog.staff.find((item) => item.id === $("staff").value)?.name;
+      $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
+    }
     $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden"); window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (error) {
     message($("booking-message"), error.message);

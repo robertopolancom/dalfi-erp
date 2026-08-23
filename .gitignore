@@ -15,3 +15,5 @@ __pycache__/
 .claude/
 
 .claude/
+.env.main-branch.local
+.env.render.local
