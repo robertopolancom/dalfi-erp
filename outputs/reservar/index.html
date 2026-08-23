@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <meta name="theme-color" content="#123c3a" />
+  <meta name="theme-color" content="#0f3d30" />
   <meta name="description" content="Reservas y agenda de Dalfi Studio Nails." />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="stylesheet" href="./styles.css" />
@@ -31,6 +31,7 @@
         <h2>Reserva en 3 pasos</h2>
         <p class="intro">Elige tus servicios, el día, y el horario con la manicurista que prefieras — todo en un mismo lugar.</p>
         <button class="primary" id="start-booking" type="button">Reservar</button>
+        <a class="whatsapp-link" href="https://wa.me/18093463030" target="_blank" rel="noopener">¿Prefieres ayuda personalizada? Escríbenos por WhatsApp</a>
       </div>
 
       <form id="booking-form">
@@ -146,6 +147,11 @@
     <label>Código de 6 dígitos<input id="verify-code-code" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="one-time-code" required /></label>
     <div class="message" id="verify-code-message"></div><button class="primary" type="submit">Verificar código</button>
   </form></dialog>
+
+  <dialog id="appointment-detail-dialog">
+    <div class="dialog-head"><div><p class="kicker">Detalle de la cita</p><h2 id="appointment-detail-time">--:--</h2></div><button class="icon-button" id="close-appointment-detail" type="button" aria-label="Cerrar">×</button></div>
+    <dl class="detail-list" id="appointment-detail-body"></dl>
+  </dialog>
 
   <dialog id="setup-dialog"><form id="setup-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Teléfono verificado</p><h2 id="setup-dialog-title">Crea tu contraseña</h2></div></div>

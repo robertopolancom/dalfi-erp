@@ -659,18 +659,20 @@ export class NeonBookingStore {
     if (account.role === "clienta") params.push(account.client_id);
     const result = await this.pool.query(
       `select a.id,a.legacy_id,a.staff_id,s.full_name staff_name,a.client_id,c.full_name client_name,
+              p.phone_original client_phone,
               to_char(a.starts_at at time zone bs.timezone,'HH24:MI') start_time,
               to_char(a.ends_at at time zone bs.timezone,'HH24:MI') end_time,
-              a.status,a.confirmation_status,
+              a.status,a.confirmation_status,a.deposit_status,a.deposit_amount,a.notes,a.group_id,
               coalesce(string_agg(x.service_name_snapshot, ', ' order by x.position),'Cita') services
          from app.appointments a
          left join app.staff s on s.id=a.staff_id
          left join app.clients c on c.id=a.client_id
+         left join app.client_phones p on p.client_id=c.id and p.is_primary
          left join app.appointment_services x on x.appointment_id=a.id
          cross join app.business_settings bs
         where (a.starts_at at time zone bs.timezone)::date=$1::date
           and a.status not in ('cancelled','replaced') ${clientFilter}
-        group by a.id,s.full_name,c.full_name,bs.timezone
+        group by a.id,s.full_name,c.full_name,p.phone_original,bs.timezone
         order by a.starts_at,s.full_name`,
       params,
     );

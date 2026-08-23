@@ -236,6 +236,29 @@ function setupPayload() {
   };
 }
 
+const APPOINTMENT_STATUS_LABEL = { scheduled: "Agendada", confirmed: "Confirmada", cancelled: "Cancelada", completed: "Completada" };
+
+function openAppointmentDetail(item) {
+  $("appointment-detail-time").textContent = `${item.start_time} – ${item.end_time}`;
+  const rows = [
+    ["Clienta", item.client_name || "Cliente"],
+    ["Teléfono", item.client_phone || "—"],
+    ["Servicios", item.services],
+    ["Manicurista", item.staff_name || "—"],
+    ["Estado", APPOINTMENT_STATUS_LABEL[item.status] || item.status || "—"],
+    ["Referencia", item.legacy_id || "—"],
+  ];
+  if (item.notes) rows.push(["Nota", item.notes]);
+  if (item.group_id) rows.push(["Servicio combinado", "Sí, con más de una manicurista"]);
+  if (Number(item.deposit_amount) > 0) rows.push(["Depósito", `RD$${item.deposit_amount} (${item.deposit_status || "pendiente"})`]);
+  $("appointment-detail-body").replaceChildren(...rows.flatMap(([label, value]) => {
+    const dt = document.createElement("dt"); dt.textContent = label;
+    const dd = document.createElement("dd"); dd.textContent = value;
+    return [dt, dd];
+  }));
+  $("appointment-detail-dialog").showModal();
+}
+
 async function showAgenda() {
   $("booking-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("agenda-card").classList.remove("hidden");
   $("booking-tab").classList.remove("active"); $("agenda-tab").classList.add("active");
@@ -245,7 +268,7 @@ async function showAgenda() {
     const result = await api(`/api/reservapp/agenda?date=${$("agenda-date").value}`);
     message($("agenda-message"));
     $("agenda-title").textContent = new Date(`${result.date}T12:00:00`).toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "long" });
-    $("agenda-intro").textContent = result.visibility === "team" ? "Todo el equipo puede ver clientes, servicios y ocupación de cada manicurista." : "Solo se muestran tus propias citas.";
+    $("agenda-intro").textContent = result.visibility === "team" ? "Todo el equipo puede ver clientes, servicios y ocupación de cada manicurista. Toca una cita para ver el detalle." : "Solo se muestran tus propias citas. Toca una cita para ver el detalle.";
     const groups = result.visibility === "team" ? result.staff.map((person) => ({ id: person.id, name: person.full_name })) : [{ id: state.account.clientId, name: "Mis citas", client: true }];
     $("agenda-board").replaceChildren(...groups.map((group) => {
       const column = document.createElement("section"); column.className = "agenda-column";
@@ -253,16 +276,19 @@ async function showAgenda() {
       const appointments = result.appointments.filter((item) => group.client ? true : item.staff_id === group.id);
       if (!appointments.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Disponible"; column.append(empty); }
       for (const item of appointments) {
-        const block = document.createElement("article"); block.className = "appointment-block";
+        const block = document.createElement("button"); block.type = "button"; block.className = `appointment-block status-${item.status}`;
         const time = document.createElement("strong"); time.textContent = `${item.start_time}–${item.end_time}`;
         const client = document.createElement("span"); client.textContent = item.client_name || "Cliente";
         const service = document.createElement("small"); service.textContent = item.services;
-        block.append(time, client, service); column.append(block);
+        block.append(time, client, service);
+        block.addEventListener("click", () => openAppointmentDetail(item));
+        column.append(block);
       }
       return column;
     }));
   } catch (error) { message($("agenda-message"), error.message); }
 }
+$("close-appointment-detail").addEventListener("click", () => $("appointment-detail-dialog").close());
 
 function showBooking() {
   $("agenda-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("booking-card").classList.remove("hidden");
@@ -301,7 +327,12 @@ function openClientDialog({ forEmployee }) {
   // vinculadas por groupId. En combo, solo el registro hecho por el personal funciona (crea la
   // ficha al instante y la reserva combinada se confirma después, ya con sesión iniciada).
   if (!forEmployee && Array.isArray(state.comboSegments) && state.comboSegments.length) {
-    message($("booking-message"), "Para servicios combinados con distinta manicurista, pide a una asesora que registre tu cita.");
+    const target = $("booking-message");
+    target.className = "message";
+    target.replaceChildren(
+      "Para servicios combinados con distinta manicurista, pide a una asesora que registre tu cita: ",
+      Object.assign(document.createElement("a"), { href: "https://wa.me/18093463030", target: "_blank", rel: "noopener", textContent: "escríbenos por WhatsApp" }),
+    );
     return;
   }
   state.clientDialogForEmployee = forEmployee;
