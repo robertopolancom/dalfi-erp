@@ -101,3 +101,54 @@ test("resolveOrCreateClientProfile completa fechaNacimiento/servicioInteres en u
   // Pero sí completa el campo que estaba vacío.
   assert.equal(res.clientRecord.servicioInteres, "Manicura Rusa");
 });
+
+test("resolveOrCreateClientProfile marca telefonoVerificado en un cliente nuevo cuando phoneVerified es true", () => {
+  const res = resolveOrCreateClientProfile({
+    clientList: [],
+    client: { name: "Nueva Clienta", phone: "809-555-0166" },
+    phoneVerified: true,
+  });
+
+  assert.equal(res.isNew, true);
+  assert.equal(res.clientRecord.telefonoVerificado, true);
+  assert.ok(res.clientRecord.telefonoVerificadoEn);
+});
+
+test("resolveOrCreateClientProfile no marca telefonoVerificado en un cliente nuevo si phoneVerified no llega (default false)", () => {
+  const res = resolveOrCreateClientProfile({
+    clientList: [],
+    client: { name: "Nueva Clienta", phone: "809-555-0155" },
+  });
+
+  assert.equal(res.clientRecord.telefonoVerificado, false);
+  assert.equal(res.clientRecord.telefonoVerificadoEn, null);
+});
+
+test("resolveOrCreateClientProfile marca verificado a un cliente existente que no lo estaba, cuando esta llamada trae phoneVerified: true", () => {
+  const clientList = [
+    { clienteID: "CLI-104", nombreCompleto: "Ana Ruiz", telefono: "8095550144", telefonoVerificado: false, lineasContactoVinculadas: [] },
+  ];
+  const res = resolveOrCreateClientProfile({
+    clientList,
+    client: { name: "Ana Ruiz", phone: "809-555-0144" },
+    phoneVerified: true,
+  });
+
+  assert.equal(res.isNew, false);
+  assert.equal(res.clientRecord.telefonoVerificado, true);
+  assert.ok(res.clientRecord.telefonoVerificadoEn);
+});
+
+test("resolveOrCreateClientProfile nunca desverifica a un cliente que ya estaba verificado", () => {
+  const clientList = [
+    { clienteID: "CLI-105", nombreCompleto: "Bea Cruz", telefono: "8095550133", telefonoVerificado: true, telefonoVerificadoEn: "2026-01-01T00:00:00.000Z", lineasContactoVinculadas: [] },
+  ];
+  const res = resolveOrCreateClientProfile({
+    clientList,
+    client: { name: "Bea Cruz", phone: "809-555-0133" },
+    phoneVerified: false,
+  });
+
+  assert.equal(res.clientRecord.telefonoVerificado, true);
+  assert.equal(res.clientRecord.telefonoVerificadoEn, "2026-01-01T00:00:00.000Z");
+});

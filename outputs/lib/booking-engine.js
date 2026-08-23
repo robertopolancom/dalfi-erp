@@ -1313,6 +1313,7 @@ export function resolveOrCreateClientProfile({
   client = {},
   senderPhone = null,
   source = "chatbot_whatsapp",
+  phoneVerified = false,
 }) {
   const targetPhone = client.phone || client.telefono || "";
   const targetName = client.name || client.clienteNombre || client.nombreCompleto || "Cliente Chatbot";
@@ -1407,6 +1408,13 @@ export function resolveOrCreateClientProfile({
       existingClient.servicioInteres = targetPreferredService;
     }
 
+    // Un cliente que ya está verificado nunca se "desverifica" por una llamada posterior sin
+    // el flag — solo se escribe cuando esta llamada trae una prueba nueva de verificación.
+    if (phoneVerified && !existingClient.telefonoVerificado) {
+      existingClient.telefonoVerificado = true;
+      existingClient.telefonoVerificadoEn = nowISO;
+    }
+
     existingClient.updated_at = nowISO;
 
     return {
@@ -1442,6 +1450,8 @@ export function resolveOrCreateClientProfile({
     lineasContactoVinculadas: linkedLines,
     origenRegistro: source,
     estado: "Activo",
+    telefonoVerificado: Boolean(phoneVerified),
+    telefonoVerificadoEn: phoneVerified ? nowISO : null,
     // Clientas creadas por el chatbot (sin un miembro del salón validando los
     // datos en el momento) quedan marcadas para revisión en el Dashboard.
     needsReview: true,

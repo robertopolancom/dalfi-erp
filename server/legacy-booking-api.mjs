@@ -215,6 +215,7 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
           clientId: String(c.clienteID || c.id), name: c.nombreCompleto || c.nombre || "Cliente",
           phone: c.telefono || "", email: c.correo || "",
           linkedContactLines: Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [],
+          verified: Boolean(c.telefonoVerificado),
         }));
       const requestedPhone = req.query.phone;
       if (requestedPhone) {
@@ -394,7 +395,7 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
           const startMinutes = parseTimeToMinutes(completionTime);
           const endMinutes = startMinutes + (duration.totalServiceMinutes || 30);
           const endTime = `${String(Math.floor(endMinutes / 60)).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`;
-          const clientProfile = resolveOrCreateClientProfile({ clientList: Array.isArray(docData.clientes) ? docData.clientes : [], client: completionClient, senderPhone: sourceConversationId || payload.senderPhone || null, source: source || "chatbot_whatsapp" });
+          const clientProfile = resolveOrCreateClientProfile({ clientList: Array.isArray(docData.clientes) ? docData.clientes : [], client: completionClient, senderPhone: sourceConversationId || payload.senderPhone || null, source: source || "chatbot_whatsapp", phoneVerified: completionClient.phoneVerified === true });
           completedClientRecord = clientProfile;
           updatedApt = {
             ...updatedApt, fecha: completionDate, hora: completionTime, horaFin: endTime, duracionMin: duration.totalServiceMinutes || 30,
@@ -461,7 +462,7 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
       }
 
       const clientList = Array.isArray(docData.clientes) ? docData.clientes : [];
-      const clientProfile = resolveOrCreateClientProfile({ clientList, client, senderPhone: sourceConversationId || payload.senderPhone || null, source });
+      const clientProfile = resolveOrCreateClientProfile({ clientList, client, senderPhone: sourceConversationId || payload.senderPhone || null, source, phoneVerified: client?.phoneVerified === true });
       const updatedClients = clientProfile.isNew
         ? [...clientList, clientProfile.clientRecord]
         : clientList.map((c) => (String(c.clienteID || c.id) === clientProfile.clientId ? clientProfile.clientRecord : c));
