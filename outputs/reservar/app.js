@@ -2,7 +2,6 @@ const $ = (id) => document.getElementById(id);
 const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
-const money = new Intl.NumberFormat("es-DO", { style: "currency", currency: "DOP", maximumFractionDigits: 0 });
 
 const api = async (path, options = {}) => {
   const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
@@ -42,9 +41,10 @@ function applyAccount(account) {
 function updateServiceSummary() {
   const services = selectedServices();
   const duration = services.reduce((sum, item) => sum + item.durationMinutes, 0);
-  const price = services.reduce((sum, item) => sum + item.price, 0);
   $("service-summary").firstElementChild.textContent = services.length ? `${services.length} servicio${services.length === 1 ? "" : "s"}` : "Selecciona uno o más servicios";
-  $("service-summary").lastElementChild.textContent = `${duration} min · ${money.format(price)}`;
+  // Sin precio a propósito: los precios los confirma una asesora (misma política que el
+  // chatbot de WhatsApp), no se cotizan solos en la app.
+  $("service-summary").lastElementChild.textContent = `${duration} min`;
   $("progress-bar").style.width = services.length ? "30%" : "12%";
   loadAvailability();
 }
@@ -59,7 +59,7 @@ async function loadCatalog() {
       input.type = "checkbox"; input.name = "service"; input.value = service.id;
       const copy = document.createElement("span");
       const strong = document.createElement("strong"); strong.textContent = service.name;
-      const small = document.createElement("small"); small.textContent = `${service.durationMinutes} min · ${money.format(service.price)}`;
+      const small = document.createElement("small"); small.textContent = `${service.durationMinutes} min`;
       copy.append(strong, small); label.append(input, copy); input.addEventListener("change", updateServiceSummary);
       return label;
     }));
