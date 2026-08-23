@@ -43,9 +43,35 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
+  // La SPA del personal (outputs/index.html) carga el cliente de Supabase desde jsdelivr y le
+  // habla directo a SUPABASE_URL (el auth legado nunca se migró, ver render.yaml) -- ambos
+  // hosts tienen que estar permitidos explícitamente o el CSP rompe el login del personal en
+  // vez de solo bloquear ataques. Derivado de env.SUPABASE_URL en vez de hardcodeado para que
+  // no se desactualice si el proyecto de Supabase cambia (mismo valor que
+  // scripts/write-supabase-config.mjs usa para outputs/supabase-config.js).
+  const supabaseOrigin = (() => {
+    try { return new URL(String(env.SUPABASE_URL || "")).origin; } catch { return null; }
+  })();
+  const supabaseConnectSrc = supabaseOrigin ? `${supabaseOrigin} ${supabaseOrigin.replace(/^https:/, "wss:")}` : "";
+  const staffCsp = [
+    "default-src 'self'",
+    "script-src 'self' https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline'",
+    `connect-src 'self' ${supabaseConnectSrc}`.trim(),
+    "img-src 'self' data:",
+    "font-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join("; ");
+
   app.use((req, res, next) => {
     res.set("X-Content-Type-Options", "nosniff");
     res.set("Referrer-Policy", "same-origin");
+    // Solo en respuestas HTML (la SPA) -- las respuestas JSON de /api/* no ejecutan nada en el
+    // navegador, así que no necesitan CSP, y aplicarlo ahí sin querer podría interferir con
+    // integraciones que sí leen ese header sobre JSON.
+    if (!req.path.startsWith("/api/")) res.set("Content-Security-Policy", staffCsp);
     if (req.path.startsWith("/api/")) res.set("Cache-Control", "no-store");
     next();
   });
@@ -150,6 +176,24 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     relayOtpHits.set(accountId, recent);
     return true;
   };
+
+  // bookingHits/relayOtpHits solo se filtraban al consultarlos -- una IP o cuenta que pega una
+  // sola vez se queda como entrada en el mapa para siempre, aunque su ventana ya expiró (fuga de
+  // memoria lenta, hallazgo de la auditoría de seguridad, 2026-08-23). Barrido periódico que
+  // borra las claves sin actividad reciente; unref() para no impedir que el proceso cierre limpio.
+  const pruneHitMap = (map, windowMs) => {
+    const now = Date.now();
+    for (const [key, timestamps] of map) {
+      const recent = timestamps.filter((time) => now - time < windowMs);
+      if (recent.length === 0) map.delete(key);
+      else map.set(key, recent);
+    }
+  };
+  const rateLimitSweep = setInterval(() => {
+    pruneHitMap(bookingHits, BOOKING_LIMIT_WINDOW_MS);
+    pruneHitMap(relayOtpHits, RELAY_OTP_REQUEST_LIMIT_WINDOW_MS);
+  }, 5 * 60 * 1000);
+  rateLimitSweep.unref?.();
 
   const requireManicuristaOrAbove = async (req, res) => {
     const session = await reservappSession(req);
