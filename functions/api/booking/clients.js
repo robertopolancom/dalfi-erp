@@ -56,6 +56,7 @@ export async function onRequestGet({ request, env }) {
         phone: c.telefono || "",
         email: c.correo || "",
         linkedContactLines: Array.isArray(c.lineasContactoVinculadas) ? c.lineasContactoVinculadas : [],
+        verified: Boolean(c.telefonoVerificado),
       }));
 
     const requestedPhone = new URL(request.url).searchParams.get("phone");

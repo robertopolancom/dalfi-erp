@@ -171,6 +171,7 @@ export async function onRequestPost({ request, env }) {
           client: completionClient,
           senderPhone: sourceConversationId || payload.senderPhone || null,
           source: source || "chatbot_whatsapp",
+          phoneVerified: completionClient.phoneVerified === true,
         });
         completedClientRecord = clientProfile;
         updatedApt = {
@@ -386,6 +387,7 @@ export async function onRequestPost({ request, env }) {
       client,
       senderPhone: sourceConversationId || payload.senderPhone || null,
       source,
+      phoneVerified: client?.phoneVerified === true,
     });
 
     let updatedClients = clientList;

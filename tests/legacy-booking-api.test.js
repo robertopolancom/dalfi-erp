@@ -159,6 +159,24 @@ test("GET /api/booking/clients?phone= resuelve una clienta existente por teléfo
   });
 });
 
+test("GET /api/booking/clients?phone= reporta verified=false cuando la clienta no tiene el teléfono verificado", async () => {
+  await withServer(baseDoc(), async (base) => {
+    const res = await fetch(`${base}/api/booking/clients?phone=8095551111`, { headers: { "x-chatbot-secret": CHATBOT_SECRET } });
+    const body = await res.json();
+    assert.equal(body.client.verified, false);
+  });
+});
+
+test("GET /api/booking/clients?phone= reporta verified=true cuando la clienta sí tiene el teléfono verificado", async () => {
+  const doc = baseDoc();
+  doc.clientes[0].telefonoVerificado = true;
+  await withServer(doc, async (base) => {
+    const res = await fetch(`${base}/api/booking/clients?phone=8095551111`, { headers: { "x-chatbot-secret": CHATBOT_SECRET } });
+    const body = await res.json();
+    assert.equal(body.client.verified, true);
+  });
+});
+
 test("POST /api/booking/clients crea una clienta nueva cuando el teléfono no existe", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/clients`, {
@@ -189,6 +207,46 @@ test("POST /api/booking/confirm: la primera reserva tiene éxito y la segunda a 
     const data2 = await res2.json();
     assert.equal(res2.status, 409);
     assert.equal(data2.code, "SLOT_NO_LONGER_AVAILABLE");
+  });
+});
+
+test("POST /api/booking/confirm: client.phoneVerified=true marca a la clienta nueva como verificada en el ERP", async () => {
+  await withServer(baseDoc(), async (base) => {
+    const res = await fetch(`${base}/api/booking/confirm`, {
+      method: "POST", headers: chatbotHeaders,
+      body: JSON.stringify({
+        idempotencyKey: "IDEM-VERIFIED-1", client: { name: "Carla Verificada", phone: "8095557777", phoneVerified: true },
+        serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
+        requestedStartAt: `${FUTURE_DATE}T09:00:00`,
+        collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
+      }),
+    });
+    assert.equal(res.status, 200);
+
+    const lookup = await fetch(`${base}/api/booking/clients?phone=8095557777`, { headers: { "x-chatbot-secret": CHATBOT_SECRET } });
+    const body = await lookup.json();
+    assert.equal(body.found, true);
+    assert.equal(body.client.verified, true);
+  });
+});
+
+test("POST /api/booking/confirm: sin phoneVerified, la clienta nueva queda sin verificar", async () => {
+  await withServer(baseDoc(), async (base) => {
+    const res = await fetch(`${base}/api/booking/confirm`, {
+      method: "POST", headers: chatbotHeaders,
+      body: JSON.stringify({
+        idempotencyKey: "IDEM-UNVERIFIED-1", client: { name: "Dana Sin Verificar", phone: "8095556666" },
+        serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
+        requestedStartAt: `${FUTURE_DATE}T10:00:00`,
+        collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
+      }),
+    });
+    assert.equal(res.status, 200);
+
+    const lookup = await fetch(`${base}/api/booking/clients?phone=8095556666`, { headers: { "x-chatbot-secret": CHATBOT_SECRET } });
+    const body = await lookup.json();
+    assert.equal(body.found, true);
+    assert.equal(body.client.verified, false);
   });
 });
 
