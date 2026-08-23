@@ -45,8 +45,20 @@ function updateServiceSummary() {
   // Sin precio a propósito: los precios los confirma una asesora (misma política que el
   // chatbot de WhatsApp), no se cotizan solos en la app.
   $("service-summary").lastElementChild.textContent = `${duration} min`;
-  $("progress-bar").style.width = services.length ? "30%" : "12%";
-  loadAvailability();
+}
+
+// Reserva en pasos: 0=portada, 1=servicios, 2=día, 3=horario por manicurista, 4=identificarse
+// y confirmar. Cada paso es un <div class="wizard-step" data-step="N"> -- goToStep solo
+// muestra/oculta, no reinicia nada de lo ya elegido en pasos anteriores.
+const WIZARD_STEP_PROGRESS = { 0: 8, 1: 20, 2: 40, 3: 60, 4: 85 };
+function goToStep(step) {
+  state.wizardStep = step;
+  document.querySelectorAll(".wizard-step").forEach((panel) => {
+    panel.classList.toggle("hidden", Number(panel.dataset.step) !== step);
+  });
+  $("progress-bar").style.width = `${WIZARD_STEP_PROGRESS[step] ?? 8}%`;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (step === 3) loadAvailability();
 }
 
 async function loadCatalog() {
@@ -81,31 +93,53 @@ async function loadSession() {
   catch { applyAccount(null); }
 }
 
+// Paso 3: consulta /api/fast-booking/availability SIN staffId -- el motor ya devuelve, en un
+// solo llamado, los horarios libres de TODAS las manicuristas elegibles para los servicios
+// pedidos (cada slot trae su propio staffId/staffName). Se agrupan en una columna por
+// manicurista para que la clienta compare y elija directamente cuál y a qué hora, en vez de
+// tener que elegir una manicurista a ciegas antes de ver si tiene espacio.
 async function loadAvailability() {
   const serviceIds = selectedServiceIds();
-  const staffId = $("staff").value;
   const date = $("date").value;
-  state.selectedSlot = null; $("time").value = "";
-  if (!serviceIds.length || !staffId || !date) {
-    $("time-field").disabled = true;
-    $("slots").innerHTML = '<p class="empty">Selecciona servicios, manicurista y fecha.</p>';
+  state.selectedSlot = null; $("time").value = ""; $("staff").value = "";
+  const board = $("staff-slots-board");
+  if (!serviceIds.length || !date) {
+    message($("availability-message"), "Selecciona servicios y una fecha antes de este paso.");
+    board.replaceChildren();
     return;
   }
-  $("time-field").disabled = true; $("slots").innerHTML = '<p class="empty">Consultando agenda…</p>';
+  message($("availability-message"), "Consultando agenda…", true);
+  board.replaceChildren();
   try {
-    const result = await api(`/api/fast-booking/availability?serviceIds=${encodeURIComponent(serviceIds.join(","))}&staffId=${encodeURIComponent(staffId)}&date=${date}`);
-    $("time-field").disabled = false; $("slots").replaceChildren();
-    if (!result.slots.length) $("slots").innerHTML = '<p class="empty">No quedan horarios para este día. Prueba otra fecha.</p>';
-    for (const slot of result.slots) {
-      const button = document.createElement("button"); button.type = "button"; button.className = "slot";
-      button.textContent = new Date(`2000-01-01T${slot.time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
-      button.addEventListener("click", () => {
-        document.querySelectorAll(".slot").forEach((item) => item.classList.remove("selected"));
-        button.classList.add("selected"); state.selectedSlot = slot; $("time").value = slot.time; $("progress-bar").style.width = "65%";
-      });
-      $("slots").append(button);
+    const result = await api(`/api/fast-booking/availability?serviceIds=${encodeURIComponent(serviceIds.join(","))}&date=${date}`);
+    if (!result.slots.length) {
+      message($("availability-message"), "No quedan horarios para este día con ninguna manicurista. Prueba otra fecha.");
+      return;
     }
-  } catch (error) { $("slots").innerHTML = `<p class="empty">${error.message}</p>`; }
+    message($("availability-message"));
+    const byStaff = new Map();
+    for (const slot of result.slots) {
+      if (!byStaff.has(slot.staffId)) byStaff.set(slot.staffId, { staffName: slot.staffName, slots: [] });
+      byStaff.get(slot.staffId).slots.push(slot);
+    }
+    board.replaceChildren(...[...byStaff.entries()].map(([staffId, group]) => {
+      const column = document.createElement("section"); column.className = "staff-slots-column";
+      const heading = document.createElement("h3"); heading.textContent = group.staffName; column.append(heading);
+      const list = document.createElement("div"); list.className = "slots"; column.append(list);
+      for (const slot of group.slots) {
+        const button = document.createElement("button"); button.type = "button"; button.className = "slot";
+        button.textContent = new Date(`2000-01-01T${slot.time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
+        button.addEventListener("click", () => {
+          document.querySelectorAll(".slot").forEach((item) => item.classList.remove("selected"));
+          button.classList.add("selected");
+          state.selectedSlot = slot; $("time").value = slot.time; $("staff").value = staffId;
+          goToStep(4);
+        });
+        list.append(button);
+      }
+      return column;
+    }));
+  } catch (error) { message($("availability-message"), error.message); }
 }
 
 function requireBookingSelection(targetMessage) {
@@ -157,6 +191,22 @@ function showBooking() {
   $("agenda-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("booking-card").classList.remove("hidden");
   $("agenda-tab").classList.remove("active"); $("booking-tab").classList.add("active");
 }
+
+$("start-booking").addEventListener("click", () => goToStep(1));
+$("step1-back").addEventListener("click", () => goToStep(0));
+$("step1-next").addEventListener("click", () => {
+  if (!selectedServiceIds().length) return message($("booking-message"), "Selecciona al menos un servicio.");
+  message($("booking-message"));
+  goToStep(2);
+});
+$("step2-back").addEventListener("click", () => goToStep(1));
+$("step2-next").addEventListener("click", () => {
+  if (!$("date").value) return message($("booking-message"), "Elige una fecha.");
+  message($("booking-message"));
+  goToStep(3);
+});
+$("step3-back").addEventListener("click", () => goToStep(2));
+$("step4-back").addEventListener("click", () => goToStep(3));
 
 $("open-login").addEventListener("click", () => $("login-dialog").showModal());
 $("close-login").addEventListener("click", () => $("login-dialog").close());
@@ -288,7 +338,10 @@ $("booking-form").addEventListener("submit", async (event) => {
     const person = state.catalog.staff.find((item) => item.id === $("staff").value)?.name;
     $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
     $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden"); window.scrollTo({ top: 0, behavior: "smooth" });
-  } catch (error) { message($("booking-message"), error.message); if (error.body?.conflict) loadAvailability(); }
+  } catch (error) {
+    message($("booking-message"), error.message);
+    if (error.body?.conflict) goToStep(3); // el horario se ocupó -- vuelve a elegir de la lista fresca
+  }
   finally { button.disabled = false; button.textContent = "Confirmar reserva"; }
 });
 
@@ -323,10 +376,10 @@ $("agenda-date").addEventListener("change", showAgenda);
 $("agenda-prev").addEventListener("click", () => { const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() - 1); $("agenda-date").value = date.toISOString().slice(0, 10); showAgenda(); });
 $("agenda-next").addEventListener("click", () => { const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() + 1); $("agenda-date").value = date.toISOString().slice(0, 10); showAgenda(); });
 $("new-booking").addEventListener("click", () => location.reload());
-[$("staff"), $("date")].forEach((element) => element.addEventListener("change", loadAvailability));
 
 async function boot() {
   await Promise.all([loadCatalog(), loadSession()]);
+  goToStep(0);
 }
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 boot();

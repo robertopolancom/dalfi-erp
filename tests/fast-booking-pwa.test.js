@@ -73,6 +73,26 @@ test("PWA publica catálogo y disponibilidad", async () => {
   });
 });
 
+test("GET /api/fast-booking/availability sin staffId consulta TODAS las manicuristas (paso 3 del wizard)", async () => {
+  const availabilityCalls = [];
+  const store = bookingStore();
+  const originalAvailability = store.availability.bind(store);
+  store.availability = async (input) => { availabilityCalls.push(input); return originalAvailability(input); };
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/availability?serviceIds=11111111-1111-4111-8111-111111111111&date=2026-08-15`);
+    assert.equal(response.status, 200);
+    assert.equal(availabilityCalls.length, 1);
+    assert.equal(availabilityCalls[0].staffId, undefined, "sin staffId en la URL, no debe forzarse ningún colaborador específico");
+  }, undefined, store);
+});
+
+test("GET /api/fast-booking/availability sin fecha responde 400 sin exigir staffId", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/fast-booking/availability?serviceIds=11111111-1111-4111-8111-111111111111`);
+    assert.equal(response.status, 400);
+  });
+});
+
 test("PWA evita cliente duplicado por teléfono (personal autorizado)", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/fast-booking/clients`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer staff-token" }, body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8090001111" }) });

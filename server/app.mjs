@@ -569,11 +569,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
 
     app.get("/api/fast-booking/availability", bookingRateLimit, async (req, res, next) => {
       const serviceIds = cleanServiceIds(req.query.serviceIds || req.query.serviceId);
+      // staffId es opcional a propósito: sin él, bookingStore.availability() ya devuelve los
+      // horarios de TODAS las manicuristas elegibles para ese servicio en un solo llamado (cada
+      // slot trae su staffId/staffName) -- es lo que usa el paso 3 del wizard para mostrar el
+      // día completo por manicurista en una sola página.
       const staffId = cleanText(req.query.staffId, 64);
       const date = cleanText(req.query.date, 10);
-      if (!serviceIds.length || !staffId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Servicios, colaboradora y fecha son obligatorios." });
+      if (!serviceIds.length || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Servicios y fecha son obligatorios." });
       try {
-        const result = await bookingStore.availability({ serviceIds, staffId, date });
+        const result = await bookingStore.availability({ serviceIds, staffId: staffId || undefined, date });
         if (result.missing) return res.status(404).json({ error: "Servicio o colaboradora no disponible." });
         res.json(result);
       } catch (error) { next(error); }

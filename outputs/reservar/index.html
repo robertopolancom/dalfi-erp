@@ -25,50 +25,64 @@
     <section class="card" id="booking-card">
       <div class="progress" aria-label="Progreso"><span id="progress-bar"></span></div>
       <p class="kicker" id="mode-label">Reserva rápida</p>
-      <p class="tagline">Tu forma rápida de reservar tu cita en Dalfi Studio</p>
-      <h2>Elige tus servicios</h2>
-      <p class="intro">Puedes combinar varios servicios. Calculamos automáticamente el tiempo total.</p>
+
+      <div class="wizard-step" data-step="0">
+        <p class="tagline">Tu forma rápida de reservar tu cita en Dalfi Studio</p>
+        <h2>Reserva en 3 pasos</h2>
+        <p class="intro">Elige tus servicios, el día, y el horario con la manicurista que prefieras — todo en un mismo lugar.</p>
+        <button class="primary" id="start-booking" type="button">Reservar</button>
+      </div>
 
       <form id="booking-form">
-        <fieldset class="service-field">
-          <legend>Servicios</legend>
-          <div class="service-list" id="service-list"><p class="empty">Cargando servicios…</p></div>
-          <div class="service-summary" id="service-summary"><span>Selecciona uno o más servicios</span><strong>0 min · RD$0</strong></div>
-        </fieldset>
-
-        <div class="field-grid">
-          <label>Manicurista
-            <select id="staff" required><option value="">Selecciona una especialista</option></select>
-          </label>
-          <label>Fecha
-            <input id="date" type="date" required />
-          </label>
+        <div class="message" id="booking-message" role="status"></div>
+        <div class="wizard-step hidden" data-step="1">
+          <h2>Paso 1 · Elige tus servicios</h2>
+          <p class="intro">Puedes combinar varios servicios. Calculamos automáticamente el tiempo total.</p>
+          <fieldset class="service-field">
+            <legend>Servicios</legend>
+            <div class="service-list" id="service-list"><p class="empty">Cargando servicios…</p></div>
+            <div class="service-summary" id="service-summary"><span>Selecciona uno o más servicios</span><strong>0 min</strong></div>
+          </fieldset>
+          <div class="step-actions"><button class="secondary" id="step1-back" type="button">Atrás</button><button class="primary" id="step1-next" type="button">Siguiente: elegir día</button></div>
         </div>
 
-        <fieldset id="time-field" disabled>
-          <legend>Hora disponible</legend>
-          <div class="slots" id="slots"><p class="empty">Selecciona servicios, manicurista y fecha.</p></div>
+        <div class="wizard-step hidden" data-step="2">
+          <h2>Paso 2 · Elige el día</h2>
+          <label class="hidden">Manicurista<select id="staff"><option value="">Cualquiera</option></select></label>
+          <label>Fecha<input id="date" type="date" required /></label>
+          <div class="step-actions"><button class="secondary" id="step2-back" type="button">Atrás</button><button class="primary" id="step2-next" type="button">Siguiente: ver horarios</button></div>
+        </div>
+
+        <div class="wizard-step hidden" data-step="3">
+          <h2>Paso 3 · Elige horario y manicurista</h2>
+          <p class="intro">Estos son los horarios libres de cada manicurista ese día para lo que elegiste.</p>
           <input id="time" type="hidden" required />
-        </fieldset>
+          <div class="message" id="availability-message"></div>
+          <div class="staff-slots-board" id="staff-slots-board"></div>
+          <div class="step-actions"><button class="secondary" id="step3-back" type="button">Atrás</button></div>
+        </div>
 
-        <section class="client-box" id="guest-access">
-          <div><span class="step-dot">1</span><div><strong>Identifícate para reservar</strong><small>Puedes revisar horarios como invitada. Para confirmar necesitas credenciales.</small></div></div>
-          <div class="access-actions"><button class="secondary" id="open-login" type="button">Ya tengo cuenta</button><button class="new-client" id="open-client" type="button">Es mi primera vez</button></div>
-        </section>
+        <div class="wizard-step hidden" data-step="4">
+          <h2>Último paso · Confirma tu cita</h2>
+          <section class="client-box" id="guest-access">
+            <div><span class="step-dot">1</span><div><strong>Identifícate para reservar</strong><small>Puedes revisar horarios como invitada. Para confirmar necesitas credenciales.</small></div></div>
+            <div class="access-actions"><button class="secondary" id="open-login" type="button">Ya tengo cuenta</button><button class="new-client" id="open-client" type="button">Es mi primera vez</button></div>
+          </section>
 
-        <section class="client-box hidden" id="employee-client">
-          <div><span class="step-dot">1</span><div><strong>Cliente de la cita</strong><small>Todo el equipo puede reservar para una clienta registrada.</small></div></div>
-          <label>Buscar por nombre o teléfono<input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" /></label>
-          <div class="search-results" id="client-results"></div>
-          <button class="new-client compact" id="employee-new-client" type="button">Es su primera vez</button>
-        </section>
+          <section class="client-box hidden" id="employee-client">
+            <div><span class="step-dot">1</span><div><strong>Cliente de la cita</strong><small>Todo el equipo puede reservar para una clienta registrada.</small></div></div>
+            <label>Buscar por nombre o teléfono<input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" /></label>
+            <div class="search-results" id="client-results"></div>
+            <button class="new-client compact" id="employee-new-client" type="button">Es su primera vez</button>
+          </section>
 
-        <div class="selected-client hidden" id="selected-client" aria-live="polite"></div>
-        <label>Nota <span>(opcional)</span><textarea id="notes" rows="3" maxlength="500" placeholder="Diseño, preferencia o información importante"></textarea></label>
-        <label class="trap" aria-hidden="true">Sitio web<input id="website" tabindex="-1" autocomplete="off" /></label>
-        <div class="message" id="booking-message" role="status"></div>
-        <button class="primary" id="submit-booking" type="submit">Confirmar reserva</button>
-        <p class="policy">Se requiere un depósito de <strong>RD$500</strong>. La cita se crea en Dalfi y se publica en Google Calendar sin permitir cambios desde Google.</p>
+          <div class="selected-client hidden" id="selected-client" aria-live="polite"></div>
+          <label>Nota <span>(opcional)</span><textarea id="notes" rows="3" maxlength="500" placeholder="Diseño, preferencia o información importante"></textarea></label>
+          <label class="trap" aria-hidden="true">Sitio web<input id="website" tabindex="-1" autocomplete="off" /></label>
+          <button class="primary" id="submit-booking" type="submit">Confirmar reserva</button>
+          <p class="policy">Se requiere un depósito de <strong>RD$500</strong>. La cita se crea en Dalfi y se publica en Google Calendar sin permitir cambios desde Google.</p>
+          <div class="step-actions"><button class="secondary" id="step4-back" type="button">Atrás</button></div>
+        </div>
       </form>
     </section>
 
