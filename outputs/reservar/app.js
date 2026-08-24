@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0 };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0, pendingBookingStart: false };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -32,6 +32,9 @@ function applyAccount(account) {
   state.client = account?.role === "clienta" ? { id: account.clientId, name: account.name } : null;
   $("account-button").textContent = account ? account.name : "Entrar";
   $("logout-link").classList.toggle("hidden", !account);
+  // Agenda/panel de personal es una función de cuenta identificada -- sin sesión no debe ni
+  // aparecer el botón (pedido explícito de diseño).
+  $("agenda-tab").classList.toggle("hidden", !account);
   $("guest-access").classList.toggle("hidden", Boolean(account));
   $("employee-client").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   const isAdmin = Boolean(account) && ["administradora", "superadministrador"].includes(account.role);
@@ -397,7 +400,57 @@ function showBooking() {
   $("agenda-tab").classList.remove("active"); $("booking-tab").classList.add("active");
 }
 
-$("start-booking").addEventListener("click", () => goToStep(1));
+// Identificarse es lo PRIMERO al querer reservar, antes de elegir servicios -- pedido
+// explícito de diseño ("atención personalizada" desde el primer clic, no como último paso).
+// Si ya hay sesión (clienta o personal) pasa directo a elegir servicios, como antes.
+$("start-booking").addEventListener("click", () => {
+  if (state.account) return goToStep(1);
+  state.pendingBookingStart = true;
+  $("identify-dialog").showModal();
+});
+$("close-identify").addEventListener("click", () => { state.pendingBookingStart = false; $("identify-dialog").close(); });
+$("identify-login").addEventListener("click", () => {
+  $("identify-dialog").close();
+  message($("login-message"));
+  $("login-dialog").showModal();
+});
+$("identify-new").addEventListener("click", () => {
+  $("identify-dialog").close();
+  $("phone-check-value").value = "";
+  message($("phone-check-message"));
+  $("phone-check-dialog").showModal();
+});
+$("close-phone-check").addEventListener("click", () => $("phone-check-dialog").close());
+
+$("phone-check-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.submitter; button.disabled = true;
+  message($("phone-check-message"), "Buscando…", true);
+  const phone = $("phone-check-value").value;
+  try {
+    const result = await api("/api/reservapp/auth/check-phone", { method: "POST", body: JSON.stringify({ phone }) });
+    $("phone-check-dialog").close();
+    if (result.exists) {
+      // Ya hay cuenta activa con ese teléfono -- confirma por nombre antes de pedir la
+      // contraseña, en vez de simplemente rechazarla o crear una cuenta duplicada.
+      $("login-phone").value = phone;
+      message(
+        $("login-message"),
+        result.firstName
+          ? `Ya hay una clienta registrada con este teléfono a nombre de ${result.firstName}. ¿Eres tú? Ingresa tu contraseña para confirmar.`
+          : "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.",
+        true,
+      );
+      $("login-dialog").showModal();
+    } else {
+      // Sin cuenta activa (nueva, o pendiente de activar) -- sigue el registro normal, que ya
+      // reutiliza la ficha pendiente si existe en vez de crear una duplicada.
+      $("new-phone").value = phone;
+      openClientDialog({ forEmployee: false, requireSelection: false });
+    }
+  } catch (error) { message($("phone-check-message"), error.message); }
+  finally { button.disabled = false; }
+});
 $("step1-back").addEventListener("click", () => goToStep(0));
 $("step1-next").addEventListener("click", () => {
   if (!selectedServiceIds().length) return message($("booking-message"), "Selecciona al menos un servicio.");
@@ -429,7 +482,7 @@ $("close-client").addEventListener("click", () => $("client-dialog").close());
 // está validando esos datos. El personal (employee-new-client) SÍ está presente validando a
 // la clienta en persona, así que no tiene sentido hacerla esperar un código; crea la ficha al
 // instante contra /api/fast-booking/clients (mismo endpoint que ya usa la búsqueda existente).
-function openClientDialog({ forEmployee }) {
+function openClientDialog({ forEmployee, requireSelection = true }) {
   // El registro-invitada por WhatsApp (auto-servicio) guarda un borrador de UNA sola cita
   // (staff_id/appointment_date/appointment_time en una fila) -- no soporta todavía varias citas
   // vinculadas por groupId. En combo, solo el registro hecho por el personal funciona (crea la
@@ -445,12 +498,15 @@ function openClientDialog({ forEmployee }) {
   }
   state.clientDialogForEmployee = forEmployee;
   $("client-dialog-title").textContent = forEmployee ? "Registrar clienta" : "Crear mi acceso";
+  const hasSelection = Boolean(selectedServiceIds().length && $("staff").value && $("date").value && $("time").value);
   $("client-dialog-intro").textContent = forEmployee
     ? "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp."
-    : "Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido.";
+    : hasSelection
+      ? "Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido."
+      : "Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono y creas tu contraseña.";
   $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar clienta" : "Enviarme el código por WhatsApp";
   message($("client-message"));
-  if (requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
+  if (!requireSelection || requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
 }
 $("open-client").addEventListener("click", () => openClientDialog({ forEmployee: false }));
 $("employee-new-client").addEventListener("click", () => openClientDialog({ forEmployee: true }));
@@ -537,7 +593,8 @@ $("login-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/login", { method: "POST", body: JSON.stringify({ phone: $("login-phone").value, password: $("login-password").value }) });
     applyAccount(result.account); $("login-dialog").close(); $("login-form").reset(); message($("booking-message"), `Hola, ${result.account.name}.`, true);
-    if (!$("agenda-card").classList.contains("hidden")) showAgenda();
+    if (state.pendingBookingStart && result.account.role === "clienta") { state.pendingBookingStart = false; goToStep(1); }
+    else if (!$("agenda-card").classList.contains("hidden")) showAgenda();
   } catch (error) { message($("login-message"), error.message); }
   finally { button.disabled = false; }
 });
@@ -611,6 +668,10 @@ $("setup-form").addEventListener("submit", async (event) => {
       $("success-summary").textContent = `Cita confirmada. Referencia: ${result.appointment.reference}`;
     } else if (wasPasswordReset) {
       message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
+    } else if (state.pendingBookingStart) {
+      state.pendingBookingStart = false;
+      message($("booking-message"), `Cuenta creada. ¡Hola, ${result.account.name}!`, true);
+      goToStep(1);
     } else message($("booking-message"), result.bookingError || "Cuenta activada. Ya puedes reservar.", !result.bookingError);
   } catch (error) { message($("setup-message"), error.message); }
   finally { button.disabled = false; }

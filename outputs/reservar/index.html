@@ -24,7 +24,7 @@
 
     <nav class="app-nav" aria-label="Secciones">
       <button class="active" id="booking-tab" type="button">Nueva reserva</button>
-      <button id="agenda-tab" type="button">Agenda</button>
+      <button class="hidden" id="agenda-tab" type="button">Agenda</button>
     </nav>
 
     <section class="card" id="booking-card">
@@ -143,6 +143,20 @@
       <button class="secondary" id="new-booking" type="button">Hacer otra reserva</button>
     </section>
   </main>
+
+  <dialog id="identify-dialog"><form id="identify-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Antes de reservar</p><h2>¿Ya eres clienta registrada?</h2></div><button class="icon-button" id="close-identify" type="button" aria-label="Cerrar">×</button></div>
+    <p>Para darte atención personalizada, primero identifícate.</p>
+    <div class="access-actions"><button class="secondary" id="identify-login" type="button">Ya tengo cuenta</button><button class="new-client" id="identify-new" type="button">Es mi primera vez</button></div>
+  </form></dialog>
+
+  <dialog id="phone-check-dialog"><form id="phone-check-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2>Tu número de teléfono</h2></div><button class="icon-button" id="close-phone-check" type="button" aria-label="Cerrar">×</button></div>
+    <p>Así confirmamos si ya tienes una cuenta o creamos una nueva.</p>
+    <label>Teléfono<input id="phone-check-value" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <div class="message" id="phone-check-message" role="status"></div>
+    <button class="primary" type="submit">Continuar</button>
+  </form></dialog>
 
   <dialog id="client-dialog"><form id="client-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2 id="client-dialog-title">Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>

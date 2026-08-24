@@ -294,6 +294,24 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   };
 
   if (bookingStore) {
+    // El nuevo flujo pide identificarse ANTES de elegir servicios (pedido explícito de diseño:
+    // "atención personalizada" desde el primer clic en "Reservar", no al final). Para el botón
+    // "Es mi primera vez" primero solo se pide el teléfono -- este endpoint dice si ya existe
+    // una cuenta activa con ese número (y su primer nombre, para que confirme "sí, soy yo")
+    // antes de pedir nombre/apellido/correo completos. Mismo candado que request-setup: solo
+    // revela status==='active' (una cuenta pending/sin activar sigue el registro normal, que ya
+    // reutiliza esa misma ficha) y solo el primer nombre, nunca el resto de los datos.
+    app.post("/api/reservapp/auth/check-phone", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
+      try {
+        const existing = await bookingStore.accountByPhone(phone);
+        if (existing?.status !== "active") return res.json({ exists: false });
+        const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
+        res.json({ exists: true, firstName });
+      } catch (error) { next(error); }
+    });
+
     app.post("/api/reservapp/auth/request-setup", bookingRateLimit, async (req, res, next) => {
       if (req.body?.website) return res.status(204).end();
       const firstName = cleanText(req.body?.firstName, 80);
