@@ -129,8 +129,16 @@ async function loadCatalog() {
 }
 
 async function loadSession() {
-  try { applyAccount((await api("/api/reservapp/auth/me")).account); }
-  catch { applyAccount(null); }
+  try {
+    const { account } = await api("/api/reservapp/auth/me");
+    // Una clienta nunca debe abrir la app y encontrarse ya "logueada" -- si el dispositivo es
+    // compartido, mostraría el nombre/citas de la última clienta que reservó ahí. El cookie de
+    // sesión sigue vigente (no se cierra sesión), solo no se aplica automáticamente; si es
+    // ella, entra normal con su teléfono y contraseña. El personal sí mantiene su sesión de 30
+    // días -- comparten el tablet de recepción y no tiene sentido pedirles credenciales cada
+    // vez que abren la app.
+    applyAccount(account && account.role !== "clienta" ? account : null);
+  } catch { applyAccount(null); }
 }
 
 // Agrupa los slots devueltos por /api/fast-booking/availability en una columna por
@@ -411,7 +419,7 @@ $("step2-back-top").addEventListener("click", () => $("step2-back").click());
 $("step2-next-top").addEventListener("click", () => $("step2-next").click());
 $("step4-back").addEventListener("click", () => goToStep(3));
 
-$("open-login").addEventListener("click", () => $("login-dialog").showModal());
+$("open-login").addEventListener("click", () => { message($("login-message")); $("login-dialog").showModal(); });
 $("close-login").addEventListener("click", () => $("login-dialog").close());
 $("close-client").addEventListener("click", () => $("client-dialog").close());
 
@@ -478,7 +486,15 @@ $("client-form").addEventListener("submit", async (event) => {
     message($("verify-code-message")); $("verify-code-dialog").showModal();
   } catch (error) {
     message($("client-message"), error.message);
-    if (error.body?.accountExists) { $("client-dialog").close(); $("login-phone").value = $("new-phone").value; $("login-dialog").showModal(); }
+    if (error.body?.accountExists) {
+      $("client-dialog").close();
+      $("login-phone").value = $("new-phone").value;
+      $("login-dialog").showModal();
+      // Confirmación por nombre antes de pedirle la contraseña -- así sabe que no está
+      // creando una cuenta duplicada, solo iniciando sesión en la que ya existe.
+      const name = error.body.firstName;
+      message($("login-message"), name ? `Ya hay una clienta registrada con este teléfono a nombre de ${name}. ¿Eres tú? Ingresa tu contraseña para confirmar.` : "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", true);
+    }
   } finally { button.disabled = false; }
 });
 
@@ -529,7 +545,7 @@ $("login-form").addEventListener("submit", async (event) => {
 // Antes un solo botón hacía doble función (login/logout, texto "{nombre} · Salir") -- ahora
 // "cerrar sesión" es una acción explícita y separada, pedido de diseño para que no se confunda
 // con solo ver el nombre de la cuenta.
-$("account-button").addEventListener("click", () => { if (!state.account) $("login-dialog").showModal(); });
+$("account-button").addEventListener("click", () => { if (!state.account) { message($("login-message")); $("login-dialog").showModal(); } });
 $("logout-link").addEventListener("click", async () => {
   await api("/api/reservapp/auth/logout", { method: "POST" }).catch(() => {});
   applyAccount(null); showBooking();
