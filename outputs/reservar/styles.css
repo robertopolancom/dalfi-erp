@@ -116,6 +116,9 @@ dialog form{padding:28px}
 .account-button{border:1px solid #ddceac;background:rgba(255,255,255,.75);color:var(--brand-dark);font-weight:850;border-radius:999px;padding:10px 14px;cursor:pointer;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .account-group{margin-left:auto;display:flex;align-items:center;gap:10px}
 .app-nav{display:grid;grid-template-columns:1fr 1fr;gap:5px;background:rgba(255,255,255,.6);padding:5px;border-radius:16px;margin:0 4px 16px}
+/* Agenda (panel de personal / mis citas) solo existe una vez identificada -- sin sesión, la
+   pestaña queda oculta y "Nueva reserva" ocupa todo el ancho, en vez de dejar una mitad vacía. */
+.app-nav:has(#agenda-tab.hidden){grid-template-columns:1fr}
 .app-nav button{border:0;background:transparent;border-radius:12px;padding:11px;color:var(--muted);font-weight:850;cursor:pointer}
 .app-nav button.active{background:var(--brand-dark);color:#fff;box-shadow:0 7px 20px rgba(0,47,36,.2)}
 
@@ -194,7 +197,12 @@ dialog>.dialog-head{padding:28px 28px 12px}
   .date-controls input{flex:1}
   .field-grid.three{grid-template-columns:1fr}
   .access-actions{grid-template-columns:1fr}
-  .account-button{font-size:.75rem;max-width:38%;padding-inline:10px}
+  /* "Entrar"/"Cerrar sesión" nunca deben recortarse a una sola letra -- en vez de pelear por
+     ancho con el nombre de la marca, el grupo de cuenta baja a su propia fila con todo el
+     ancho disponible. */
+  .brand{flex-wrap:wrap}
+  .account-group{margin-left:0;width:100%;justify-content:flex-end}
+  .account-button{font-size:.75rem;max-width:none;padding-inline:10px}
   .step-actions,.step-actions-top{grid-template-columns:1fr!important}
   .staff-slots-board{grid-template-columns:1fr!important}
 }

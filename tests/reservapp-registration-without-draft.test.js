@@ -101,3 +101,38 @@ test("request-setup: teléfono con cuenta activa devuelve accountExists + solo e
     existingAccount: { status: "active", full_name: "Ana Gómez" },
   });
 });
+
+test("check-phone: cuenta activa devuelve exists:true y solo el primer nombre", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { exists: true, firstName: "Ana" });
+  }, { existingAccount: { status: "active", full_name: "Ana Gómez" } });
+});
+
+test("check-phone: sin cuenta, o cuenta pendiente de activar, devuelve exists:false (sigue el registro normal)", async () => {
+  await withServer(async (base) => {
+    const withoutAccount = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.deepEqual(await withoutAccount.json(), { exists: false });
+  });
+  await withServer(async (base) => {
+    const pending = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.deepEqual(await pending.json(), { exists: false });
+  }, { existingAccount: { status: "pending", full_name: "Ana Gómez" } });
+});
+
+test("check-phone: teléfono inválido, 400 sin llegar a consultar la cuenta", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "123" }),
+    });
+    assert.equal(response.status, 400);
+  });
+});

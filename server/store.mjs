@@ -482,6 +482,19 @@ export class NeonBookingStore {
     return result.rows[0] || null;
   }
 
+  // Fija una contraseña nueva a mano (ver POST /admin/accounts/:id/reset-password) y revoca toda
+  // sesión activa de esa cuenta -- si alguien más ya tenía sesión abierta con la contraseña
+  // vieja, no debe seguir teniéndola después de un restablecimiento por administración.
+  async resetAccountPassword({ id, passwordHash }) {
+    const result = await this.pool.query(
+      `update app.reservapp_accounts set password_hash=$2, updated_at=now() where id=$1 returning id`,
+      [id, passwordHash],
+    );
+    if (!result.rowCount) return null;
+    await this.pool.query("update app.reservapp_sessions set revoked_at=now() where account_id=$1 and revoked_at is null", [id]);
+    return true;
+  }
+
   // "Bloquear" tiene que impedir el login de verdad, no solo marcar la ficha -- el login
   // (POST /auth/login) exige reservapp_accounts.status='active', que es una tabla aparte de
   // app.clients. Si la clienta ya tiene cuenta de ReservApp, se suspende/reactiva junto con el

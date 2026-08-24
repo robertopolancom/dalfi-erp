@@ -294,6 +294,24 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   };
 
   if (bookingStore) {
+    // El nuevo flujo pide identificarse ANTES de elegir servicios (pedido explícito de diseño:
+    // "atención personalizada" desde el primer clic en "Reservar", no al final). Para el botón
+    // "Es mi primera vez" primero solo se pide el teléfono -- este endpoint dice si ya existe
+    // una cuenta activa con ese número (y su primer nombre, para que confirme "sí, soy yo")
+    // antes de pedir nombre/apellido/correo completos. Mismo candado que request-setup: solo
+    // revela status==='active' (una cuenta pending/sin activar sigue el registro normal, que ya
+    // reutiliza esa misma ficha) y solo el primer nombre, nunca el resto de los datos.
+    app.post("/api/reservapp/auth/check-phone", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
+      try {
+        const existing = await bookingStore.accountByPhone(phone);
+        if (existing?.status !== "active") return res.json({ exists: false });
+        const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
+        res.json({ exists: true, firstName });
+      } catch (error) { next(error); }
+    });
+
     app.post("/api/reservapp/auth/request-setup", bookingRateLimit, async (req, res, next) => {
       if (req.body?.website) return res.status(204).end();
       const firstName = cleanText(req.body?.firstName, 80);
@@ -476,6 +494,20 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, async (req, res, next) => {
       const phone = cleanText(req.body?.phone, 30);
       if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
+      // TEMPORAL (mismo interruptor que RESERVAPP_SKIP_PHONE_VERIFICATION, ver comentario junto a
+      // /auth/request-setup): saltarse la prueba de teléfono para CREAR una cuenta nueva es un
+      // riesgo aceptable, pero hacerlo para restablecer la contraseña de una cuenta YA ACTIVA no
+      // -- cualquiera que supiera el número de otra clienta podría robarle el acceso sin que
+      // llegue ningún código real. Mientras el bridge no pueda mandar ese código por WhatsApp, el
+      // autoservicio de "olvidé mi contraseña" queda apagado: solo administración puede
+      // restablecer una contraseña, con POST /api/reservapp/admin/accounts/:id/reset-password.
+      if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
+        return res.status(202).json({
+          pendingConfirmation: false,
+          selfServiceDisabled: true,
+          message: "Por ahora no podemos verificar tu teléfono por WhatsApp. Escríbenos o pide en el salón que la administración restablezca tu contraseña.",
+        });
+      }
       try {
         const account = await bookingStore.accountByPhone(phone);
         // Misma respuesta exista o no la cuenta -- este endpoint no debe servir para enumerar
@@ -584,6 +616,22 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const updated = await bookingStore.updateEmployeeAccount({ id: req.params.id, role, status });
         if (!updated) return res.status(404).json({ error: "Cuenta no encontrada." });
         res.json({ account: updated });
+      } catch (error) { next(error); }
+    });
+
+    // Válvula de escape mientras /auth/request-password-reset está apagado (ver comentario ahí
+    // arriba): administración fija la contraseña a mano, sin depender del código de WhatsApp.
+    // Sirve tanto para personal como para clientas -- reservapp_accounts.id es el mismo id que
+    // devuelve tanto listEmployeeAccounts como account_id en listClientsForAdmin.
+    app.post("/api/reservapp/admin/accounts/:id/reset-password", bookingRateLimit, async (req, res, next) => {
+      const password = String(req.body?.password || "");
+      if (!validPassword(password)) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres, una letra y un número." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede restablecer contraseñas." });
+        const updated = await bookingStore.resetAccountPassword({ id: req.params.id, passwordHash: await hashPassword(password) });
+        if (!updated) return res.status(404).json({ error: "Esa cuenta no existe." });
+        res.json({ ok: true });
       } catch (error) { next(error); }
     });
 

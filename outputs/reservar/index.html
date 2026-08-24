@@ -24,7 +24,7 @@
 
     <nav class="app-nav" aria-label="Secciones">
       <button class="active" id="booking-tab" type="button">Nueva reserva</button>
-      <button id="agenda-tab" type="button">Agenda</button>
+      <button class="hidden" id="agenda-tab" type="button">Agenda</button>
     </nav>
 
     <section class="card" id="booking-card">
@@ -144,6 +144,20 @@
     </section>
   </main>
 
+  <dialog id="identify-dialog"><form id="identify-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Antes de reservar</p><h2>¿Ya eres clienta registrada?</h2></div><button class="icon-button" id="close-identify" type="button" aria-label="Cerrar">×</button></div>
+    <p>Para darte atención personalizada, primero identifícate.</p>
+    <div class="access-actions"><button class="secondary" id="identify-login" type="button">Ya tengo cuenta</button><button class="new-client" id="identify-new" type="button">Es mi primera vez</button></div>
+  </form></dialog>
+
+  <dialog id="phone-check-dialog"><form id="phone-check-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2>Tu número de teléfono</h2></div><button class="icon-button" id="close-phone-check" type="button" aria-label="Cerrar">×</button></div>
+    <p>Así confirmamos si ya tienes una cuenta o creamos una nueva.</p>
+    <label>Teléfono<input id="phone-check-value" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <div class="message" id="phone-check-message" role="status"></div>
+    <button class="primary" type="submit">Continuar</button>
+  </form></dialog>
+
   <dialog id="client-dialog"><form id="client-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2 id="client-dialog-title">Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
     <p id="client-dialog-intro">Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido.</p>
@@ -164,7 +178,7 @@
 
   <dialog id="forgot-password-dialog"><form id="forgot-password-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Acceso seguro</p><h2>Restablecer contraseña</h2></div><button class="icon-button" id="close-forgot-password" type="button" aria-label="Cerrar">×</button></div>
-    <p>Te enviaremos por WhatsApp un código de 6 dígitos para restablecer tu contraseña.</p>
+    <p>Intentamos enviarte por WhatsApp un código de 6 dígitos. Si no está disponible por ahora, te lo decimos aquí.</p>
     <label>Teléfono<input id="forgot-password-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <div class="message" id="forgot-password-message"></div><button class="primary" type="submit">Enviarme el código por WhatsApp</button>
   </form></dialog>
@@ -188,6 +202,13 @@
     <label>Nueva contraseña<input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
     <label>Repetir contraseña<input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
     <div class="message" id="setup-message"></div><button class="primary" type="submit">Activar y confirmar cita</button>
+  </form></dialog>
+
+  <dialog id="admin-reset-password-dialog"><form id="admin-reset-password-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Solo administración</p><h2>Restablecer contraseña de <span id="admin-reset-password-name"></span></h2></div><button class="icon-button" id="close-admin-reset-password" type="button" aria-label="Cerrar">×</button></div>
+    <p>Debe tener 8 caracteres o más, al menos una letra y un número. La clienta deberá usarla la próxima vez que inicie sesión.</p>
+    <label>Nueva contraseña<input id="admin-reset-password-value" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <div class="message" id="admin-reset-password-message"></div><button class="primary" type="submit">Guardar contraseña</button>
   </form></dialog>
 
   <script src="./config.js"></script><script src="./app.js" defer></script>
