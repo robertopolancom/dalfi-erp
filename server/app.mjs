@@ -168,6 +168,26 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     return true;
   };
 
+  // Guard compartido por el panel "Configuración de usuarios" (banner promocional, listar/editar
+  // cuentas): misma regla que ya usaba POST /admin/accounts -- administradora/superadministrador
+  // de ReservApp, o el personal legado del ERP con canManageUsers cuando no hay cookie
+  // reservapp_session. No incluye el candado extra de "solo superadmin crea superadmin"; eso
+  // sigue siendo específico de asignar ese rol, no de esta sección en general.
+  const requireReservappAdmin = async (req, res) => {
+    const session = await reservappSession(req);
+    const sessionRole = session?.account.role;
+    let allowed = sessionRole && ["administradora", "superadministrador"].includes(sessionRole);
+    if (!allowed && !session) {
+      const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
+      allowed = !identity.error && Boolean(identity.permissions?.canManageUsers);
+    }
+    if (!allowed) {
+      res.status(403).json({ error: "Solo administración puede acceder a esta sección." });
+      return null;
+    }
+    return session;
+  };
+
   const requireManicuristaOrAbove = async (req, res) => {
     const session = await reservappSession(req);
     if (session && ["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) return session;
@@ -432,6 +452,106 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         if (error?.code === "23503") return res.status(400).json({ error: "La colaboradora seleccionada no existe." });
         next(error);
       }
+    });
+
+    // Banner promocional configurable: la misma lista cerrada de 5 temas que
+    // bridge/banner-generator.js en dalfi-chatbot-n8n (nunca colores libres, ni
+    // generados por IA ni escritos a mano -- el JSON en reservapp_settings solo
+    // guarda el nombre del tema, los hex de verdad viven acá, del lado del
+    // servidor que sirve la app pública).
+    const BANNER_THEMES = {
+      verde: { bgColor: "#002F24", textColor: "#FFFFFF" },
+      crema: { bgColor: "#F8F0DD", textColor: "#1A1712" },
+      dorado: { bgColor: "#F6E7C4", textColor: "#5B3A00" },
+      rojo: { bgColor: "#A5303F", textColor: "#FFFFFF" },
+      rosado: { bgColor: "#F6E1E5", textColor: "#5C1F2B" },
+    };
+    const BANNER_SETTING_KEY = "promo_banner";
+
+    app.get("/api/reservapp/banner", bookingRateLimit, async (_req, res, next) => {
+      try {
+        const saved = await bookingStore.getSetting(BANNER_SETTING_KEY);
+        if (!saved?.enabled || !saved?.text) return res.json({ enabled: false });
+        const theme = BANNER_THEMES[saved.theme] ? saved.theme : "verde";
+        res.json({ enabled: true, text: String(saved.text).slice(0, 140), theme, ...BANNER_THEMES[theme] });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/admin/banner/generate", bookingRateLimit, async (req, res, next) => {
+      if (!(await requireReservappAdmin(req, res))) return;
+      const instructions = cleanText(req.body?.instructions, 500);
+      const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+      const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+      if (!bridgeSecret) return res.status(200).json({ ok: false, code: "AI_CREDENTIAL_MISSING", error: "La generación con IA no está configurada." });
+      try {
+        const response = await fetchImpl(`${bridgeBase}/webhook/generate-banner`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+          body: JSON.stringify({ instructions }),
+        });
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || payload?.status !== "OK") {
+          return res.status(200).json({ ok: false, code: payload?.code || "AI_UNAVAILABLE", error: payload?.error || "No se pudo generar el banner." });
+        }
+        res.json({ ok: true, banner: payload.banner });
+      } catch (error) { next(error); }
+    });
+
+    app.put("/api/reservapp/admin/banner", bookingRateLimit, async (req, res, next) => {
+      const session = await requireReservappAdmin(req, res);
+      if (!session) return;
+      const enabled = Boolean(req.body?.enabled);
+      const text = cleanText(req.body?.text, 140);
+      const theme = BANNER_THEMES[req.body?.theme] ? req.body.theme : "verde";
+      if (enabled && !text) return res.status(400).json({ error: "Escribe el texto del banner o desactívalo." });
+      try {
+        await bookingStore.upsertSetting({ key: BANNER_SETTING_KEY, value: { enabled, text, theme }, updatedByAccountId: session.account?.id || null });
+        res.json({ enabled, text, theme, ...BANNER_THEMES[theme] });
+      } catch (error) { next(error); }
+    });
+
+    // Configuración de usuarios: listar y editar cuentas ReservApp existentes
+    // (staff y clientas) -- crear cuentas de staff sigue siendo
+    // POST /api/reservapp/admin/accounts, esto es lo que faltaba para
+    // bloquear/reactivar o cambiar de rol una cuenta ya creada.
+    app.get("/api/reservapp/admin/accounts", bookingRateLimit, async (req, res, next) => {
+      if (!(await requireReservappAdmin(req, res))) return;
+      const role = cleanText(req.query.role, 32);
+      try {
+        const accounts = await bookingStore.listAccounts({ role: RESERVAPP_ROLES.includes(role) ? role : null });
+        res.json({ accounts });
+      } catch (error) { next(error); }
+    });
+
+    app.patch("/api/reservapp/admin/accounts/:id", bookingRateLimit, async (req, res, next) => {
+      const session = await requireReservappAdmin(req, res);
+      if (!session) return;
+      const id = cleanText(req.params.id, 64);
+      const role = req.body?.role !== undefined ? cleanText(req.body.role, 32) : undefined;
+      const status = req.body?.status !== undefined ? cleanText(req.body.status, 32) : undefined;
+      if (role !== undefined && !RESERVAPP_ROLES.includes(role)) return res.status(400).json({ error: "Rol inválido." });
+      if (status !== undefined && !["active", "suspended"].includes(status)) return res.status(400).json({ error: "Estado inválido." });
+      // Solo un superadministrador puede asignar o quitar el rol superadministrador -- mismo
+      // candado que POST /admin/accounts, para que nadie se autoeleve.
+      if (role === "superadministrador" && session.account.role !== "superadministrador") {
+        return res.status(403).json({ error: "Solo un superadministrador puede asignar ese rol." });
+      }
+      if (id === session.account.id && (status === "suspended" || role)) {
+        return res.status(400).json({ error: "No puedes cambiar tu propio rol ni bloquearte a ti misma." });
+      }
+      try {
+        const target = await bookingStore.listAccounts({});
+        const current = target.find((a) => a.id === id);
+        if (!current) return res.status(404).json({ error: "Cuenta no encontrada." });
+        // El rol está atado 1:1 a un recurso ERP (client_id o staff_id, ver constraint de la
+        // tabla) -- una clienta nunca puede pasar a ser staff ni viceversa desde este panel,
+        // solo se le puede cambiar el estado.
+        if (role && role !== current.role && (role === "clienta" || current.role === "clienta")) {
+          return res.status(400).json({ error: "No se puede cambiar entre clienta y staff. Crea una cuenta nueva del tipo correcto." });
+        }
+        const updated = await bookingStore.updateAccount(id, { role, status });
+        res.json({ account: updated });
+      } catch (error) { next(error); }
     });
 
     // Relay OTP: cuando una MANICURISTA quiere agendar a una clienta que

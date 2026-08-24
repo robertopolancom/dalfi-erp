@@ -606,4 +606,56 @@ export class NeonBookingStore {
       : (await this.pool.query("select id,full_name from app.staff where status='active' order by full_name")).rows;
     return { date, visibility: account.role === "clienta" ? "own" : "team", staff, appointments: result.rows };
   }
+
+  async getSetting(key) {
+    const result = await this.pool.query("select value from app.reservapp_settings where key=$1", [key]);
+    return result.rows[0]?.value ?? null;
+  }
+
+  async upsertSetting({ key, value, updatedByAccountId = null }) {
+    await this.pool.query(
+      `insert into app.reservapp_settings (key,value,updated_by_account_id,updated_at)
+       values ($1,$2,$3,now())
+       on conflict (key) do update set value=$2,updated_by_account_id=$3,updated_at=now()`,
+      [key, value, updatedByAccountId],
+    );
+  }
+
+  // Cuentas de staff Y de clientas en una sola lista -- el panel "Configuración de usuarios"
+  // necesita poder bloquear/reactivar cualquiera de las dos, no solo el equipo.
+  async listAccounts({ role = null } = {}) {
+    const params = [];
+    let roleFilter = "";
+    if (role) {
+      params.push(role);
+      roleFilter = `and a.role=$${params.length}`;
+    }
+    const result = await this.pool.query(
+      `select a.id,a.role,a.status,a.phone_normalized,a.client_id,a.staff_id,
+              coalesce(c.full_name,s.full_name) full_name,a.created_at,a.last_login_at
+         from app.reservapp_accounts a
+         left join app.clients c on c.id=a.client_id
+         left join app.staff s on s.id=a.staff_id
+        where true ${roleFilter}
+        order by (a.role='clienta'),a.role,coalesce(c.full_name,s.full_name)`,
+      params,
+    );
+    return result.rows;
+  }
+
+  async updateAccount(id, { role, status }) {
+    const sets = [];
+    const params = [];
+    if (role) { params.push(role); sets.push(`role=$${params.length}`); }
+    if (status) { params.push(status); sets.push(`status=$${params.length}`); }
+    if (!sets.length) return null;
+    params.push(id);
+    const result = await this.pool.query(
+      `update app.reservapp_accounts set ${sets.join(",")},updated_at=now()
+        where id=$${params.length}
+        returning id,role,status,phone_normalized,client_id,staff_id`,
+      params,
+    );
+    return result.rows[0] || null;
+  }
 }
