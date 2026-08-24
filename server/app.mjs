@@ -339,7 +339,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         }
         if (!customer) return res.status(409).json({ error: "No pudimos vincular el teléfono con una ficha de cliente." });
         const existing = await bookingStore.accountByPhone(phone);
-        if (existing?.status === "active") return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true });
+        if (existing?.status === "active") {
+          // Primer nombre nada más -- suficiente para que confirme "sí, soy yo" sin exponerle
+          // el apellido/nombre completo a quien haya escrito un teléfono que no es suyo.
+          const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
+          return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true, firstName });
+        }
         const account = await bookingStore.ensureClientAccount({ clientId: customer.id, phone });
         const code = generateOtpCode();
         const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();

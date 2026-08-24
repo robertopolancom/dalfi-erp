@@ -7,7 +7,7 @@ function documentStore() {
   return { async read() { return { data: {}, updatedAt: "2026-08-13T00:00:00.000Z", version: 1 }; } };
 }
 
-function bookingStore() {
+function bookingStore({ existingClient = null, existingAccount = null } = {}) {
   const prepareSetupCalls = [];
   const availabilityCalls = [];
   return {
@@ -17,19 +17,19 @@ function bookingStore() {
       availabilityCalls.push(input);
       return { durationMinutes: 60, slots: [{ staffId: "22222222-2222-4222-8222-222222222222", staffName: "Dalfina", time: "10:00" }] };
     },
-    async resolveClient() { return null; },
+    async resolveClient() { return existingClient; },
     async createClient() {
       return { client: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" }, previousDocument: {}, document: {} };
     },
-    async accountByPhone() { return null; },
+    async accountByPhone() { return existingAccount; },
     async ensureClientAccount() { return { id: "55555555-5555-4555-8555-555555555555" }; },
     async prepareSetup(input) { prepareSetupCalls.push(input); return { outbox: { id: "outbox-1" } }; },
     async markWhatsApp() {},
   };
 }
 
-async function withServer(run) {
-  const store = bookingStore();
+async function withServer(run, storeOptions) {
+  const store = bookingStore(storeOptions);
   const app = createApp({
     store: documentStore(), bookingStore: store,
     fetchImpl: async () => new Response(JSON.stringify({ status: "SENT" }), { status: 200 }),
@@ -82,5 +82,22 @@ test("request-setup: un borrador completo sigue validando disponibilidad como an
     assert.equal(response.status, 202);
     assert.equal(store.availabilityCalls.length, 1);
     assert.ok(store.prepareSetupCalls[0].draft);
+  });
+});
+
+test("request-setup: teléfono con cuenta activa devuelve accountExists + solo el primer nombre (para que confirme que es ella)", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234" }),
+    });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.accountExists, true);
+    assert.equal(body.firstName, "Ana");
+    assert.equal(store.prepareSetupCalls.length, 0, "no debe generar un código nuevo para una cuenta ya activa");
+  }, {
+    existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" },
+    existingAccount: { status: "active", full_name: "Ana Gómez" },
   });
 });
