@@ -20,13 +20,14 @@ function bookingStore({ account = null } = {}) {
   };
 }
 
-async function withServer(store, run, { fetchImpl } = {}) {
+async function withServer(store, run, { fetchImpl, env: extraEnv } = {}) {
   const app = createApp({
     store: documentStore(), bookingStore: store,
     fetchImpl: fetchImpl || (async () => new Response(JSON.stringify({ status: "SENT" }), { status: 200 })),
     env: {
       SUPABASE_URL: "https://example.supabase.co", SUPABASE_PUBLISHABLE_KEY: "test", SUPABASE_SERVICE_ROLE_KEY: "test",
       ERP_WEBHOOK_SECRET: "test-secret",
+      ...extraEnv,
     },
   });
   const server = app.listen(0, "127.0.0.1");
@@ -101,4 +102,28 @@ test("POST /api/reservapp/auth/request-password-reset: el mensaje de WhatsApp ha
   });
   assert.match(sentBody.whatsappFormattedText, /restablecer tu contraseña/i);
   assert.doesNotMatch(sentBody.whatsappFormattedText, /crear tu contraseña/i);
+});
+
+// TEMPORAL: mientras RESERVAPP_SKIP_PHONE_VERIFICATION esté activo (ver comentario junto a
+// /auth/request-password-reset en server/app.mjs), restablecer una contraseña sin poder mandar
+// un código real por WhatsApp dejaría que cualquiera que supiera el teléfono de otra clienta le
+// robara la cuenta -- así que el autoservicio queda apagado y solo administración puede
+// restablecer contraseñas (POST /admin/accounts/:id/reset-password).
+test("POST /api/reservapp/auth/request-password-reset: con RESERVAPP_SKIP_PHONE_VERIFICATION=true no manda WhatsApp ni prepara OTP", async () => {
+  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez" } });
+  let bridgeCalled = false;
+  await withServer(store, async (base) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.equal(response.status, 202);
+    const body = await response.json();
+    assert.equal(body.selfServiceDisabled, true);
+    assert.equal(body.pendingConfirmation, false);
+    assert.equal(store.prepareSetupCalls.length, 0);
+    assert.equal(bridgeCalled, false);
+  }, {
+    env: { RESERVAPP_SKIP_PHONE_VERIFICATION: "true" },
+    fetchImpl: async () => { bridgeCalled = true; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); },
+  });
 });

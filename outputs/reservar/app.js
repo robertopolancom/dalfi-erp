@@ -564,6 +564,10 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), "Enviando…", true);
   try {
     const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
+    // TEMPORAL: mientras el backend tenga apagado el autoservicio (ver comentario junto a
+    // /auth/request-password-reset en server/app.mjs), no hay código que verificar -- solo
+    // mostramos el mensaje que indica pedirle a administración que restablezca la contraseña.
+    if (result.selfServiceDisabled) { $("forgot-password-dialog").close(); message($("booking-message"), result.message, true); return; }
     state.passwordResetFlow = true; $("forgot-password-dialog").close(); message($("booking-message"), result.message, true);
     $("verify-code-phone").value = $("forgot-password-phone").value; $("verify-code-code").value = "";
     message($("verify-code-message")); $("verify-code-dialog").showModal();
@@ -753,6 +757,15 @@ async function loadClientsAdmin(query = "") {
         } catch (error) { message($("clients-admin-message"), error.message); toggle.disabled = false; }
       });
       actions.append(toggle);
+      // Mientras el autoservicio de "olvidé mi contraseña" esté apagado (ver comentario junto a
+      // /auth/request-password-reset), esta es la única forma de restablecer la contraseña de
+      // una clienta -- solo aplica si ya tiene cuenta de ReservApp (account_id).
+      if (client.account_id) {
+        const resetPassword = document.createElement("button"); resetPassword.type = "button"; resetPassword.className = "admin-row-action";
+        resetPassword.textContent = "Restablecer contraseña";
+        resetPassword.addEventListener("click", () => openAdminResetPassword({ accountId: client.account_id, name: client.full_name }));
+        actions.append(resetPassword);
+      }
       row.append(name, phone, status, actions);
       return row;
     }));
@@ -761,6 +774,28 @@ async function loadClientsAdmin(query = "") {
 $("clients-admin-search").addEventListener("input", () => {
   clearTimeout(clientsAdminSearchTimer);
   clientsAdminSearchTimer = setTimeout(() => loadClientsAdmin($("clients-admin-search").value.trim()), 300);
+});
+
+let adminResetPasswordAccountId = null;
+function openAdminResetPassword({ accountId, name }) {
+  adminResetPasswordAccountId = accountId;
+  $("admin-reset-password-name").textContent = name || "";
+  $("admin-reset-password-value").value = "";
+  message($("admin-reset-password-message"));
+  $("admin-reset-password-dialog").showModal();
+}
+$("close-admin-reset-password").addEventListener("click", () => $("admin-reset-password-dialog").close());
+$("admin-reset-password-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); const button = event.submitter; button.disabled = true;
+  message($("admin-reset-password-message"), "Guardando…", true);
+  try {
+    await api(`/api/reservapp/admin/accounts/${adminResetPasswordAccountId}/reset-password`, {
+      method: "POST", body: JSON.stringify({ password: $("admin-reset-password-value").value }),
+    });
+    $("admin-reset-password-dialog").close();
+    message($("clients-admin-message"), "Contraseña actualizada.", true);
+  } catch (error) { message($("admin-reset-password-message"), error.message); }
+  finally { button.disabled = false; }
 });
 
 // ---------- Banner promocional con IA (Fase 6) ----------
