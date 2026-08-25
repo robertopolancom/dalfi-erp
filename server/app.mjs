@@ -590,6 +590,16 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       catch (error) { next(error); }
     });
 
+    // "Citas activas" / historial para una clienta -- a diferencia de /agenda (un día, vista de
+    // equipo), esta ruta es exclusiva de cuentas clienta y siempre usa su propio client_id de la
+    // sesión, nunca uno recibido del cliente.
+    app.get("/api/reservapp/my-appointments", requireReservapp, async (req, res, next) => {
+      if (req.reservapp.account.role !== "clienta") return res.status(403).json({ error: "Solo disponible para cuentas de clienta." });
+      const scope = req.query.scope === "history" ? "history" : "active";
+      try { res.json({ appointments: await bookingStore.listClientAppointments({ clientId: req.reservapp.account.client_id, scope }) }); }
+      catch (error) { next(error); }
+    });
+
     // Compartido por todos los endpoints de "Configuración de usuarios" -- misma regla que ya
     // usaba POST /admin/accounts: administradora/superadministrador de ReservApp, o personal
     // del ERP legado con canManageUsers, pero SOLO un superadministrador de ReservApp puede
@@ -936,21 +946,29 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
 
     // Confirma la asistencia de una cita -- llamado por el Chatbot Bridge cuando la clienta
     // responde "1. Confirmar mi hora" por WhatsApp (x-webhook-secret compartido, mismo que usa el
-    // bridge para notify-invoice-sent.js) o por el botón "Confirmar cita en salón" del ERP legado
-    // (sesión de administración). Si el horario ya fue tomado por otra reserva mientras esta
-    // esperaba (EspacioLiberado -> otra cita ocupó esa colaboradora+horario), responde
-    // alreadyReassigned:true para que quien llama le pida a la clienta elegir otro horario.
+    // bridge para notify-invoice-sent.js), por el botón "Confirmar cita en salón" del ERP legado
+    // (sesión de administración), o por la propia clienta desde "Citas activas" en ReservApp
+    // (sesión clienta -- acotada a su propio client_id dentro de confirmAppointmentAttendance,
+    // nunca confía en el reservationId por sí solo). Si el horario ya fue tomado por otra reserva
+    // mientras esta esperaba (EspacioLiberado -> otra cita ocupó esa colaboradora+horario),
+    // responde alreadyReassigned:true para que quien llama le pida a la clienta elegir otro horario.
     app.post("/api/reservapp/booking/confirm-attendance", bookingRateLimit, async (req, res, next) => {
       const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
       const viaBridge = bridgeSecret && (req.get("x-webhook-secret") || "") === bridgeSecret;
+      let clientId = null;
       if (!viaBridge) {
-        const { allowed } = await resolveAdminAuthority(req);
-        if (!allowed) return res.status(401).json({ error: "No autorizado." });
+        const session = await reservappSession(req);
+        if (session?.account.role === "clienta") {
+          clientId = session.account.client_id;
+        } else {
+          const { allowed } = await resolveAdminAuthority(req);
+          if (!allowed) return res.status(401).json({ error: "No autorizado." });
+        }
       }
       const reservationId = cleanText(req.body?.reservationId, 80);
       if (!reservationId) return res.status(400).json({ error: "Se requiere reservationId." });
       try {
-        const result = await bookingStore.confirmAppointmentAttendance({ legacyId: reservationId });
+        const result = await bookingStore.confirmAppointmentAttendance({ legacyId: reservationId, clientId });
         if (result.missing) return res.status(404).json({ error: `Reserva '${reservationId}' no encontrada.` });
         if (result.alreadyReassigned) {
           return res.status(409).json({

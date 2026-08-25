@@ -46,6 +46,7 @@ function documentStore() {
 }
 
 const ADMIN_TOKEN = "admin-session-token";
+const CLIENT_TOKEN = "client-session-token";
 
 function bookingStoreMock({ appointments = [], settings = {} } = {}) {
   const markCalls = [];
@@ -53,7 +54,9 @@ function bookingStoreMock({ appointments = [], settings = {} } = {}) {
   return {
     markCalls, confirmCalls,
     async sessionAccount(tokenHash) {
-      return tokenHash === hashToken(ADMIN_TOKEN) ? { id: "admin-1", role: "administradora" } : null;
+      if (tokenHash === hashToken(ADMIN_TOKEN)) return { id: "admin-1", role: "administradora" };
+      if (tokenHash === hashToken(CLIENT_TOKEN)) return { id: "client-account-1", role: "clienta", client_id: "CLI-1" };
+      return null;
     },
     async businessSettings() { return { timezone: "America/Santo_Domingo", settings }; },
     async listAppointmentsForReminderSweep() { return appointments; },
@@ -164,6 +167,18 @@ test("POST /api/reservapp/booking/confirm-attendance: con x-webhook-secret del b
     const body = await response.json();
     assert.equal(body.success, true);
     assert.equal(store.confirmCalls[0].legacyId, "RES-1");
+  });
+});
+
+test("POST /api/reservapp/booking/confirm-attendance: una clienta con sesión propia confirma acotada a su client_id", async () => {
+  await withServer({ env: {} }, async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/booking/confirm-attendance`, {
+      method: "POST", headers: { "Content-Type": "application/json", Cookie: `reservapp_session=${CLIENT_TOKEN}` },
+      body: JSON.stringify({ reservationId: "RES-1" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(store.confirmCalls[0].legacyId, "RES-1");
+    assert.equal(store.confirmCalls[0].clientId, "CLI-1");
   });
 });
 

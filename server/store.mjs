@@ -691,17 +691,20 @@ export class NeonBookingStore {
   // otra cita (esta quedó "EspacioLiberado" y alguien más reservó exactamente esa colaboradora +
   // horario mientras tanto), rechaza con alreadyReassigned:true para que quien llama le pida a la
   // clienta elegir otro horario -- nunca resucita una cita por encima de una reserva nueva.
-  async confirmAppointmentAttendance({ legacyId }) {
+  // clientId: cuando lo llama una sesión de clienta (no el bridge ni administración), acota la
+  // confirmación a SU PROPIA cita -- nunca confía en un legacyId ajeno. null/omitido para
+  // llamadas ya autorizadas de otra forma (bridge, administración).
+  async confirmAppointmentAttendance({ legacyId, clientId = null }) {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
       const current = await client.query(
-        `select id, legacy_id, staff_id, starts_at, ends_at, status, confirmation_status
+        `select id, legacy_id, staff_id, client_id, starts_at, ends_at, status, confirmation_status
            from app.appointments where legacy_id=$1 for update`,
         [legacyId],
       );
       const apt = current.rows[0];
-      if (!apt) {
+      if (!apt || (clientId && String(apt.client_id) !== String(clientId))) {
         await client.query("rollback");
         return { missing: true };
       }
@@ -1187,5 +1190,35 @@ export class NeonBookingStore {
       ? []
       : (await this.pool.query("select id,full_name from app.staff where status='active' order by full_name")).rows;
     return { date, visibility: account.role === "clienta" ? "own" : "team", staff, appointments: result.rows };
+  }
+
+  // Vista de clienta en ReservApp: "Citas activas" (próximas, sin cancelar/reasignar) e
+  // "historial" (ya pasadas o canceladas/reasignadas) -- a diferencia de agenda(), no está
+  // acotada a un solo día, así que una clienta ve todas sus citas activas de un vistazo en vez de
+  // tener que navegar día por día. Nunca acepta un clientId externo: siempre viene de la sesión
+  // autenticada (ver GET /api/reservapp/my-appointments en server/app.mjs).
+  async listClientAppointments({ clientId, scope }) {
+    const isActive = scope !== "history";
+    const result = await this.pool.query(
+      `select a.id, a.legacy_id, a.staff_id, s.full_name staff_name,
+              to_char(a.starts_at at time zone bs.timezone,'YYYY-MM-DD') date,
+              to_char(a.starts_at at time zone bs.timezone,'HH24:MI') start_time,
+              to_char(a.ends_at at time zone bs.timezone,'HH24:MI') end_time,
+              a.status, a.confirmation_status, a.deposit_status, a.deposit_amount, a.notes,
+              coalesce(string_agg(x.service_name_snapshot, ', ' order by x.position),'Cita') services
+         from app.appointments a
+         left join app.staff s on s.id=a.staff_id
+         left join app.appointment_services x on x.appointment_id=a.id
+         cross join app.business_settings bs
+        where a.client_id=$1
+          ${isActive
+            ? "and a.starts_at >= now() and a.status not in ('cancelled','replaced')"
+            : "and (a.starts_at < now() or a.status in ('cancelled','replaced'))"}
+        group by a.id, s.full_name, bs.timezone
+        order by a.starts_at ${isActive ? "asc" : "desc"}
+        limit 100`,
+      [clientId],
+    );
+    return result.rows;
   }
 }

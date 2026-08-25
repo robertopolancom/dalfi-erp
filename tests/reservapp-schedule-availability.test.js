@@ -60,8 +60,8 @@ test("availability(): weeklyHours con null marca el día completo cerrado aunque
 });
 
 test("availability(): una colaboradora sin fila en staff_weekly_schedules sigue el horario general (compatibilidad)", async () => {
-  const store = new NeonBookingStore(fakePool({ staff: STAFF, businessSettings: {} }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-08-25" });
+  const store = new NeonBookingStore(fakePool({ staff: STAFF, businessSettings: { maximumAdvanceBookingDays: 400 } }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
   assert.ok(result.slots.length > 0, "sin ninguna fila configurada, debe comportarse exactamente como antes de que existiera la tabla");
 });
 
@@ -92,20 +92,20 @@ test("availability(): colaboradora con horario semanal propio respeta su hora de
 test("availability(): una excepción puntual (available:false) deja libre a la colaboradora ese día aunque su horario semanal diga que trabaja", async () => {
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
-    businessSettings: {},
-    exceptions: [{ staff_id: "COL-1", exception_date: "2026-08-25", start_time: null, end_time: null, available: false }],
+    businessSettings: { maximumAdvanceBookingDays: 400 },
+    exceptions: [{ staff_id: "COL-1", exception_date: "2027-06-01", start_time: null, end_time: null, available: false }],
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-08-25" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
   assert.equal(result.closed, true);
 });
 
 test("availability(): una excepción puntual con horas propias (medio día) limita los horarios de esa colaboradora ese día", async () => {
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
-    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00" },
-    exceptions: [{ staff_id: "COL-1", exception_date: "2026-08-25", start_time: "09:00:00", end_time: "12:00:00", available: true }],
+    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400 },
+    exceptions: [{ staff_id: "COL-1", exception_date: "2027-06-01", start_time: "09:00:00", end_time: "12:00:00", available: true }],
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-08-25" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
   assert.ok(result.slots.length > 0);
   assert.ok(result.slots.every((slot) => slot.time < "12:00"));
 });

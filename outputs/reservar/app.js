@@ -56,7 +56,7 @@ function applyAccount(account) {
   const isAdmin = Boolean(account) && ["administradora", "superadministrador"].includes(account.role);
   $("open-user-management").classList.toggle("hidden", !isAdmin);
   $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
-  $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Agenda";
+  $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Citas activas";
   $("mode-label").textContent = !account ? "Reserva rápida" : account.role === "clienta" ? "Mi reserva" : "Reserva del equipo";
   if (state.client) setClient(state.client); else $("selected-client").classList.add("hidden");
   // Cuentas de personal aterrizan directo en el panel de colaboradores (agenda) -- ya no en el
@@ -405,7 +405,7 @@ function renderAgendaFilters(groups) {
 }
 
 async function showAgenda() {
-  $("booking-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("agenda-card").classList.remove("hidden");
+  $("booking-card").classList.add("hidden"); $("client-appointments-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("agenda-card").classList.remove("hidden");
   $("booking-tab").classList.remove("active"); $("agenda-tab").classList.add("active");
   if (!state.account) { $("login-dialog").showModal(); return; }
   // applyAccount() puede llamar aquí antes de que loadCatalog() (en paralelo) termine de poner
@@ -426,8 +426,110 @@ async function showAgenda() {
 }
 $("close-appointment-detail").addEventListener("click", () => $("appointment-detail-dialog").close());
 
+// Etiquetas humanas de las dos dimensiones independientes de una cita -- mismo vocabulario que ya
+// usa el ERP legado (outputs/app.js CONFIRM_NOTES/DEPOSIT_NOTES) para que administración y
+// clientas vean exactamente el mismo lenguaje en ambos lados.
+const CONFIRM_STATUS_LABELS = {
+  Programada: "Recordatorio de confirmación programado",
+  PendienteConfirmarHora: "Esperando tu confirmación",
+  EspacioLiberado: "Tu horario podría liberarse pronto -- confirma ya",
+  HoraConfirmada: "Asistencia confirmada",
+  NoRequerida: "Sin recordatorio necesario",
+};
+const DEPOSIT_STATUS_LABELS = {
+  Pendiente: "Depósito pendiente",
+  ComprobanteRecibido: "Comprobante recibido",
+  PendienteVerificacion: "Verificando comprobante",
+  Verificado: "Depósito confirmado",
+  Rechazado: "Depósito rechazado",
+};
+// Mismos tres estados que PENDING_CONFIRMATION_STATES en outputs/app.js -- son los únicos en los
+// que confirmar todavía tiene sentido (HoraConfirmada/NoRequerida ya no necesitan acción).
+const CONFIRMABLE_STATES = new Set(["Programada", "PendienteConfirmarHora", "EspacioLiberado"]);
+
+function badgeEl(text, className) {
+  const span = document.createElement("span");
+  span.className = `appointment-badge ${className}`;
+  span.textContent = text;
+  return span;
+}
+
+function renderAppointmentCard(apt) {
+  const card = document.createElement("article");
+  card.className = "appointment-card";
+
+  const top = document.createElement("div"); top.className = "appointment-top";
+  const service = document.createElement("span"); service.className = "appointment-service"; service.textContent = apt.services || "Cita";
+  const when = document.createElement("span"); when.className = "appointment-when";
+  when.textContent = `${new Date(`${apt.date}T12:00:00`).toLocaleDateString("es-DO", { weekday: "short", day: "numeric", month: "short" })} · ${formatSlotTime(apt.start_time)}`;
+  top.append(service, when);
+  card.append(top);
+
+  if (apt.staff_name) {
+    const meta = document.createElement("div"); meta.className = "appointment-meta";
+    meta.textContent = `Con ${apt.staff_name}`;
+    card.append(meta);
+  }
+
+  const badges = document.createElement("div"); badges.className = "appointment-badges";
+  const confirmLabel = CONFIRM_STATUS_LABELS[apt.confirmation_status];
+  if (confirmLabel) badges.append(badgeEl(confirmLabel, `confirm-${String(apt.confirmation_status).toLowerCase()}`));
+  const depositStatus = apt.deposit_status && DEPOSIT_STATUS_LABELS[apt.deposit_status] ? apt.deposit_status : "Pendiente";
+  badges.append(badgeEl(DEPOSIT_STATUS_LABELS[depositStatus], `deposit-${depositStatus.toLowerCase()}`));
+  card.append(badges);
+
+  if (CONFIRMABLE_STATES.has(apt.confirmation_status)) {
+    const btn = document.createElement("button");
+    btn.className = "primary compact appointment-confirm-btn"; btn.type = "button";
+    btn.textContent = "Confirmar mi hora";
+    btn.addEventListener("click", () => confirmMyAppointment(apt.legacy_id, btn));
+    card.append(btn);
+  }
+  return card;
+}
+
+async function confirmMyAppointment(reservationId, btn) {
+  btn.disabled = true; btn.textContent = "Confirmando…";
+  try {
+    await api("/api/reservapp/booking/confirm-attendance", { method: "POST", body: JSON.stringify({ reservationId }) });
+    await loadMyAppointments(state.myAppointmentsScope || "active");
+  } catch (error) {
+    message($("my-appointments-message"), error.message);
+    btn.disabled = false; btn.textContent = "Confirmar mi hora";
+  }
+}
+
+async function loadMyAppointments(scope) {
+  state.myAppointmentsScope = scope;
+  $("my-appointments-active-tab").classList.toggle("active", scope === "active");
+  $("my-appointments-history-tab").classList.toggle("active", scope === "history");
+  message($("my-appointments-message"), "Cargando…", true);
+  try {
+    const result = await api(`/api/reservapp/my-appointments?scope=${scope}`);
+    $("my-appointments-list").replaceChildren();
+    if (!result.appointments.length) {
+      message($("my-appointments-message"), scope === "active" ? "No tienes citas activas por el momento." : "Aún no tienes historial de citas.");
+      return;
+    }
+    message($("my-appointments-message"));
+    result.appointments.forEach((apt) => $("my-appointments-list").append(renderAppointmentCard(apt)));
+  } catch (error) { message($("my-appointments-message"), error.message); }
+}
+
+// Vista de clienta: "Citas activas"/"Historial" -- reemplaza a la Agenda de equipo que veía
+// antes (pedido explícito: una clienta solo debe ver sus propias citas, no la agenda completa).
+function showClientAppointments() {
+  $("booking-card").classList.add("hidden"); $("agenda-card").classList.add("hidden"); $("success-card").classList.add("hidden");
+  $("client-appointments-card").classList.remove("hidden");
+  $("booking-tab").classList.remove("active"); $("agenda-tab").classList.add("active");
+  if (!state.account) { $("login-dialog").showModal(); return; }
+  loadMyAppointments("active");
+}
+$("my-appointments-active-tab").addEventListener("click", () => loadMyAppointments("active"));
+$("my-appointments-history-tab").addEventListener("click", () => loadMyAppointments("history"));
+
 function showBooking() {
-  $("agenda-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("booking-card").classList.remove("hidden");
+  $("agenda-card").classList.add("hidden"); $("client-appointments-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("booking-card").classList.remove("hidden");
   $("agenda-tab").classList.remove("active"); $("booking-tab").classList.add("active");
 }
 
@@ -1075,7 +1177,11 @@ $("banner-remove").addEventListener("click", async () => {
   finally { button.disabled = false; }
 });
 
-$("booking-tab").addEventListener("click", showBooking); $("agenda-tab").addEventListener("click", showAgenda);
+$("booking-tab").addEventListener("click", showBooking);
+$("agenda-tab").addEventListener("click", () => {
+  if (state.account && employeeRoles.has(state.account.role)) showAgenda();
+  else showClientAppointments();
+});
 $("agenda-date").addEventListener("change", showAgenda);
 $("agenda-prev").addEventListener("click", () => { const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() - 1); $("agenda-date").value = date.toISOString().slice(0, 10); showAgenda(); });
 $("agenda-next").addEventListener("click", () => { const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() + 1); $("agenda-date").value = date.toISOString().slice(0, 10); showAgenda(); });
