@@ -340,9 +340,21 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
       try {
         const existing = await bookingStore.accountByPhone(phone);
-        if (existing?.status !== "active") return res.json({ exists: false });
-        const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
-        res.json({ exists: true, firstName });
+        if (existing?.status === "active") {
+          const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
+          return res.json({ exists: true, firstName });
+        }
+        // Sin cuenta activa de ReservApp -- pero puede que ya sea clienta del salón (ficha creada
+        // directamente en el ERP, por el personal, o en una visita anterior). En ese caso no hace
+        // falta pedirle de nuevo nombre/apellido/fecha de nacimiento: ya los tenemos, solo falta
+        // que defina su contraseña (ver request-setup, que ya reconoce esta misma ficha por
+        // teléfono y se salta esos campos).
+        const customer = await bookingStore.resolveClient({ phone });
+        if (customer) {
+          const firstName = String(customer.full_name || "").trim().split(/\s+/)[0] || "";
+          return res.json({ exists: true, firstName, needsPasswordOnly: true });
+        }
+        res.json({ exists: false });
       } catch (error) { next(error); }
     });
 
@@ -365,11 +377,8 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         notes: cleanText(req.body?.notes, 500),
         idempotencyKey: cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120) || crypto.randomUUID(),
       };
-      if (!firstName || !lastName || !validPhone(phone)) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
+      if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido." });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || birthDate > new Date().toISOString().slice(0, 10)) {
-        return res.status(400).json({ error: "Introduce una fecha de nacimiento válida." });
-      }
       // Registrarse (crear cuenta) no requiere tener ya un horario elegido --
       // solo si la clienta arrancó desde el wizard de reserva vendrá un
       // borrador adjunto, y en ese caso sí debe venir completo.
@@ -378,13 +387,23 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora, o deja todo vacío para solo crear tu cuenta." });
       }
       try {
+        let customer = await bookingStore.resolveClient({ phone });
+        // Si el teléfono ya corresponde a una ficha del salón (creada en el ERP directamente, por
+        // el personal, o en una visita anterior), no hace falta volver a pedir nombre/apellido/
+        // fecha de nacimiento -- ya los tenemos. Solo una clienta realmente nueva debe completar
+        // el formulario entero.
+        if (!customer) {
+          if (!firstName || !lastName) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || birthDate > new Date().toISOString().slice(0, 10)) {
+            return res.status(400).json({ error: "Introduce una fecha de nacimiento válida." });
+          }
+        }
         if (hasDraftIntent) {
           const availability = await bookingStore.availability({ ...draft, serviceIds });
           if (!availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
             return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
           }
         }
-        let customer = await bookingStore.resolveClient({ phone });
         if (!customer) {
           const id = `CLI-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
           const legacyPayload = {
@@ -435,7 +454,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             });
           }
         }
-        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: `${firstName} ${lastName}` });
+        // firstName/lastName solo llegan si es una clienta realmente nueva (ver validación
+        // arriba) -- si ya existía en el ERP, usa el nombre que ya tenía su ficha.
+        const displayName = firstName && lastName ? `${firstName} ${lastName}` : customer.full_name;
+        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: displayName });
         res.status(202).json({
           pendingConfirmation: true,
           deliveryStatus: delivery.status,
@@ -550,7 +572,8 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         return res.status(202).json({
           pendingConfirmation: false,
           selfServiceDisabled: true,
-          message: "Por ahora no podemos verificar tu teléfono por WhatsApp. Escríbenos o pide en el salón que la administración restablezca tu contraseña.",
+          message: "Por ahora no podemos verificar tu teléfono por WhatsApp para restablecer tu contraseña. Escríbenos y un asesor te ayuda, o pide en el salón que la administración te la reinicie.",
+          whatsappNumber: "18093463030",
         });
       }
       try {

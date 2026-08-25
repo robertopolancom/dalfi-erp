@@ -212,6 +212,14 @@
     <button class="primary" type="submit">Continuar</button>
   </form></dialog>
 
+  <dialog id="quick-setup-dialog"><form id="quick-setup-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Ya te conocemos</p><h2>¡Hola de nuevo!</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
+    <p id="quick-setup-intro">Ya tienes una ficha con nosotros. Solo falta que definas tu contraseña.</p>
+    <div class="message" id="quick-setup-message" role="status"></div>
+    <button class="primary" type="submit">Sí, soy yo -- enviar código</button>
+    <button class="secondary" id="quick-setup-not-me" type="button">No soy yo</button>
+  </form></dialog>
+
   <dialog id="client-dialog"><form id="client-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2 id="client-dialog-title">Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
     <p id="client-dialog-intro">Confirma tu teléfono y crea tu contraseña para continuar.</p>
@@ -268,8 +276,9 @@
 
   <dialog id="admin-reset-password-dialog"><form id="admin-reset-password-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Solo administración</p><h2>Restablecer contraseña de <span id="admin-reset-password-name"></span></h2></div><button class="icon-button" id="close-admin-reset-password" type="button" aria-label="Cerrar">×</button></div>
-    <p>Debe tener 8 caracteres o más, al menos una letra y un número. La clienta deberá usarla la próxima vez que inicie sesión.</p>
+    <p>Debe tener 8 caracteres o más, al menos una letra y un número. Deberá usarla la próxima vez que inicie sesión.</p>
     <label>Nueva contraseña<input id="admin-reset-password-value" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label>Confirmar contraseña<input id="admin-reset-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
     <div class="message" id="admin-reset-password-message"></div><button class="primary" type="submit">Guardar contraseña</button>
   </form></dialog>
 

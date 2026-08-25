@@ -120,6 +120,10 @@ test("POST /api/reservapp/auth/request-password-reset: con RESERVAPP_SKIP_PHONE_
     const body = await response.json();
     assert.equal(body.selfServiceDisabled, true);
     assert.equal(body.pendingConfirmation, false);
+    // El frontend arma un enlace real de wa.me con este número (ver forgot-password-form en
+    // outputs/reservar/app.js) en vez de solo mostrar texto sin acción -- debe venir del backend,
+    // nunca hardcodeado en el frontend, para poder cambiarlo sin desplegar el sitio estático.
+    assert.equal(body.whatsappNumber, "18093463030");
     assert.equal(store.prepareSetupCalls.length, 0);
     assert.equal(bridgeCalled, false);
   }, {

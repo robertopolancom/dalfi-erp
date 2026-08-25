@@ -171,6 +171,39 @@ test("check-phone: sin cuenta, o cuenta pendiente de activar, devuelve exists:fa
   }, { existingAccount: { status: "pending", full_name: "Ana Gómez" } });
 });
 
+test("check-phone: sin cuenta de ReservApp pero con ficha ya existente en el ERP devuelve needsPasswordOnly:true", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { exists: true, firstName: "Ana", needsPasswordOnly: true });
+  }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
+});
+
+test("request-setup: teléfono con ficha ya existente en el ERP no exige nombre/apellido/fecha de nacimiento", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.equal(response.status, 202);
+    assert.equal(store.createClientCalls.length, 0, "no debe crear una ficha duplicada, ya existía");
+    assert.equal(store.prepareSetupCalls.length, 1);
+  }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
+});
+
+test("request-setup: sin ficha existente y sin nombre/apellido/fecha de nacimiento sigue exigiéndolos (clienta realmente nueva)", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(store.createClientCalls.length, 0);
+  });
+});
+
 test("check-phone: teléfono inválido, 400 sin llegar a consultar la cuenta", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {

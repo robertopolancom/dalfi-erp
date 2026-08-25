@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0, pendingBookingStart: false, agendaView: "day" };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -656,7 +656,17 @@ $("phone-check-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/check-phone", { method: "POST", body: JSON.stringify({ phone }) });
     $("phone-check-dialog").close();
-    if (result.exists) {
+    if (result.exists && result.needsPasswordOnly) {
+      // Ya es clienta del salón (ficha del ERP, sin credenciales de ReservApp todavía) -- no
+      // hace falta volver a pedirle nombre/apellido/fecha de nacimiento, solo confirmar que es
+      // ella y enviarle el código para definir su contraseña.
+      state.quickSetupPhone = phone;
+      $("quick-setup-intro").textContent = result.firstName
+        ? `¡Hola, ${result.firstName}! Ya tienes una ficha con nosotros. Solo falta que definas tu contraseña.`
+        : "Ya tienes una ficha con nosotros. Solo falta que definas tu contraseña.";
+      message($("quick-setup-message"));
+      $("quick-setup-dialog").showModal();
+    } else if (result.exists) {
       // Ya hay cuenta activa con ese teléfono -- confirma por nombre antes de pedir la
       // contraseña, en vez de simplemente rechazarla o crear una cuenta duplicada.
       $("login-phone").value = phone;
@@ -669,13 +679,52 @@ $("phone-check-form").addEventListener("submit", async (event) => {
       );
       $("login-dialog").showModal();
     } else {
-      // Sin cuenta activa (nueva, o pendiente de activar) -- sigue el registro normal, que ya
-      // reutiliza la ficha pendiente si existe en vez de crear una duplicada.
+      // Sin cuenta activa ni ficha previa -- sigue el registro normal, que ya reutiliza la ficha
+      // pendiente si existe en vez de crear una duplicada.
       $("new-phone").value = phone;
       openClientDialog({ forEmployee: false, requireSelection: false });
     }
   } catch (error) { message($("phone-check-message"), error.message); }
   finally { button.disabled = false; }
+});
+
+$("close-quick-setup").addEventListener("click", () => $("quick-setup-dialog").close());
+$("quick-setup-not-me").addEventListener("click", () => {
+  $("quick-setup-dialog").close();
+  $("phone-check-value").value = "";
+  message($("phone-check-message"));
+  $("phone-check-dialog").showModal();
+});
+$("quick-setup-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.submitter; button.disabled = true;
+  message($("quick-setup-message"), "Enviando…", true);
+  try {
+    const serviceIds = selectedServiceIds();
+    const hasDraft = Boolean(serviceIds.length);
+    const result = await api("/api/reservapp/auth/request-setup", {
+      method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({
+        phone: state.quickSetupPhone,
+        serviceIds, staffId: hasDraft ? $("staff").value : "", date: hasDraft ? $("date").value : "", time: hasDraft ? $("time").value : "",
+        notes: $("notes").value, website: $("website").value,
+      }),
+    });
+    $("quick-setup-dialog").close(); message($("booking-message"), result.message, true);
+    // TEMPORAL: ver comentario en server/app.mjs junto a RESERVAPP_SKIP_PHONE_VERIFICATION.
+    if (result.activationTicket) { openSetupDialog(result.activationTicket); return; }
+    $("submit-booking").disabled = true;
+    $("verify-code-phone").value = state.quickSetupPhone; $("verify-code-code").value = "";
+    message($("verify-code-message")); $("verify-code-dialog").showModal();
+  } catch (error) {
+    message($("quick-setup-message"), error.message);
+    if (error.body?.accountExists) {
+      $("quick-setup-dialog").close();
+      $("login-phone").value = state.quickSetupPhone;
+      message($("login-message"), error.body.firstName ? `Ya hay una clienta registrada con este teléfono a nombre de ${error.body.firstName}. ¿Eres tú? Ingresa tu contraseña para confirmar.` : error.message, true);
+      $("login-dialog").showModal();
+    }
+  } finally { button.disabled = false; }
 });
 $("step1-back").addEventListener("click", () => goToStep(0));
 $("step1-next").addEventListener("click", () => {
@@ -813,9 +862,22 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
     // TEMPORAL: mientras el backend tenga apagado el autoservicio (ver comentario junto a
-    // /auth/request-password-reset en server/app.mjs), no hay código que verificar -- solo
-    // mostramos el mensaje que indica pedirle a administración que restablezca la contraseña.
-    if (result.selfServiceDisabled) { $("forgot-password-dialog").close(); message($("booking-message"), result.message, true); return; }
+    // /auth/request-password-reset en server/app.mjs), no hay código que verificar -- en vez de
+    // dejarla sin salida, se le ofrece hablar por WhatsApp con un asesor (enlace real, no solo
+    // texto) o pedirle a administración que la reinicie desde "Configuración de usuarios".
+    if (result.selfServiceDisabled) {
+      $("forgot-password-dialog").close();
+      const target = $("booking-message");
+      target.className = "message ok";
+      target.replaceChildren(
+        `${result.message} `,
+        Object.assign(document.createElement("a"), {
+          className: "whatsapp-link", href: `https://wa.me/${result.whatsappNumber || "18093463030"}`, target: "_blank", rel: "noopener",
+          textContent: "Escríbenos por WhatsApp",
+        }),
+      );
+      return;
+    }
     state.passwordResetFlow = true; $("forgot-password-dialog").close(); message($("booking-message"), result.message, true);
     $("verify-code-phone").value = $("forgot-password-phone").value; $("verify-code-code").value = "";
     message($("verify-code-message")); $("verify-code-dialog").showModal();
@@ -859,7 +921,7 @@ $("account-button").addEventListener("click", () => { if (!state.account) { mess
 // sesión debe dejar todo como recién cargado, para que la siguiente persona tenga que
 // identificarse desde cero y no vea ni un campo con datos de la anterior -- pedido explícito.
 function resetDeviceState() {
-  ["booking-form", "identify-form", "phone-check-form", "client-form", "login-form", "forgot-password-form", "verify-code-form", "setup-form"].forEach((id) => {
+  ["booking-form", "identify-form", "phone-check-form", "quick-setup-form", "client-form", "login-form", "forgot-password-form", "verify-code-form", "setup-form"].forEach((id) => {
     $(id)?.reset();
   });
   $("client-search").value = "";
@@ -871,6 +933,7 @@ function resetDeviceState() {
   state.comboSegments = null;
   state.comboIndex = 0;
   state.pendingBookingStart = false;
+  state.quickSetupPhone = null;
   goToStep(0);
 }
 
@@ -996,6 +1059,13 @@ async function loadEmployeesTable() {
         } catch (error) { message($("employees-message"), error.message); toggle.disabled = false; }
       });
       actions.append(toggle);
+      // Misma válvula de escape que en la tabla de clientas (autoservicio de "olvidé mi
+      // contraseña" apagado, ver /auth/request-password-reset) -- el personal también necesita
+      // que administración pueda reiniciarle la contraseña.
+      const resetPassword = document.createElement("button"); resetPassword.type = "button"; resetPassword.className = "admin-row-action";
+      resetPassword.textContent = "Restablecer contraseña";
+      resetPassword.addEventListener("click", () => openAdminResetPassword({ accountId: account.id, name: account.full_name, messageTarget: "employees-message" }));
+      actions.append(resetPassword);
       row.append(name, role, status, actions);
       return row;
     }));
@@ -1221,23 +1291,30 @@ $("staff-exception-add").addEventListener("click", async () => {
 });
 
 let adminResetPasswordAccountId = null;
-function openAdminResetPassword({ accountId, name }) {
+let adminResetPasswordMessageTarget = null;
+function openAdminResetPassword({ accountId, name, messageTarget = "clients-admin-message" }) {
   adminResetPasswordAccountId = accountId;
+  adminResetPasswordMessageTarget = messageTarget;
   $("admin-reset-password-name").textContent = name || "";
   $("admin-reset-password-value").value = "";
+  $("admin-reset-password-confirm").value = "";
   message($("admin-reset-password-message"));
   $("admin-reset-password-dialog").showModal();
 }
 $("close-admin-reset-password").addEventListener("click", () => $("admin-reset-password-dialog").close());
 $("admin-reset-password-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const button = event.submitter; button.disabled = true;
+  event.preventDefault();
+  const password = $("admin-reset-password-value").value;
+  const confirm = $("admin-reset-password-confirm").value;
+  if (password !== confirm) return message($("admin-reset-password-message"), "Las contraseñas no coinciden.");
+  const button = event.submitter; button.disabled = true;
   message($("admin-reset-password-message"), "Guardando…", true);
   try {
     await api(`/api/reservapp/admin/accounts/${adminResetPasswordAccountId}/reset-password`, {
-      method: "POST", body: JSON.stringify({ password: $("admin-reset-password-value").value }),
+      method: "POST", body: JSON.stringify({ password }),
     });
     $("admin-reset-password-dialog").close();
-    message($("clients-admin-message"), "Contraseña actualizada.", true);
+    message($(adminResetPasswordMessageTarget || "clients-admin-message"), "Contraseña actualizada.", true);
   } catch (error) { message($("admin-reset-password-message"), error.message); }
   finally { button.disabled = false; }
 });
