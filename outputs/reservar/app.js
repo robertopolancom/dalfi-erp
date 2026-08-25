@@ -662,8 +662,8 @@ $("phone-check-form").addEventListener("submit", async (event) => {
       // ella y enviarle el código para definir su contraseña.
       state.quickSetupPhone = phone;
       $("quick-setup-intro").textContent = result.firstName
-        ? `¡Hola, ${result.firstName}! Ya tienes una ficha con nosotros. Solo falta que definas tu contraseña.`
-        : "Ya tienes una ficha con nosotros. Solo falta que definas tu contraseña.";
+        ? `¿Eres tú, ${result.firstName}? Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`
+        : "¿Eres tú? Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.";
       message($("quick-setup-message"));
       $("quick-setup-dialog").showModal();
     } else if (result.exists) {
@@ -868,8 +868,8 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
       $("forgot-password-dialog").close();
       state.quickSetupPhone = $("forgot-password-phone").value;
       $("quick-setup-intro").textContent = result.firstName
-        ? `¡Hola, ${result.firstName}! Este teléfono no tiene una contraseña creada todavía. Vamos a crearla.`
-        : "Este teléfono no tiene una contraseña creada todavía. Vamos a crearla.";
+        ? `¿Eres tú, ${result.firstName}? Este teléfono todavía no tiene contraseña -- no la olvidaste, nunca la creaste. Vamos a crearla.`
+        : "¿Eres tú? Este teléfono todavía no tiene contraseña -- no la olvidaste, nunca la creaste. Vamos a crearla.";
       message($("quick-setup-message"));
       $("quick-setup-dialog").showModal();
       return;
