@@ -561,31 +561,45 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, async (req, res, next) => {
       const phone = cleanText(req.body?.phone, 30);
       if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
-      // TEMPORAL (mismo interruptor que RESERVAPP_SKIP_PHONE_VERIFICATION, ver comentario junto a
-      // /auth/request-setup): saltarse la prueba de teléfono para CREAR una cuenta nueva es un
-      // riesgo aceptable, pero hacerlo para restablecer la contraseña de una cuenta YA ACTIVA no
-      // -- cualquiera que supiera el número de otra clienta podría robarle el acceso sin que
-      // llegue ningún código real. Mientras el bridge no pueda mandar ese código por WhatsApp, el
-      // autoservicio de "olvidé mi contraseña" queda apagado: solo administración puede
-      // restablecer una contraseña, con POST /api/reservapp/admin/accounts/:id/reset-password.
-      if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
-        return res.status(202).json({
-          pendingConfirmation: false,
-          selfServiceDisabled: true,
-          message: "Por ahora no podemos verificar tu teléfono por WhatsApp para restablecer tu contraseña. Escríbenos y un asesor te ayuda, o pide en el salón que la administración te la reinicie.",
-          whatsappNumber: "18093463030",
-        });
-      }
       try {
         const account = await bookingStore.accountByPhone(phone);
-        // Misma respuesta exista o no la cuenta -- este endpoint no debe servir para enumerar
-        // qué teléfonos tienen cuenta activa en ReservApp.
         if (account?.status === "active") {
+          // TEMPORAL (mismo interruptor que RESERVAPP_SKIP_PHONE_VERIFICATION, ver comentario
+          // junto a /auth/request-setup): saltarse la prueba de teléfono para CREAR una cuenta
+          // nueva es un riesgo aceptable, pero hacerlo para restablecer la contraseña de una
+          // cuenta YA ACTIVA no -- cualquiera que supiera el número de otra clienta podría
+          // robarle el acceso sin que llegue ningún código real. Mientras el bridge no pueda
+          // mandar ese código por WhatsApp, el autoservicio de "olvidé mi contraseña" (para
+          // quien SÍ tiene una contraseña ya creada) queda apagado: solo administración puede
+          // restablecerla, con POST /api/reservapp/admin/accounts/:id/reset-password.
+          if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
+            return res.status(202).json({
+              pendingConfirmation: false,
+              selfServiceDisabled: true,
+              message: "Por ahora no podemos verificar tu teléfono por WhatsApp para restablecer tu contraseña. Escríbenos y un asesor te ayuda, o pide en el salón que la administración te la reinicie.",
+              whatsappNumber: "18093463030",
+            });
+          }
           const code = generateOtpCode();
           const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
           const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone });
           await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: account.full_name || "", purpose: "reset" });
+          return res.status(202).json({
+            pendingConfirmation: true,
+            message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",
+          });
         }
+        // Sin cuenta activa: no necesariamente "olvidó" su contraseña -- puede que nunca haya
+        // creado ninguna (ficha del ERP sin credenciales de ReservApp todavía, el mismo caso que
+        // reconoce /auth/check-phone). Distinguirlo evita el mensaje confuso de "restablecer" algo
+        // que nunca existió -- en su lugar, la dirige a crear su contraseña por primera vez.
+        const customer = await bookingStore.resolveClient({ phone });
+        if (customer) {
+          const firstName = String(customer.full_name || "").trim().split(/\s+/)[0] || "";
+          return res.json({ pendingConfirmation: false, neverHadPassword: true, firstName });
+        }
+        // Ni cuenta ni ficha -- misma respuesta genérica que antes, este endpoint no debe servir
+        // para enumerar qué teléfonos existen en el sistema.
         res.status(202).json({
           pendingConfirmation: true,
           message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",

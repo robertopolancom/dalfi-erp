@@ -861,6 +861,19 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), "Enviando…", true);
   try {
     const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
+    // No es un reset real -- nunca creó contraseña (ficha del ERP sin credenciales de ReservApp
+    // todavía). "Olvidé mi contraseña" no aplica; se le manda al mismo flujo de "solo falta
+    // definir tu contraseña" que ya usa check-phone (ver quick-setup-dialog).
+    if (result.neverHadPassword) {
+      $("forgot-password-dialog").close();
+      state.quickSetupPhone = $("forgot-password-phone").value;
+      $("quick-setup-intro").textContent = result.firstName
+        ? `¡Hola, ${result.firstName}! Este teléfono no tiene una contraseña creada todavía. Vamos a crearla.`
+        : "Este teléfono no tiene una contraseña creada todavía. Vamos a crearla.";
+      message($("quick-setup-message"));
+      $("quick-setup-dialog").showModal();
+      return;
+    }
     // TEMPORAL: mientras el backend tenga apagado el autoservicio (ver comentario junto a
     // /auth/request-password-reset en server/app.mjs), no hay código que verificar -- en vez de
     // dejarla sin salida, se le ofrece hablar por WhatsApp con un asesor (enlace real, no solo

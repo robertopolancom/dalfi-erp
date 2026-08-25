@@ -7,11 +7,12 @@ function documentStore() {
   return { async read() { return { data: {}, updatedAt: "2026-08-13T00:00:00.000Z", version: 1 }; } };
 }
 
-function bookingStore({ account = null } = {}) {
+function bookingStore({ account = null, existingClient = null } = {}) {
   const prepareSetupCalls = [];
   return {
     prepareSetupCalls,
     async accountByPhone() { return account; },
+    async resolveClient() { return existingClient; },
     async prepareSetup(input) {
       prepareSetupCalls.push(input);
       return { outbox: { id: "outbox-1" } };
@@ -68,6 +69,20 @@ test("POST /api/reservapp/auth/request-password-reset: cuenta con status pendien
     });
     assert.equal(response.status, 202);
     assert.equal(store.prepareSetupCalls.length, 0);
+  });
+});
+
+test("POST /api/reservapp/auth/request-password-reset: sin cuenta pero con ficha ya existente en el ERP dice neverHadPassword en vez de fingir un reset", async () => {
+  const store = bookingStore({ account: null, existingClient: { id: "client-1", full_name: "Ana Gómez" } });
+  await withServer(store, async (base) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.neverHadPassword, true);
+    assert.equal(body.firstName, "Ana");
+    assert.equal(store.prepareSetupCalls.length, 0, "no debe mandar un código de reset -- nunca hubo una contraseña que restablecer");
   });
 });
 
