@@ -272,15 +272,18 @@ export class NeonBookingStore {
     return result.rows;
   }
 
-  async setStaffScheduleException({ staffId, date, startTime, endTime, available, reason }) {
+  // createdBy: 'admin' (por defecto, Configuración de usuarios) o 'staff' (la propia
+  // colaboradora desde "Mi disponibilidad") -- listRecentStaffCreatedExceptions() usa esta
+  // columna para mostrarle a administración solo los cambios que no hizo ella misma.
+  async setStaffScheduleException({ staffId, date, startTime, endTime, available, reason, createdBy = "admin" }) {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
       await client.query("delete from app.staff_schedule_exceptions where staff_id=$1 and exception_date=$2", [staffId, date]);
       const inserted = await client.query(
-        `insert into app.staff_schedule_exceptions (staff_id, exception_date, start_time, end_time, available, reason)
-         values ($1,$2,$3,$4,$5,$6) returning id, staff_id, exception_date, start_time, end_time, available, reason`,
-        [staffId, date, startTime, endTime, available, reason || null],
+        `insert into app.staff_schedule_exceptions (staff_id, exception_date, start_time, end_time, available, reason, created_by, updated_at)
+         values ($1,$2,$3,$4,$5,$6,$7,now()) returning id, staff_id, exception_date, start_time, end_time, available, reason, created_by, updated_at`,
+        [staffId, date, startTime, endTime, available, reason || null, createdBy],
       );
       await this.mirrorStaffScheduleToDocument(client);
       await client.query("commit");
@@ -291,6 +294,24 @@ export class NeonBookingStore {
     } finally {
       client.release();
     }
+  }
+
+  // Panel de administración ("Configuración de usuarios") -- lista los cambios de disponibilidad
+  // que hizo la propia colaboradora desde "Mi disponibilidad" (nunca los que hizo
+  // administración), más recientes primero, para que no tenga que revisar colaboradora por
+  // colaboradora si alguien marcó algo nuevo.
+  async listRecentStaffCreatedExceptions({ days = 30 } = {}) {
+    const result = await this.pool.query(
+      `select e.id, e.staff_id, s.full_name staff_name, e.exception_date, e.start_time, e.end_time,
+              e.available, e.reason, e.updated_at
+         from app.staff_schedule_exceptions e
+         join app.staff s on s.id = e.staff_id
+        where e.created_by = 'staff' and e.updated_at > now() - ($1 || ' days')::interval
+        order by e.updated_at desc
+        limit 50`,
+      [days],
+    );
+    return result.rows;
   }
 
   async deleteStaffScheduleException({ staffId, date }) {

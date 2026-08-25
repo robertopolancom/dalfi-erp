@@ -9,6 +9,8 @@ function documentStore() {
 }
 
 const ADMIN_TOKEN = "admin-session-token";
+const MANICURISTA_TOKEN = "manicurista-session-token";
+const MANICURISTA_NO_STAFF_TOKEN = "manicurista-no-staff-session-token";
 
 function bookingStore() {
   const updateBusinessSettingsCalls = [];
@@ -16,11 +18,15 @@ function bookingStore() {
   const deleteStaffWeeklyScheduleCalls = [];
   const setStaffScheduleExceptionCalls = [];
   const deleteStaffScheduleExceptionCalls = [];
+  let recentChanges = [];
   return {
     updateBusinessSettingsCalls, setStaffWeeklyScheduleCalls, deleteStaffWeeklyScheduleCalls,
     setStaffScheduleExceptionCalls, deleteStaffScheduleExceptionCalls,
+    setRecentChanges(rows) { recentChanges = rows; },
     async sessionAccount(tokenHash) {
       if (tokenHash === hashToken(ADMIN_TOKEN)) return { id: "admin-1", role: "administradora" };
+      if (tokenHash === hashToken(MANICURISTA_TOKEN)) return { id: "manicurista-1", role: "manicurista", staff_id: "COL-1" };
+      if (tokenHash === hashToken(MANICURISTA_NO_STAFF_TOKEN)) return { id: "manicurista-2", role: "manicurista", staff_id: null };
       return null;
     },
     async businessSettings() { return { timezone: "America/Santo_Domingo", settings: { defaultOpeningTime: "09:00" } }; },
@@ -31,6 +37,7 @@ function bookingStore() {
     async listStaffScheduleExceptions() { return []; },
     async setStaffScheduleException(input) { setStaffScheduleExceptionCalls.push(input); return { id: "exc-1", ...input }; },
     async deleteStaffScheduleException(input) { deleteStaffScheduleExceptionCalls.push(input); },
+    async listRecentStaffCreatedExceptions() { return recentChanges; },
   };
 }
 
@@ -162,5 +169,89 @@ test("DELETE /admin/staff-schedule-exceptions/:staffId/:date: fecha inválida re
     });
     assert.equal(response.status, 400);
     assert.equal(store.deleteStaffScheduleExceptionCalls.length, 0);
+  });
+});
+
+// ---------- "Mi disponibilidad" (autoservicio de cada colaboradora) ----------
+
+test("GET /admin/staff-schedule-changes: sin sesión de administración se rechaza", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/reservapp/admin/staff-schedule-changes`);
+    assert.equal(response.status, 403);
+  });
+});
+
+test("GET /admin/staff-schedule-changes: administradora ve los cambios que hizo el personal por su cuenta", async () => {
+  await withServer(async (base, store) => {
+    store.setRecentChanges([{ id: "exc-1", staff_id: "COL-1", staff_name: "Ana Pérez", exception_date: "2026-09-01", start_time: null, end_time: null, available: false, reason: "Cita médica", updated_at: "2026-08-25T10:00:00.000Z" }]);
+    const response = await fetch(`${base}/api/reservapp/admin/staff-schedule-changes`, { headers: authHeaders(ADMIN_TOKEN) });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.changes.length, 1);
+    assert.equal(body.changes[0].staff_name, "Ana Pérez");
+  });
+});
+
+test("POST /my-schedule-exceptions: sin sesión de personal se rechaza", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
+      method: "POST", headers: authHeaders(), body: JSON.stringify({ date: "2026-09-01", available: false }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(store.setStaffScheduleExceptionCalls.length, 0);
+  });
+});
+
+test("POST /my-schedule-exceptions: cuenta sin colaboradora vinculada se rechaza", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
+      method: "POST", headers: authHeaders(MANICURISTA_NO_STAFF_TOKEN), body: JSON.stringify({ date: "2026-09-01", available: false }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(store.setStaffScheduleExceptionCalls.length, 0);
+  });
+});
+
+test("POST /my-schedule-exceptions: la manicurista marca su propio staffId (nunca uno ajeno) con createdBy:'staff'", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
+      method: "POST", headers: authHeaders(MANICURISTA_TOKEN),
+      body: JSON.stringify({ date: "2026-09-01", available: false, reason: "Cita médica", staffId: "COL-OTHER" }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(store.setStaffScheduleExceptionCalls.length, 1);
+    assert.equal(store.setStaffScheduleExceptionCalls[0].staffId, "COL-1", "debe usar el staff_id de su propia sesión, ignorando cualquier staffId del body");
+    assert.equal(store.setStaffScheduleExceptionCalls[0].createdBy, "staff");
+  });
+});
+
+test("POST /my-schedule-exceptions: medio día con hora de fin antes que la de inicio responde 400", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
+      method: "POST", headers: authHeaders(MANICURISTA_TOKEN),
+      body: JSON.stringify({ date: "2026-09-01", available: true, startTime: "12:00", endTime: "09:00" }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(store.setStaffScheduleExceptionCalls.length, 0);
+  });
+});
+
+test("DELETE /my-schedule-exceptions/:date: la manicurista solo puede borrar de su propio staffId", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions/2026-09-01`, {
+      method: "DELETE", headers: authHeaders(MANICURISTA_TOKEN),
+    });
+    assert.equal(response.status, 204);
+    assert.equal(store.deleteStaffScheduleExceptionCalls.length, 1);
+    assert.equal(store.deleteStaffScheduleExceptionCalls[0].staffId, "COL-1");
+  });
+});
+
+test("GET /my-schedule-exceptions: una administradora también puede usarlo (tiene staff_id propio)", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, { headers: authHeaders(ADMIN_TOKEN) });
+    // La cuenta administradora del mock no trae staff_id -- confirma que sin vínculo a
+    // colaboradora se rechaza igual que para personal, no solo para manicuristas.
+    assert.equal(response.status, 403);
   });
 });

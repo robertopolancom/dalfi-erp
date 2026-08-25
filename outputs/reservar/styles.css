@@ -143,6 +143,7 @@ dialog form{padding:28px}
 .agenda-card{min-height:430px}
 .agenda-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px}
 .date-controls{display:flex;align-items:center;gap:5px}
+.agenda-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
 .date-controls input{margin:0;min-width:145px;padding:10px}
 .date-controls button{border:1px solid #ded1b3;background:#fff;color:var(--brand-dark);width:40px;height:40px;border-radius:11px;font-size:1.4rem;cursor:pointer}
 /* Agenda en vista de calendario: una columna por manicurista, citas posicionadas por hora real
@@ -188,6 +189,10 @@ dialog form{padding:28px}
 .admin-jump-nav{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
 .admin-jump-nav a{border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.82rem;font-weight:800;color:var(--brand-dark);text-decoration:none;background:#fff}
 .admin-jump-nav a:hover{background:var(--paper-alt,#f6f1e4)}
+.admin-alert{background:#fef9c3;border:1px solid #fde68a;border-radius:14px;padding:14px 18px;margin:14px 0 22px}
+.admin-alert h4{margin:0 0 4px;color:#854d0e}
+.admin-alert p{margin:0 0 10px;color:#854d0e;font-size:.85rem}
+.admin-alert .admin-list{margin-bottom:0}
 
 /* ---------- horarios ---------- */
 .schedule-grid{display:flex;flex-direction:column;gap:6px;margin:8px 0 14px}

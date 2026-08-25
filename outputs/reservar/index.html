@@ -117,7 +117,10 @@
         <button class="active" id="agenda-view-day" type="button">Día</button>
         <button id="agenda-view-week" type="button">Semana</button>
       </div>
-      <button class="secondary hidden" id="open-user-management" type="button">Configuración de usuarios</button>
+      <div class="agenda-actions">
+        <button class="secondary hidden" id="open-my-availability" type="button">Mi disponibilidad</button>
+        <button class="secondary hidden" id="open-user-management" type="button">Configuración de usuarios</button>
+      </div>
       <div class="agenda-filters" id="agenda-filters"></div>
       <div class="message" id="agenda-message"></div>
       <div class="agenda-board" id="agenda-board"></div>
@@ -131,6 +134,12 @@
           <a href="#admin-section-clientas">Clientas</a>
           <a href="#admin-section-banner">Banner</a>
         </nav>
+
+        <div class="admin-alert hidden" id="staff-schedule-changes-alert">
+          <h4>Cambios de disponibilidad recientes</h4>
+          <p>Días u horas que las propias colaboradoras marcaron desde "Mi disponibilidad" en los últimos 30 días.</p>
+          <ul class="admin-list" id="staff-schedule-changes-list"></ul>
+        </div>
 
         <h3 id="admin-section-personal">Personal</h3>
         <div class="message" id="employees-message"></div>
@@ -289,6 +298,24 @@
     <label>Nueva contraseña<input id="admin-reset-password-value" type="password" autocomplete="new-password" minlength="8" required /></label>
     <label>Confirmar contraseña<input id="admin-reset-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
     <div class="message" id="admin-reset-password-message"></div><button class="primary" type="submit">Guardar contraseña</button>
+  </form></dialog>
+
+  <dialog id="my-availability-dialog"><form id="my-availability-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Mi horario</p><h2>Mi disponibilidad</h2></div><button class="icon-button" id="close-my-availability" type="button" aria-label="Cerrar">×</button></div>
+    <p>Marca un día que no vas a trabajar, o en el que trabajas horas distintas a lo normal. Administración lo ve reflejado automáticamente en tu horario.</p>
+    <label>Fecha<input id="my-availability-date" type="date" required /></label>
+    <label>¿Trabajas ese día?
+      <select id="my-availability-available"><option value="false">No (libre todo el día)</option><option value="true">Sí, con horario distinto</option></select>
+    </label>
+    <div class="field-grid" id="my-availability-hours">
+      <label>Desde<input id="my-availability-start" type="time" /></label>
+      <label>Hasta<input id="my-availability-end" type="time" /></label>
+    </div>
+    <label>Motivo <span>(opcional)</span><input id="my-availability-reason" type="text" maxlength="200" /></label>
+    <div class="message" id="my-availability-message" role="status"></div>
+    <button class="primary" type="submit">Guardar</button>
+    <h4>Próximas fechas marcadas</h4>
+    <ul class="admin-list" id="my-availability-list"></ul>
   </form></dialog>
 
   <script src="./config.js"></script><script src="./app.js" defer></script>

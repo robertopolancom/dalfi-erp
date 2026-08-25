@@ -55,6 +55,10 @@ function applyAccount(account) {
   $("employee-client").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   const isAdmin = Boolean(account) && ["administradora", "superadministrador"].includes(account.role);
   $("open-user-management").classList.toggle("hidden", !isAdmin);
+  // "Mi disponibilidad" es para cualquier colaboradora con horario propio (manicurista/asistente
+  // también, no solo administración) -- pedido explícito: cada una marca sus propios días/horas
+  // no disponibles en vez de depender de que administración lo haga por ella.
+  $("open-my-availability").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
   $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Citas activas";
   $("mode-label").textContent = !account ? "Reserva rápida" : account.role === "clienta" ? "Mi reserva" : "Reserva del equipo";
@@ -1043,6 +1047,7 @@ $("open-user-management").addEventListener("click", () => {
   loadClientsAdmin();
   loadBusinessHours();
   loadStaffSchedule($("staff-schedule-select").value);
+  loadStaffScheduleChanges();
   // Si ya hay un banner publicado de una sesión anterior, reflejarlo aquí también (si no, el
   // botón "Quitar" solo aparecería después de generar y publicar uno nuevo en esta sesión).
   if (state.catalog?.banner) { generatedBanner = state.catalog.banner; renderBannerPreview(generatedBanner); $("banner-remove").classList.remove("hidden"); }
@@ -1270,6 +1275,25 @@ $("holiday-closure-add").addEventListener("click", async () => {
   finally { button.disabled = false; }
 });
 
+// Aviso arriba del panel: qué marcó cada colaboradora por su cuenta en "Mi disponibilidad"
+// (created_by='staff' en el backend) -- así administración no tiene que ir colaboradora por
+// colaboradora a ver si alguien cambió algo.
+async function loadStaffScheduleChanges() {
+  try {
+    const { changes } = await api("/api/reservapp/admin/staff-schedule-changes");
+    $("staff-schedule-changes-alert").classList.toggle("hidden", changes.length === 0);
+    $("staff-schedule-changes-list").replaceChildren(...changes.map((change) => {
+      const li = document.createElement("li");
+      const dateLabel = new Date(`${change.exception_date}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" });
+      const hoursLabel = change.available ? (change.start_time ? ` (${change.start_time.slice(0, 5)}–${change.end_time.slice(0, 5)})` : "") : "libre todo el día";
+      const span = document.createElement("span");
+      span.textContent = `${change.staff_name}: ${dateLabel} — ${change.available ? "trabaja" + hoursLabel : hoursLabel}${change.reason ? ` · ${change.reason}` : ""}`;
+      li.append(span);
+      return li;
+    }));
+  } catch { /* aviso opcional -- no bloquea el resto del panel si falla */ }
+}
+
 async function loadStaffSchedule(staffId) {
   if (!staffId) { renderScheduleGrid($("staff-weekdays-grid"), { dayValues: {}, prefix: "staff" }); $("staff-exceptions-list").replaceChildren(); return; }
   message($("staff-schedule-message"), "Cargando…", true);
@@ -1345,6 +1369,63 @@ $("staff-exception-add").addEventListener("click", async () => {
     $("staff-exception-hours").classList.add("hidden");
     loadStaffSchedule(staffId);
   } catch (error) { message($("staff-schedule-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+// ---------- Mi disponibilidad (autoservicio de cada colaboradora) ----------
+async function loadMyAvailability() {
+  message($("my-availability-message"), "Cargando…", true);
+  try {
+    const { exceptions } = await api("/api/reservapp/my-schedule-exceptions");
+    message($("my-availability-message"));
+    $("my-availability-list").replaceChildren(...exceptions.map((exception) => {
+      const li = document.createElement("li");
+      const dateLabel = new Date(`${exception.exception_date}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" });
+      const hoursLabel = exception.available ? (exception.start_time ? ` (${exception.start_time.slice(0, 5)}–${exception.end_time.slice(0, 5)})` : "") : "libre todo el día";
+      const label = document.createElement("span"); label.textContent = `${dateLabel} — ${exception.available ? "trabajo" + hoursLabel : hoursLabel}${exception.reason ? ` · ${exception.reason}` : ""}`;
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "admin-row-action"; remove.textContent = "Quitar";
+      remove.addEventListener("click", async () => {
+        remove.disabled = true;
+        try {
+          await api(`/api/reservapp/my-schedule-exceptions/${exception.exception_date}`, { method: "DELETE" });
+          loadMyAvailability();
+        } catch (error) { message($("my-availability-message"), error.message); remove.disabled = false; }
+      });
+      li.append(label, remove);
+      return li;
+    }));
+  } catch (error) { message($("my-availability-message"), error.message); }
+}
+
+$("open-my-availability").addEventListener("click", () => {
+  $("my-availability-date").value = ""; $("my-availability-reason").value = ""; $("my-availability-available").value = "false";
+  $("my-availability-hours").classList.add("hidden");
+  $("my-availability-dialog").showModal();
+  loadMyAvailability();
+});
+$("close-my-availability").addEventListener("click", () => $("my-availability-dialog").close());
+$("my-availability-available").addEventListener("change", () => {
+  $("my-availability-hours").classList.toggle("hidden", $("my-availability-available").value !== "true");
+});
+$("my-availability-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const date = $("my-availability-date").value;
+  if (!date) return message($("my-availability-message"), "Elige una fecha.");
+  const available = $("my-availability-available").value === "true";
+  const button = event.submitter; button.disabled = true;
+  try {
+    await api("/api/reservapp/my-schedule-exceptions", {
+      method: "POST",
+      body: JSON.stringify({
+        date, available, reason: $("my-availability-reason").value,
+        startTime: available ? $("my-availability-start").value : "", endTime: available ? $("my-availability-end").value : "",
+      }),
+    });
+    $("my-availability-date").value = ""; $("my-availability-reason").value = ""; $("my-availability-available").value = "false";
+    $("my-availability-hours").classList.add("hidden");
+    message($("my-availability-message"), "Guardado.", true);
+    loadMyAvailability();
+  } catch (error) { message($("my-availability-message"), error.message); }
   finally { button.disabled = false; }
 });
 

@@ -1001,6 +1001,65 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Aviso en Configuración de usuarios de qué colaboradoras marcaron su propia disponibilidad
+    // recientemente (últimos 30 días) desde "Mi disponibilidad" -- ver setStaffScheduleException
+    // createdBy más abajo.
+    app.get("/api/reservapp/admin/staff-schedule-changes", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver estos cambios." });
+        res.json({ changes: await bookingStore.listRecentStaffCreatedExceptions({}) });
+      } catch (error) { next(error); }
+    });
+
+    // "Mi disponibilidad": cualquier colaboradora (manicurista/asistente/administradora/
+    // superadministrador, ver requireManicuristaOrAbove) marca sus propios días u horas no
+    // disponibles -- mismas tablas y misma lógica de availability() que ya usa el editor de
+    // administración, solo que acotado a la propia sesión (nunca a un staffId ajeno) y
+    // marcado created_by='staff' para que aparezca en el aviso de arriba.
+    app.get("/api/reservapp/my-schedule-exceptions", bookingRateLimit, async (req, res, next) => {
+      const session = await requireManicuristaOrAbove(req, res);
+      if (!session) return;
+      if (!session.account.staff_id) return res.status(403).json({ error: "Esta cuenta no está vinculada a una colaboradora." });
+      try {
+        res.json({ exceptions: await bookingStore.listStaffScheduleExceptions(session.account.staff_id) });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/my-schedule-exceptions", bookingRateLimit, async (req, res, next) => {
+      const session = await requireManicuristaOrAbove(req, res);
+      if (!session) return;
+      if (!session.account.staff_id) return res.status(403).json({ error: "Esta cuenta no está vinculada a una colaboradora." });
+      const date = cleanText(req.body?.date, 10);
+      const available = Boolean(req.body?.available);
+      const startTime = available ? cleanText(req.body?.startTime, 5) : "";
+      const endTime = available ? cleanText(req.body?.endTime, 5) : "";
+      const reason = cleanText(req.body?.reason, 200);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Elige una fecha válida." });
+      if (available && (startTime || endTime) && (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime) || startTime >= endTime)) {
+        return res.status(400).json({ error: "La hora de fin debe ser posterior a la de inicio." });
+      }
+      try {
+        res.json({
+          exception: await bookingStore.setStaffScheduleException({
+            staffId: session.account.staff_id, date, available, reason,
+            startTime: startTime || null, endTime: endTime || null, createdBy: "staff",
+          }),
+        });
+      } catch (error) { next(error); }
+    });
+
+    app.delete("/api/reservapp/my-schedule-exceptions/:date", bookingRateLimit, async (req, res, next) => {
+      const session = await requireManicuristaOrAbove(req, res);
+      if (!session) return;
+      if (!session.account.staff_id) return res.status(403).json({ error: "Esta cuenta no está vinculada a una colaboradora." });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: "Fecha inválida." });
+      try {
+        await bookingStore.deleteStaffScheduleException({ staffId: session.account.staff_id, date: req.params.date });
+        res.status(204).end();
+      } catch (error) { next(error); }
+    });
+
     // Motor de recordatorios de confirmación de asistencia -- disparado por un Cloudflare Worker
     // con Cron Trigger cada hora (workers/booking-reminder-cron/), mismo mecanismo que antes de
     // eliminar dalfi-erp.pages.dev, solo que ahora apunta aquí en vez de a esa Pages Function
