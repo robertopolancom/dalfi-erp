@@ -756,6 +756,14 @@ export class NeonBookingStore {
       return { confirmed: true };
     } catch (error) {
       await client.query("rollback").catch(() => {});
+      // Ventana de carrera real entre el chequeo de conflicto de arriba (un SELECT normal, no
+      // bloquea inserciones nuevas de otras sesiones) y este UPDATE: si alguien más reservó
+      // exactamente ese staff_id+horario en el instante entre medio, este UPDATE reintroduce la
+      // fila al alcance de la restricción de exclusión (confirmation_status deja de ser
+      // 'EspacioLiberado') y Postgres la rechaza con 23P01 -- mismo código que ya maneja
+      // createAppointment(). Sin este catch, esa carrera se veía como un 500 genérico en vez del
+      // 409 ALREADY_REASSIGNED que sí espera el frontend.
+      if (error?.code === "23P01") return { alreadyReassigned: true, status: "Reemplazada" };
       throw error;
     } finally {
       client.release();

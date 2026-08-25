@@ -1067,7 +1067,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     // "Programada" recibe recordatorio a <=4h laborales de la cita; "PendienteConfirmarHora"
     // recibe el segundo + libera el horario a >=1h laboral después del primero sin respuesta
     // (ver businessMinutesBetween/resolveBusinessDayWindow en store.mjs).
-    app.post("/api/booking/send-reminders", async (req, res, next) => {
+    // bookingRateLimit aquí no afecta el cron real (una llamada por hora, muy por debajo del
+    // límite) -- solo evita que alguien intentando adivinar BOOKING_REMINDER_CRON_SECRET a fuerza
+    // bruta lo haga sin ningún freno (antes esta ruta era la única sin límite de intentos).
+    app.post("/api/booking/send-reminders", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.BOOKING_REMINDER_CRON_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar BOOKING_REMINDER_CRON_SECRET." });
       if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
