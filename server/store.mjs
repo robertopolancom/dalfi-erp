@@ -897,6 +897,21 @@ export class NeonBookingStore {
     return true;
   }
 
+  // Alternativa a resetAccountPassword: en vez de que administración escriba la contraseña
+  // nueva por la persona, borra la que tenía y la deja en el mismo estado "sin contraseña
+  // todavía" que una cuenta recién creada -- la próxima vez que esa persona (clienta o
+  // personal) ponga su teléfono en ReservApp, check-phone/request-setup ya la reconocen
+  // (password_hash IS NULL) y la mandan directo a "¿Eres tú? Crea tu contraseña".
+  async clearAccountPassword({ id }) {
+    const result = await this.pool.query(
+      `update app.reservapp_accounts set password_hash=null, updated_at=now() where id=$1 returning id`,
+      [id],
+    );
+    if (!result.rowCount) return null;
+    await this.pool.query("update app.reservapp_sessions set revoked_at=now() where account_id=$1 and revoked_at is null", [id]);
+    return true;
+  }
+
   // "Bloquear" tiene que impedir el login de verdad, no solo marcar la ficha -- el login
   // (POST /auth/login) exige reservapp_accounts.status='active', que es una tabla aparte de
   // app.clients. Si la clienta ya tiene cuenta de ReservApp, se suspende/reactiva junto con el

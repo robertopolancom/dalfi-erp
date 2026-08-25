@@ -125,8 +125,14 @@
 
       <section class="admin-panel hidden" id="admin-panel">
         <div class="dialog-head"><p class="kicker">Configuración de usuarios</p><button class="icon-button" id="close-user-management" type="button" aria-label="Cerrar">×</button></div>
+        <nav class="admin-jump-nav" aria-label="Ir a sección">
+          <a href="#admin-section-personal">Personal</a>
+          <a href="#admin-section-horarios">Horarios</a>
+          <a href="#admin-section-clientas">Clientas</a>
+          <a href="#admin-section-banner">Banner</a>
+        </nav>
 
-        <h3>Personal</h3>
+        <h3 id="admin-section-personal">Personal</h3>
         <div class="message" id="employees-message"></div>
         <div class="admin-table-wrap"><table class="admin-table" id="employees-table"><thead><tr><th>Nombre</th><th>Rol</th><th>Estado</th><th></th></tr></thead><tbody id="employees-body"></tbody></table></div>
 
@@ -139,7 +145,7 @@
         </div>
         <div class="message" id="account-message"></div><button class="secondary" id="create-account" type="button">Enviar credenciales</button>
 
-        <h3>Horarios</h3>
+        <h3 id="admin-section-horarios">Horarios</h3>
         <p>El horario general aplica a todo el negocio. Si una colaboradora tiene su propio horario configurado abajo, ese manda para ella los días que tenga fila -- si no tiene ninguno, sigue el horario general.</p>
 
         <h4>Horario general del negocio</h4>
@@ -176,12 +182,12 @@
         <div class="message" id="staff-schedule-message"></div>
         <ul class="admin-list" id="staff-exceptions-list"></ul>
 
-        <h3>Clientas</h3>
+        <h3 id="admin-section-clientas">Clientas</h3>
         <label>Buscar por nombre o teléfono<input id="clients-admin-search" type="search" autocomplete="off" placeholder="Escribe para filtrar" /></label>
         <div class="message" id="clients-admin-message"></div>
         <div class="admin-table-wrap"><table class="admin-table" id="clients-admin-table"><thead><tr><th>Nombre</th><th>Teléfono</th><th>Estado</th><th></th></tr></thead><tbody id="clients-admin-body"></tbody></table></div>
 
-        <h3>Banner promocional</h3>
+        <h3 id="admin-section-banner">Banner promocional</h3>
         <p>Describe qué quieres anunciar y la IA redacta el texto y elige el estilo. Sin banner publicado, ReservApp se ve igual que siempre.</p>
         <label>Instrucciones<textarea id="banner-instructions" rows="2" placeholder="Ej. 2x1 en manicura los lunes, tono festivo"></textarea></label>
         <div class="message" id="banner-message"></div>

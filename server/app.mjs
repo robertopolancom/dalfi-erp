@@ -777,6 +777,20 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Alternativa al reset manual de arriba: en vez de que administración escriba la
+    // contraseña nueva, borra la que tenía -- la próxima vez que esa persona ponga su teléfono
+    // en ReservApp, la reconoce sin contraseña (ver check-phone/request-setup) y la manda
+    // directo a "¿Eres tú? Crea tu contraseña" para que la defina ella misma.
+    app.post("/api/reservapp/admin/accounts/:id/clear-password", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede reiniciar credenciales." });
+        const updated = await bookingStore.clearAccountPassword({ id: req.params.id });
+        if (!updated) return res.status(404).json({ error: "Esa cuenta no existe." });
+        res.json({ ok: true });
+      } catch (error) { next(error); }
+    });
+
     app.get("/api/reservapp/admin/clients", bookingRateLimit, async (req, res, next) => {
       try {
         const { allowed } = await resolveAdminAuthority(req);

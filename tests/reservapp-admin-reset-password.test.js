@@ -12,14 +12,20 @@ const ADMIN_TOKEN = "admin-session-token";
 
 function bookingStore() {
   const resetCalls = [];
+  const clearCalls = [];
   return {
-    resetCalls,
+    resetCalls, clearCalls,
     async sessionAccount(tokenHash) {
       if (tokenHash === hashToken(ADMIN_TOKEN)) return { id: "admin-1", role: "administradora" };
       return null;
     },
     async resetAccountPassword({ id, passwordHash }) {
       resetCalls.push({ id, passwordHash });
+      if (id === "missing-account") return null;
+      return true;
+    },
+    async clearAccountPassword({ id }) {
+      clearCalls.push({ id });
       if (id === "missing-account") return null;
       return true;
     },
@@ -76,6 +82,38 @@ test("POST /api/reservapp/admin/accounts/:id/reset-password: administradora fija
 test("POST /api/reservapp/admin/accounts/:id/reset-password: cuenta inexistente responde 404", async () => {
   await withServer(async (base) => {
     const response = await resetRequest(base, { cookie: ADMIN_TOKEN, accountId: "missing-account" });
+    assert.equal(response.status, 404);
+  });
+});
+
+// Alternativa a fijar la contraseña: borrarla para que la propia persona defina una nueva la
+// próxima vez que ponga su teléfono en ReservApp (ver check-phone/request-setup).
+function clearRequest(base, { accountId = "account-1", cookie } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (cookie) headers.Cookie = `reservapp_session=${cookie}`;
+  return fetch(`${base}/api/reservapp/admin/accounts/${accountId}/clear-password`, { method: "POST", headers });
+}
+
+test("POST /api/reservapp/admin/accounts/:id/clear-password: sin sesión de administración se rechaza", async () => {
+  await withServer(async (base, store) => {
+    const response = await clearRequest(base, {});
+    assert.equal(response.status, 403);
+    assert.equal(store.clearCalls.length, 0);
+  });
+});
+
+test("POST /api/reservapp/admin/accounts/:id/clear-password: administradora borra la contraseña de la cuenta", async () => {
+  await withServer(async (base, store) => {
+    const response = await clearRequest(base, { cookie: ADMIN_TOKEN, accountId: "account-42" });
+    assert.equal(response.status, 200);
+    assert.equal(store.clearCalls.length, 1);
+    assert.equal(store.clearCalls[0].id, "account-42");
+  });
+});
+
+test("POST /api/reservapp/admin/accounts/:id/clear-password: cuenta inexistente responde 404", async () => {
+  await withServer(async (base) => {
+    const response = await clearRequest(base, { cookie: ADMIN_TOKEN, accountId: "missing-account" });
     assert.equal(response.status, 404);
   });
 });

@@ -1046,6 +1046,10 @@ $("open-user-management").addEventListener("click", () => {
   // Si ya hay un banner publicado de una sesión anterior, reflejarlo aquí también (si no, el
   // botón "Quitar" solo aparecería después de generar y publicar uno nuevo en esta sesión).
   if (state.catalog?.banner) { generatedBanner = state.catalog.banner; renderBannerPreview(generatedBanner); $("banner-remove").classList.remove("hidden"); }
+  // El panel aparece debajo de toda la grilla de la agenda del día -- sin este scroll, en
+  // pantallas normales parece que el botón "no responde" porque no hay ningún cambio visible
+  // hasta que se hace scroll manualmente (reportado en vivo 2026-08-25).
+  $("admin-panel").scrollIntoView({ behavior: "smooth", block: "start" });
 });
 $("close-user-management").addEventListener("click", () => $("admin-panel").classList.add("hidden"));
 
@@ -1057,7 +1061,28 @@ async function loadEmployeesTable() {
     $("employees-body").replaceChildren(...accounts.map((account) => {
       const row = document.createElement("tr");
       const name = document.createElement("td"); name.textContent = account.full_name;
-      const role = document.createElement("td"); role.textContent = account.role;
+      // Editable en vez de solo texto -- antes no había forma de cambiarle el rol a alguien ya
+      // creada, solo se elegía una vez al invitarla. Guarda apenas se cambia la selección; el
+      // backend igual exige ser superadministrador para tocar cualquier cosa que sea o pase a
+      // ser "superadministrador" (ver PATCH /admin/accounts/:id).
+      const role = document.createElement("td");
+      const roleSelect = document.createElement("select"); roleSelect.className = "admin-role-select";
+      ["manicurista", "asistente", "administradora", "superadministrador"].forEach((value) => {
+        roleSelect.append(new Option(value.charAt(0).toUpperCase() + value.slice(1), value, false, value === account.role));
+      });
+      roleSelect.addEventListener("change", async () => {
+        const nextRole = roleSelect.value;
+        roleSelect.disabled = true;
+        try {
+          await api(`/api/reservapp/admin/accounts/${account.id}`, { method: "PATCH", body: JSON.stringify({ role: nextRole }) });
+          message($("employees-message"), `Rol de ${account.full_name} actualizado a ${nextRole}.`, true);
+          account.role = nextRole;
+        } catch (error) {
+          message($("employees-message"), error.message);
+          roleSelect.value = account.role;
+        } finally { roleSelect.disabled = false; }
+      });
+      role.append(roleSelect);
       const status = document.createElement("td");
       const badge = document.createElement("span"); badge.className = `admin-status ${account.status}`; badge.textContent = EMPLOYEE_STATUS_LABEL[account.status] || account.status;
       status.append(badge);
@@ -1079,10 +1104,29 @@ async function loadEmployeesTable() {
       resetPassword.textContent = "Restablecer contraseña";
       resetPassword.addEventListener("click", () => openAdminResetPassword({ accountId: account.id, name: account.full_name, messageTarget: "employees-message" }));
       actions.append(resetPassword);
+      actions.append(clearPasswordButton({ accountId: account.id, name: account.full_name, messageTarget: "employees-message", onDone: loadEmployeesTable }));
       row.append(name, role, status, actions);
       return row;
     }));
   } catch (error) { message($("employees-message"), error.message); }
+}
+
+// Botón compartido por la tabla de Personal y la de Clientas: en vez de que administración
+// escriba la contraseña nueva (openAdminResetPassword), borra la que tenía para que la
+// propia persona la defina la próxima vez que ponga su teléfono en ReservApp.
+function clearPasswordButton({ accountId, name, messageTarget, onDone }) {
+  const button = document.createElement("button"); button.type = "button"; button.className = "admin-row-action";
+  button.textContent = "Reiniciar acceso";
+  button.title = `${name || "Esta persona"} tendrá que crear su propia contraseña de nuevo`;
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api(`/api/reservapp/admin/accounts/${accountId}/clear-password`, { method: "POST" });
+      message($(messageTarget), `Listo -- ${name || "esa persona"} deberá crear una contraseña nueva la próxima vez que entre.`, true);
+      onDone?.();
+    } catch (error) { message($(messageTarget), error.message); button.disabled = false; }
+  });
+  return button;
 }
 
 let clientsAdminSearchTimer;
@@ -1117,6 +1161,7 @@ async function loadClientsAdmin(query = "") {
         resetPassword.textContent = "Restablecer contraseña";
         resetPassword.addEventListener("click", () => openAdminResetPassword({ accountId: client.account_id, name: client.full_name }));
         actions.append(resetPassword);
+        actions.append(clearPasswordButton({ accountId: client.account_id, name: client.full_name, messageTarget: "clients-admin-message", onDone: () => loadClientsAdmin($("clients-admin-search").value.trim()) }));
       }
       row.append(name, phone, status, actions);
       return row;

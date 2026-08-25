@@ -21,6 +21,7 @@
   font-family:Poppins,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
 *{box-sizing:border-box}
+html{scroll-behavior:smooth}
 body{margin:0;min-height:100vh;background:radial-gradient(circle at 12% 0,var(--bg-1) 0,transparent 42%),linear-gradient(160deg,var(--bg-1),var(--bg-2));color:var(--ink)}
 button,input,select,textarea{font:inherit}
 .shell{width:min(820px,100%);margin:auto;padding:32px 18px 70px}
@@ -113,7 +114,10 @@ dialog form{padding:28px}
   .deposit{align-items:flex-start;flex-direction:column;gap:4px}
 }
 
-.account-button{border:1px solid #ddceac;background:rgba(255,255,255,.75);color:var(--brand-dark);font-weight:850;border-radius:999px;padding:10px 14px;cursor:pointer;max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* max-width fijo (no porcentaje) -- un % del contenedor de auto-ancho (.account-group) podía
+   colapsar a un valor minúsculo según el viewport y recortaba "Entrar" a una sola letra incluso
+   en escritorio; la media query de abajo ya cubre el caso realmente angosto (móvil). */
+.account-button{border:1px solid #ddceac;background:rgba(255,255,255,.75);color:var(--brand-dark);font-weight:850;border-radius:999px;padding:10px 14px;cursor:pointer;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .account-group{margin-left:auto;display:flex;align-items:center;gap:10px}
 .app-nav{display:grid;grid-template-columns:1fr 1fr;gap:5px;background:rgba(255,255,255,.6);padding:5px;border-radius:16px;margin:0 4px 16px}
 /* Agenda (panel de personal / mis citas) solo existe una vez identificada -- sin sesión, la
@@ -176,8 +180,14 @@ dialog form{padding:28px}
 .admin-status.pending{background:var(--soft);color:var(--muted)}
 .admin-status.pending::before{background:var(--muted)}
 .admin-row-action{border:1px solid var(--line);background:#fff;color:var(--brand-dark);font-weight:800;font-size:.76rem;padding:5px 10px;border-radius:8px;cursor:pointer;margin-right:4px}
+.admin-role-select{width:auto;min-width:140px;padding:6px 10px;margin-top:0;font-size:.82rem;border-radius:8px}
 .admin-panel h4{margin:18px 0 4px;font-size:.95rem}
 .admin-panel h5{margin:14px 0 4px;font-size:.85rem;color:var(--muted)}
+/* Panel largo (Personal, Horarios, Clientas puede tener decenas de filas, Banner) -- sin esto,
+   llegar a una sección de abajo (ej. Banner) exige adivinar cuánto hay que bajar. */
+.admin-jump-nav{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
+.admin-jump-nav a{border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:.82rem;font-weight:800;color:var(--brand-dark);text-decoration:none;background:#fff}
+.admin-jump-nav a:hover{background:var(--paper-alt,#f6f1e4)}
 
 /* ---------- horarios ---------- */
 .schedule-grid{display:flex;flex-direction:column;gap:6px;margin:8px 0 14px}
