@@ -23,7 +23,12 @@ function fakePool({ staff = [], businessSettings = {}, weeklySchedules = [], exc
         const date = params[1];
         return { rows: exceptions.filter((row) => params[0].includes(row.staff_id) && row.exception_date === date) };
       }
-      if (sql.includes("from app.appointments")) return { rows: appointments };
+      if (sql.includes("from app.appointments")) {
+        const rows = sql.includes("confirmation_status is distinct from 'EspacioLiberado'")
+          ? appointments.filter((row) => row.confirmation_status !== "EspacioLiberado")
+          : appointments;
+        return { rows };
+      }
       throw new Error(`Consulta no simulada: ${sql}`);
     },
   };
@@ -125,6 +130,28 @@ test("availability(): scheduleExceptions con open/close vacíos cierra el negoci
   }));
   const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-12-25" });
   assert.equal(result.closed, true);
+});
+
+test("availability(): una cita con confirmation_status EspacioLiberado no bloquea su horario (el espacio reaparece disponible)", async () => {
+  const monday = "2026-08-31";
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    businessSettings: {},
+    appointments: [{ staff_id: "COL-1", starts_at: `${monday}T13:00:00-04:00`, ends_at: `${monday}T14:00:00-04:00`, confirmation_status: "EspacioLiberado" }],
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: monday });
+  assert.ok(result.slots.some((slot) => slot.time === "13:00"), "el horario liberado debe reaparecer como disponible");
+});
+
+test("availability(): una cita normal (sin EspacioLiberado) sigue bloqueando su horario", async () => {
+  const monday = "2026-08-31";
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    businessSettings: {},
+    appointments: [{ staff_id: "COL-1", starts_at: `${monday}T13:00:00-04:00`, ends_at: `${monday}T14:00:00-04:00`, confirmation_status: "Programada" }],
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: monday });
+  assert.ok(!result.slots.some((slot) => slot.time === "13:00"), "una cita normal sigue ocupando su horario");
 });
 
 test("availability(): scheduleExceptions con open/close puntuales cambia el horario del negocio solo esa fecha", async () => {

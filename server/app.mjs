@@ -4,6 +4,7 @@ import { authorizeDatabaseChanges, detectDatabaseChanges } from "../functions/ap
 import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
+import { businessMinutesBetween } from "./store.mjs";
 import {
   RESERVAPP_ROLES,
   generateOtpCode,
@@ -290,6 +291,39 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     } catch (error) {
       await bookingStore.markWhatsApp({ outboxId, status: "failed", error: cleanText(error.message, 300) });
       return { status: "failed" };
+    }
+  };
+
+  // Recordatorio/escalación de confirmación de asistencia (ver checkConfirmationReminder más
+  // abajo) -- mismo evento y endpoint del bridge que ya usaba functions/api/booking/send-reminders.js
+  // (proyecto de Cloudflare Pages ya eliminado), así que el propio Chatbot Bridge no necesita
+  // ningún cambio: sigue atendiendo la respuesta de la clienta con su menú
+  // "1. Confirmar mi hora / 2. Reagendar / 3. Menú principal" y llamando de vuelta a
+  // POST /api/reservapp/booking/confirm-attendance cuando confirma. No usa outbox (no es un
+  // código de un solo uso, es un aviso reintentable cada hora por el propio cron si falla).
+  const sendConfirmationReminderWhatsApp = async ({ reservationId, phone, clientName, date, time, service, stage }) => {
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!bridgeSecret) return { ok: false, reason: "pending_configuration" };
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    const text = stage === "second"
+      ? `Hola ${clientName || ""}. Tu cita de ${service || "tu servicio"} el ${date} a las ${time} está a punto de liberarse porque no hemos recibido tu confirmación. Responde "1" para confirmar tu hora ahora mismo, o la podríamos ofrecer a otra clienta.`.trim()
+      : `Hola ${clientName || ""}. Recuerda tu cita de ${service || "tu servicio"} hoy/mañana ${date} a las ${time}. Responde "1" para confirmar tu asistencia o "2" para reagendar.`.trim();
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/overdue-reminders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          event: "booking.confirmation_reminder",
+          actionRequired: "await_customer_reply",
+          reservationId,
+          recipientPhone: normalizePhone(phone),
+          whatsappFormattedText: text,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      return { ok: response.ok, status: response.status, body };
+    } catch (error) {
+      return { ok: false, error: error.message };
     }
   };
 
@@ -853,6 +887,78 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         if (!allowed) return res.status(403).json({ error: "Solo administración puede editar excepciones de horario." });
         await bookingStore.deleteStaffScheduleException({ staffId: cleanText(req.params.staffId, 64), date: req.params.date });
         res.status(204).end();
+      } catch (error) { next(error); }
+    });
+
+    // Motor de recordatorios de confirmación de asistencia -- disparado por un Cloudflare Worker
+    // con Cron Trigger cada hora (workers/booking-reminder-cron/), mismo mecanismo que antes de
+    // eliminar dalfi-erp.pages.dev, solo que ahora apunta aquí en vez de a esa Pages Function
+    // muerta. Aplica a TODA cita futura sin importar canal de origen (ver createAppointment) --
+    // "Programada" recibe recordatorio a <=4h laborales de la cita; "PendienteConfirmarHora"
+    // recibe el segundo + libera el horario a >=1h laboral después del primero sin respuesta
+    // (ver businessMinutesBetween/resolveBusinessDayWindow en store.mjs).
+    app.post("/api/booking/send-reminders", async (req, res, next) => {
+      const expectedSecret = env.BOOKING_REMINDER_CRON_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar BOOKING_REMINDER_CRON_SECRET." });
+      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      try {
+        const { settings } = await bookingStore.businessSettings();
+        const appointments = await bookingStore.listAppointmentsForReminderSweep();
+        const now = Date.now();
+        let remindersSent = 0;
+        let escalationsSent = 0;
+        const failures = [];
+        for (const apt of appointments) {
+          if (!apt.client_phone) continue;
+          const common = {
+            reservationId: apt.legacy_id, phone: apt.client_phone, clientName: apt.client_name,
+            date: apt.apt_date, time: apt.apt_time, service: apt.service_name,
+          };
+          if (apt.confirmation_status === "Programada") {
+            const hoursUntil = businessMinutesBetween(now, new Date(apt.starts_at).getTime(), settings) / 60;
+            if (hoursUntil > 4) continue;
+            const result = await sendConfirmationReminderWhatsApp({ ...common, stage: "first" });
+            if (!result.ok) { failures.push({ reservationId: apt.legacy_id, error: result.error || result.status }); continue; }
+            await bookingStore.markConfirmationReminderSent({ appointmentId: apt.id, stage: "first" });
+            remindersSent += 1;
+          } else if (apt.confirmation_status === "PendienteConfirmarHora" && apt.first_reminder_sent_at) {
+            const hoursSinceFirst = businessMinutesBetween(new Date(apt.first_reminder_sent_at).getTime(), now, settings) / 60;
+            if (hoursSinceFirst < 1) continue;
+            const result = await sendConfirmationReminderWhatsApp({ ...common, stage: "second" });
+            if (!result.ok) { failures.push({ reservationId: apt.legacy_id, error: result.error || result.status }); continue; }
+            await bookingStore.markConfirmationReminderSent({ appointmentId: apt.id, stage: "second" });
+            escalationsSent += 1;
+          }
+        }
+        res.json({ ok: true, remindersSent, escalationsSent, failures });
+      } catch (error) { next(error); }
+    });
+
+    // Confirma la asistencia de una cita -- llamado por el Chatbot Bridge cuando la clienta
+    // responde "1. Confirmar mi hora" por WhatsApp (x-webhook-secret compartido, mismo que usa el
+    // bridge para notify-invoice-sent.js) o por el botón "Confirmar cita en salón" del ERP legado
+    // (sesión de administración). Si el horario ya fue tomado por otra reserva mientras esta
+    // esperaba (EspacioLiberado -> otra cita ocupó esa colaboradora+horario), responde
+    // alreadyReassigned:true para que quien llama le pida a la clienta elegir otro horario.
+    app.post("/api/reservapp/booking/confirm-attendance", bookingRateLimit, async (req, res, next) => {
+      const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+      const viaBridge = bridgeSecret && (req.get("x-webhook-secret") || "") === bridgeSecret;
+      if (!viaBridge) {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(401).json({ error: "No autorizado." });
+      }
+      const reservationId = cleanText(req.body?.reservationId, 80);
+      if (!reservationId) return res.status(400).json({ error: "Se requiere reservationId." });
+      try {
+        const result = await bookingStore.confirmAppointmentAttendance({ legacyId: reservationId });
+        if (result.missing) return res.status(404).json({ error: `Reserva '${reservationId}' no encontrada.` });
+        if (result.alreadyReassigned) {
+          return res.status(409).json({
+            success: false, code: "ALREADY_REASSIGNED",
+            error: `El horario de la reserva '${reservationId}' ya no está disponible: fue tomado por otra reserva. Selecciona otro horario.`,
+          });
+        }
+        res.json({ success: true, confirmed: true });
       } catch (error) { next(error); }
     });
 

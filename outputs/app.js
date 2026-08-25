@@ -4205,7 +4205,7 @@ function renderReservations() {
   renderConsolidatedMatrix();
 }
 
-function confirmSalonReservation(reservationId) {
+async function confirmSalonReservation(reservationId) {
   if (!canManageReservations()) {
     alert("Tu usuario no está autorizado para confirmar reservas en salón.");
     return;
@@ -4216,13 +4216,34 @@ function confirmSalonReservation(reservationId) {
     return;
   }
   // Si esta cita ya fue reasignada (otra reserva tomó su horario tras no
-  // confirmarse a tiempo, ver functions/api/booking/confirm.js
-  // ALREADY_REASSIGNED), no se debe resucitar por encima de la nueva reserva.
+  // confirmarse a tiempo), no se debe resucitar por encima de la nueva reserva.
   // "Reprogramada" no cuenta como reasignada: es la cita reagendada a un
-  // horario nuevo, sigue siendo válida (ver el mismo criterio en confirm.js).
+  // horario nuevo, sigue siendo válida.
   const reassignedStatuses = new Set(["reemplazada", "cancelada"]);
   if (reassignedStatuses.has(String(dbRow.estado || "").toLowerCase())) {
     alert(`La cita ${reservationId} ya no está disponible: su horario fue reasignado (estado actual: ${dbRow.estado}).`);
+    return;
+  }
+  // Confirmar primero contra el backend real (app.appointments en Neon) -- de ahí sale de verdad
+  // la disponibilidad (ver availability() en server/store.mjs). Confirmar solo en el documento
+  // local dejaría el motor de recordatorios pensando que sigue sin confirmarse y liberaría su
+  // horario de todos modos.
+  try {
+    const response = await fetch("/api/reservapp/booking/confirm-attendance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify({ reservationId }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      if (body.code === "ALREADY_REASSIGNED") {
+        alert(body.error || `El horario de la reserva ${reservationId} ya fue tomado por otra clienta. Selecciona otro horario para ${dbRow.clienteNombre || "esta clienta"}.`);
+        return;
+      }
+      throw new Error(body.error || `HTTP ${response.status}`);
+    }
+  } catch (error) {
+    alert(`No se pudo confirmar la cita ${reservationId} en el sistema real: ${error.message}. Intenta de nuevo.`);
     return;
   }
   dbRow.estado = "Confirmada";

@@ -75,6 +75,59 @@ function uniqueServiceIds(value) {
   return [...new Set((Array.isArray(value) ? value : [value]).filter(Boolean).map(String))];
 }
 
+// Ventana de apertura del negocio para una fecha exacta (America/Santo_Domingo, UTC-4 fijo, sin
+// horario de verano), o null si está cerrado. Prioridad: scheduleExceptions (fecha exacta) >
+// holidayClosures/weekDays > weeklyHours[díaDeSemana] > defaultOpeningTime/defaultClosingTime.
+// Extraído de availability() para reutilizarse también en businessMinutesBetween (motor de
+// recordatorios de confirmación) sin duplicar la lógica de resolución de horario.
+export function resolveBusinessDayWindow(dateStr, settings = {}) {
+  const weekday = new Date(`${dateStr}T12:00:00-04:00`).getDay();
+  const weeklyHours = settings.weeklyHours && typeof settings.weeklyHours === "object" ? settings.weeklyHours : {};
+  const dayKey = String(weekday);
+  const dayOverride = Object.prototype.hasOwnProperty.call(weeklyHours, dayKey) ? weeklyHours[dayKey] : undefined;
+  const weekDays = Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6];
+  const businessClosedToday = dayOverride === undefined ? !weekDays.includes(weekday) : dayOverride === null;
+  const scheduleExceptions = Array.isArray(settings.scheduleExceptions) ? settings.scheduleExceptions : [];
+  const dateException = scheduleExceptions.find((exc) => exc?.date === dateStr);
+  const dateExceptionClosed = dateException && !dateException.open && !dateException.close;
+  if (businessClosedToday || (settings.holidayClosures || []).includes(dateStr) || dateExceptionClosed) return null;
+  const open = dateException?.open || dayOverride?.open || settings.defaultOpeningTime || "09:00";
+  const close = dateException?.close || dayOverride?.close || settings.defaultClosingTime || "18:00";
+  return { open, close };
+}
+
+// Minutos de horario laboral real entre dos instantes (fromMs, toMs), caminando día por día en
+// America/Santo_Domingo -- usado para que "faltan N horas para la cita" cuente solo horas en que
+// el salón realmente atiende, no horas de reloj puro (ver checkConfirmationReminder en
+// server/app.mjs). Puerto de businessMinutesUntil (outputs/lib/booking-engine.js), adaptado a la
+// forma de settings de app.business_settings en vez de businessSchedule normalizado.
+export function businessMinutesBetween(fromMs, toMs, settings = {}) {
+  if (!(toMs > fromMs)) return 0;
+  let totalMinutes = 0;
+  let cursorMs = fromMs;
+  const toMinutesNum = (clock) => {
+    const [hour, minute] = clock.split(":").map(Number);
+    return hour * 60 + minute;
+  };
+  // Límite defensivo: nunca camina más allá de ~2 años de días, para que un settings corrupto
+  // (todo cerrado) nunca cause un bucle largo.
+  for (let guard = 0; guard < 730 && cursorMs < toMs; guard += 1) {
+    const dateStr = new Date(cursorMs - 4 * 3600000).toISOString().slice(0, 10); // fecha SD del cursor
+    const window = resolveBusinessDayWindow(dateStr, settings);
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const dayStartMs = Date.UTC(y, m - 1, d, 4, 0, 0); // 00:00 SD == 04:00 UTC
+    if (window) {
+      const openMs = dayStartMs + toMinutesNum(window.open) * 60000;
+      const closeMs = dayStartMs + toMinutesNum(window.close) * 60000;
+      const segStart = Math.max(cursorMs, openMs);
+      const segEnd = Math.min(toMs, closeMs);
+      if (segEnd > segStart) totalMinutes += (segEnd - segStart) / 60000;
+    }
+    cursorMs = dayStartMs + 24 * 3600000; // medianoche del día siguiente
+  }
+  return totalMinutes;
+}
+
 export class NeonBookingStore {
   constructor(pool) {
     this.pool = pool;
@@ -296,26 +349,10 @@ export class NeonBookingStore {
     const minNotice = Math.max(0, Number(settings.minimumBookingNoticeMinutes) || 30);
     const maxDays = Math.max(1, Number(settings.maximumAdvanceBookingDays) || 60);
     const weekday = new Date(`${date}T12:00:00-04:00`).getDay();
-    // weeklyHours (horario del negocio por día de semana, puede tener horas distintas cada día o
-    // null para "no se labora") manda sobre weekDays/defaultOpeningTime/defaultClosingTime -- ese
-    // era el formato anterior, de un solo horario para todos los días abiertos, y sigue vigente
-    // tal cual para cualquier día que nunca se configuró en weeklyHours (compatibilidad).
-    const weeklyHours = settings.weeklyHours && typeof settings.weeklyHours === "object" ? settings.weeklyHours : {};
-    const dayKey = String(weekday);
-    const dayOverride = Object.prototype.hasOwnProperty.call(weeklyHours, dayKey) ? weeklyHours[dayKey] : undefined;
-    const weekDays = Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6];
-    const businessClosedToday = dayOverride === undefined ? !weekDays.includes(weekday) : dayOverride === null;
-    // scheduleExceptions: mismo formato que ya usaba el editor de horario del ERP legado (fecha
-    // puntual + open/close, o ambos vacíos para "cerrado todo el día") -- gana sobre weeklyHours
-    // y sobre holidayClosures para esa fecha exacta.
-    const scheduleExceptions = Array.isArray(settings.scheduleExceptions) ? settings.scheduleExceptions : [];
-    const dateException = scheduleExceptions.find((exc) => exc?.date === date);
-    const dateExceptionClosed = dateException && !dateException.open && !dateException.close;
-    if (businessClosedToday || (settings.holidayClosures || []).includes(date) || dateExceptionClosed) {
-      return { date, slots: [], closed: true };
-    }
-    const opening = dateException?.open || dayOverride?.open || settings.defaultOpeningTime || "09:00";
-    const closing = dateException?.close || dayOverride?.close || settings.defaultClosingTime || "18:00";
+    const dayWindow = resolveBusinessDayWindow(date, settings);
+    if (!dayWindow) return { date, slots: [], closed: true };
+    const opening = dayWindow.open;
+    const closing = dayWindow.close;
     let staff = staffId ? catalog.staff.filter((item) => item.id === staffId) : catalog.staff;
     if (!staff.length) return { missing: "staff" };
     const mappings = await this.pool.query(
@@ -373,6 +410,7 @@ export class NeonBookingStore {
     const busy = await this.pool.query(
       `select staff_id, starts_at, ends_at from app.appointments
        where staff_id = any($1::uuid[]) and status not in ('cancelled','replaced')
+         and confirmation_status is distinct from 'EspacioLiberado'
          and starts_at < (($2::date + interval '1 day')::timestamp at time zone $3)
          and ends_at > ($2::date::timestamp at time zone $3)`,
       [staff.map((item) => item.id), date, timezone],
@@ -501,12 +539,19 @@ export class NeonBookingStore {
         return { missing: !customer ? "client" : services.length !== selectedIds.length ? "service" : "staff" };
       }
       const durationMinutes = services.reduce((sum, item) => sum + Number(item.duration_minutes), 0);
-      const settingsResult = await client.query("select timezone from app.business_settings where id=true");
+      const settingsResult = await client.query("select timezone, settings from app.business_settings where id=true");
       const timezone = settingsResult.rows[0]?.timezone || "America/Santo_Domingo";
+      const businessSettings = settingsResult.rows[0]?.settings || {};
       const startResult = await client.query("select ($1::date + $2::time)::timestamp at time zone $3 starts_at", [input.date, input.time, timezone]);
       const startsAt = startResult.rows[0].starts_at;
       const endsAt = new Date(new Date(startsAt).getTime() + durationMinutes * 60_000);
       const id = legacyId("RES");
+      // Toda cita nueva, sin importar el canal de origen, entra al motor de recordatorios de
+      // confirmación de asistencia (4h laborales antes + 1h laboral después, ver
+      // checkConfirmationReminder en server/app.mjs) -- salvo que ya falten <=4h laborales para
+      // la cita al momento de crearse, caso en el que un recordatorio no tendría sentido.
+      const hoursUntilAppointment = businessMinutesBetween(Date.now(), new Date(startsAt).getTime(), businessSettings) / 60;
+      const confirmationStatus = hoursUntilAppointment <= 4 ? "NoRequerida" : "Programada";
       const legacyPayload = {
         reservaID: id, fecha: input.date, hora: input.time, horaFin: input.endTime,
         clienteID: customer.legacy_id, clienteNombre: customer.full_name,
@@ -516,7 +561,8 @@ export class NeonBookingStore {
         servicios: services.map((item) => ({ servicioID: item.legacy_id, nombre: item.name, cantidad: 1, duracionMin: Number(item.duration_minutes), precio: Number(item.base_price) })),
         colaboradorID: staff.legacy_id, colaboradorNombre: staff.full_name,
         duracionMin: durationMinutes, bloqueoGlobal: false,
-        estado: "Programada", estadoConfirmacion: "Pendiente", estadoDeposito: "Pendiente",
+        estado: "Programada", estadoConfirmacion: confirmationStatus, estadoDeposito: "Pendiente",
+        primerRecordatorioEnviadoEn: null,
         montoDeposito: 500, observaciones: input.notes || "",
         idempotencyKey: input.idempotencyKey,
         created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
@@ -525,9 +571,9 @@ export class NeonBookingStore {
         `insert into app.appointments
           (legacy_id,idempotency_key,client_id,staff_id,starts_at,ends_at,status,confirmation_status,
            deposit_status,deposit_amount,source_channel,notes,legacy_payload,group_id)
-         values ($1,$2,$3,$4,$5,$6,'scheduled','Pendiente','Pendiente',500,$7,$8,$9::jsonb,$10)
+         values ($1,$2,$3,$4,$5,$6,'scheduled',$11,'Pendiente',500,$7,$8,$9::jsonb,$10)
          returning id, legacy_id, starts_at, ends_at`,
-        [id, input.idempotencyKey, customer.id, staff.id, startsAt, endsAt, input.source, input.notes || "", JSON.stringify(legacyPayload), input.groupId || null],
+        [id, input.idempotencyKey, customer.id, staff.id, startsAt, endsAt, input.source, input.notes || "", JSON.stringify(legacyPayload), input.groupId || null, confirmationStatus],
       );
       for (const [index, service] of services.entries()) {
         await client.query(
@@ -555,6 +601,137 @@ export class NeonBookingStore {
         const existing = await this.pool.query("select id, legacy_id, starts_at, ends_at from app.appointments where idempotency_key=$1", [input.idempotencyKey]);
         return { appointment: existing.rows[0], idempotent: true };
       }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Aplica `mutateFn` a la fila de app.erp_document.data.reservas[] que corresponde a `legacyId`
+  // (no-op si el documento o la fila no existen) -- mismo patrón de mirror que
+  // mirrorStaffScheduleToDocument, para que el Matriz Consolidada y el banner del ERP legado
+  // (outputs/app.js, que solo leen el documento) vean el mismo estado que app.appointments.
+  async mirrorAppointmentToDocument(client, legacyId, mutateFn) {
+    const docResult = await client.query("select document from app.erp_document where id=true for update");
+    const document = docResult.rows[0]?.document;
+    const data = documentData(document);
+    if (!data) return;
+    const row = (data.reservas || []).find((item) => String(item.reservaID) === String(legacyId));
+    if (!row) return;
+    mutateFn(row);
+    await client.query(`update app.erp_document set document=$1::jsonb, version=version+1, updated_at=clock_timestamp() where id=true`, [JSON.stringify(document)]);
+  }
+
+  // Citas candidatas al motor de recordatorios de confirmación de asistencia (ver
+  // checkConfirmationReminder en server/app.mjs) -- cualquier cita futura, sin importar canal de
+  // origen, cuyo estadoConfirmacion siga en "Programada" (aún no se envió el primer recordatorio)
+  // o "PendienteConfirmarHora" (primer recordatorio enviado, esperando respuesta o el segundo).
+  async listAppointmentsForReminderSweep() {
+    const result = await this.pool.query(
+      `select a.id, a.legacy_id, a.starts_at, a.confirmation_status, a.first_reminder_sent_at,
+              c.full_name client_name, p.phone_original client_phone,
+              coalesce(string_agg(distinct x.service_name_snapshot, ', '),'Cita') service_name,
+              s.full_name staff_name,
+              to_char(a.starts_at at time zone bs.timezone,'YYYY-MM-DD') apt_date,
+              to_char(a.starts_at at time zone bs.timezone,'HH24:MI') apt_time
+         from app.appointments a
+         join app.clients c on c.id=a.client_id
+         left join app.client_phones p on p.client_id=c.id and p.is_primary
+         left join app.staff s on s.id=a.staff_id
+         left join app.appointment_services x on x.appointment_id=a.id
+         cross join app.business_settings bs
+        where a.confirmation_status in ('Programada','PendienteConfirmarHora')
+          and a.status not in ('cancelled','replaced')
+          and a.starts_at > now()
+        group by a.id, c.full_name, p.phone_original, s.full_name, bs.timezone
+        order by a.starts_at`,
+    );
+    return result.rows;
+  }
+
+  // stage "first": primer recordatorio (Programada -> PendienteConfirmarHora, estampa
+  // first_reminder_sent_at). stage "second": segundo recordatorio sin respuesta
+  // (PendienteConfirmarHora -> EspacioLiberado) -- availability() ya excluye
+  // confirmation_status='EspacioLiberado' de las citas ocupadas, así que el horario reaparece
+  // como disponible en el mismo paso (ver el WHERE de app.appointments ahí y el predicado
+  // equivalente en la restricción appointments_no_staff_overlap, neon/migrations/0014).
+  async markConfirmationReminderSent({ appointmentId, stage }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const nextStatus = stage === "first" ? "PendienteConfirmarHora" : "EspacioLiberado";
+      const result = await client.query(
+        stage === "first"
+          ? `update app.appointments set confirmation_status=$2, first_reminder_sent_at=now(), updated_at=clock_timestamp() where id=$1 returning legacy_id`
+          : `update app.appointments set confirmation_status=$2, updated_at=clock_timestamp() where id=$1 returning legacy_id`,
+        [appointmentId, nextStatus],
+      );
+      const legacyIdValue = result.rows[0]?.legacy_id;
+      if (legacyIdValue) {
+        const nowIso = new Date().toISOString();
+        await this.mirrorAppointmentToDocument(client, legacyIdValue, (row) => {
+          row.estadoConfirmacion = nextStatus;
+          if (stage === "first") row.primerRecordatorioEnviadoEn = nowIso;
+          else row.segundoRecordatorioEnviadoEn = nowIso;
+          row.updated_at = nowIso;
+        });
+      }
+      await client.query("commit");
+      return { updated: Boolean(legacyIdValue), confirmationStatus: nextStatus };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Confirma la asistencia de una cita (respuesta de la clienta por WhatsApp vía el Chatbot
+  // Bridge, o el botón "Confirmar cita en salón" del ERP legado). Si el horario ya fue tomado por
+  // otra cita (esta quedó "EspacioLiberado" y alguien más reservó exactamente esa colaboradora +
+  // horario mientras tanto), rechaza con alreadyReassigned:true para que quien llama le pida a la
+  // clienta elegir otro horario -- nunca resucita una cita por encima de una reserva nueva.
+  async confirmAppointmentAttendance({ legacyId }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const current = await client.query(
+        `select id, legacy_id, staff_id, starts_at, ends_at, status, confirmation_status
+           from app.appointments where legacy_id=$1 for update`,
+        [legacyId],
+      );
+      const apt = current.rows[0];
+      if (!apt) {
+        await client.query("rollback");
+        return { missing: true };
+      }
+      if (["cancelled", "replaced"].includes(apt.status)) {
+        await client.query("rollback");
+        return { alreadyReassigned: true, status: apt.status };
+      }
+      const conflict = await client.query(
+        `select id from app.appointments
+          where staff_id=$1 and id<>$2 and status not in ('cancelled','replaced')
+            and starts_at < $4 and ends_at > $3
+          limit 1`,
+        [apt.staff_id, apt.id, apt.starts_at, apt.ends_at],
+      );
+      if (conflict.rowCount) {
+        await client.query("rollback");
+        return { alreadyReassigned: true, status: "Reemplazada" };
+      }
+      await client.query(
+        `update app.appointments set confirmation_status='HoraConfirmada', updated_at=clock_timestamp() where id=$1`,
+        [apt.id],
+      );
+      await this.mirrorAppointmentToDocument(client, legacyId, (row) => {
+        row.estadoConfirmacion = "HoraConfirmada";
+        row.updated_at = new Date().toISOString();
+      });
+      await client.query("commit");
+      return { confirmed: true };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
       throw error;
     } finally {
       client.release();

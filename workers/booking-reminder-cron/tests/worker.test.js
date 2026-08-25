@@ -164,8 +164,8 @@ test("la expresion cron activa vive UNICAMENTE en workers/booking-reminder-cron/
   assert.match(wranglerToml, /^\[triggers\]\s*\ncrons = \["0 \* \* \* \*"\]/m, "el Cron Trigger debe estar activo (sin comentar), una vez por hora");
 });
 
-test("APP_BASE_URL en wrangler.toml apunta al dominio productivo real de Cloudflare Pages, no a un placeholder", () => {
-  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/dalfi-erp\.pages\.dev"/);
+test("APP_BASE_URL en wrangler.toml apunta al backend real (Render + Neon), no a un placeholder ni al dominio de Cloudflare Pages ya eliminado", () => {
+  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/ssc\.sebengroup\.com"/);
 });
 
 test("workers/booking-reminder-cron/README.md no contiene ningun secreto real, solo placeholders", () => {

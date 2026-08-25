@@ -1,21 +1,18 @@
-// Worker programado (Cloudflare Cron Trigger) para dalfi-erp.
+// Worker programado (Cloudflare Cron Trigger) para el backend real de Dalfi ERP (Render + Neon).
 //
 // Responsabilidad UNICA: en cada disparo, hacer una llamada HTTP autenticada
-// a la Pages Function que ya existe en este repo
-// (functions/api/booking/send-reminders.js) para que envie los recordatorios
-// horarios de citas "Preaprobadas" del chatbot y las escale (marcandolas
-// "No confirmada" y liberando su horario) cuando llegan a su hora sin
-// confirmarse. Este Worker NUNCA accede a Supabase directamente ni duplica
-// ninguna regla de negocio de reservas (ventana de 4h, calculo de
-// disponibilidad, reasignacion de horario, etc.): toda esa logica sigue
-// viviendo unicamente en functions/api/booking/send-reminders.js y en
-// outputs/lib/booking-engine.js, tal como documenta functions/CRON.md.
+// a POST /api/booking/send-reminders en server/app.mjs (Render, dominio
+// ssc.sebengroup.com) para que envie los recordatorios de confirmacion de
+// asistencia de TODA cita futura (sin importar canal de origen) y las
+// escale (liberando su horario) cuando llegan a su hora sin confirmarse.
+// Este Worker NUNCA accede a Neon directamente ni duplica ninguna regla de
+// negocio de reservas (ventana de 4h laborales, cadencia de escalacion,
+// liberacion de horario, etc.): toda esa logica vive en server/app.mjs y
+// server/store.mjs (checkConfirmationReminder/businessMinutesBetween).
 //
-// Cloudflare Pages no soporta Cron Triggers directamente sobre sus Pages
-// Functions; por eso este Worker vive en un proyecto Wrangler separado
-// (workers/booking-reminder-cron/), con su propio wrangler.toml y su propio
-// [triggers] crons, y solo se comunica con Pages por HTTP. Mismo patron que
-// workers/closing-cron/.
+// Este Worker antes llamaba a dalfi-erp.pages.dev (Cloudflare Pages +
+// Supabase), proyecto ya eliminado -- ahora apunta a APP_BASE_URL
+// (ssc.sebengroup.com) via wrangler.toml, sin cambios en esta logica.
 
 const DEFAULT_TIMEOUT_MS = 20000;
 

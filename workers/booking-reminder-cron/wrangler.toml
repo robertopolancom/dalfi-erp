@@ -7,15 +7,16 @@ name = "dalfi-erp-booking-reminder-cron"
 main = "worker.js"
 compatibility_date = "2026-07-09"
 
-# Variable NO secreta: el dominio publico de Cloudflare Pages al que este
-# Worker le hace fetch().
+# Variable NO secreta: el backend real (Render + Neon) al que este Worker le hace fetch().
+# dalfi-erp.pages.dev (Cloudflare Pages + Supabase) se eliminó -- la lógica de recordatorios se
+# portó a POST /api/booking/send-reminders en server/app.mjs (ver ahí checkConfirmationReminder).
 [vars]
-APP_BASE_URL = "https://dalfi-erp.pages.dev"
+APP_BASE_URL = "https://ssc.sebengroup.com"
 
 # BOOKING_REMINDER_CRON_SECRET se configura por separado como Secret (nunca
 # en este archivo ni en Git): "wrangler secret put BOOKING_REMINDER_CRON_SECRET".
-# Debe ser EXACTAMENTE el mismo valor que env.BOOKING_REMINDER_CRON_SECRET en
-# Cloudflare Pages (el que ya usa functions/api/booking/send-reminders.js).
+# Debe ser EXACTAMENTE el mismo valor que env.BOOKING_REMINDER_CRON_SECRET en el servicio de
+# Render (dalfi-erp) que ya usa POST /api/booking/send-reminders en server/app.mjs.
 
 # Una vez por hora. Cloudflare Cron Triggers usan UTC; da igual la hora exacta
 # porque checkPreapprovedConfirmationReminder() en outputs/lib/booking-engine.js
