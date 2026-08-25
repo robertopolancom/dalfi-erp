@@ -210,6 +210,14 @@ dialog form{padding:28px}
 .appointment-badge.deposit-pendiente{background:#f1f5f9;color:#475569}
 .appointment-card .appointment-confirm-btn{align-self:flex-start;margin-top:4px}
 
+/* ---------- vista semanal de la agenda del equipo ---------- */
+.agenda-view-nav{margin:0 0 12px;max-width:260px}
+.agenda-week-board{display:flex;flex-direction:column;gap:16px}
+.agenda-week-day h3{margin:0 0 8px;font-size:.95rem}
+.agenda-week-day .client-appointments-list{gap:6px}
+.agenda-week-day .appointment-card{padding:10px 14px}
+.agenda-week-day .empty{color:var(--muted);font-size:.85rem;margin:0}
+
 /* ---------- banner promocional ---------- */
 .promo-banner{margin:0 4px 16px;padding:13px 18px;border-radius:16px;font-weight:700;font-size:.92rem;text-align:center}
 .banner-preview{margin:12px 0 0;padding:13px 18px;border-radius:16px;font-weight:700;font-size:.92rem;text-align:center;border:1px dashed var(--line)}

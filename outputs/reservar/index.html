@@ -113,10 +113,15 @@
         <div class="date-controls"><button id="agenda-prev" type="button" aria-label="Día anterior">‹</button><input id="agenda-date" type="date" /><button id="agenda-next" type="button" aria-label="Día siguiente">›</button></div>
       </div>
       <p class="intro" id="agenda-intro">Inicia sesión para consultar la agenda.</p>
+      <div class="app-nav agenda-view-nav">
+        <button class="active" id="agenda-view-day" type="button">Día</button>
+        <button id="agenda-view-week" type="button">Semana</button>
+      </div>
       <button class="secondary hidden" id="open-user-management" type="button">Configuración de usuarios</button>
       <div class="agenda-filters" id="agenda-filters"></div>
       <div class="message" id="agenda-message"></div>
       <div class="agenda-board" id="agenda-board"></div>
+      <div class="agenda-week-board hidden" id="agenda-week-board"></div>
 
       <section class="admin-panel hidden" id="admin-panel">
         <div class="dialog-head"><p class="kicker">Configuración de usuarios</p><button class="icon-button" id="close-user-management" type="button" aria-label="Cerrar">×</button></div>

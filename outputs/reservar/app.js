@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0, pendingBookingStart: false };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, comboSegments: null, comboIndex: 0, pendingBookingStart: false, agendaView: "day" };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -404,6 +404,9 @@ function renderAgendaFilters(groups) {
   }));
 }
 
+// Panel de colaboradoras: vista de "Día" (grilla horaria por manicurista, ya existente) o
+// "Semana" (lista compacta por día -- pedido explícito: el volumen de citas no justifica repetir
+// la grilla horaria 7 veces, una lista simple por día alcanza).
 async function showAgenda() {
   $("booking-card").classList.add("hidden"); $("client-appointments-card").classList.add("hidden"); $("success-card").classList.add("hidden"); $("agenda-card").classList.remove("hidden");
   $("booking-tab").classList.remove("active"); $("agenda-tab").classList.add("active");
@@ -412,6 +415,15 @@ async function showAgenda() {
   // la fecha de hoy por defecto -- sin esto, una cuenta de personal que aterriza directo en la
   // agenda al iniciar sesión dispararía la primera consulta con date="" (400 del servidor).
   if (!$("agenda-date").value) $("agenda-date").value = todayLocal();
+  await loadAgendaView();
+}
+
+async function loadAgendaView() {
+  if (state.agendaView === "week") return loadAgendaWeek();
+  return loadAgendaDay();
+}
+
+async function loadAgendaDay() {
   message($("agenda-message"), "Cargando agenda…", true);
   try {
     const result = await api(`/api/reservapp/agenda?date=${$("agenda-date").value}`);
@@ -424,6 +436,58 @@ async function showAgenda() {
     $("agenda-board").replaceChildren(hourGutter, columns);
   } catch (error) { message($("agenda-message"), error.message); }
 }
+
+function startOfWeek(dateStr) {
+  const d = new Date(`${dateStr}T12:00:00-04:00`);
+  const day = d.getDay(); // 0=domingo
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day)); // retrocede al lunes de esa semana
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(d);
+}
+
+async function loadAgendaWeek() {
+  message($("agenda-message"), "Cargando semana…", true);
+  $("agenda-filters").replaceChildren();
+  const monday = startOfWeek($("agenda-date").value || todayLocal());
+  const days = [...Array(7)].map((_, i) => {
+    const d = new Date(`${monday}T12:00:00-04:00`); d.setDate(d.getDate() + i);
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(d);
+  });
+  try {
+    const results = await Promise.all(days.map((date) => api(`/api/reservapp/agenda?date=${date}`)));
+    message($("agenda-message"));
+    const sunday = days[6];
+    $("agenda-title").textContent = `Semana del ${new Date(`${monday}T12:00:00`).toLocaleDateString("es-DO", { day: "numeric", month: "long" })} al ${new Date(`${sunday}T12:00:00`).toLocaleDateString("es-DO", { day: "numeric", month: "long" })}`;
+    $("agenda-intro").textContent = "Resumen de la semana, un vistazo por día. Cambia a «Día» para ver la ocupación hora por hora de cada manicurista.";
+    $("agenda-week-board").replaceChildren(...days.map((date, index) => {
+      const container = document.createElement("div"); container.className = "agenda-week-day";
+      const heading = document.createElement("h3");
+      heading.textContent = new Date(`${date}T12:00:00`).toLocaleDateString("es-DO", { weekday: "long", day: "numeric", month: "short" });
+      container.append(heading);
+      const appointments = (results[index].appointments || []).slice().sort((a, b) => a.start_time.localeCompare(b.start_time));
+      if (!appointments.length) {
+        const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Sin citas.";
+        container.append(empty);
+      } else {
+        const list = document.createElement("div"); list.className = "client-appointments-list";
+        appointments.forEach((apt) => list.append(renderTeamAppointmentCard(apt)));
+        container.append(list);
+      }
+      return container;
+    }));
+  } catch (error) { message($("agenda-message"), error.message); }
+}
+
+function setAgendaView(view) {
+  state.agendaView = view;
+  $("agenda-view-day").classList.toggle("active", view === "day");
+  $("agenda-view-week").classList.toggle("active", view === "week");
+  $("agenda-board").classList.toggle("hidden", view !== "day");
+  $("agenda-week-board").classList.toggle("hidden", view !== "week");
+  loadAgendaView();
+}
+$("agenda-view-day").addEventListener("click", () => setAgendaView("day"));
+$("agenda-view-week").addEventListener("click", () => setAgendaView("week"));
+
 $("close-appointment-detail").addEventListener("click", () => $("appointment-detail-dialog").close());
 
 // Etiquetas humanas de las dos dimensiones independientes de una cita -- mismo vocabulario que ya
@@ -485,6 +549,35 @@ function renderAppointmentCard(apt) {
     btn.addEventListener("click", () => confirmMyAppointment(apt.legacy_id, btn));
     card.append(btn);
   }
+  return card;
+}
+
+// Misma tarjeta que renderAppointmentCard, pero para la vista semanal del equipo (agenda() trae
+// clienta + manicurista, no solo manicurista como en /my-appointments) -- el día ya lo indica el
+// encabezado del día en loadAgendaWeek, así que aquí solo hace falta la hora.
+function renderTeamAppointmentCard(apt) {
+  const card = document.createElement("article");
+  card.className = "appointment-card";
+
+  const top = document.createElement("div"); top.className = "appointment-top";
+  const service = document.createElement("span"); service.className = "appointment-service"; service.textContent = apt.services || "Cita";
+  const when = document.createElement("span"); when.className = "appointment-when"; when.textContent = formatSlotTime(apt.start_time);
+  top.append(service, when);
+  card.append(top);
+
+  const metaText = [apt.client_name, apt.staff_name ? `con ${apt.staff_name}` : null].filter(Boolean).join(" · ");
+  if (metaText) {
+    const meta = document.createElement("div"); meta.className = "appointment-meta"; meta.textContent = metaText;
+    card.append(meta);
+  }
+
+  const badges = document.createElement("div"); badges.className = "appointment-badges";
+  const confirmLabel = CONFIRM_STATUS_LABELS[apt.confirmation_status];
+  if (confirmLabel) badges.append(badgeEl(confirmLabel, `confirm-${String(apt.confirmation_status).toLowerCase()}`));
+  const depositStatus = apt.deposit_status && DEPOSIT_STATUS_LABELS[apt.deposit_status] ? apt.deposit_status : "Pendiente";
+  badges.append(badgeEl(DEPOSIT_STATUS_LABELS[depositStatus], `deposit-${depositStatus.toLowerCase()}`));
+  card.append(badges);
+
   return card;
 }
 
@@ -762,9 +855,28 @@ $("login-form").addEventListener("submit", async (event) => {
 // "cerrar sesión" es una acción explícita y separada, pedido de diseño para que no se confunda
 // con solo ver el nombre de la cuenta.
 $("account-button").addEventListener("click", () => { if (!state.account) { message($("login-message")); $("login-dialog").showModal(); } });
+// Dispositivo compartido (tablet de recepción, teléfono que pasa de clienta en clienta): cerrar
+// sesión debe dejar todo como recién cargado, para que la siguiente persona tenga que
+// identificarse desde cero y no vea ni un campo con datos de la anterior -- pedido explícito.
+function resetDeviceState() {
+  ["booking-form", "identify-form", "phone-check-form", "client-form", "login-form", "forgot-password-form", "verify-code-form", "setup-form"].forEach((id) => {
+    $(id)?.reset();
+  });
+  $("client-search").value = "";
+  $("client-results").replaceChildren();
+  $("selected-client").textContent = "";
+  $("selected-client").classList.add("hidden");
+  state.client = null;
+  state.selectedSlot = null;
+  state.comboSegments = null;
+  state.comboIndex = 0;
+  state.pendingBookingStart = false;
+  goToStep(0);
+}
+
 $("logout-link").addEventListener("click", async () => {
   await api("/api/reservapp/auth/logout", { method: "POST" }).catch(() => {});
-  applyAccount(null); showBooking();
+  applyAccount(null); resetDeviceState(); showBooking();
 });
 
 let searchTimer;
@@ -1182,9 +1294,10 @@ $("agenda-tab").addEventListener("click", () => {
   if (state.account && employeeRoles.has(state.account.role)) showAgenda();
   else showClientAppointments();
 });
-$("agenda-date").addEventListener("change", showAgenda);
-$("agenda-prev").addEventListener("click", () => { const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() - 1); $("agenda-date").value = date.toISOString().slice(0, 10); showAgenda(); });
-$("agenda-next").addEventListener("click", () => { const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() + 1); $("agenda-date").value = date.toISOString().slice(0, 10); showAgenda(); });
+$("agenda-date").addEventListener("change", loadAgendaView);
+// En vista "Semana", ‹/› saltan 7 días (a la semana anterior/siguiente); en "Día", 1 día.
+$("agenda-prev").addEventListener("click", () => { const step = state.agendaView === "week" ? 7 : 1; const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() - step); $("agenda-date").value = date.toISOString().slice(0, 10); loadAgendaView(); });
+$("agenda-next").addEventListener("click", () => { const step = state.agendaView === "week" ? 7 : 1; const date = new Date(`${$("agenda-date").value}T12:00:00`); date.setDate(date.getDate() + step); $("agenda-date").value = date.toISOString().slice(0, 10); loadAgendaView(); });
 $("new-booking").addEventListener("click", () => location.reload());
 
 async function boot() {
