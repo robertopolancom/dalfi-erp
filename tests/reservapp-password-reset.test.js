@@ -61,13 +61,19 @@ test("POST /api/reservapp/auth/request-password-reset: sin cuenta activa respond
   });
 });
 
-test("POST /api/reservapp/auth/request-password-reset: cuenta con status pendiente (nunca activada) tampoco manda código", async () => {
+// password_hash (no status) es la señal real de "ya tiene contraseña" -- una cuenta con status
+// "pending" (invitada, nunca completó su activación, sin importar si es personal o clienta)
+// nunca tuvo contraseña que restablecer, así que debe decir neverHadPassword, no fingir un reset.
+test("POST /api/reservapp/auth/request-password-reset: cuenta con status pendiente (sin contraseña) dice neverHadPassword, no manda código de reset", async () => {
   const store = bookingStore({ account: { id: "account-1", status: "pending", full_name: "Ana" } });
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
     });
-    assert.equal(response.status, 202);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.neverHadPassword, true);
+    assert.equal(body.firstName, "Ana");
     assert.equal(store.prepareSetupCalls.length, 0);
   });
 });
@@ -87,7 +93,7 @@ test("POST /api/reservapp/auth/request-password-reset: sin cuenta pero con ficha
 });
 
 test("POST /api/reservapp/auth/request-password-reset: cuenta activa dispara prepareSetup y devuelve 202 idéntico al caso sin cuenta", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez" } });
+  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } });
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
@@ -103,7 +109,7 @@ test("POST /api/reservapp/auth/request-password-reset: cuenta activa dispara pre
 });
 
 test("POST /api/reservapp/auth/request-password-reset: el mensaje de WhatsApp habla de restablecer, no de crear por primera vez", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez" } });
+  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } });
   let sentBody = null;
   await withServer(store, async (base) => {
     await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
@@ -125,7 +131,7 @@ test("POST /api/reservapp/auth/request-password-reset: el mensaje de WhatsApp ha
 // robara la cuenta -- así que el autoservicio queda apagado y solo administración puede
 // restablecer contraseñas (POST /admin/accounts/:id/reset-password).
 test("POST /api/reservapp/auth/request-password-reset: con RESERVAPP_SKIP_PHONE_VERIFICATION=true no manda WhatsApp ni prepara OTP", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez" } });
+  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } });
   let bridgeCalled = false;
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {

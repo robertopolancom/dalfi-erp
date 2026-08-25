@@ -340,15 +340,24 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
       try {
         const existing = await bookingStore.accountByPhone(phone);
-        if (existing?.status === "active") {
+        // password_hash (no status) es la señal real de "ya tiene contraseña creada" -- una
+        // cuenta de personal o clienta puede existir en estado "pending" (invitada, nunca activó)
+        // sin haber definido ninguna todavía, y eso NO es lo mismo que iniciar sesión.
+        if (existing?.password_hash) {
           const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
           return res.json({ exists: true, firstName });
         }
-        // Sin cuenta activa de ReservApp -- pero puede que ya sea clienta del salón (ficha creada
-        // directamente en el ERP, por el personal, o en una visita anterior). En ese caso no hace
-        // falta pedirle de nuevo nombre/apellido/fecha de nacimiento: ya los tenemos, solo falta
-        // que defina su contraseña (ver request-setup, que ya reconoce esta misma ficha por
-        // teléfono y se salta esos campos).
+        if (existing) {
+          // Cuenta ya creada (clienta o personal) pero sin contraseña todavía -- salta directo a
+          // crearla, no hace falta volver a pedir datos que ya tenemos.
+          const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
+          return res.json({ exists: true, firstName, needsPasswordOnly: true });
+        }
+        // Sin cuenta de ReservApp en absoluto -- pero puede que ya sea clienta del salón (ficha
+        // creada directamente en el ERP, por el personal, o en una visita anterior). En ese caso
+        // no hace falta pedirle de nuevo nombre/apellido/fecha de nacimiento: ya los tenemos,
+        // solo falta que defina su contraseña (ver request-setup, que ya reconoce esta misma
+        // ficha por teléfono y se salta esos campos).
         const customer = await bookingStore.resolveClient({ phone });
         if (customer) {
           const firstName = String(customer.full_name || "").trim().split(/\s+/)[0] || "";
@@ -387,6 +396,40 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora, o deja todo vacío para solo crear tu cuenta." });
       }
       try {
+        // Si YA existe cualquier cuenta de ReservApp con este teléfono (de personal o de
+        // clienta) sin contraseña definida todavía, se reutiliza tal cual -- nunca se crea una
+        // ficha ni cuenta nueva encima. Cubre tanto una cuenta de personal invitada que nunca
+        // completó su activación (status "pending") como una clienta que ya empezó este mismo
+        // flujo antes. Con contraseña ya definida, sigue el candado de siempre (abajo).
+        const existingAccount = await bookingStore.accountByPhone(phone);
+        if (existingAccount && !existingAccount.password_hash) {
+          const code = generateOtpCode();
+          const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+          const prepared = await bookingStore.prepareSetup({ accountId: existingAccount.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
+          // TEMPORAL: ver comentario junto a RESERVAPP_SKIP_PHONE_VERIFICATION más abajo -- mismo
+          // interruptor, mismo mecanismo, solo que reutilizando una cuenta ya existente.
+          if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
+            const activationTicket = secureToken();
+            const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+            const verify = await bookingStore.verifySetupOtp({ accountId: existingAccount.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
+            if (!verify.notFound && !verify.locked && !verify.invalid) {
+              return res.status(202).json({
+                pendingConfirmation: false,
+                bypassedPhoneVerification: true,
+                activationTicket,
+                message: "Verificación de WhatsApp deshabilitada temporalmente. Crea tu contraseña para confirmar la cita.",
+              });
+            }
+          }
+          const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: existingAccount.full_name || "" });
+          return res.status(202).json({
+            pendingConfirmation: true,
+            deliveryStatus: delivery.status,
+            expiresInSeconds: 600,
+            message: "Te enviamos por WhatsApp un código para crear tu contraseña.",
+            ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {}),
+          });
+        }
         let customer = await bookingStore.resolveClient({ phone });
         // Si el teléfono ya corresponde a una ficha del salón (creada en el ERP directamente, por
         // el personal, o en una visita anterior), no hace falta volver a pedir nombre/apellido/
@@ -420,8 +463,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           else customer = created.client;
         }
         if (!customer) return res.status(409).json({ error: "No pudimos vincular el teléfono con una ficha de cliente." });
+        // Salvaguarda ante condición de carrera (otra solicitud creó la cuenta justo después del
+        // chequeo de arriba) -- normalmente ya se resolvió en la rama de existingAccount.
         const existing = await bookingStore.accountByPhone(phone);
-        if (existing?.status === "active") {
+        if (existing?.password_hash) {
           // Primer nombre nada más -- suficiente para que confirme "sí, soy yo" sin exponerle
           // el apellido/nombre completo a quien haya escrito un teléfono que no es suyo.
           const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
@@ -563,7 +608,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
       try {
         const account = await bookingStore.accountByPhone(phone);
-        if (account?.status === "active") {
+        if (account?.password_hash) {
           // TEMPORAL (mismo interruptor que RESERVAPP_SKIP_PHONE_VERIFICATION, ver comentario
           // junto a /auth/request-setup): saltarse la prueba de teléfono para CREAR una cuenta
           // nueva es un riesgo aceptable, pero hacerlo para restablecer la contraseña de una
@@ -589,10 +634,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",
           });
         }
-        // Sin cuenta activa: no necesariamente "olvidó" su contraseña -- puede que nunca haya
-        // creado ninguna (ficha del ERP sin credenciales de ReservApp todavía, el mismo caso que
-        // reconoce /auth/check-phone). Distinguirlo evita el mensaje confuso de "restablecer" algo
-        // que nunca existió -- en su lugar, la dirige a crear su contraseña por primera vez.
+        // Sin contraseña creada todavía: no necesariamente "olvidó" la suya -- puede que nunca
+        // haya definido ninguna (cuenta de personal invitada sin activar, o ficha del ERP sin
+        // credenciales de ReservApp todavía -- mismos dos casos que reconoce /auth/check-phone).
+        // Distinguirlo evita el mensaje confuso de "restablecer" algo que nunca existió -- en su
+        // lugar, la dirige a crear su contraseña por primera vez.
+        if (account) {
+          const firstName = String(account.full_name || "").trim().split(/\s+/)[0] || "";
+          return res.json({ pendingConfirmation: false, neverHadPassword: true, firstName });
+        }
         const customer = await bookingStore.resolveClient({ phone });
         if (customer) {
           const firstName = String(customer.full_name || "").trim().split(/\s+/)[0] || "";

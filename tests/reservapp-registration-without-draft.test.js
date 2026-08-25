@@ -141,11 +141,11 @@ test("request-setup: teléfono con cuenta activa devuelve accountExists + solo e
     assert.equal(store.prepareSetupCalls.length, 0, "no debe generar un código nuevo para una cuenta ya activa");
   }, {
     existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" },
-    existingAccount: { status: "active", full_name: "Ana Gómez" },
+    existingAccount: { status: "active", full_name: "Ana Gómez", password_hash: "hash" },
   });
 });
 
-test("check-phone: cuenta activa devuelve exists:true y solo el primer nombre", async () => {
+test("check-phone: cuenta con contraseña ya creada devuelve exists:true y solo el primer nombre (login)", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -153,22 +153,29 @@ test("check-phone: cuenta activa devuelve exists:true y solo el primer nombre", 
     });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { exists: true, firstName: "Ana" });
-  }, { existingAccount: { status: "active", full_name: "Ana Gómez" } });
+  }, { existingAccount: { status: "active", full_name: "Ana Gómez", password_hash: "hash" } });
 });
 
-test("check-phone: sin cuenta, o cuenta pendiente de activar, devuelve exists:false (sigue el registro normal)", async () => {
+test("check-phone: sin ninguna cuenta ni ficha, devuelve exists:false (sigue el registro normal)", async () => {
   await withServer(async (base) => {
-    const withoutAccount = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
     });
-    assert.deepEqual(await withoutAccount.json(), { exists: false });
+    assert.deepEqual(await response.json(), { exists: false });
   });
+});
+
+// password_hash (no status) es la señal real de "ya tiene contraseña" -- una cuenta de PERSONAL
+// invitada que nunca completó su activación (status "pending") es el mismo caso que una clienta
+// sin credenciales todavía: debe saltar a crear su contraseña, no desaparecer como si no existiera.
+test("check-phone: cuenta de personal pendiente de activar (sin contraseña) devuelve needsPasswordOnly:true, no exists:false", async () => {
   await withServer(async (base) => {
-    const pending = await fetch(`${base}/api/reservapp/auth/check-phone`, {
+    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
     });
-    assert.deepEqual(await pending.json(), { exists: false });
-  }, { existingAccount: { status: "pending", full_name: "Ana Gómez" } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { exists: true, firstName: "Dalfina", needsPasswordOnly: true });
+  }, { existingAccount: { status: "pending", full_name: "Dalfina Guzmán", password_hash: null } });
 });
 
 test("check-phone: sin cuenta de ReservApp pero con ficha ya existente en el ERP devuelve needsPasswordOnly:true", async () => {
@@ -191,6 +198,19 @@ test("request-setup: teléfono con ficha ya existente en el ERP no exige nombre/
     assert.equal(store.createClientCalls.length, 0, "no debe crear una ficha duplicada, ya existía");
     assert.equal(store.prepareSetupCalls.length, 1);
   }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
+});
+
+test("request-setup: cuenta de personal existente sin contraseña reutiliza esa cuenta -- nunca crea ni busca una ficha de clienta", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: "8296679289" }),
+    });
+    assert.equal(response.status, 202);
+    assert.equal(store.createClientCalls.length, 0);
+    assert.equal(store.prepareSetupCalls.length, 1);
+    assert.equal(store.prepareSetupCalls[0].accountId, "account-dalfina");
+  }, { existingAccount: { id: "account-dalfina", status: "pending", full_name: "Dalfina Guzmán", password_hash: null } });
 });
 
 test("request-setup: sin ficha existente y sin nombre/apellido/fecha de nacimiento sigue exigiéndolos (clienta realmente nueva)", async () => {
