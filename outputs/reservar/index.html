@@ -160,11 +160,19 @@
 
   <dialog id="client-dialog"><form id="client-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2 id="client-dialog-title">Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
-    <p id="client-dialog-intro">Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido.</p>
+    <p id="client-dialog-intro">Confirma tu teléfono y crea tu contraseña para continuar.</p>
     <div class="field-grid"><label>Nombre<input id="first-name" autocomplete="given-name" required /></label><label>Apellido<input id="last-name" autocomplete="family-name" required /></label></div>
     <label>Teléfono de WhatsApp<input id="new-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <label>Correo <span>(opcional)</span><input id="new-email" type="email" autocomplete="email" /></label>
-    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit">Enviarme el código por WhatsApp</button>
+    <label>Fecha de nacimiento<input id="new-birthdate" type="date" autocomplete="bday" required /></label>
+    <div class="field-grid">
+      <label>Sexo <span>(opcional)</span>
+        <select id="new-sex"><option value="">No especificado</option><option value="Femenino">Femenino</option><option value="Masculino">Masculino</option></select>
+      </label>
+      <label>Servicio de preferencia <span>(opcional)</span><select id="new-preferred-service"><option value="">Cualquiera</option></select></label>
+    </div>
+    <label>Dirección <span>(opcional)</span><textarea id="new-address" rows="2"></textarea></label>
+    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit">Continuar</button>
   </form></dialog>
 
   <dialog id="login-dialog"><form id="login-form" method="dialog">

@@ -41,7 +41,7 @@ async function withServer(fetchImpl, run) {
 }
 
 function requestSetupBody() {
-  return { firstName: "Ana", lastName: "Pérez", phone: "8095551234", serviceIds: ["svc-1"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-20", time: "10:00" };
+  return { firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20", serviceIds: ["svc-1"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-20", time: "10:00" };
 }
 
 test("request-setup marca el outbox como sent solo cuando el bridge confirma SENT", async () => {

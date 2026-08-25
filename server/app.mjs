@@ -318,6 +318,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const lastName = cleanText(req.body?.lastName, 80);
       const phone = cleanText(req.body?.phone, 30);
       const email = cleanText(req.body?.email, 160).toLowerCase();
+      const birthDate = cleanText(req.body?.birthDate, 10);
+      const sex = ["Femenino", "Masculino"].includes(req.body?.sex) ? req.body.sex : "";
+      const address = cleanText(req.body?.address, 300);
+      const preferredService = cleanText(req.body?.preferredService, 160);
       const serviceIds = cleanServiceIds(req.body?.serviceIds);
       const draft = {
         serviceIds,
@@ -329,6 +333,9 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       };
       if (!firstName || !lastName || !validPhone(phone)) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || birthDate > new Date().toISOString().slice(0, 10)) {
+        return res.status(400).json({ error: "Introduce una fecha de nacimiento válida." });
+      }
       // Registrarse (crear cuenta) no requiere tener ya un horario elegido --
       // solo si la clienta arrancó desde el wizard de reserva vendrá un
       // borrador adjunto, y en ese caso sí debe venir completo.
@@ -349,9 +356,13 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           const legacyPayload = {
             clienteID: id, nombre: firstName, apellido: lastName, nombreCompleto: `${firstName} ${lastName}`,
             telefono: phone, correo: email, estado: "Activo", origenRegistro: "RESERVAPP_CLIENTE",
+            fechaNacimiento: birthDate, sexo: sex, direccion: address, servicioPreferido: preferredService,
             fechaRegistro: new Date().toISOString(), observaciones: "Creado al solicitar credenciales de ReservApp.",
           };
-          const created = await bookingStore.createClient({ firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source: "RESERVAPP_CLIENTE", legacyPayload });
+          const created = await bookingStore.createClient({
+            firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source: "RESERVAPP_CLIENTE", legacyPayload,
+            birthDate, sex, address, preferredService,
+          });
           if (created.duplicate) customer = await bookingStore.resolveClient({ phone });
           else customer = created.client;
         }
@@ -827,6 +838,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const lastName = cleanText(req.body?.lastName, 80);
       const phone = cleanText(req.body?.phone, 30);
       const email = cleanText(req.body?.email, 160).toLowerCase();
+      const birthDate = /^\d{4}-\d{2}-\d{2}$/.test(req.body?.birthDate) ? req.body.birthDate : "";
+      const sex = ["Femenino", "Masculino"].includes(req.body?.sex) ? req.body.sex : "";
+      const address = cleanText(req.body?.address, 300);
+      const preferredService = cleanText(req.body?.preferredService, 160);
       if (!firstName || !lastName || !validPhone(phone)) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
       const id = `CLI-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
@@ -834,11 +849,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const legacyPayload = {
         clienteID: id, nombre: firstName, apellido: lastName, nombreCompleto: `${firstName} ${lastName}`,
         telefono: phone, correo: email, estado: "Activo", origenRegistro: source,
+        fechaNacimiento: birthDate, sexo: sex, direccion: address, servicioPreferido: preferredService,
         fechaRegistro: new Date().toISOString(), observaciones: "Creado desde reserva rápida.",
       };
       try {
         if (!(await requireBookingStaff(req, res))) return;
-        const result = await bookingStore.createClient({ firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source, legacyPayload });
+        const result = await bookingStore.createClient({
+          firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source, legacyPayload,
+          birthDate, sex, address, preferredService,
+        });
         if (result.duplicate) return res.status(409).json({ error: `Ya existe un cliente con ese ${result.matchedBy === "email" ? "correo" : "teléfono"}.`, duplicate: true, matchedBy: result.matchedBy });
         const calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, result.previousDocument, result.document, { fetchImpl });
         res.status(201).json({ client: { id: result.client.id, name: result.client.full_name }, calendarSync });

@@ -10,15 +10,18 @@ function documentStore() {
 function bookingStore({ existingClient = null, existingAccount = null } = {}) {
   const prepareSetupCalls = [];
   const availabilityCalls = [];
+  const createClientCalls = [];
   return {
     prepareSetupCalls,
     availabilityCalls,
+    createClientCalls,
     async availability(input) {
       availabilityCalls.push(input);
       return { durationMinutes: 60, slots: [{ staffId: "22222222-2222-4222-8222-222222222222", staffName: "Dalfina", time: "10:00" }] };
     },
     async resolveClient() { return existingClient; },
-    async createClient() {
+    async createClient(input) {
+      createClientCalls.push(input);
       return { client: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" }, previousDocument: {}, document: {} };
     },
     async accountByPhone() { return existingAccount; },
@@ -48,11 +51,51 @@ test("request-setup: permite crear cuenta sin borrador de reserva (registro puro
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234" }),
+      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20" }),
     });
     assert.equal(response.status, 202);
     assert.equal(store.availabilityCalls.length, 0, "no debe consultar disponibilidad sin borrador");
     assert.equal(store.prepareSetupCalls[0].draft, null);
+  });
+});
+
+test("request-setup: sin fecha de nacimiento responde 400 (dato requerido para la ficha en el ERP)", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234" }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(store.createClientCalls.length, 0);
+  });
+});
+
+test("request-setup: pasa fecha de nacimiento, sexo, dirección y servicio preferido a createClient", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20",
+        sex: "Femenino", address: "Calle 3 #12, Santo Domingo", preferredService: "Pedicura",
+      }),
+    });
+    assert.equal(response.status, 202);
+    assert.equal(store.createClientCalls.length, 1);
+    assert.equal(store.createClientCalls[0].birthDate, "1995-05-20");
+    assert.equal(store.createClientCalls[0].sex, "Femenino");
+    assert.equal(store.createClientCalls[0].address, "Calle 3 #12, Santo Domingo");
+    assert.equal(store.createClientCalls[0].preferredService, "Pedicura");
+  });
+});
+
+test("request-setup: un sexo fuera de la lista permitida se guarda vacío en vez de basura", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20", sex: "<script>" }),
+    });
+    assert.equal(response.status, 202);
+    assert.equal(store.createClientCalls[0].sex, "");
   });
 });
 
@@ -61,7 +104,7 @@ test("request-setup: un borrador parcial (falta hora) se rechaza en vez de ignor
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        firstName: "Ana", lastName: "Pérez", phone: "8095551234",
+        firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20",
         serviceIds: ["svc-1"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-20",
       }),
     });
@@ -75,7 +118,7 @@ test("request-setup: un borrador completo sigue validando disponibilidad como an
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        firstName: "Ana", lastName: "Pérez", phone: "8095551234",
+        firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20",
         serviceIds: ["svc-1"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-20", time: "10:00",
       }),
     });
@@ -89,7 +132,7 @@ test("request-setup: teléfono con cuenta activa devuelve accountExists + solo e
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234" }),
+      body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20" }),
     });
     assert.equal(response.status, 409);
     const body = await response.json();

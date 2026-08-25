@@ -203,9 +203,13 @@ export class NeonBookingStore {
       const id = input.legacyPayload?.clienteID || legacyId("CLI");
       const inserted = await client.query(
         `insert into app.clients
-          (legacy_id, full_name, first_name, last_name, email, registration_source, legacy_payload)
-         values ($1,$2,$3,$4,nullif($5,''),$6,$7::jsonb) returning id, legacy_id, full_name`,
-        [id, input.fullName, input.firstName, input.lastName || "", input.email || "", input.source, JSON.stringify(input.legacyPayload)],
+          (legacy_id, full_name, first_name, last_name, email, birth_date, sex, address, preferred_service, registration_source, legacy_payload)
+         values ($1,$2,$3,$4,nullif($5,''),nullif($6,'')::date,nullif($7,''),nullif($8,''),nullif($9,''),$10,$11::jsonb) returning id, legacy_id, full_name`,
+        [
+          id, input.fullName, input.firstName, input.lastName || "", input.email || "",
+          input.birthDate || "", input.sex || "", input.address || "", input.preferredService || "",
+          input.source, JSON.stringify(input.legacyPayload),
+        ],
       );
       await client.query(
         `insert into app.client_phones (client_id, phone_original, phone_normalized, label, source, is_primary)

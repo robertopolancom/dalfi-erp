@@ -113,6 +113,9 @@ async function loadCatalog() {
       $("staff").add(new Option(person.name, person.id));
       $("account-staff").add(new Option(person.name, person.id));
     }
+    // preferred_service en app.clients es texto libre (lo usa el chatbot para lo mismo) -- el
+    // nombre del servicio, no su id, para que quien lea la ficha en el ERP lo entienda sin buscar.
+    for (const service of state.catalog.services) $("new-preferred-service").add(new Option(service.name, service.name));
     const min = todayLocal();
     const max = new Date(`${min}T12:00:00-04:00`);
     max.setDate(max.getDate() + Number(state.catalog.schedule.settings?.maximumAdvanceBookingDays || 60));
@@ -253,12 +256,23 @@ function requireBookingSelection(targetMessage) {
 }
 
 function setupPayload() {
+  // $("date") siempre trae la fecha de hoy precargada por loadCatalog() (y $("staff") puede
+  // quedar en cualquier opción tocada durante una visita previa al wizard) -- sin esto, registrarse
+  // ANTES de elegir servicios (flujo "es mi primera vez" desde identificarse) mandaría un borrador
+  // a medias (fecha sí, servicio no) y el backend lo rechazaría pidiendo "selecciona servicios,
+  // manicurista, fecha y hora". Solo hay borrador real si de verdad hay servicios elegidos.
+  const serviceIds = selectedServiceIds();
+  const hasDraft = Boolean(serviceIds.length);
   return {
     firstName: $("first-name").value,
     lastName: $("last-name").value,
     phone: $("new-phone").value,
     email: $("new-email").value,
-    serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value,
+    birthDate: $("new-birthdate").value,
+    sex: $("new-sex").value,
+    address: $("new-address").value,
+    preferredService: $("new-preferred-service").value,
+    serviceIds, staffId: hasDraft ? $("staff").value : "", date: hasDraft ? $("date").value : "", time: hasDraft ? $("time").value : "",
     notes: $("notes").value, website: $("website").value,
   };
 }
@@ -497,14 +511,15 @@ function openClientDialog({ forEmployee, requireSelection = true }) {
     return;
   }
   state.clientDialogForEmployee = forEmployee;
+  state.clientDialogRequireSelection = requireSelection;
   $("client-dialog-title").textContent = forEmployee ? "Registrar clienta" : "Crear mi acceso";
   const hasSelection = Boolean(selectedServiceIds().length && $("staff").value && $("date").value && $("time").value);
   $("client-dialog-intro").textContent = forEmployee
     ? "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp."
     : hasSelection
-      ? "Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono, creas tu contraseña y se confirma el horario elegido."
-      : "Te enviaremos un código de 6 dígitos a tu WhatsApp. Con él confirmas tu teléfono y creas tu contraseña.";
-  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar clienta" : "Enviarme el código por WhatsApp";
+      ? "Confirma tu teléfono, crea tu contraseña y tu cita quedará agendada."
+      : "Confirma tu teléfono y crea tu contraseña para continuar.";
+  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar clienta" : "Continuar";
   message($("client-message"));
   if (!requireSelection || requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
 }
@@ -512,14 +527,21 @@ $("open-client").addEventListener("click", () => openClientDialog({ forEmployee:
 $("employee-new-client").addEventListener("click", () => openClientDialog({ forEmployee: true }));
 
 $("client-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); if (!requireBookingSelection($("client-message"))) return;
+  event.preventDefault();
+  // Identificarse antes de reservar (state.clientDialogRequireSelection === false) no debe
+  // exigir servicio/manicurista/fecha/hora -- todavía no se ha llegado a esa parte del wizard.
+  if (state.clientDialogRequireSelection && !requireBookingSelection($("client-message"))) return;
   const button = event.submitter; button.disabled = true;
   if (state.clientDialogForEmployee) {
     message($("client-message"), "Registrando…", true);
     try {
       const result = await api("/api/fast-booking/clients", {
         method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({ firstName: $("first-name").value, lastName: $("last-name").value, phone: $("new-phone").value, email: $("new-email").value, actorType: "employee" }),
+        body: JSON.stringify({
+          firstName: $("first-name").value, lastName: $("last-name").value, phone: $("new-phone").value, email: $("new-email").value,
+          birthDate: $("new-birthdate").value, sex: $("new-sex").value, address: $("new-address").value, preferredService: $("new-preferred-service").value,
+          actorType: "employee",
+        }),
       });
       setClient(result.client);
       $("client-dialog").close();
@@ -529,7 +551,7 @@ $("client-form").addEventListener("submit", async (event) => {
     } finally { button.disabled = false; }
     return;
   }
-  message($("client-message"), "Enviando código…", true);
+  message($("client-message"), "Guardando…", true);
   try {
     const result = await api("/api/reservapp/auth/request-setup", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(setupPayload()) });
     $("client-dialog").close(); message($("booking-message"), result.message, true);
