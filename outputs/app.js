@@ -4556,7 +4556,7 @@ function renderBusinessScheduleForm() {
   if (message) { message.textContent = ""; message.className = "form-message"; }
 }
 
-function saveBusinessSchedule(event) {
+async function saveBusinessSchedule(event) {
   event.preventDefault();
   const message = byId("business-schedule-message");
   const setMessage = (text, kind = "") => {
@@ -4582,6 +4582,34 @@ function saveBusinessSchedule(event) {
   const maxDays = Number(byId("biz-max-days")?.value);
   const slotInterval = Number(byId("biz-slot-interval")?.value);
   const bufferAfter = Number(byId("biz-buffer-after")?.value);
+  const weekDays = Object.entries(weeklyHours).filter(([, value]) => value).map(([day]) => Number(day));
+
+  const submitButton = event.submitter || document.querySelector("#business-schedule-form button[type=submit]");
+  if (submitButton) submitButton.disabled = true;
+  setMessage("Guardando…");
+  try {
+    // Esto es lo que de verdad cambia qué puede reservar una clienta en ReservApp -- antes este
+    // formulario solo tocaba el documento JSON del ERP (database.data.businessSchedule), que
+    // server/store.mjs ya no lee para calcular disponibilidad (ver comentario en availability()).
+    // Guardar aquí primero y solo seguir si sale bien evita que el personal crea que cambió el
+    // horario cuando en realidad no pasó nada.
+    const response = await fetch("/api/reservapp/admin/business-settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify({
+        weekDays, weeklyHours, scheduleExceptions: pendingScheduleExceptions,
+        minimumBookingNoticeMinutes: noticeMinutes, maximumAdvanceBookingDays: maxDays, defaultSlotIntervalMinutes: slotInterval,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${response.status}`);
+    }
+  } catch (error) {
+    setMessage(`No se pudo guardar el horario real de ReservApp: ${error.message}`, "error");
+    if (submitButton) submitButton.disabled = false;
+    return;
+  }
 
   const existing = database.data.businessSchedule || {};
   database.data.businessSchedule = {
@@ -4606,6 +4634,7 @@ function saveBusinessSchedule(event) {
   saveState();
   setMessage("Horario guardado correctamente.", "success");
   renderBusinessScheduleForm();
+  if (submitButton) submitButton.disabled = false;
 }
 
 function payrollPeriodRange(period, cut) {

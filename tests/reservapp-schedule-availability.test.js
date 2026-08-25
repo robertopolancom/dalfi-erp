@@ -117,3 +117,25 @@ test("availability(): una colaboradora sin servicio elegible no se ve afectada p
   assert.ok(staffIdsInSlots.has("COL-1"), "COL-1 no tiene horario propio, sigue el horario general");
   assert.ok(staffIdsInSlots.has("COL-2"), "COL-2 sí trabaja ese lunes según su horario propio");
 });
+
+test("availability(): scheduleExceptions con open/close vacíos cierra el negocio entero esa fecha (mismo formato del editor del ERP legado)", async () => {
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    businessSettings: { scheduleExceptions: [{ date: "2026-12-25", open: null, close: null, label: "Navidad" }] },
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-12-25" });
+  assert.equal(result.closed, true);
+});
+
+test("availability(): scheduleExceptions con open/close puntuales cambia el horario del negocio solo esa fecha", async () => {
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    businessSettings: {
+      defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400,
+      scheduleExceptions: [{ date: "2026-12-24", open: "09:00", close: "13:00", label: "Nochebuena, medio día" }],
+    },
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-12-24" });
+  assert.ok(result.slots.length > 0);
+  assert.ok(result.slots.every((slot) => slot.time < "13:00"));
+});

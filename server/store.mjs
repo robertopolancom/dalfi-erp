@@ -305,11 +305,17 @@ export class NeonBookingStore {
     const dayOverride = Object.prototype.hasOwnProperty.call(weeklyHours, dayKey) ? weeklyHours[dayKey] : undefined;
     const weekDays = Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6];
     const businessClosedToday = dayOverride === undefined ? !weekDays.includes(weekday) : dayOverride === null;
-    if (businessClosedToday || (settings.holidayClosures || []).includes(date)) {
+    // scheduleExceptions: mismo formato que ya usaba el editor de horario del ERP legado (fecha
+    // puntual + open/close, o ambos vacíos para "cerrado todo el día") -- gana sobre weeklyHours
+    // y sobre holidayClosures para esa fecha exacta.
+    const scheduleExceptions = Array.isArray(settings.scheduleExceptions) ? settings.scheduleExceptions : [];
+    const dateException = scheduleExceptions.find((exc) => exc?.date === date);
+    const dateExceptionClosed = dateException && !dateException.open && !dateException.close;
+    if (businessClosedToday || (settings.holidayClosures || []).includes(date) || dateExceptionClosed) {
       return { date, slots: [], closed: true };
     }
-    const opening = dayOverride?.open || settings.defaultOpeningTime || "09:00";
-    const closing = dayOverride?.close || settings.defaultClosingTime || "18:00";
+    const opening = dateException?.open || dayOverride?.open || settings.defaultOpeningTime || "09:00";
+    const closing = dateException?.close || dayOverride?.close || settings.defaultClosingTime || "18:00";
     let staff = staffId ? catalog.staff.filter((item) => item.id === staffId) : catalog.staff;
     if (!staff.length) return { missing: "staff" };
     const mappings = await this.pool.query(

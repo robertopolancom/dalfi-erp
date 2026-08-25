@@ -757,6 +757,20 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const dates = req.body.holidayClosures.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date));
         patch.holidayClosures = [...new Set(dates)].sort();
       }
+      // scheduleExceptions: mismo formato que ya usaba el editor del ERP legado -- fecha puntual +
+      // open/close (ambos vacíos = cerrado todo el día). No pasa por la validación estricta de
+      // open<close de weeklyHours porque el editor legado ya permite guardar una sola hora puesta
+      // (el usuario la corrige después); solo se descarta si la fecha no es válida.
+      if (Array.isArray(req.body?.scheduleExceptions)) {
+        patch.scheduleExceptions = req.body.scheduleExceptions
+          .filter((exc) => exc && /^\d{4}-\d{2}-\d{2}$/.test(exc.date))
+          .map((exc) => ({
+            date: exc.date,
+            open: /^\d{2}:\d{2}$/.test(exc.open) ? exc.open : null,
+            close: /^\d{2}:\d{2}$/.test(exc.close) ? exc.close : null,
+            label: cleanText(exc.label, 120),
+          }));
+      }
       if (!Object.keys(patch).length) return res.status(400).json({ error: "Nada que actualizar." });
       try {
         const { allowed } = await resolveAdminAuthority(req);
