@@ -5,6 +5,7 @@ import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { businessMinutesBetween } from "./store.mjs";
+import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
   RESERVAPP_ROLES,
   generateOtpCode,
@@ -134,6 +135,31 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   };
   const validPassword = (value) => String(value || "").length >= 8 && /[A-Za-zÁÉÍÓÚáéíóúÑñ]/.test(value) && /[0-9]/.test(value);
   const cleanText = (value, max = 160) => String(value || "").trim().slice(0, max);
+
+  // Distancia de edición clásica -- para tolerar errores de tipografía (acento olvidado, letra
+  // de más/menos) al comparar el nombre que la clienta escribe contra el que ya tiene su ficha,
+  // sin exigir coincidencia exacta ni depender de un servicio externo de IA.
+  const levenshteinDistance = (a, b) => {
+    const rows = a.length + 1, cols = b.length + 1;
+    const dp = Array.from({ length: rows }, (_, i) => (i === 0 ? Array.from({ length: cols }, (_, j) => j) : [i, ...Array(cols - 1).fill(0)]));
+    for (let i = 1; i < rows; i += 1) {
+      for (let j = 1; j < cols; j += 1) {
+        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    return dp[rows - 1][cols - 1];
+  };
+  // Compara solo el PRIMER nombre real contra lo que escribió la clienta -- normaliza acentos y
+  // mayúsculas (normalizeTextForMatching) y tolera hasta ~1 error de tipografía por cada 4
+  // caracteres (mínimo 1) en vez de exigir coincidencia exacta.
+  const namesLooselyMatch = (typed, actualFullName) => {
+    const a = normalizeTextForMatching(typed);
+    const b = normalizeTextForMatching(String(actualFullName || "").trim().split(/\s+/)[0] || "");
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const threshold = Math.max(1, Math.floor(Math.max(a.length, b.length) / 4));
+    return levenshteinDistance(a, b) <= threshold;
+  };
   const cleanServiceIds = (value) => [...new Set((Array.isArray(value) ? value : String(value || "").split(",")).map((item) => cleanText(item, 64)).filter(Boolean))].slice(0, 12);
   const authorizeEmployeeBooking = async (req) => {
     if (req.body?.actorType !== "employee") return null;
@@ -331,10 +357,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     // El nuevo flujo pide identificarse ANTES de elegir servicios (pedido explícito de diseño:
     // "atención personalizada" desde el primer clic en "Reservar", no al final). Para el botón
     // "Es mi primera vez" primero solo se pide el teléfono -- este endpoint dice si ya existe
-    // una cuenta activa con ese número (y su primer nombre, para que confirme "sí, soy yo")
-    // antes de pedir nombre/apellido/correo completos. Mismo candado que request-setup: solo
-    // revela status==='active' (una cuenta pending/sin activar sigue el registro normal, que ya
-    // reutiliza esa misma ficha) y solo el primer nombre, nunca el resto de los datos.
+    // una ficha con ese número, SIN revelar el nombre (auditoría de seguridad 2026-08-25: antes
+    // devolvía el primer nombre aquí, lo que dejaba adivinar qué teléfonos son clientas reales
+    // con solo probar números). Confirmar la identidad de verdad ahora es responsabilidad de
+    // /auth/verify-name, que la clienta pasa escribiendo SU nombre, no leyéndolo del servidor.
     app.post("/api/reservapp/auth/check-phone", bookingRateLimit, async (req, res, next) => {
       const phone = cleanText(req.body?.phone, 30);
       if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
@@ -343,27 +369,33 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         // password_hash (no status) es la señal real de "ya tiene contraseña creada" -- una
         // cuenta de personal o clienta puede existir en estado "pending" (invitada, nunca activó)
         // sin haber definido ninguna todavía, y eso NO es lo mismo que iniciar sesión.
-        if (existing?.password_hash) {
-          const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
-          return res.json({ exists: true, firstName });
-        }
-        if (existing) {
-          // Cuenta ya creada (clienta o personal) pero sin contraseña todavía -- salta directo a
-          // crearla, no hace falta volver a pedir datos que ya tenemos.
-          const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
-          return res.json({ exists: true, firstName, needsPasswordOnly: true });
-        }
+        if (existing?.password_hash) return res.json({ exists: true });
+        if (existing) return res.json({ exists: true, needsPasswordOnly: true });
         // Sin cuenta de ReservApp en absoluto -- pero puede que ya sea clienta del salón (ficha
         // creada directamente en el ERP, por el personal, o en una visita anterior). En ese caso
         // no hace falta pedirle de nuevo nombre/apellido/fecha de nacimiento: ya los tenemos,
         // solo falta que defina su contraseña (ver request-setup, que ya reconoce esta misma
         // ficha por teléfono y se salta esos campos).
         const customer = await bookingStore.resolveClient({ phone });
-        if (customer) {
-          const firstName = String(customer.full_name || "").trim().split(/\s+/)[0] || "";
-          return res.json({ exists: true, firstName, needsPasswordOnly: true });
-        }
+        if (customer) return res.json({ exists: true, needsPasswordOnly: true });
         res.json({ exists: false });
+      } catch (error) { next(error); }
+    });
+
+    // Confirma identidad sin que el servidor revele el nombre: la clienta escribe el suyo, y se
+    // compara (tolerando errores de tipografía -- acentos, una letra de más/menos) contra el
+    // primer nombre real de la ficha que corresponde a ese teléfono. Nunca devuelve el nombre
+    // real ni distingue "el teléfono no existe" de "el nombre no coincidió" -- misma respuesta
+    // genérica en ambos casos, para no servir de oráculo de enumeración.
+    app.post("/api/reservapp/auth/verify-name", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      const firstName = cleanText(req.body?.firstName, 80);
+      if (!validPhone(phone) || !firstName) return res.status(400).json({ error: "Escribe tu nombre para continuar." });
+      try {
+        const existing = await bookingStore.accountByPhone(phone);
+        const actualName = existing?.full_name || (await bookingStore.resolveClient({ phone }))?.full_name || "";
+        const verified = Boolean(actualName) && namesLooselyMatch(firstName, actualName);
+        res.json({ verified });
       } catch (error) { next(error); }
     });
 
@@ -467,10 +499,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         // chequeo de arriba) -- normalmente ya se resolvió en la rama de existingAccount.
         const existing = await bookingStore.accountByPhone(phone);
         if (existing?.password_hash) {
-          // Primer nombre nada más -- suficiente para que confirme "sí, soy yo" sin exponerle
-          // el apellido/nombre completo a quien haya escrito un teléfono que no es suyo.
-          const firstName = String(existing.full_name || "").trim().split(/\s+/)[0] || "";
-          return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true, firstName });
+          // Nunca revela el nombre aquí (ver /auth/check-phone y /auth/verify-name) -- este
+          // camino solo se alcanza si hubo una condición de carrera real, así que el frontend ya
+          // habría verificado el nombre antes de llegar aquí en el flujo normal.
+          return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true });
         }
         const account = await bookingStore.ensureClientAccount({ clientId: customer.id, phone });
         const code = generateOtpCode();
@@ -639,15 +671,9 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         // credenciales de ReservApp todavía -- mismos dos casos que reconoce /auth/check-phone).
         // Distinguirlo evita el mensaje confuso de "restablecer" algo que nunca existió -- en su
         // lugar, la dirige a crear su contraseña por primera vez.
-        if (account) {
-          const firstName = String(account.full_name || "").trim().split(/\s+/)[0] || "";
-          return res.json({ pendingConfirmation: false, neverHadPassword: true, firstName });
-        }
+        if (account) return res.json({ pendingConfirmation: false, neverHadPassword: true });
         const customer = await bookingStore.resolveClient({ phone });
-        if (customer) {
-          const firstName = String(customer.full_name || "").trim().split(/\s+/)[0] || "";
-          return res.json({ pendingConfirmation: false, neverHadPassword: true, firstName });
-        }
+        if (customer) return res.json({ pendingConfirmation: false, neverHadPassword: true });
         // Ni cuenta ni ficha -- misma respuesta genérica que antes, este endpoint no debe servir
         // para enumerar qué teléfonos existen en el sistema.
         res.status(202).json({

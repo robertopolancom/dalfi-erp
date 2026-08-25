@@ -227,6 +227,15 @@
     <button class="primary" type="submit">Continuar</button>
   </form></dialog>
 
+  <dialog id="confirm-name-dialog"><form id="confirm-name-form" method="dialog">
+    <div class="dialog-head"><div><p class="kicker">Confirmemos que eres tú</p><h2>¿Cuál es tu nombre?</h2></div><button class="icon-button" id="close-confirm-name" type="button" aria-label="Cerrar">×</button></div>
+    <p>Ya tenemos una ficha con este teléfono. Escribe tu nombre para confirmar que eres tú -- nunca lo mostramos aquí primero, por tu seguridad.</p>
+    <label>Tu nombre<input id="confirm-name-value" type="text" autocomplete="given-name" required /></label>
+    <div class="message" id="confirm-name-message" role="status"></div>
+    <button class="primary" type="submit">Continuar</button>
+    <a class="whatsapp-link" href="https://wa.me/18093463030" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
+  </form></dialog>
+
   <dialog id="quick-setup-dialog"><form id="quick-setup-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Ya te conocemos</p><h2>¡Hola de nuevo!</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
     <p id="quick-setup-intro">¿Eres tú? Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.</p>

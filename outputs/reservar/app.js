@@ -660,28 +660,12 @@ $("phone-check-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/check-phone", { method: "POST", body: JSON.stringify({ phone }) });
     $("phone-check-dialog").close();
-    if (result.exists && result.needsPasswordOnly) {
-      // Ya es clienta del salón (ficha del ERP, sin credenciales de ReservApp todavía) -- no
-      // hace falta volver a pedirle nombre/apellido/fecha de nacimiento, solo confirmar que es
-      // ella y enviarle el código para definir su contraseña.
-      state.quickSetupPhone = phone;
-      $("quick-setup-intro").textContent = result.firstName
-        ? `¿Eres tú, ${result.firstName}? Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`
-        : "¿Eres tú? Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.";
-      message($("quick-setup-message"));
-      $("quick-setup-dialog").showModal();
-    } else if (result.exists) {
-      // Ya hay cuenta activa con ese teléfono -- confirma por nombre antes de pedir la
-      // contraseña, en vez de simplemente rechazarla o crear una cuenta duplicada.
-      $("login-phone").value = phone;
-      message(
-        $("login-message"),
-        result.firstName
-          ? `Ya hay una clienta registrada con este teléfono a nombre de ${result.firstName}. ¿Eres tú? Ingresa tu contraseña para confirmar.`
-          : "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.",
-        true,
-      );
-      $("login-dialog").showModal();
+    if (result.exists) {
+      // Ya hay una ficha con ese teléfono (con o sin contraseña creada) -- el servidor nunca
+      // revela el nombre aquí (auditoría de seguridad 2026-08-25: antes lo hacía, y eso permitía
+      // adivinar qué teléfonos son de clientas reales solo probando números). Confirmar que es
+      // ella ahora pasa por que ELLA escriba su nombre, no por leerlo del servidor.
+      openConfirmName({ phone, needsPasswordOnly: Boolean(result.needsPasswordOnly) });
     } else {
       // Sin cuenta activa ni ficha previa -- sigue el registro normal, que ya reutiliza la ficha
       // pendiente si existe en vez de crear una duplicada.
@@ -689,6 +673,44 @@ $("phone-check-form").addEventListener("submit", async (event) => {
       openClientDialog({ forEmployee: false, requireSelection: false });
     }
   } catch (error) { message($("phone-check-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+// Paso intermedio compartido por "Es mi primera vez" y "Olvidé mi contraseña" cuando ya existe
+// una ficha con ese teléfono: en vez de que el servidor diga el nombre, la propia persona lo
+// escribe y /auth/verify-name lo compara (tolerando errores de tipografía) sin nunca revelarlo
+// -- ni siquiera la respuesta de "no coincide" distingue de "el teléfono no existía".
+function openConfirmName({ phone, needsPasswordOnly }) {
+  state.confirmNamePhone = phone;
+  state.confirmNameNeedsPasswordOnly = needsPasswordOnly;
+  $("confirm-name-value").value = "";
+  message($("confirm-name-message"));
+  $("confirm-name-dialog").showModal();
+}
+$("close-confirm-name").addEventListener("click", () => $("confirm-name-dialog").close());
+$("confirm-name-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.submitter; button.disabled = true;
+  const typedName = $("confirm-name-value").value.trim();
+  message($("confirm-name-message"), "Verificando…", true);
+  try {
+    const result = await api("/api/reservapp/auth/verify-name", { method: "POST", body: JSON.stringify({ phone: state.confirmNamePhone, firstName: typedName }) });
+    if (!result.verified) {
+      message($("confirm-name-message"), "No pudimos confirmar tu identidad con ese nombre. Revisa que esté bien escrito, o habla con un asesor por WhatsApp.");
+      return;
+    }
+    $("confirm-name-dialog").close();
+    if (state.confirmNameNeedsPasswordOnly) {
+      state.quickSetupPhone = state.confirmNamePhone;
+      $("quick-setup-intro").textContent = `¡Hola, ${typedName}! Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`;
+      message($("quick-setup-message"));
+      $("quick-setup-dialog").showModal();
+    } else {
+      $("login-phone").value = state.confirmNamePhone;
+      message($("login-message"), `¿Eres tú, ${typedName}? Ingresa tu contraseña para confirmar.`, true);
+      $("login-dialog").showModal();
+    }
+  } catch (error) { message($("confirm-name-message"), error.message); }
   finally { button.disabled = false; }
 });
 
@@ -723,9 +745,11 @@ $("quick-setup-form").addEventListener("submit", async (event) => {
   } catch (error) {
     message($("quick-setup-message"), error.message);
     if (error.body?.accountExists) {
+      // Condición de carrera real (otra sesión definió la contraseña justo en este instante) --
+      // el servidor no revela el nombre aquí tampoco, ver /auth/check-phone.
       $("quick-setup-dialog").close();
       $("login-phone").value = state.quickSetupPhone;
-      message($("login-message"), error.body.firstName ? `Ya hay una clienta registrada con este teléfono a nombre de ${error.body.firstName}. ¿Eres tú? Ingresa tu contraseña para confirmar.` : error.message, true);
+      message($("login-message"), "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", true);
       $("login-dialog").showModal();
     }
   } finally { button.disabled = false; }
@@ -844,13 +868,11 @@ $("client-form").addEventListener("submit", async (event) => {
   } catch (error) {
     message($("client-message"), error.message);
     if (error.body?.accountExists) {
+      // Condición de carrera real -- el servidor no revela el nombre aquí, ver /auth/check-phone.
       $("client-dialog").close();
       $("login-phone").value = $("new-phone").value;
+      message($("login-message"), "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", true);
       $("login-dialog").showModal();
-      // Confirmación por nombre antes de pedirle la contraseña -- así sabe que no está
-      // creando una cuenta duplicada, solo iniciando sesión en la que ya existe.
-      const name = error.body.firstName;
-      message($("login-message"), name ? `Ya hay una clienta registrada con este teléfono a nombre de ${name}. ¿Eres tú? Ingresa tu contraseña para confirmar.` : "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", true);
     }
   } finally { button.disabled = false; }
 });
@@ -870,12 +892,7 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
     // definir tu contraseña" que ya usa check-phone (ver quick-setup-dialog).
     if (result.neverHadPassword) {
       $("forgot-password-dialog").close();
-      state.quickSetupPhone = $("forgot-password-phone").value;
-      $("quick-setup-intro").textContent = result.firstName
-        ? `¿Eres tú, ${result.firstName}? Este teléfono todavía no tiene contraseña -- no la olvidaste, nunca la creaste. Vamos a crearla.`
-        : "¿Eres tú? Este teléfono todavía no tiene contraseña -- no la olvidaste, nunca la creaste. Vamos a crearla.";
-      message($("quick-setup-message"));
-      $("quick-setup-dialog").showModal();
+      openConfirmName({ phone: $("forgot-password-phone").value, needsPasswordOnly: true });
       return;
     }
     // TEMPORAL: mientras el backend tenga apagado el autoservicio (ver comentario junto a
@@ -938,7 +955,7 @@ $("account-button").addEventListener("click", () => { if (!state.account) { mess
 // sesión debe dejar todo como recién cargado, para que la siguiente persona tenga que
 // identificarse desde cero y no vea ni un campo con datos de la anterior -- pedido explícito.
 function resetDeviceState() {
-  ["booking-form", "identify-form", "phone-check-form", "quick-setup-form", "client-form", "login-form", "forgot-password-form", "verify-code-form", "setup-form"].forEach((id) => {
+  ["booking-form", "identify-form", "phone-check-form", "confirm-name-form", "quick-setup-form", "client-form", "login-form", "forgot-password-form", "verify-code-form", "setup-form"].forEach((id) => {
     $(id)?.reset();
   });
   $("client-search").value = "";

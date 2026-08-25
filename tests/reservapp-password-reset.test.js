@@ -73,7 +73,7 @@ test("POST /api/reservapp/auth/request-password-reset: cuenta con status pendien
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.neverHadPassword, true);
-    assert.equal(body.firstName, "Ana");
+    assert.equal(body.firstName, undefined, "no debe revelar el nombre -- ver /auth/verify-name (auditoría de seguridad 2026-08-25)");
     assert.equal(store.prepareSetupCalls.length, 0);
   });
 });
@@ -87,7 +87,7 @@ test("POST /api/reservapp/auth/request-password-reset: sin cuenta pero con ficha
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.neverHadPassword, true);
-    assert.equal(body.firstName, "Ana");
+    assert.equal(body.firstName, undefined, "no debe revelar el nombre -- ver /auth/verify-name (auditoría de seguridad 2026-08-25)");
     assert.equal(store.prepareSetupCalls.length, 0, "no debe mandar un código de reset -- nunca hubo una contraseña que restablecer");
   });
 });
