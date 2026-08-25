@@ -144,7 +144,7 @@ test("reschedule.js: nunca cobra un depósito nuevo (estadoDeposito se conserva 
     ],
   };
   const env = createNestedMockEnv(doc);
-  const futureDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10); // +5 días, de sobra >4h laborales
+  const futureDate = futureBusinessDate(5); // +5 días hábiles, de sobra >4h laborales, nunca domingo
   const req = new Request("https://localhost/api/booking/reschedule", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -171,7 +171,7 @@ test("reschedule.js: recalcula estadoConfirmacion para el NUEVO horario (una cit
     ],
   };
   const env = createNestedMockEnv(doc);
-  const futureDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const futureDate = futureBusinessDate(5);
   const req = new Request("https://localhost/api/booking/reschedule", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -288,9 +288,10 @@ test("Bloque continuo: confirmar una cita con varios servicios persiste TODAS la
   };
   const env = createNestedMockEnv(doc);
   // Fecha relativa (no fija) para que esta prueba no empiece a fallar por sí sola cuando
-  // el reloj real cruce la fecha/hora antes escrita a mano — mismo criterio ya usado en las
-  // pruebas de reschedule.js más abajo en este archivo.
-  const futureStartAt = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10) + "T09:00:00";
+  // el reloj real cruce la fecha/hora antes escrita a mano -- y futureBusinessDate() en vez de
+  // sumar días a lo bruto, para no caer en domingo (sin disponibilidad en este documento de
+  // prueba) como pasaba antes.
+  const futureStartAt = futureBusinessDate(5) + "T09:00:00";
   const req = new Request("https://localhost/api/booking/confirm", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
