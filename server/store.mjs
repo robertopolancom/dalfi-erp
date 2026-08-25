@@ -120,6 +120,169 @@ export class NeonBookingStore {
     await this.pool.query("update app.business_settings set settings = settings - 'banner', updated_at = now() where id = true");
   }
 
+  // Panel "Horarios" -- mismo business_settings.settings que ya lee availability() (server/store.mjs
+  // más abajo) para calcular horarios reales, así que editar esto SÍ cambia qué se puede reservar.
+  // El panel del ERP legado edita un documento JSON aparte que ya no alimenta la disponibilidad
+  // real -- este es el único lugar que de verdad la afecta.
+  async businessSettings() {
+    const result = await this.pool.query("select timezone, settings from app.business_settings where id = true");
+    return result.rows[0] || { timezone: "America/Santo_Domingo", settings: {} };
+  }
+
+  async updateBusinessSettings(patch) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update app.business_settings
+            set settings = settings || $1::jsonb, updated_at = now()
+          where id = true
+          returning timezone, settings`,
+        [JSON.stringify(patch)],
+      );
+      // Espejo hacia el documento del ERP legado -- mismas claves (weekDays, weeklyHours,
+      // holidayClosures, etc.) que ya usaba su propio editor de horario, así que la pantalla del
+      // ERP sigue mostrando lo mismo que se acaba de guardar desde ReservApp, sin traducir nada.
+      const docResult = await client.query("select document from app.erp_document where id=true for update");
+      const document = docResult.rows[0]?.document;
+      const data = documentData(document);
+      if (data) {
+        data.businessSchedule = { ...(data.businessSchedule || {}), ...result.rows[0].settings };
+        await client.query(`update app.erp_document set document=$1::jsonb, version=version+1, updated_at=clock_timestamp() where id=true`, [JSON.stringify(document)]);
+      }
+      await client.query("commit");
+      return result.rows[0];
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Horario semanal propio de una colaboradora -- opt-in, ver comentario en availability(). Una
+  // fila por día de semana (upsert: borra la fila vieja de ese día si existía, mete la nueva) para
+  // no acumular duplicados ni depender de un unique index que la tabla no tiene.
+  async listStaffWeeklySchedules(staffId = null) {
+    const result = await this.pool.query(
+      `select id, staff_id, weekday, start_time, end_time, active from app.staff_weekly_schedules
+        where ($1::uuid is null or staff_id=$1) order by staff_id, weekday`,
+      [staffId],
+    );
+    return result.rows;
+  }
+
+  async setStaffWeeklySchedule({ staffId, weekday, startTime, endTime, active }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from app.staff_weekly_schedules where staff_id=$1 and weekday=$2", [staffId, weekday]);
+      const inserted = await client.query(
+        `insert into app.staff_weekly_schedules (staff_id, weekday, start_time, end_time, active)
+         values ($1,$2,$3,$4,$5) returning id, staff_id, weekday, start_time, end_time, active`,
+        [staffId, weekday, startTime, endTime, active],
+      );
+      await this.mirrorStaffScheduleToDocument(client);
+      await client.query("commit");
+      return inserted.rows[0];
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteStaffWeeklySchedule({ staffId, weekday }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from app.staff_weekly_schedules where staff_id=$1 and weekday=$2", [staffId, weekday]);
+      await this.mirrorStaffScheduleToDocument(client);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Excepción puntual (un día suelto, no un patrón semanal) -- vacaciones, medio día, etc. Gana
+  // siempre sobre el horario semanal de ese día, tenga fila o no (ver availability()).
+  async listStaffScheduleExceptions(staffId = null) {
+    const result = await this.pool.query(
+      `select id, staff_id, exception_date, start_time, end_time, available, reason from app.staff_schedule_exceptions
+        where ($1::uuid is null or staff_id=$1) order by exception_date`,
+      [staffId],
+    );
+    return result.rows;
+  }
+
+  async setStaffScheduleException({ staffId, date, startTime, endTime, available, reason }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from app.staff_schedule_exceptions where staff_id=$1 and exception_date=$2", [staffId, date]);
+      const inserted = await client.query(
+        `insert into app.staff_schedule_exceptions (staff_id, exception_date, start_time, end_time, available, reason)
+         values ($1,$2,$3,$4,$5,$6) returning id, staff_id, exception_date, start_time, end_time, available, reason`,
+        [staffId, date, startTime, endTime, available, reason || null],
+      );
+      await this.mirrorStaffScheduleToDocument(client);
+      await client.query("commit");
+      return inserted.rows[0];
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async deleteStaffScheduleException({ staffId, date }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("delete from app.staff_schedule_exceptions where staff_id=$1 and exception_date=$2", [staffId, date]);
+      await this.mirrorStaffScheduleToDocument(client);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Vuelca staff_weekly_schedules/staff_schedule_exceptions completas al documento del ERP legado
+  // (mismas claves que ya inicializaba su propio código, ver outputs/app.js) -- se llama dentro de
+  // la misma transacción que cada cambio para que nunca queden desincronizados.
+  async mirrorStaffScheduleToDocument(client) {
+    const [weekly, exceptions, staffRows] = await Promise.all([
+      client.query("select staff_id, weekday, start_time, end_time, active from app.staff_weekly_schedules order by staff_id, weekday"),
+      client.query("select staff_id, exception_date, start_time, end_time, available, reason from app.staff_schedule_exceptions order by exception_date"),
+      client.query("select id, legacy_id, full_name from app.staff"),
+    ]);
+    const staffById = new Map(staffRows.rows.map((row) => [row.id, row]));
+    const docResult = await client.query("select document from app.erp_document where id=true for update");
+    const document = docResult.rows[0]?.document;
+    const data = documentData(document);
+    if (!data) return;
+    data.staffWeeklySchedules = weekly.rows.map((row) => ({
+      colaboradorID: staffById.get(row.staff_id)?.legacy_id || row.staff_id,
+      colaboradorNombre: staffById.get(row.staff_id)?.full_name || "",
+      weekday: row.weekday, startTime: row.start_time, endTime: row.end_time, active: row.active,
+    }));
+    data.staffScheduleExceptions = exceptions.rows.map((row) => ({
+      colaboradorID: staffById.get(row.staff_id)?.legacy_id || row.staff_id,
+      colaboradorNombre: staffById.get(row.staff_id)?.full_name || "",
+      date: row.exception_date, startTime: row.start_time, endTime: row.end_time,
+      available: row.available, reason: row.reason || "",
+    }));
+    await client.query(`update app.erp_document set document=$1::jsonb, version=version+1, updated_at=clock_timestamp() where id=true`, [JSON.stringify(document)]);
+  }
+
   async availability({ serviceId, serviceIds, staffId, date }) {
     const catalog = await this.catalog();
     const selectedIds = uniqueServiceIds(serviceIds?.length ? serviceIds : serviceId);
@@ -129,16 +292,24 @@ export class NeonBookingStore {
     const totalPrice = services.reduce((sum, item) => sum + item.price, 0);
     const settings = catalog.schedule.settings || {};
     const timezone = catalog.schedule.timezone || "America/Santo_Domingo";
-    const opening = settings.defaultOpeningTime || "09:00";
-    const closing = settings.defaultClosingTime || "18:00";
     const interval = Math.max(5, Number(settings.defaultSlotIntervalMinutes) || 15);
     const minNotice = Math.max(0, Number(settings.minimumBookingNoticeMinutes) || 30);
     const maxDays = Math.max(1, Number(settings.maximumAdvanceBookingDays) || 60);
     const weekday = new Date(`${date}T12:00:00-04:00`).getDay();
+    // weeklyHours (horario del negocio por día de semana, puede tener horas distintas cada día o
+    // null para "no se labora") manda sobre weekDays/defaultOpeningTime/defaultClosingTime -- ese
+    // era el formato anterior, de un solo horario para todos los días abiertos, y sigue vigente
+    // tal cual para cualquier día que nunca se configuró en weeklyHours (compatibilidad).
+    const weeklyHours = settings.weeklyHours && typeof settings.weeklyHours === "object" ? settings.weeklyHours : {};
+    const dayKey = String(weekday);
+    const dayOverride = Object.prototype.hasOwnProperty.call(weeklyHours, dayKey) ? weeklyHours[dayKey] : undefined;
     const weekDays = Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6];
-    if (!weekDays.includes(weekday) || (settings.holidayClosures || []).includes(date)) {
+    const businessClosedToday = dayOverride === undefined ? !weekDays.includes(weekday) : dayOverride === null;
+    if (businessClosedToday || (settings.holidayClosures || []).includes(date)) {
       return { date, slots: [], closed: true };
     }
+    const opening = dayOverride?.open || settings.defaultOpeningTime || "09:00";
+    const closing = dayOverride?.close || settings.defaultClosingTime || "18:00";
     let staff = staffId ? catalog.staff.filter((item) => item.id === staffId) : catalog.staff;
     if (!staff.length) return { missing: "staff" };
     const mappings = await this.pool.query(
@@ -153,6 +324,46 @@ export class NeonBookingStore {
       });
     }
     if (!staff.length) return { missing: "staff_services" };
+    // Horario/ausencias por colaboradora -- opt-in: una colaboradora sin ninguna fila propia en
+    // staff_weekly_schedules sigue el horario general del negocio como siempre (así se comportaba
+    // esto antes de que existiera esta tabla). Solo quien tiene AL MENOS una fila propia queda
+    // sujeta a "si no hay fila para hoy, hoy no trabaja" -- y una excepción puntual (vacaciones,
+    // medio día, etc.) siempre gana sobre el horario semanal, tenga fila o no.
+    const staffIds = staff.map((item) => item.id);
+    const [weeklyToday, weeklyAny, exceptionRows] = await Promise.all([
+      this.pool.query(
+        `select staff_id, start_time, end_time from app.staff_weekly_schedules
+          where staff_id = any($1::uuid[]) and weekday=$2 and active=true`,
+        [staffIds, weekday],
+      ),
+      this.pool.query(`select distinct staff_id from app.staff_weekly_schedules where staff_id = any($1::uuid[])`, [staffIds]),
+      this.pool.query(
+        `select staff_id, start_time, end_time, available from app.staff_schedule_exceptions
+          where staff_id = any($1::uuid[]) and exception_date=$2`,
+        [staffIds, date],
+      ),
+    ]);
+    const optedIn = new Set(weeklyAny.rows.map((row) => row.staff_id));
+    const todayByStaff = new Map(weeklyToday.rows.map((row) => [row.staff_id, row]));
+    const exceptionByStaff = new Map(exceptionRows.rows.map((row) => [row.staff_id, row]));
+    const staffWindows = new Map();
+    for (const person of staff) {
+      const exception = exceptionByStaff.get(person.id);
+      if (exception) {
+        staffWindows.set(person.id, exception.available
+          ? { open: exception.start_time?.slice(0, 5) || opening, close: exception.end_time?.slice(0, 5) || closing }
+          : null);
+        continue;
+      }
+      if (optedIn.has(person.id)) {
+        const today = todayByStaff.get(person.id);
+        staffWindows.set(person.id, today ? { open: today.start_time.slice(0, 5), close: today.end_time.slice(0, 5) } : null);
+        continue;
+      }
+      staffWindows.set(person.id, { open: opening, close: closing });
+    }
+    staff = staff.filter((person) => staffWindows.get(person.id));
+    if (!staff.length) return { date, slots: [], closed: true };
     const busy = await this.pool.query(
       `select staff_id, starts_at, ends_at from app.appointments
        where staff_id = any($1::uuid[]) and status not in ('cancelled','replaced')
@@ -169,7 +380,8 @@ export class NeonBookingStore {
     const slots = [];
     for (const person of staff) {
       const personBusy = busy.rows.filter((row) => row.staff_id === person.id);
-      for (let minute = toMinutes(opening); minute + durationMinutes <= toMinutes(closing); minute += interval) {
+      const window = staffWindows.get(person.id);
+      for (let minute = toMinutes(window.open); minute + durationMinutes <= toMinutes(window.close); minute += interval) {
         const hour = String(Math.floor(minute / 60)).padStart(2, "0");
         const min = String(minute % 60).padStart(2, "0");
         const start = new Date(`${date}T${hour}:${min}:00-04:00`);

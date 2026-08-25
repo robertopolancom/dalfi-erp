@@ -122,6 +122,43 @@
         </div>
         <div class="message" id="account-message"></div><button class="secondary" id="create-account" type="button">Enviar credenciales</button>
 
+        <h3>Horarios</h3>
+        <p>El horario general aplica a todo el negocio. Si una colaboradora tiene su propio horario configurado abajo, ese manda para ella los días que tenga fila -- si no tiene ninguno, sigue el horario general.</p>
+
+        <h4>Horario general del negocio</h4>
+        <div class="message" id="business-hours-message"></div>
+        <div class="schedule-grid" id="business-weekdays-grid"></div>
+        <button class="secondary" id="business-hours-save" type="button">Guardar horario general</button>
+
+        <h4>Días cerrados (feriados, cierres puntuales)</h4>
+        <div class="field-grid three">
+          <label>Fecha<input id="holiday-closure-date" type="date" /></label>
+          <label>&nbsp;<button class="secondary" id="holiday-closure-add" type="button">Agregar día cerrado</button></label>
+        </div>
+        <ul class="admin-list" id="holiday-closures-list"></ul>
+
+        <h4>Horario por colaboradora</h4>
+        <label>Colaboradora<select id="staff-schedule-select"><option value="">Selecciona</option></select></label>
+        <div class="schedule-grid" id="staff-weekdays-grid"></div>
+        <button class="secondary" id="staff-schedule-save" type="button">Guardar horario de esta colaboradora</button>
+        <p><small>Sin ninguna fila marcada, la colaboradora sigue el horario general de arriba todos los días.</small></p>
+
+        <h5>Excepciones puntuales (vacaciones, medio día, etc.)</h5>
+        <div class="field-grid three">
+          <label>Fecha<input id="staff-exception-date" type="date" /></label>
+          <label>¿Trabaja ese día?
+            <select id="staff-exception-available"><option value="false">No (libre todo el día)</option><option value="true">Sí, con horario distinto</option></select>
+          </label>
+          <label>Motivo <span>(opcional)</span><input id="staff-exception-reason" type="text" maxlength="200" /></label>
+        </div>
+        <div class="field-grid" id="staff-exception-hours">
+          <label>Desde<input id="staff-exception-start" type="time" /></label>
+          <label>Hasta<input id="staff-exception-end" type="time" /></label>
+        </div>
+        <button class="secondary" id="staff-exception-add" type="button">Guardar excepción</button>
+        <div class="message" id="staff-schedule-message"></div>
+        <ul class="admin-list" id="staff-exceptions-list"></ul>
+
         <h3>Clientas</h3>
         <label>Buscar por nombre o teléfono<input id="clients-admin-search" type="search" autocomplete="off" placeholder="Escribe para filtrar" /></label>
         <div class="message" id="clients-admin-message"></div>

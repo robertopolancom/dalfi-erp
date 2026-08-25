@@ -715,6 +715,133 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Panel "Horarios" -- este es el único lugar que de verdad afecta la disponibilidad real de
+    // ReservApp (ver comentario junto a businessSettings() en store.mjs). El editor del ERP legado
+    // sigue funcionando para mostrar/leer, pero escribir horario ahí ya no es la fuente de verdad.
+    app.get("/api/reservapp/admin/business-settings", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver los horarios." });
+        res.json(await bookingStore.businessSettings());
+      } catch (error) { next(error); }
+    });
+
+    app.patch("/api/reservapp/admin/business-settings", bookingRateLimit, async (req, res, next) => {
+      const patch = {};
+      if (req.body?.defaultOpeningTime != null) {
+        if (!/^\d{2}:\d{2}$/.test(req.body.defaultOpeningTime)) return res.status(400).json({ error: "Hora de apertura inválida." });
+        patch.defaultOpeningTime = req.body.defaultOpeningTime;
+      }
+      if (req.body?.defaultClosingTime != null) {
+        if (!/^\d{2}:\d{2}$/.test(req.body.defaultClosingTime)) return res.status(400).json({ error: "Hora de cierre inválida." });
+        patch.defaultClosingTime = req.body.defaultClosingTime;
+      }
+      if (Array.isArray(req.body?.weekDays)) {
+        const weekDays = req.body.weekDays.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6);
+        patch.weekDays = [...new Set(weekDays)];
+      }
+      if (req.body?.weeklyHours != null && typeof req.body.weeklyHours === "object" && !Array.isArray(req.body.weeklyHours)) {
+        const weeklyHours = {};
+        for (const [day, value] of Object.entries(req.body.weeklyHours)) {
+          if (!/^[0-6]$/.test(day)) continue;
+          if (value === null) { weeklyHours[day] = null; continue; }
+          const open = cleanText(value?.open, 5); const close = cleanText(value?.close, 5);
+          if (!/^\d{2}:\d{2}$/.test(open) || !/^\d{2}:\d{2}$/.test(close) || open >= close) {
+            return res.status(400).json({ error: `Horario inválido para el día ${day}.` });
+          }
+          weeklyHours[day] = { open, close };
+        }
+        patch.weeklyHours = weeklyHours;
+      }
+      if (Array.isArray(req.body?.holidayClosures)) {
+        const dates = req.body.holidayClosures.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date));
+        patch.holidayClosures = [...new Set(dates)].sort();
+      }
+      if (!Object.keys(patch).length) return res.status(400).json({ error: "Nada que actualizar." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar los horarios." });
+        res.json(await bookingStore.updateBusinessSettings(patch));
+      } catch (error) { next(error); }
+    });
+
+    app.get("/api/reservapp/admin/staff-schedules", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver el horario del personal." });
+        res.json({ schedules: await bookingStore.listStaffWeeklySchedules(cleanText(req.query.staffId, 64) || null) });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/admin/staff-schedules", bookingRateLimit, async (req, res, next) => {
+      const staffId = cleanText(req.body?.staffId, 64);
+      const weekday = Number(req.body?.weekday);
+      const startTime = cleanText(req.body?.startTime, 5);
+      const endTime = cleanText(req.body?.endTime, 5);
+      const active = req.body?.active !== false;
+      if (!staffId || !Number.isInteger(weekday) || weekday < 0 || weekday > 6) return res.status(400).json({ error: "Colaboradora y día de la semana son obligatorios." });
+      if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime) || startTime >= endTime) {
+        return res.status(400).json({ error: "La hora de fin debe ser posterior a la de inicio." });
+      }
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar el horario del personal." });
+        res.json({ schedule: await bookingStore.setStaffWeeklySchedule({ staffId, weekday, startTime, endTime, active }) });
+      } catch (error) { next(error); }
+    });
+
+    app.delete("/api/reservapp/admin/staff-schedules/:staffId/:weekday", bookingRateLimit, async (req, res, next) => {
+      const weekday = Number(req.params.weekday);
+      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) return res.status(400).json({ error: "Día de la semana inválido." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar el horario del personal." });
+        await bookingStore.deleteStaffWeeklySchedule({ staffId: cleanText(req.params.staffId, 64), weekday });
+        res.status(204).end();
+      } catch (error) { next(error); }
+    });
+
+    app.get("/api/reservapp/admin/staff-schedule-exceptions", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver las excepciones de horario." });
+        res.json({ exceptions: await bookingStore.listStaffScheduleExceptions(cleanText(req.query.staffId, 64) || null) });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/admin/staff-schedule-exceptions", bookingRateLimit, async (req, res, next) => {
+      const staffId = cleanText(req.body?.staffId, 64);
+      const date = cleanText(req.body?.date, 10);
+      const available = Boolean(req.body?.available);
+      const startTime = available ? cleanText(req.body?.startTime, 5) : "";
+      const endTime = available ? cleanText(req.body?.endTime, 5) : "";
+      const reason = cleanText(req.body?.reason, 200);
+      if (!staffId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Colaboradora y fecha son obligatorias." });
+      if (available && (startTime || endTime) && (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime) || startTime >= endTime)) {
+        return res.status(400).json({ error: "La hora de fin debe ser posterior a la de inicio." });
+      }
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar excepciones de horario." });
+        res.json({
+          exception: await bookingStore.setStaffScheduleException({
+            staffId, date, available, reason,
+            startTime: startTime || null, endTime: endTime || null,
+          }),
+        });
+      } catch (error) { next(error); }
+    });
+
+    app.delete("/api/reservapp/admin/staff-schedule-exceptions/:staffId/:date", bookingRateLimit, async (req, res, next) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: "Fecha inválida." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar excepciones de horario." });
+        await bookingStore.deleteStaffScheduleException({ staffId: cleanText(req.params.staffId, 64), date: req.params.date });
+        res.status(204).end();
+      } catch (error) { next(error); }
+    });
+
     // Relay OTP: cuando una MANICURISTA quiere agendar a una clienta que
     // todavía no existe en el sistema, primero debe comprobar que controla
     // ese teléfono con un código de 6 dígitos enviado por WhatsApp -- no

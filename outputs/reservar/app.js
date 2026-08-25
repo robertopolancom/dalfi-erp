@@ -16,6 +16,22 @@ const message = (element, text = "", ok = false) => {
   element.className = ok ? "message ok" : "message";
 };
 const todayLocal = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(new Date());
+// weekDays/holidayClosures ya los respeta la disponibilidad real del backend (server/store.mjs) --
+// esto solo evita que la clienta llegue a elegir un día que de todos modos va a salir sin horarios.
+function isClosedDate(dateStr) {
+  const settings = state.catalog?.schedule?.settings || {};
+  const weekDays = Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6];
+  const weekday = new Date(`${dateStr}T12:00:00-04:00`).getDay();
+  return !weekDays.includes(weekday) || (settings.holidayClosures || []).includes(dateStr);
+}
+function nextOpenDate(dateStr) {
+  let cursor = dateStr;
+  for (let i = 0; i < 60 && isClosedDate(cursor); i += 1) {
+    const next = new Date(`${cursor}T12:00:00-04:00`); next.setDate(next.getDate() + 1);
+    cursor = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(next);
+  }
+  return cursor;
+}
 const selectedServiceIds = () => [...document.querySelectorAll('input[name="service"]:checked')].map((item) => item.value);
 const selectedServices = () => selectedServiceIds().map((id) => state.catalog?.services.find((item) => item.id === id)).filter(Boolean);
 const employeeRoles = new Set(["manicurista", "asistente", "administradora", "superadministrador"]);
@@ -112,6 +128,7 @@ async function loadCatalog() {
     for (const person of state.catalog.staff) {
       $("staff").add(new Option(person.name, person.id));
       $("account-staff").add(new Option(person.name, person.id));
+      $("staff-schedule-select").add(new Option(person.name, person.id));
     }
     // preferred_service en app.clients es texto libre (lo usa el chatbot para lo mismo) -- el
     // nombre del servicio, no su id, para que quien lea la ficha en el ERP lo entienda sin buscar.
@@ -121,7 +138,7 @@ async function loadCatalog() {
     max.setDate(max.getDate() + Number(state.catalog.schedule.settings?.maximumAdvanceBookingDays || 60));
     $("date").min = min;
     $("date").max = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(max);
-    $("date").value = min; $("agenda-date").value = min;
+    $("date").value = nextOpenDate(min); $("agenda-date").value = min;
     // Sin banner publicado, el elemento se queda oculto y la página se ve exactamente igual que
     // antes de que existiera esta función -- requisito explícito de diseño.
     if (state.catalog.banner) {
@@ -472,8 +489,22 @@ $("step1-next").addEventListener("click", () => {
   goToStep(2);
 });
 $("step2-back").addEventListener("click", () => goToStep(1));
+// Si el día elegido no se labora (fin de semana fuera de weekDays, o una fecha en
+// holidayClosures), en vez de bloquear con un error se avanza sola al próximo día hábil --
+// pedido explícito de diseño ("que se siga hacia el próximo día").
+$("date").addEventListener("change", () => {
+  if (!$("date").value || !isClosedDate($("date").value)) return;
+  const closedDate = $("date").value;
+  $("date").value = nextOpenDate(closedDate);
+  message($("booking-message"), `Ese día no laboramos -- te muestro el próximo día disponible.`, true);
+});
 $("step2-next").addEventListener("click", () => {
   if (!$("date").value) return message($("booking-message"), "Elige una fecha.");
+  if (isClosedDate($("date").value)) {
+    $("date").value = nextOpenDate($("date").value);
+    message($("booking-message"), "Ese día no laboramos -- te muestro el próximo día disponible.", true);
+    return;
+  }
   message($("booking-message"));
   goToStep(3);
 });
@@ -720,6 +751,8 @@ $("open-user-management").addEventListener("click", () => {
   $("admin-panel").classList.remove("hidden");
   loadEmployeesTable();
   loadClientsAdmin();
+  loadBusinessHours();
+  loadStaffSchedule($("staff-schedule-select").value);
   // Si ya hay un banner publicado de una sesión anterior, reflejarlo aquí también (si no, el
   // botón "Quitar" solo aparecería después de generar y publicar uno nuevo en esta sesión).
   if (state.catalog?.banner) { generatedBanner = state.catalog.banner; renderBannerPreview(generatedBanner); $("banner-remove").classList.remove("hidden"); }
@@ -796,6 +829,181 @@ async function loadClientsAdmin(query = "") {
 $("clients-admin-search").addEventListener("input", () => {
   clearTimeout(clientsAdminSearchTimer);
   clientsAdminSearchTimer = setTimeout(() => loadClientsAdmin($("clients-admin-search").value.trim()), 300);
+});
+
+// ---------- Horarios (Fase 7) ----------
+// Único lugar que de verdad cambia la disponibilidad real de ReservApp -- ver comentario junto a
+// businessSettings()/availability() en server/store.mjs. El horario general aplica a todo el
+// negocio; una colaboradora con su propio horario configurado lo sigue a ella, no al general, los
+// días que tenga fila (opt-in: sin ninguna fila, sigue el general como siempre).
+const WEEKDAY_LABELS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+let businessHolidayClosures = [];
+
+function renderScheduleGrid(container, { dayValues, prefix }) {
+  container.replaceChildren(...WEEKDAY_LABELS.map((label, day) => {
+    const existing = dayValues[day];
+    const row = document.createElement("div");
+    row.className = `schedule-day${existing ? "" : " day-closed"}`;
+    row.dataset.day = day;
+    const checkboxLabel = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox"; checkbox.className = `${prefix}-day-enabled`; checkbox.checked = Boolean(existing);
+    checkbox.addEventListener("change", () => row.classList.toggle("day-closed", !checkbox.checked));
+    checkboxLabel.append(checkbox, ` ${label}`);
+    const openInput = document.createElement("input");
+    openInput.type = "time"; openInput.className = `${prefix}-day-open`; openInput.value = existing?.open || "09:00";
+    const closeInput = document.createElement("input");
+    closeInput.type = "time"; closeInput.className = `${prefix}-day-close`; closeInput.value = existing?.close || "18:00";
+    row.append(checkboxLabel, document.createElement("span"), openInput, closeInput);
+    return row;
+  }));
+}
+
+function readScheduleGrid(container) {
+  const values = {};
+  container.querySelectorAll(".schedule-day").forEach((row) => {
+    const day = row.dataset.day;
+    const enabled = row.querySelector("input[type=checkbox]").checked;
+    values[day] = enabled ? { open: row.querySelector("input[class$='-day-open']").value, close: row.querySelector("input[class$='-day-close']").value } : null;
+  });
+  return values;
+}
+
+function renderHolidayClosuresList() {
+  $("holiday-closures-list").replaceChildren(...businessHolidayClosures.map((date) => {
+    const li = document.createElement("li");
+    const label = document.createElement("span"); label.textContent = new Date(`${date}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" });
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "admin-row-action"; remove.textContent = "Quitar";
+    remove.addEventListener("click", async () => {
+      remove.disabled = true;
+      try {
+        await api("/api/reservapp/admin/business-settings", { method: "PATCH", body: JSON.stringify({ holidayClosures: businessHolidayClosures.filter((item) => item !== date) }) });
+        loadBusinessHours();
+      } catch (error) { message($("business-hours-message"), error.message); remove.disabled = false; }
+    });
+    li.append(label, remove);
+    return li;
+  }));
+}
+
+async function loadBusinessHours() {
+  message($("business-hours-message"), "Cargando…", true);
+  try {
+    const { settings } = await api("/api/reservapp/admin/business-settings");
+    const weeklyHours = settings.weeklyHours || {};
+    const weekDays = new Set(Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6]);
+    const dayValues = {};
+    for (let day = 0; day <= 6; day += 1) {
+      const override = Object.prototype.hasOwnProperty.call(weeklyHours, String(day)) ? weeklyHours[String(day)] : undefined;
+      dayValues[day] = override !== undefined ? override : (weekDays.has(day) ? { open: settings.defaultOpeningTime || "09:00", close: settings.defaultClosingTime || "18:00" } : null);
+    }
+    renderScheduleGrid($("business-weekdays-grid"), { dayValues, prefix: "business" });
+    businessHolidayClosures = Array.isArray(settings.holidayClosures) ? [...settings.holidayClosures].sort() : [];
+    renderHolidayClosuresList();
+    message($("business-hours-message"));
+  } catch (error) { message($("business-hours-message"), error.message); }
+}
+
+$("business-hours-save").addEventListener("click", async () => {
+  const button = $("business-hours-save"); button.disabled = true;
+  message($("business-hours-message"), "Guardando…", true);
+  try {
+    const dayValues = readScheduleGrid($("business-weekdays-grid"));
+    const weekDays = Object.entries(dayValues).filter(([, value]) => value).map(([day]) => Number(day));
+    await api("/api/reservapp/admin/business-settings", { method: "PATCH", body: JSON.stringify({ weekDays, weeklyHours: dayValues }) });
+    message($("business-hours-message"), "Horario general guardado.", true);
+  } catch (error) { message($("business-hours-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+$("holiday-closure-add").addEventListener("click", async () => {
+  const date = $("holiday-closure-date").value;
+  if (!date) return message($("business-hours-message"), "Elige una fecha.");
+  const button = $("holiday-closure-add"); button.disabled = true;
+  try {
+    await api("/api/reservapp/admin/business-settings", { method: "PATCH", body: JSON.stringify({ holidayClosures: [...businessHolidayClosures, date] }) });
+    $("holiday-closure-date").value = "";
+    loadBusinessHours();
+  } catch (error) { message($("business-hours-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+async function loadStaffSchedule(staffId) {
+  if (!staffId) { renderScheduleGrid($("staff-weekdays-grid"), { dayValues: {}, prefix: "staff" }); $("staff-exceptions-list").replaceChildren(); return; }
+  message($("staff-schedule-message"), "Cargando…", true);
+  try {
+    const [{ schedules }, { exceptions }] = await Promise.all([
+      api(`/api/reservapp/admin/staff-schedules?staffId=${encodeURIComponent(staffId)}`),
+      api(`/api/reservapp/admin/staff-schedule-exceptions?staffId=${encodeURIComponent(staffId)}`),
+    ]);
+    const dayValues = {};
+    for (const row of schedules) dayValues[row.weekday] = { open: row.start_time.slice(0, 5), close: row.end_time.slice(0, 5) };
+    renderScheduleGrid($("staff-weekdays-grid"), { dayValues, prefix: "staff" });
+    $("staff-exceptions-list").replaceChildren(...exceptions.map((exception) => {
+      const li = document.createElement("li");
+      const dateLabel = new Date(`${exception.exception_date}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" });
+      const hoursLabel = exception.available ? (exception.start_time ? ` (${exception.start_time.slice(0, 5)}–${exception.end_time.slice(0, 5)})` : "") : "libre todo el día";
+      const label = document.createElement("span"); label.textContent = `${dateLabel} — ${exception.available ? "trabaja" + hoursLabel : hoursLabel}${exception.reason ? ` · ${exception.reason}` : ""}`;
+      const remove = document.createElement("button"); remove.type = "button"; remove.className = "admin-row-action"; remove.textContent = "Quitar";
+      remove.addEventListener("click", async () => {
+        remove.disabled = true;
+        try {
+          await api(`/api/reservapp/admin/staff-schedule-exceptions/${encodeURIComponent(staffId)}/${exception.exception_date}`, { method: "DELETE" });
+          loadStaffSchedule(staffId);
+        } catch (error) { message($("staff-schedule-message"), error.message); remove.disabled = false; }
+      });
+      li.append(label, remove);
+      return li;
+    }));
+    message($("staff-schedule-message"));
+  } catch (error) { message($("staff-schedule-message"), error.message); }
+}
+
+$("staff-schedule-select").addEventListener("change", () => loadStaffSchedule($("staff-schedule-select").value));
+
+$("staff-schedule-save").addEventListener("click", async () => {
+  const staffId = $("staff-schedule-select").value;
+  if (!staffId) return message($("staff-schedule-message"), "Selecciona una colaboradora.");
+  const button = $("staff-schedule-save"); button.disabled = true;
+  message($("staff-schedule-message"), "Guardando…", true);
+  try {
+    const dayValues = readScheduleGrid($("staff-weekdays-grid"));
+    for (const [day, value] of Object.entries(dayValues)) {
+      if (value) {
+        await api("/api/reservapp/admin/staff-schedules", { method: "POST", body: JSON.stringify({ staffId, weekday: Number(day), startTime: value.open, endTime: value.close }) });
+      } else {
+        await api(`/api/reservapp/admin/staff-schedules/${encodeURIComponent(staffId)}/${day}`, { method: "DELETE" });
+      }
+    }
+    message($("staff-schedule-message"), "Horario de la colaboradora guardado.", true);
+  } catch (error) { message($("staff-schedule-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+$("staff-exception-available").addEventListener("change", () => {
+  $("staff-exception-hours").classList.toggle("hidden", $("staff-exception-available").value !== "true");
+});
+
+$("staff-exception-add").addEventListener("click", async () => {
+  const staffId = $("staff-schedule-select").value;
+  const date = $("staff-exception-date").value;
+  if (!staffId) return message($("staff-schedule-message"), "Selecciona una colaboradora.");
+  if (!date) return message($("staff-schedule-message"), "Elige una fecha.");
+  const available = $("staff-exception-available").value === "true";
+  const button = $("staff-exception-add"); button.disabled = true;
+  try {
+    await api("/api/reservapp/admin/staff-schedule-exceptions", {
+      method: "POST",
+      body: JSON.stringify({
+        staffId, date, available, reason: $("staff-exception-reason").value,
+        startTime: available ? $("staff-exception-start").value : "", endTime: available ? $("staff-exception-end").value : "",
+      }),
+    });
+    $("staff-exception-date").value = ""; $("staff-exception-reason").value = ""; $("staff-exception-available").value = "false";
+    $("staff-exception-hours").classList.add("hidden");
+    loadStaffSchedule(staffId);
+  } catch (error) { message($("staff-schedule-message"), error.message); }
+  finally { button.disabled = false; }
 });
 
 let adminResetPasswordAccountId = null;
