@@ -4,7 +4,7 @@
 // insertAuditLog, syncAppointmentToGoogleCalendar) contra el mismo modelo de documento único
 // que ya usan GET/PUT /api/database — solo cambia el transporte (store de Neon en vez de
 // Supabase REST). server/app.mjs ya mantiene app.erp_document sincronizado con las tablas
-// normalizadas al crear citas/clientas desde ReservApp, así que este documento es la misma
+// normalizadas al crear citas/clientes desde ReservApp, así que este documento es la misma
 // fuente que ve el personal.
 import { insertAuditLog } from "../functions/api/_lib/audit.js";
 import { syncAppointmentToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
@@ -374,7 +374,7 @@ export function registerLegacyBookingApi(app, { store, env, fetchImpl }) {
           const completionLines = Array.isArray(serviceLines) ? serviceLines : [];
           const completionClient = client && typeof client === "object" ? client : null;
           if (!completionDate || !completionTime || !completionLines.length || !completionClient) {
-            return res.status(400).json({ success: false, code: "PENDING_RESERVATION_INCOMPLETE", error: "Para completar esta reserva se requieren clienta, servicio, fecha y hora." });
+            return res.status(400).json({ success: false, code: "PENDING_RESERVATION_INCOMPLETE", error: "Para completar esta reserva se requieren cliente, servicio, fecha y hora." });
           }
           const services = Array.isArray(docData.servicios) ? docData.servicios : [];
           const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];

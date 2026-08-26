@@ -23,7 +23,7 @@ function bookingStore({ account = null, existingClient = null } = {}) {
     async markWhatsApp() {},
     async ensureClientAccount(input) {
       ensureClientAccountCalls.push(input);
-      return { id: "new-account-1", client_id: input.clientId, role: "clienta", full_name: existingClient?.full_name };
+      return { id: "new-account-1", client_id: input.clientId, role: "cliente", full_name: existingClient?.full_name };
     },
     async setOwnPasswordAndActivate(input) {
       setOwnPasswordCalls.push(input);
@@ -75,7 +75,7 @@ test("POST /api/reservapp/auth/request-password-reset: sin cuenta activa respond
 });
 
 // password_hash (no status) es la señal real de "ya tiene contraseña" -- una cuenta con status
-// "pending" (invitada, nunca completó su activación, sin importar si es personal o clienta)
+// "pending" (invitada, nunca completó su activación, sin importar si es personal o cliente)
 // nunca tuvo contraseña que restablecer, así que debe pedir confirmar el nombre para definir una
 // nueva (ver /auth/set-password-after-verification), no fingir un reset por WhatsApp.
 test("POST /api/reservapp/auth/request-password-reset: cuenta con status pendiente (sin contraseña) pide confirmar nombre, no manda código de reset", async () => {

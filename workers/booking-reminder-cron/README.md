@@ -41,11 +41,11 @@ cerrado:
    o menos para la cita, envía el primer recordatorio por WhatsApp (vía el
    Chatbot Bridge) y la pasa a `"PendienteConfirmarHora"`.
 2. Si su `confirmation_status` es `"PendienteConfirmarHora"` y ya pasó 1
-   hora laboral o más desde ese primer recordatorio sin que la clienta
+   hora laboral o más desde ese primer recordatorio sin que el cliente
    confirme, envía un segundo recordatorio **y**, en el mismo paso, la pasa
    a `"EspacioLiberado"` -- `availability()` deja de contarla como ocupada,
    así que su horario reaparece disponible para otra reserva. Si nadie más
-   lo toma, la clienta (o el salón) todavía puede confirmarla después vía
+   lo toma, el cliente (o el salón) todavía puede confirmarla después vía
    `POST /api/reservapp/booking/confirm-attendance`; si otra reserva ocupa
    ese mismo horario primero, esa confirmación tardía responde
    `409 ALREADY_REASSIGNED` pidiendo elegir otro horario.

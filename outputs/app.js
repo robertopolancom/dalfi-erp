@@ -4237,7 +4237,7 @@ async function confirmSalonReservation(reservationId) {
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       if (body.code === "ALREADY_REASSIGNED") {
-        alert(body.error || `El horario de la reserva ${reservationId} ya fue tomado por otra clienta. Selecciona otro horario para ${dbRow.clienteNombre || "esta clienta"}.`);
+        alert(body.error || `El horario de la reserva ${reservationId} ya fue tomado por otro cliente. Selecciona otro horario para ${dbRow.clienteNombre || "este cliente"}.`);
         return;
       }
       throw new Error(body.error || `HTTP ${response.status}`);
@@ -4289,7 +4289,7 @@ function markClientReviewed(clientId) {
     entity: "clientes",
     entityId: clientId,
     newData: { needsReview: false },
-    note: `Clienta ${clientId} (creada por el chatbot) marcada como revisada.`,
+    note: `Cliente ${clientId} (creado por el chatbot) marcado como revisado.`,
     success: true,
   });
   state = stateFromDatabase(database);
@@ -4331,7 +4331,7 @@ function renderConsolidatedMatrix() {
           <div>
             <h4 style="margin:0 0 6px; color: #1e40af;">⚠️ Citas del Chatbot pendientes de confirmar asistencia (${pendingPreapproved.length})</h4>
             <p style="margin:0 0 10px; font-size: 13px; color: #1e3a8a;">
-              Las reservas del chatbot realizadas con más de 4h laborales de anticipación reciben un recordatorio para que la clienta confirme su hora o reagende. Si no responde, 1 hora laboral después se le recuerda de nuevo y el horario queda <strong>liberado</strong> (rojo abajo) — el salón todavía puede confirmarla mientras nadie más lo haya tomado.
+              Las reservas del chatbot realizadas con más de 4h laborales de anticipación reciben un recordatorio para que el cliente confirme su hora o reagende. Si no responde, 1 hora laboral después se le recuerda de nuevo y el horario queda <strong>liberado</strong> (rojo abajo) — el salón todavía puede confirmarla mientras nadie más lo haya tomado.
             </p>
             <div style="display:flex; flex-direction:column; gap:6px;">
               ${pendingPreapproved.map((apt) => {
@@ -4372,11 +4372,11 @@ function renderConsolidatedMatrix() {
       if (unreviewedClients.length) {
         reviewSections.push(`
           <div>
-            <h4 style="margin:0 0 6px; color: #92400e;">🆕 Clientas nuevas del chatbot sin revisar (${unreviewedClients.length})</h4>
+            <h4 style="margin:0 0 6px; color: #92400e;">🆕 Clientes nuevos del chatbot sin revisar (${unreviewedClients.length})</h4>
             <div style="display:flex; flex-direction:column; gap:6px;">
               ${unreviewedClients.map((c) => `
                 <div style="display:flex; justify-content:space-between; align-items:center; background:#ffffff; padding:8px 12px; border-radius:6px; border:1px solid #fde68a;">
-                  <div><strong>${escapeHtml(c.nombreCompleto || "Clienta")}</strong> · ${escapeHtml(c.telefono || "")}</div>
+                  <div><strong>${escapeHtml(c.nombreCompleto || "Cliente")}</strong> · ${escapeHtml(c.telefono || "")}</div>
                   <button class="secondary-btn compact mark-client-reviewed" data-client-id="${escapeHtml(c.clienteID)}" type="button">Marcar como revisado</button>
                 </div>
               `).join("")}
@@ -4609,7 +4609,7 @@ async function saveBusinessSchedule(event) {
   if (submitButton) submitButton.disabled = true;
   setMessage("Guardando…");
   try {
-    // Esto es lo que de verdad cambia qué puede reservar una clienta en ReservApp -- antes este
+    // Esto es lo que de verdad cambia qué puede reservar un cliente en ReservApp -- antes este
     // formulario solo tocaba el documento JSON del ERP (database.data.businessSchedule), que
     // server/store.mjs ya no lee para calcular disponibilidad (ver comentario en availability()).
     // Guardar aquí primero y solo seguir si sale bien evita que el personal crea que cambió el

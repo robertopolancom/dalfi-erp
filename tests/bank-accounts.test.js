@@ -1,5 +1,5 @@
 // Pruebas para GET /api/booking/bank-accounts — endpoint que el Chatbot Bridge consulta
-// cuando la clienta elige "Enviar comprobante de pago -> Transferencia bancaria".
+// cuando el cliente elige "Enviar comprobante de pago -> Transferencia bancaria".
 
 import test from "node:test";
 import assert from "node:assert/strict";

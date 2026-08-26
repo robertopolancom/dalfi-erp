@@ -1,5 +1,5 @@
 // Fase 5 del plan "ReservApp: rebrand + panel de personal + sesión + banner con IA" --
-// gestión de usuarios (personal y clientas) desde el panel de administración.
+// gestión de usuarios (personal y clientes) desde el panel de administración.
 
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -148,7 +148,7 @@ test("PATCH /admin/accounts/:id: rechaza un estado inválido antes de tocar la b
   });
 });
 
-test("GET /admin/clients: administradora ve y puede filtrar clientas", async () => {
+test("GET /admin/clients: administradora ve y puede filtrar clientes", async () => {
   await withServer(async (base) => {
     const all = await fetch(`${base}/api/reservapp/admin/clients`, { headers: withCookie(ADMIN_TOKEN) });
     assert.equal((await all.json()).clients.length, 1);
@@ -158,7 +158,7 @@ test("GET /admin/clients: administradora ve y puede filtrar clientas", async () 
   });
 });
 
-test("PATCH /admin/clients/:id: bloquear una clienta actualiza su estado", async () => {
+test("PATCH /admin/clients/:id: bloquear un cliente actualiza su estado", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/admin/clients/client-1`, {
       method: "PATCH", headers: { ...withCookie(ADMIN_TOKEN), "Content-Type": "application/json" },
@@ -170,7 +170,7 @@ test("PATCH /admin/clients/:id: bloquear una clienta actualiza su estado", async
   });
 });
 
-test("PATCH /admin/clients/:id: una manicurista no puede bloquear clientas", async () => {
+test("PATCH /admin/clients/:id: una manicurista no puede bloquear clientes", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/reservapp/admin/clients/client-1`, {
       method: "PATCH", headers: { ...withCookie(MANICURISTA_TOKEN), "Content-Type": "application/json" },

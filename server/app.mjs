@@ -137,7 +137,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   const cleanText = (value, max = 160) => String(value || "").trim().slice(0, max);
 
   // Distancia de edición clásica -- para tolerar errores de tipografía (acento olvidado, letra
-  // de más/menos) al comparar el nombre que la clienta escribe contra el que ya tiene su ficha,
+  // de más/menos) al comparar el nombre que el cliente escribe contra el que ya tiene su ficha,
   // sin exigir coincidencia exacta ni depender de un servicio externo de IA.
   const levenshteinDistance = (a, b) => {
     const rows = a.length + 1, cols = b.length + 1;
@@ -149,7 +149,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     }
     return dp[rows - 1][cols - 1];
   };
-  // Compara solo el PRIMER nombre real contra lo que escribió la clienta -- normaliza acentos y
+  // Compara solo el PRIMER nombre real contra lo que escribió el cliente -- normaliza acentos y
   // mayúsculas (normalizeTextForMatching) y tolera hasta ~1 error de tipografía por cada 4
   // caracteres (mínimo 1) en vez de exigir coincidencia exacta.
   const namesLooselyMatch = (typed, actualFullName) => {
@@ -168,11 +168,11 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     return identity;
   };
 
-  // El flujo público definitivo para crear/vincular una clienta es
+  // El flujo público definitivo para crear/vincular un cliente es
   // /api/reservapp/auth/request-setup (crea la ficha internamente y siempre termina en el
   // envío del enlace de credenciales por WhatsApp). client/resolve y clients (POST) no los usa
   // ningún flujo público real — dejarlos accesibles sin autenticación permite enumerar
-  // teléfonos/nombres de clientas existentes y llenar la ERP de fichas huérfanas sin pasar por
+  // teléfonos/nombres de clientes existentes y llenar la ERP de fichas huérfanas sin pasar por
   // ese flujo. Solo personal autorizado (misma regla que la búsqueda GET /clients) puede
   // usarlos, para herramientas administrativas internas.
   const requireBookingStaff = async (req, res) => {
@@ -180,15 +180,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     if (session && ["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) return true;
     const identity = await resolveErpIdentity(webRequest(req), { ...env, fetch: fetchImpl });
     if (identity.error || !identity.permissions?.canManageReservations) {
-      res.status(403).json({ error: "No tienes permiso para gestionar clientas." });
+      res.status(403).json({ error: "No tienes permiso para gestionar clientes." });
       return false;
     }
     return true;
   };
 
-  // La manicurista puede crear una clienta nueva directamente con solo su
+  // La manicurista puede crear un cliente nuevo directamente con solo su
   // teléfono, igual que asistente/administradora -- la verificación real ya
-  // no ocurre aquí. Se mueve al punto donde la clienta usa esa identidad de
+  // no ocurre aquí. Se mueve al punto donde el cliente usa esa identidad de
   // verdad: crear sus credenciales de ReservApp (código de WhatsApp + luego
   // contraseña) o confirmar una cita agendada por el chatbot (código de
   // WhatsApp en la misma conversación). relay-otp/{request,confirm} sigue
@@ -261,7 +261,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       // enviado de verdad, así que hay que leer el cuerpo y solo marcar "sent" si el bridge
       // confirma status: "SENT" explícitamente.
       //
-      // Código de 6 dígitos, no enlace mágico: la clienta lo escribe en la app para probar que
+      // Código de 6 dígitos, no enlace mágico: el cliente lo escribe en la app para probar que
       // controla ese teléfono (POST /api/reservapp/setup/verify-code) y solo después se le pide
       // definir una contraseña -- dos pasos separados, ver activateWithToken/verifySetupOtp.
       const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
@@ -323,7 +323,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   // Recordatorio/escalación de confirmación de asistencia (ver checkConfirmationReminder más
   // abajo) -- mismo evento y endpoint del bridge que ya usaba functions/api/booking/send-reminders.js
   // (proyecto de Cloudflare Pages ya eliminado), así que el propio Chatbot Bridge no necesita
-  // ningún cambio: sigue atendiendo la respuesta de la clienta con su menú
+  // ningún cambio: sigue atendiendo la respuesta del cliente con su menú
   // "1. Confirmar mi hora / 2. Reagendar / 3. Menú principal" y llamando de vuelta a
   // POST /api/reservapp/booking/confirm-attendance cuando confirma. No usa outbox (no es un
   // código de un solo uso, es un aviso reintentable cada hora por el propio cron si falla).
@@ -332,7 +332,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     if (!bridgeSecret) return { ok: false, reason: "pending_configuration" };
     const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
     const text = stage === "second"
-      ? `Hola ${clientName || ""}. Tu cita de ${service || "tu servicio"} el ${date} a las ${time} está a punto de liberarse porque no hemos recibido tu confirmación. Responde "1" para confirmar tu hora ahora mismo, o la podríamos ofrecer a otra clienta.`.trim()
+      ? `Hola ${clientName || ""}. Tu cita de ${service || "tu servicio"} el ${date} a las ${time} está a punto de liberarse porque no hemos recibido tu confirmación. Responde "1" para confirmar tu hora ahora mismo, o la podríamos ofrecer a otro cliente.`.trim()
       : `Hola ${clientName || ""}. Recuerda tu cita de ${service || "tu servicio"} hoy/mañana ${date} a las ${time}. Responde "1" para confirmar tu asistencia o "2" para reagendar.`.trim();
     try {
       const response = await fetchImpl(`${bridgeBase}/webhook/overdue-reminders`, {
@@ -358,20 +358,20 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     // "atención personalizada" desde el primer clic en "Reservar", no al final). Para el botón
     // "Es mi primera vez" primero solo se pide el teléfono -- este endpoint dice si ya existe
     // una ficha con ese número, SIN revelar el nombre (auditoría de seguridad 2026-08-25: antes
-    // devolvía el primer nombre aquí, lo que dejaba adivinar qué teléfonos son clientas reales
+    // devolvía el primer nombre aquí, lo que dejaba adivinar qué teléfonos son clientes reales
     // con solo probar números). Confirmar la identidad de verdad ahora es responsabilidad de
-    // /auth/verify-name, que la clienta pasa escribiendo SU nombre, no leyéndolo del servidor.
+    // /auth/verify-name, que el cliente pasa escribiendo SU nombre, no leyéndolo del servidor.
     app.post("/api/reservapp/auth/check-phone", bookingRateLimit, async (req, res, next) => {
       const phone = cleanText(req.body?.phone, 30);
       if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
       try {
         const existing = await bookingStore.accountByPhone(phone);
         // password_hash (no status) es la señal real de "ya tiene contraseña creada" -- una
-        // cuenta de personal o clienta puede existir en estado "pending" (invitada, nunca activó)
+        // cuenta de personal o cliente puede existir en estado "pending" (invitada, nunca activó)
         // sin haber definido ninguna todavía, y eso NO es lo mismo que iniciar sesión.
         if (existing?.password_hash) return res.json({ exists: true });
         if (existing) return res.json({ exists: true, needsPasswordOnly: true });
-        // Sin cuenta de ReservApp en absoluto -- pero puede que ya sea clienta del salón (ficha
+        // Sin cuenta de ReservApp en absoluto -- pero puede que ya sea cliente del salón (ficha
         // creada directamente en el ERP, por el personal, o en una visita anterior). En ese caso
         // no hace falta pedirle de nuevo nombre/apellido/fecha de nacimiento: ya los tenemos,
         // solo falta que defina su contraseña (ver request-setup, que ya reconoce esta misma
@@ -382,7 +382,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
-    // Confirma identidad sin que el servidor revele el nombre: la clienta escribe el suyo, y se
+    // Confirma identidad sin que el servidor revele el nombre: el cliente escribe el suyo, y se
     // compara (tolerando errores de tipografía -- acentos, una letra de más/menos) contra el
     // primer nombre real de la ficha que corresponde a ese teléfono. Nunca devuelve el nombre
     // real ni distingue "el teléfono no existe" de "el nombre no coincidió" -- misma respuesta
@@ -421,7 +421,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido." });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
       // Registrarse (crear cuenta) no requiere tener ya un horario elegido --
-      // solo si la clienta arrancó desde el wizard de reserva vendrá un
+      // solo si el cliente arrancó desde el wizard de reserva vendrá un
       // borrador adjunto, y en ese caso sí debe venir completo.
       const hasDraftIntent = Boolean(serviceIds.length || draft.staffId || draft.date || draft.time);
       if (hasDraftIntent && (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time))) {
@@ -429,9 +429,9 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
       try {
         // Si YA existe cualquier cuenta de ReservApp con este teléfono (de personal o de
-        // clienta) sin contraseña definida todavía, se reutiliza tal cual -- nunca se crea una
+        // cliente) sin contraseña definida todavía, se reutiliza tal cual -- nunca se crea una
         // ficha ni cuenta nueva encima. Cubre tanto una cuenta de personal invitada que nunca
-        // completó su activación (status "pending") como una clienta que ya empezó este mismo
+        // completó su activación (status "pending") como un cliente que ya empezó este mismo
         // flujo antes. Con contraseña ya definida, sigue el candado de siempre (abajo).
         const existingAccount = await bookingStore.accountByPhone(phone);
         if (existingAccount && !existingAccount.password_hash) {
@@ -465,7 +465,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         let customer = await bookingStore.resolveClient({ phone });
         // Si el teléfono ya corresponde a una ficha del salón (creada en el ERP directamente, por
         // el personal, o en una visita anterior), no hace falta volver a pedir nombre/apellido/
-        // fecha de nacimiento -- ya los tenemos. Solo una clienta realmente nueva debe completar
+        // fecha de nacimiento -- ya los tenemos. Solo un cliente realmente nuevo debe completar
         // el formulario entero.
         if (!customer) {
           if (!firstName || !lastName) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
@@ -510,12 +510,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
         // TEMPORAL (quitar cuando Meta apruebe WHATSAPP_ACTIVATION_TEMPLATE_NAME en el bridge de
         // WhatsApp -- dalfi-chatbot-n8n): sin esa plantilla aprobada, el bridge no puede iniciar
-        // conversación con una clienta nueva (fuera de la ventana de 24h) y el código de
+        // conversación con un cliente nuevo (fuera de la ventana de 24h) y el código de
         // verificación nunca llega, dejando el autorregistro completamente bloqueado. Con
         // RESERVAPP_SKIP_PHONE_VERIFICATION=true nos "autoverificamos" el mismo código que
         // acabamos de generar (mismo verifySetupOtp que usa /setup/verify-code, mismas reglas de
         // expiración/consumo de un solo uso) y devolvemos el activationTicket directo, sin pasar
-        // por WhatsApp. La clienta sigue eligiendo su propia contraseña -- lo único que se salta
+        // por WhatsApp. El cliente sigue eligiendo su propia contraseña -- lo único que se salta
         // es la prueba de que controla ese teléfono. Para revertir: borrar esta rama `if` y la
         // env var en Render, no hace falta tocar nada más.
         if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
@@ -531,7 +531,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             });
           }
         }
-        // firstName/lastName solo llegan si es una clienta realmente nueva (ver validación
+        // firstName/lastName solo llegan si es un cliente realmente nuevo (ver validación
         // arriba) -- si ya existía en el ERP, usa el nombre que ya tenía su ficha.
         const displayName = firstName && lastName ? `${firstName} ${lastName}` : customer.full_name;
         const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: displayName });
@@ -548,7 +548,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
     });
 
-    // Primer paso del setup en dos pasos: probar que la clienta/colaboradora controla el
+    // Primer paso del setup en dos pasos: probar que el cliente/colaboradora controla el
     // teléfono con el código de 6 dígitos que le llegó por WhatsApp. Si es correcto, rota el
     // token en reservapp_setup_tokens a un secreto nuevo largo (el "activationTicket") que
     // /api/reservapp/auth/complete-setup consume para fijar la contraseña -- ese endpoint no
@@ -595,7 +595,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             time: String(account.draft.appointment_time).slice(0, 5),
             notes: account.draft.notes || "",
             source: "RESERVAPP_CLIENTE",
-            createdBy: { role: "clienta", accountId: account.account_id },
+            createdBy: { role: "cliente", accountId: account.account_id },
             idempotencyKey: account.draft.idempotency_key,
           };
           const availability = await bookingStore.availability(input);
@@ -633,7 +633,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     // Reutiliza el mismo pipeline de OTP que el setup de cuenta nueva (prepareSetup ->
     // /setup/verify-code -> /auth/complete-setup) -- verify-code y complete-setup no necesitan
     // saber si vinieron de aquí o de request-setup, solo consumen el token/OTP que sea. La
-    // única diferencia real es que aquí NO se crea una clienta nueva ni se adjunta un draft de
+    // única diferencia real es que aquí NO se crea un cliente nuevo ni se adjunta un draft de
     // cita, y solo procede si la cuenta ya existe y está activa.
     app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, async (req, res, next) => {
       const phone = cleanText(req.body?.phone, 30);
@@ -645,7 +645,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           // esperando a que Meta apruebe la verificación de la empresa -- hasta entonces el
           // bridge no puede mandar códigos reales por WhatsApp, y RESERVAPP_SKIP_PHONE_VERIFICATION
           // se queda en "true". Mientras tanto, /auth/verify-name + /auth/set-password-after-verification
-          // reemplazan el código real: la clienta confirma su identidad escribiendo su nombre en
+          // reemplazan el código real: el cliente confirma su identidad escribiendo su nombre en
           // vez de recibir un código. Cuando Meta apruebe y se apague el interruptor, este mismo
           // bloque vuelve a mandar el código real (rama de abajo) -- no borrar esa rama.
           if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
@@ -719,7 +719,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         let appointment = null;
         let bookingError = null;
         if (hasDraftIntent && clientId) {
-          const input = { clientId, ...draft, serviceIds, source: "RESERVAPP_CLIENTE", createdBy: { role: "clienta", accountId }, idempotencyKey: crypto.randomUUID() };
+          const input = { clientId, ...draft, serviceIds, source: "RESERVAPP_CLIENTE", createdBy: { role: "cliente", accountId }, idempotencyKey: crypto.randomUUID() };
           const availability = await bookingStore.availability(input);
           if (availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
             input.endTime = new Date(new Date(`2000-01-01T${draft.time}:00Z`).getTime() + availability.durationMinutes * 60_000).toISOString().slice(11, 16);
@@ -755,11 +755,11 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       catch (error) { next(error); }
     });
 
-    // "Citas activas" / historial para una clienta -- a diferencia de /agenda (un día, vista de
-    // equipo), esta ruta es exclusiva de cuentas clienta y siempre usa su propio client_id de la
+    // "Citas activas" / historial para un cliente -- a diferencia de /agenda (un día, vista de
+    // equipo), esta ruta es exclusiva de cuentas cliente y siempre usa su propio client_id de la
     // sesión, nunca uno recibido del cliente.
     app.get("/api/reservapp/my-appointments", requireReservapp, async (req, res, next) => {
-      if (req.reservapp.account.role !== "clienta") return res.status(403).json({ error: "Solo disponible para cuentas de clienta." });
+      if (req.reservapp.account.role !== "cliente") return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
       const scope = req.query.scope === "history" ? "history" : "active";
       try { res.json({ appointments: await bookingStore.listClientAppointments({ clientId: req.reservapp.account.client_id, scope }) }); }
       catch (error) { next(error); }
@@ -786,7 +786,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const role = cleanText(req.body?.role, 32);
       const staffId = cleanText(req.body?.staffId, 64);
       const phone = cleanText(req.body?.phone, 30);
-      if (!RESERVAPP_ROLES.includes(role) || role === "clienta" || !staffId || !validPhone(phone)) {
+      if (!RESERVAPP_ROLES.includes(role) || role === "cliente" || !staffId || !validPhone(phone)) {
         return res.status(400).json({ error: "Selecciona colaboradora, rol y teléfono válidos." });
       }
       try {
@@ -817,7 +817,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     app.patch("/api/reservapp/admin/accounts/:id", bookingRateLimit, async (req, res, next) => {
       const role = req.body?.role != null ? cleanText(req.body.role, 32) : null;
       const status = req.body?.status != null ? cleanText(req.body.status, 20) : null;
-      if (role && (!RESERVAPP_ROLES.includes(role) || role === "clienta")) return res.status(400).json({ error: "Rol inválido." });
+      if (role && (!RESERVAPP_ROLES.includes(role) || role === "cliente")) return res.status(400).json({ error: "Rol inválido." });
       if (status && !["pending", "active", "suspended"].includes(status)) return res.status(400).json({ error: "Estado inválido." });
       if (!role && !status) return res.status(400).json({ error: "Nada que actualizar." });
       try {
@@ -841,7 +841,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
 
     // Válvula de escape mientras /auth/request-password-reset está apagado (ver comentario ahí
     // arriba): administración fija la contraseña a mano, sin depender del código de WhatsApp.
-    // Sirve tanto para personal como para clientas -- reservapp_accounts.id es el mismo id que
+    // Sirve tanto para personal como para clientes -- reservapp_accounts.id es el mismo id que
     // devuelve tanto listEmployeeAccounts como account_id en listClientsForAdmin.
     app.post("/api/reservapp/admin/accounts/:id/reset-password", bookingRateLimit, async (req, res, next) => {
       const password = String(req.body?.password || "");
@@ -869,10 +869,39 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Un paso más allá de clear-password: en vez de dejar la cuenta sin contraseña, la borra
+    // entera. Sirve para personal que ya no trabaja aquí y para clientes que pidieron que se les
+    // quite el acceso a la app -- la ficha de staff/cliente queda intacta, solo desaparece el
+    // acceso. Al irse la cuenta se libera su teléfono, así que volver a invitar a esa persona es
+    // simplemente crearle credenciales de nuevo.
+    app.delete("/api/reservapp/admin/accounts/:id", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed, actingAsSuperadmin, session } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede borrar credenciales." });
+        // Borrarse a sí misma dejaría al salón sin quien administre si era la única -- y en
+        // cualquier caso es un accidente, no una intención.
+        if (session && session.account.id === req.params.id) {
+          return res.status(400).json({ error: "No puedes borrar tus propias credenciales." });
+        }
+        // Mismo candado de autoelevación que PATCH /admin/accounts/:id: una administradora que
+        // no es superadministrador no puede quitarle el acceso a un superadministrador.
+        if (!actingAsSuperadmin) {
+          const accounts = await bookingStore.listEmployeeAccounts();
+          const target = accounts.find((row) => row.id === req.params.id);
+          if (target?.role === "superadministrador") {
+            return res.status(403).json({ error: "Solo un superadministrador puede borrar esta cuenta." });
+          }
+        }
+        const deleted = await bookingStore.deleteAccount({ id: req.params.id });
+        if (!deleted) return res.status(404).json({ error: "Esa cuenta no existe." });
+        res.json({ ok: true });
+      } catch (error) { next(error); }
+    });
+
     app.get("/api/reservapp/admin/clients", bookingRateLimit, async (req, res, next) => {
       try {
         const { allowed } = await resolveAdminAuthority(req);
-        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver clientas." });
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede ver clientes." });
         res.json({ clients: await bookingStore.listClientsForAdmin({ query: cleanText(req.query.q, 120) }) });
       } catch (error) { next(error); }
     });
@@ -882,10 +911,33 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!["active", "blocked"].includes(status)) return res.status(400).json({ error: "Estado inválido." });
       try {
         const { allowed } = await resolveAdminAuthority(req);
-        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar clientas." });
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede editar clientes." });
         const updated = await bookingStore.updateClientStatus({ id: req.params.id, status });
-        if (!updated) return res.status(404).json({ error: "Clienta no encontrada." });
+        if (!updated) return res.status(404).json({ error: "Cliente no encontrado." });
         res.json({ client: updated });
+      } catch (error) { next(error); }
+    });
+
+    // "Borrar cliente" -- borrado lógico (ver softDeleteClient). La ficha desaparece de todo lo
+    // vivo pero su historial de citas, facturas e ingresos se queda; si esa persona vuelve, se
+    // registra de cero con un id nuevo. Se le borra de paso la cuenta de ReservApp, porque su
+    // teléfono tiene que quedar libre para ese registro nuevo.
+    //
+    // Con citas futuras sin cancelar no se borra: se cancelan primero desde el ERP, por el flujo
+    // normal, que es el que mantiene sincronizado el documento que ve el personal.
+    app.delete("/api/reservapp/admin/clients/:id", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede borrar clientes." });
+        const deleted = await bookingStore.softDeleteClient({ id: req.params.id });
+        if (!deleted) return res.status(404).json({ error: "Ese cliente no existe o ya fue borrado." });
+        if (deleted.blocked) {
+          return res.status(409).json({
+            error: `Este cliente tiene ${deleted.blocked} cita(s) futuras sin cancelar. Cancélalas primero y vuelve a intentarlo.`,
+            upcomingAppointments: deleted.blocked,
+          });
+        }
+        res.json({ ok: true, deletedAccount: deleted.deletedAccount });
       } catch (error) { next(error); }
     });
 
@@ -1185,21 +1237,21 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
-    // Confirma la asistencia de una cita -- llamado por el Chatbot Bridge cuando la clienta
+    // Confirma la asistencia de una cita -- llamado por el Chatbot Bridge cuando el cliente
     // responde "1. Confirmar mi hora" por WhatsApp (x-webhook-secret compartido, mismo que usa el
     // bridge para notify-invoice-sent.js), por el botón "Confirmar cita en salón" del ERP legado
-    // (sesión de administración), o por la propia clienta desde "Citas activas" en ReservApp
-    // (sesión clienta -- acotada a su propio client_id dentro de confirmAppointmentAttendance,
+    // (sesión de administración), o por el propio cliente desde "Citas activas" en ReservApp
+    // (sesión cliente -- acotada a su propio client_id dentro de confirmAppointmentAttendance,
     // nunca confía en el reservationId por sí solo). Si el horario ya fue tomado por otra reserva
     // mientras esta esperaba (EspacioLiberado -> otra cita ocupó esa colaboradora+horario),
-    // responde alreadyReassigned:true para que quien llama le pida a la clienta elegir otro horario.
+    // responde alreadyReassigned:true para que quien llama le pida al cliente elegir otro horario.
     app.post("/api/reservapp/booking/confirm-attendance", bookingRateLimit, async (req, res, next) => {
       const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
       const viaBridge = bridgeSecret && (req.get("x-webhook-secret") || "") === bridgeSecret;
       let clientId = null;
       if (!viaBridge) {
         const session = await reservappSession(req);
-        if (session?.account.role === "clienta") {
+        if (session?.account.role === "cliente") {
           clientId = session.account.client_id;
         } else {
           const { allowed } = await resolveAdminAuthority(req);
@@ -1221,12 +1273,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
-    // Relay OTP: cuando una MANICURISTA quiere agendar a una clienta que
+    // Relay OTP: cuando una MANICURISTA quiere agendar a un cliente que
     // todavía no existe en el sistema, primero debe comprobar que controla
     // ese teléfono con un código de 6 dígitos enviado por WhatsApp -- no
     // puede simplemente inventar un número y convertirlo en identidad
     // verificada (a diferencia de asistente/administradora, que sí pueden
-    // crear clientas directamente vía POST /api/fast-booking/clients).
+    // crear clientes directamente vía POST /api/fast-booking/clients).
     app.post("/api/reservapp/clients/relay-otp/request", bookingRateLimit, async (req, res, next) => {
       const session = await requireManicuristaOrAbove(req, res);
       if (!session) return;
@@ -1235,13 +1287,13 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const lastName = cleanText(req.body?.lastName, 80);
       const email = cleanText(req.body?.email, 160).toLowerCase();
       if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
-      if (!firstName) return res.status(400).json({ error: "El nombre de la clienta es obligatorio." });
+      if (!firstName) return res.status(400).json({ error: "El nombre del cliente es obligatorio." });
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
       if (!relayOtpRequestLimit(session.account.id)) return res.status(429).json({ error: "Demasiados códigos solicitados. Espera unos minutos." });
       try {
-        // Respuesta idéntica exista o no la clienta -- este endpoint NO debe
+        // Respuesta idéntica exista o no el cliente -- este endpoint NO debe
         // servir para enumerar teléfonos ya registrados. La consulta explícita
-        // de "¿esta clienta ya existe?" es responsabilidad de
+        // de "¿este cliente ya existe?" es responsabilidad de
         // POST /api/fast-booking/client/resolve (mismo nivel de autorización);
         // el frontend lo llama primero y solo llega aquí si no encontró nada.
         // Si de todos modos llega un teléfono ya existente, no se crea un OTP
@@ -1264,7 +1316,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           pendingConfirmation: true,
           deliveryStatus,
           expiresInSeconds: Math.floor(RELAY_OTP_TTL_MS / 1000),
-          message: "Si el teléfono no tiene ya una clienta registrada, le enviamos un código de WhatsApp para confirmar.",
+          message: "Si el teléfono no tiene ya un cliente registrado, le enviamos un código de WhatsApp para confirmar.",
           ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" && exposedCode ? { code: exposedCode } : {}),
         });
       } catch (error) { next(error); }
@@ -1411,12 +1463,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
       try {
         const appSession = await reservappSession(req);
-        // canalOrigen/creadoPor identifican con precisión quién agendó la cita (clienta,
+        // canalOrigen/creadoPor identifican con precisión quién agendó la cita (cliente,
         // manicurista, asistente o administradora) -- no un genérico "PWA_EMPLEADO" que no
         // distinguía el rol real de quien la creó.
         let source, createdBy;
         if (req.body?.actorType === "employee") {
-          if (appSession && appSession.account.role !== "clienta") {
+          if (appSession && appSession.account.role !== "cliente") {
             source = `RESERVAPP_${appSession.account.role.toUpperCase()}`;
             createdBy = { role: appSession.account.role, accountId: appSession.account.id };
           } else {
@@ -1427,11 +1479,11 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             createdBy = { role: erpRole, email: employee?.email || null };
           }
         } else {
-          if (!appSession || appSession.account.role !== "clienta" || appSession.account.client_id !== clientId) {
+          if (!appSession || appSession.account.role !== "cliente" || appSession.account.client_id !== clientId) {
             return res.status(401).json({ error: "Inicia sesión con tu teléfono y contraseña para reservar." });
           }
           source = "RESERVAPP_CLIENTE";
-          createdBy = { role: "clienta", accountId: appSession.account.id };
+          createdBy = { role: "cliente", accountId: appSession.account.id };
         }
 
         if (rawSegments) {

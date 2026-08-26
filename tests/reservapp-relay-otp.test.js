@@ -66,7 +66,7 @@ function withCookie(token) {
   return token ? { Cookie: `reservapp_session=${token}` } : {};
 }
 
-test("relay-otp/request: manicurista puede solicitar código para clienta nueva", async () => {
+test("relay-otp/request: manicurista puede solicitar código para cliente nuevo", async () => {
   const store = bookingStore();
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/clients/relay-otp/request`, {
@@ -95,7 +95,7 @@ test("relay-otp/request: expone el código solo si RESERVAPP_EXPOSE_OTP_CODE=tru
   }, { env: { RESERVAPP_EXPOSE_OTP_CODE: "true" } });
 });
 
-test("relay-otp/request: si la clienta ya existe, no crea código ni manda WhatsApp -- pero responde IGUAL que si sí lo hiciera (anti-enumeración)", async () => {
+test("relay-otp/request: si el cliente ya existe, no crea código ni manda WhatsApp -- pero responde IGUAL que si sí lo hiciera (anti-enumeración)", async () => {
   const store = bookingStore({ existingClient: { id: "existing-1", full_name: "Ana Pérez" } });
   const notFoundStore = bookingStore();
   let existingResponseBody;
@@ -121,7 +121,7 @@ test("relay-otp/request: si la clienta ya existe, no crea código ni manda Whats
     assert.equal(notFoundStore.relayOtps.length, 1);
   });
   // Misma forma, mismo status, mismo mensaje -- un atacante no puede
-  // distinguir "el teléfono ya era clienta" de "se mandó un código nuevo".
+  // distinguir "el teléfono ya era cliente" de "se mandó un código nuevo".
   assert.deepEqual(Object.keys(existingResponseBody).sort(), Object.keys(notFoundResponseBody).sort());
   assert.equal(existingResponseBody.message, notFoundResponseBody.message);
   assert.equal(existingResponseBody.deliveryStatus, notFoundResponseBody.deliveryStatus);
@@ -140,7 +140,7 @@ test("relay-otp/request: sin sesión válida de staff se rechaza", async () => {
   });
 });
 
-test("relay-otp/confirm: código correcto crea la clienta y la marca verificada", async () => {
+test("relay-otp/confirm: código correcto crea el cliente y la marca verificada", async () => {
   const otpRow = { id: "otp-1", code_hash: hashToken("123456"), first_name: "Ana", last_name: "Pérez", email: "", requested_by_account_id: "manicurista-1" };
   const store = bookingStore({ otpRow });
   await withServer(store, async (base) => {
@@ -158,7 +158,7 @@ test("relay-otp/confirm: código correcto crea la clienta y la marca verificada"
   });
 });
 
-test("relay-otp/confirm: código incorrecto no crea la clienta", async () => {
+test("relay-otp/confirm: código incorrecto no crea el cliente", async () => {
   const otpRow = { id: "otp-1", code_hash: hashToken("123456"), first_name: "Ana", requested_by_account_id: "manicurista-1" };
   const store = bookingStore({ otpRow });
   await withServer(store, async (base) => {
@@ -175,7 +175,7 @@ test("relay-otp/confirm: código incorrecto no crea la clienta", async () => {
   });
 });
 
-test("relay-otp/confirm: código vencido/no solicitado responde 410 sin crear clienta", async () => {
+test("relay-otp/confirm: código vencido/no solicitado responde 410 sin crear cliente", async () => {
   const store = bookingStore({ otpRow: null });
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/clients/relay-otp/confirm`, {
@@ -202,7 +202,7 @@ test("relay-otp/confirm: intentos agotados responde 429 (OTP_LOCKED)", async () 
   });
 });
 
-test("POST /api/fast-booking/clients: manicurista SÍ puede crear clienta directamente, sin OTP", async () => {
+test("POST /api/fast-booking/clients: manicurista SÍ puede crear cliente directamente, sin OTP", async () => {
   const store = bookingStore();
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/fast-booking/clients`, {
@@ -215,7 +215,7 @@ test("POST /api/fast-booking/clients: manicurista SÍ puede crear clienta direct
   });
 });
 
-test("POST /api/fast-booking/clients: asistente SÍ puede crear clienta directamente, sin OTP", async () => {
+test("POST /api/fast-booking/clients: asistente SÍ puede crear cliente directamente, sin OTP", async () => {
   const store = bookingStore();
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/fast-booking/clients`, {

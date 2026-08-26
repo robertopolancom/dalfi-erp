@@ -166,7 +166,7 @@ test("check-phone: sin ninguna cuenta ni ficha, devuelve exists:false (sigue el 
 });
 
 // password_hash (no status) es la señal real de "ya tiene contraseña" -- una cuenta de PERSONAL
-// invitada que nunca completó su activación (status "pending") es el mismo caso que una clienta
+// invitada que nunca completó su activación (status "pending") es el mismo caso que un cliente
 // sin credenciales todavía: debe saltar a crear su contraseña, no desaparecer como si no existiera.
 test("check-phone: cuenta de personal pendiente de activar (sin contraseña) devuelve needsPasswordOnly:true, no exists:false", async () => {
   await withServer(async (base) => {
@@ -259,7 +259,7 @@ test("request-setup: teléfono con ficha ya existente en el ERP no exige nombre/
   }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
 });
 
-test("request-setup: cuenta de personal existente sin contraseña reutiliza esa cuenta -- nunca crea ni busca una ficha de clienta", async () => {
+test("request-setup: cuenta de personal existente sin contraseña reutiliza esa cuenta -- nunca crea ni busca una ficha de cliente", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -272,7 +272,7 @@ test("request-setup: cuenta de personal existente sin contraseña reutiliza esa 
   }, { existingAccount: { id: "account-dalfina", status: "pending", full_name: "Dalfina Guzmán", password_hash: null } });
 });
 
-test("request-setup: sin ficha existente y sin nombre/apellido/fecha de nacimiento sigue exigiéndolos (clienta realmente nueva)", async () => {
+test("request-setup: sin ficha existente y sin nombre/apellido/fecha de nacimiento sigue exigiéndolos (cliente realmente nuevo)", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },

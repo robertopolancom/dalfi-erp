@@ -97,9 +97,9 @@ export async function onRequestPost({ request, env }) {
       // sin confirmar, ver send-reminders.js) libera su horario para que otra
       // reserva lo tome. Si eso ya pasó (esta cita quedó "Reemplazada" por
       // otra reserva que sí tomó el horario, o "Cancelada"), confirmarla
-      // ahora resucitaría una reserva cuyo horario ya es de otra clienta.
+      // ahora resucitaría una reserva cuyo horario ya es de otro cliente.
       // "Reprogramada" NO cuenta aquí: es la propia cita, reagendada a un
-      // horario nuevo por la clienta (ver reschedule.js) o el staff — sigue
+      // horario nuevo por el cliente (ver reschedule.js) o el staff — sigue
       // siendo válida y debe poder confirmarse normalmente.
       const alreadyReassignedStatuses = new Set(["reemplazada", "cancelada"]);
       if (alreadyReassignedStatuses.has(String(existingApt.estado || "").toLowerCase())) {
@@ -135,7 +135,7 @@ export async function onRequestPost({ request, env }) {
         const completionLines = Array.isArray(serviceLines) ? serviceLines : [];
         const completionClient = client && typeof client === "object" ? client : null;
         if (!completionDate || !completionTime || !completionLines.length || !completionClient) {
-          return json({ success: false, code: "PENDING_RESERVATION_INCOMPLETE", error: "Para completar esta reserva se requieren clienta, servicio, fecha y hora." }, 400);
+          return json({ success: false, code: "PENDING_RESERVATION_INCOMPLETE", error: "Para completar esta reserva se requieren cliente, servicio, fecha y hora." }, 400);
         }
         const services = Array.isArray(docData.servicios) ? docData.servicios : [];
         const staffList = Array.isArray(docData.colaboradores) ? docData.colaboradores : [];

@@ -4,8 +4,8 @@
 
 El ERP sigue siendo la fuente de verdad. Google Calendar recibe una copia operativa de cada cita:
 
-- título: clienta y manicurista;
-- descripción: clienta, manicurista, servicio, horario, estado e ID interno de la reserva;
+- título: cliente y manicurista;
+- descripción: cliente, manicurista, servicio, horario, estado e ID interno de la reserva;
 - inicio y fin: calculados con la duración real del servicio cuando `horaFin` no existe;
 - zona horaria: `America/Santo_Domingo`;
 - visibilidad: privada;
@@ -126,13 +126,13 @@ No existe importación desde Google Calendar. La ruta histórica
 Se envían únicamente:
 
 - ID interno de la reserva;
-- nombre de la clienta;
+- nombre del cliente;
 - nombre de la manicurista;
 - servicio;
 - fecha, inicio y fin;
 - estado de la cita.
 
-No se envían teléfono, correo de la clienta, facturas, pagos, depósitos, credenciales ni otros registros del ERP.
+No se envían teléfono, correo del cliente, facturas, pagos, depósitos, credenciales ni otros registros del ERP.
 
 ## Desactivación inmediata
 

@@ -466,10 +466,10 @@ export class NeonBookingStore {
       const normalizedPhone = await client.query("select app.normalize_phone($1) value", [input.phone]);
       const duplicate = await client.query(
         `select c.id, c.full_name, 'phone' matched_by from app.client_phones p join app.clients c on c.id=p.client_id
-          where p.phone_normalized=$1
+          where p.phone_normalized=$1 and c.status <> 'deleted'
          union all
          select c.id, c.full_name, 'email' matched_by from app.clients c
-          where $2 <> '' and lower(c.email)=lower($2)
+          where $2 <> '' and lower(c.email)=lower($2) and c.status <> 'deleted'
          limit 1`,
         [normalizedPhone.rows[0].value, input.email || ""],
       );
@@ -519,6 +519,7 @@ export class NeonBookingStore {
          from app.client_phones p join app.clients c on c.id=p.client_id
         where p.phone_normalized=app.normalize_phone($1)
           and ($2='' or lower(coalesce(c.email,''))=lower($2))
+          and c.status <> 'deleted'
         limit 1`,
       [phone, email],
     );
@@ -530,8 +531,9 @@ export class NeonBookingStore {
     const result = await this.pool.query(
       `select distinct c.id, c.full_name, c.email, p.phone_original phone
          from app.clients c left join app.client_phones p on p.client_id=c.id and p.is_primary
-        where lower(c.full_name) like lower($1)
-           or ($2 <> '' and p.phone_normalized like '%' || app.normalize_phone($2) || '%')
+        where c.status <> 'deleted'
+          and (lower(c.full_name) like lower($1)
+               or ($2 <> '' and p.phone_normalized like '%' || app.normalize_phone($2) || '%'))
         order by c.full_name limit 12`,
       [`%${query}%`, digits],
     );
@@ -549,7 +551,7 @@ export class NeonBookingStore {
         client.query("select id, legacy_id, full_name from app.staff where id=$1 and status='active'", [input.staffId]),
         client.query(`select c.id, c.legacy_id, c.full_name, c.email, p.phone_original
           from app.clients c left join app.client_phones p on p.client_id=c.id and p.is_primary
-          where c.id=$1`, [input.clientId]),
+          where c.id=$1 and c.status <> 'deleted'`, [input.clientId]),
       ]);
       const byId = new Map(serviceResult.rows.map((row) => [row.id, row]));
       const services = selectedIds.map((id) => byId.get(id)).filter(Boolean);
@@ -707,12 +709,12 @@ export class NeonBookingStore {
     }
   }
 
-  // Confirma la asistencia de una cita (respuesta de la clienta por WhatsApp vía el Chatbot
+  // Confirma la asistencia de una cita (respuesta del cliente por WhatsApp vía el Chatbot
   // Bridge, o el botón "Confirmar cita en salón" del ERP legado). Si el horario ya fue tomado por
   // otra cita (esta quedó "EspacioLiberado" y alguien más reservó exactamente esa colaboradora +
   // horario mientras tanto), rechaza con alreadyReassigned:true para que quien llama le pida a la
-  // clienta elegir otro horario -- nunca resucita una cita por encima de una reserva nueva.
-  // clientId: cuando lo llama una sesión de clienta (no el bridge ni administración), acota la
+  // cliente elegir otro horario -- nunca resucita una cita por encima de una reserva nueva.
+  // clientId: cuando lo llama una sesión de cliente (no el bridge ni administración), acota la
   // confirmación a SU PROPIA cita -- nunca confía en un legacyId ajeno. null/omitido para
   // llamadas ya autorizadas de otra forma (bridge, administración).
   async confirmAppointmentAttendance({ legacyId, clientId = null }) {
@@ -846,12 +848,12 @@ export class NeonBookingStore {
   async ensureClientAccount({ clientId, phone }) {
     const result = await this.pool.query(
       `insert into app.reservapp_accounts (phone_normalized,client_id,role)
-       values (app.normalize_phone($1),$2,'clienta')
+       values (app.normalize_phone($1),$2,'cliente')
        on conflict (phone_normalized) do update set updated_at=now()
        returning *`,
       [phone, clientId],
     );
-    if (result.rows[0].role !== "clienta" || result.rows[0].client_id !== clientId) {
+    if (result.rows[0].role !== "cliente" || result.rows[0].client_id !== clientId) {
       throw Object.assign(new Error("El teléfono pertenece a otra cuenta."), { code: "PHONE_ACCOUNT_CONFLICT" });
     }
     return result.rows[0];
@@ -878,7 +880,7 @@ export class NeonBookingStore {
               s.id staff_id, s.full_name, s.status staff_status
          from app.reservapp_accounts ra
          join app.staff s on s.id = ra.staff_id
-        where ra.role <> 'clienta'
+        where ra.role <> 'cliente'
         order by s.full_name`,
     );
     return result.rows;
@@ -892,7 +894,8 @@ export class NeonBookingStore {
          from app.clients c
          left join app.client_phones p on p.client_id = c.id and p.is_primary
          left join app.reservapp_accounts ra on ra.client_id = c.id
-        where ($1 = '' or c.full_name ilike $2 or p.phone_original ilike $2)
+        where c.status <> 'deleted'
+          and ($1 = '' or c.full_name ilike $2 or p.phone_original ilike $2)
         order by c.full_name
         limit $3`,
       [query.trim(), search, limit],
@@ -906,7 +909,7 @@ export class NeonBookingStore {
     const result = await this.pool.query(
       `update app.reservapp_accounts
           set role = coalesce($2, role), status = coalesce($3, status), updated_at = now()
-        where id = $1 and role <> 'clienta'
+        where id = $1 and role <> 'cliente'
         returning id, role, status, staff_id`,
       [id, role, status],
     );
@@ -946,7 +949,7 @@ export class NeonBookingStore {
 
   // Alternativa a resetAccountPassword: en vez de que administración escriba la contraseña
   // nueva por la persona, borra la que tenía y la deja en el mismo estado "sin contraseña
-  // todavía" que una cuenta recién creada -- la próxima vez que esa persona (clienta o
+  // todavía" que una cuenta recién creada -- la próxima vez que esa persona (cliente o
   // personal) ponga su teléfono en ReservApp, check-phone/request-setup ya la reconocen
   // (password_hash IS NULL) y la mandan directo a "¿Eres tú? Crea tu contraseña".
   async clearAccountPassword({ id }) {
@@ -959,9 +962,66 @@ export class NeonBookingStore {
     return true;
   }
 
+  // "Borrar credenciales" del panel: elimina la cuenta de ReservApp, sea de personal o de
+  // cliente. Las sesiones abiertas y los tokens de setup pendientes cuelgan de ella con
+  // on delete cascade (ver 0010_reservapp_identity_agenda.sql), así que se van con ella y quien
+  // la tuviera abierta queda fuera en su siguiente petición. La ficha de staff o de cliente NO
+  // se toca -- solo desaparece el acceso a la app, y el teléfono queda libre
+  // (phone_normalized es único) para volver a invitar a esa persona desde cero.
+  async deleteAccount({ id }) {
+    const result = await this.pool.query(
+      "delete from app.reservapp_accounts where id=$1 returning id, role, client_id, staff_id",
+      [id],
+    );
+    return result.rows[0] || null;
+  }
+
+  // "Borrar cliente" del panel -- borrado LÓGICO. La ficha pasa a status='deleted' y desaparece
+  // de todo lo vivo (búsqueda, duplicados, listado de administración, citas nuevas), pero sus
+  // citas pasadas, facturas e ingresos quedan intactos: borrarlos de verdad descuadraría la
+  // contabilidad histórica. Se borra además su cuenta de ReservApp -- si no, su teléfono
+  // seguiría ocupado (phone_normalized es único) y no podría volver a registrarse nunca.
+  //
+  // Volver a atender a esa persona = registrarla de cero, con un id nuevo. El id viejo queda
+  // colgando solo del historial; los índices de unicidad (correo) y la detección de duplicados
+  // por teléfono ignoran las fichas borradas, justamente para que ese registro nuevo pase.
+  //
+  // Devuelve null si la ficha no existe o ya estaba borrada, y { blocked: n } si todavía tiene
+  // n citas futuras: cancelarlas aquí a mano dejaría app.erp_document desincronizado del
+  // documento que ve el personal, así que administración las cancela por el flujo normal del
+  // ERP y después borra la ficha.
+  async softDeleteClient({ id }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      // for update: sin el candado, dos borrados simultáneos (o un borrado mientras alguien
+      // agenda) podrían leer la misma ficha "todavía activa" y decidir sobre datos viejos.
+      const current = await client.query(
+        "select id, full_name from app.clients where id=$1 and status <> 'deleted' for update",
+        [id],
+      );
+      if (!current.rowCount) { await client.query("rollback"); return null; }
+      const upcoming = await client.query(
+        `select count(*)::int total from app.appointments
+          where client_id=$1 and status not in ('cancelled','replaced') and ends_at >= now()`,
+        [id],
+      );
+      if (upcoming.rows[0].total) { await client.query("rollback"); return { blocked: upcoming.rows[0].total }; }
+      await client.query("update app.clients set status='deleted', updated_at=now() where id=$1", [id]);
+      const account = await client.query("delete from app.reservapp_accounts where client_id=$1 returning id", [id]);
+      await client.query("commit");
+      return { id, fullName: current.rows[0].full_name, deletedAccount: Boolean(account.rowCount) };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   // "Bloquear" tiene que impedir el login de verdad, no solo marcar la ficha -- el login
   // (POST /auth/login) exige reservapp_accounts.status='active', que es una tabla aparte de
-  // app.clients. Si la clienta ya tiene cuenta de ReservApp, se suspende/reactiva junto con el
+  // app.clients. Si el cliente ya tiene cuenta de ReservApp, se suspende/reactiva junto con el
   // bloqueo del cliente en la misma transacción; solo se toca una cuenta que estaba
   // active/suspended (nunca una 'pending' que todavía no completó su setup).
   async updateClientStatus({ id, status }) {
@@ -976,7 +1036,7 @@ export class NeonBookingStore {
       await client.query(
         `update app.reservapp_accounts
             set status = $2, updated_at = now()
-          where client_id = $1 and role = 'clienta' and status in ('active','suspended')`,
+          where client_id = $1 and role = 'cliente' and status in ('active','suspended')`,
         [id, status === "blocked" ? "suspended" : "active"],
       );
       await client.query("commit");
@@ -1042,7 +1102,7 @@ export class NeonBookingStore {
 
   // Código de relay (ver 0011_reservapp_relay_otp.sql): una manicurista
   // solicita un código de 6 dígitos para verificar el teléfono de una
-  // clienta nueva antes de registrarla. Cualquier código activo anterior
+  // cliente nuevo antes de registrarla. Cualquier código activo anterior
   // para ese mismo teléfono se invalida -- solo el más reciente es válido.
   async createRelayOtp({ requestedByAccountId, phone, firstName, lastName, email, codeHash, expiresAt, maxAttempts = 5 }) {
     const client = await this.pool.connect();
@@ -1227,8 +1287,8 @@ export class NeonBookingStore {
 
   async agenda({ date, account }) {
     const params = [date];
-    const clientFilter = account.role === "clienta" ? "and a.client_id=$2" : "";
-    if (account.role === "clienta") params.push(account.client_id);
+    const clientFilter = account.role === "cliente" ? "and a.client_id=$2" : "";
+    if (account.role === "cliente") params.push(account.client_id);
     const result = await this.pool.query(
       `select a.id,a.legacy_id,a.staff_id,s.full_name staff_name,a.client_id,c.full_name client_name,
               p.phone_original client_phone,
@@ -1248,15 +1308,15 @@ export class NeonBookingStore {
         order by a.starts_at,s.full_name`,
       params,
     );
-    const staff = account.role === "clienta"
+    const staff = account.role === "cliente"
       ? []
       : (await this.pool.query("select id,full_name from app.staff where status='active' order by full_name")).rows;
-    return { date, visibility: account.role === "clienta" ? "own" : "team", staff, appointments: result.rows };
+    return { date, visibility: account.role === "cliente" ? "own" : "team", staff, appointments: result.rows };
   }
 
-  // Vista de clienta en ReservApp: "Citas activas" (próximas, sin cancelar/reasignar) e
+  // Vista de cliente en ReservApp: "Citas activas" (próximas, sin cancelar/reasignar) e
   // "historial" (ya pasadas o canceladas/reasignadas) -- a diferencia de agenda(), no está
-  // acotada a un solo día, así que una clienta ve todas sus citas activas de un vistazo en vez de
+  // acotada a un solo día, así que un cliente ve todas sus citas activas de un vistazo en vez de
   // tener que navegar día por día. Nunca acepta un clientId externo: siempre viene de la sesión
   // autenticada (ver GET /api/reservapp/my-appointments en server/app.mjs).
   async listClientAppointments({ clientId, scope }) {

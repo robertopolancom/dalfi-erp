@@ -188,7 +188,7 @@ function doPost(e) {
     }
     return jsonResponse_({ ok: true, action: action, appointmentId: input.appointmentId });
   } catch (error) {
-    // No registrar el payload, secreto, clienta ni descripción.
+    // No registrar el payload, secreto, cliente ni descripción.
     console.error("dalfi-calendar: " + String(error && error.message || "SYNC_FAILED"));
     return jsonResponse_({ ok: false, code: "SYNC_FAILED" });
   } finally {

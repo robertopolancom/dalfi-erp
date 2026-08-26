@@ -5,7 +5,7 @@ const scrypt = promisify(crypto.scrypt);
 const KEY_LENGTH = 64;
 
 export const RESERVAPP_ROLES = Object.freeze([
-  "clienta",
+  "cliente",
   "manicurista",
   "asistente",
   "administradora",

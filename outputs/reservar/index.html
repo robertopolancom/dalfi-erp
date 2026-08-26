@@ -79,7 +79,7 @@
           </section>
 
           <section class="client-box hidden" id="employee-client">
-            <div><span class="step-dot">1</span><div><strong>Cliente de la cita</strong><small>Todo el equipo puede reservar para una clienta registrada.</small></div></div>
+            <div><span class="step-dot">1</span><div><strong>Cliente de la cita</strong><small>Todo el equipo puede reservar para un cliente registrado.</small></div></div>
             <label>Buscar por nombre o teléfono<input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" /></label>
             <div class="search-results" id="client-results"></div>
             <button class="new-client compact" id="employee-new-client" type="button">Es su primera vez</button>
@@ -131,7 +131,7 @@
         <nav class="admin-jump-nav" aria-label="Ir a sección">
           <a href="#admin-section-personal">Personal</a>
           <a href="#admin-section-horarios">Horarios</a>
-          <a href="#admin-section-clientas">Clientas</a>
+          <a href="#admin-section-clientes">Clientes</a>
           <a href="#admin-section-banner">Banner</a>
         </nav>
 
@@ -191,7 +191,7 @@
         <div class="message" id="staff-schedule-message"></div>
         <ul class="admin-list" id="staff-exceptions-list"></ul>
 
-        <h3 id="admin-section-clientas">Clientas</h3>
+        <h3 id="admin-section-clientes">Clientes</h3>
         <label>Buscar por nombre o teléfono<input id="clients-admin-search" type="search" autocomplete="off" placeholder="Escribe para filtrar" /></label>
         <div class="message" id="clients-admin-message"></div>
         <div class="admin-table-wrap"><table class="admin-table" id="clients-admin-table"><thead><tr><th>Nombre</th><th>Teléfono</th><th>Estado</th><th></th></tr></thead><tbody id="clients-admin-body"></tbody></table></div>
@@ -214,7 +214,7 @@
   </main>
 
   <dialog id="identify-dialog"><form id="identify-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Antes de reservar</p><h2>¿Ya eres clienta registrada?</h2></div><button class="icon-button" id="close-identify" type="button" aria-label="Cerrar">×</button></div>
+    <div class="dialog-head"><div><p class="kicker">Antes de reservar</p><h2>¿Ya eres cliente del salón?</h2></div><button class="icon-button" id="close-identify" type="button" aria-label="Cerrar">×</button></div>
     <p>Para darte atención personalizada, primero identifícate.</p>
     <div class="access-actions"><button class="secondary" id="identify-login" type="button">Ya tengo cuenta</button><button class="new-client" id="identify-new" type="button">Es mi primera vez</button></div>
   </form></dialog>

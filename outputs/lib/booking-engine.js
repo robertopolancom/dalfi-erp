@@ -598,7 +598,7 @@ export function calculateAvailableSlots({
     // functions/api/booking/confirm.js) liberan el horario igual que una
     // cancelación: no deben seguir bloqueando la agenda de la manicurista.
     // "Reprogramada" ya NO se trata como cancelada: hoy significa que la
-    // clienta reagendó su propia cita (vía el chatbot) o el staff le cambió
+    // cliente reagendó su propia cita (vía el chatbot) o el staff le cambió
     // fecha/hora — sigue siendo su reserva activa y debe seguir bloqueando
     // el horario nuevo que ocupa. Solo "Reemplazada" (otra reserva confirmada
     // ya tomó ese horario) y "EspacioLiberado" liberan la agenda.
@@ -703,7 +703,7 @@ export function calculateAvailableSlots({
   };
 }
 
-// Algoritmo de puntuación para asignación inteligente de manicurista cuando la clienta NO especifica preferencia.
+// Algoritmo de puntuación para asignación inteligente de manicurista cuando el cliente NO especifica preferencia.
 export function scoreEligibleCollaborator({
   collaborator,
   date,
@@ -757,7 +757,7 @@ export function scoreEligibleCollaborator({
     }
   }
 
-  // Criterio D: Continuidad de preferencia histórica autorizada de la clienta (max 10 pts)
+  // Criterio D: Continuidad de preferencia histórica autorizada del cliente (max 10 pts)
   const clientContinuityScore = clientPreviousCollaboratorId && String(clientPreviousCollaboratorId) === staffId ? 10 : 0;
 
   const totalScore = Math.round(workloadBalanceScore + weeklyFairnessScore + gapReductionScore + clientContinuityScore);
@@ -1013,7 +1013,7 @@ export function buildConsolidatedDailyMatrix({
       // "EspacioLiberado"/"Reemplazada" liberan el horario igual que una
       // cancelación — ver el bloque equivalente en calculateAvailableSlots arriba.
       // Ver el comentario equivalente en calculateAvailableSlots más arriba:
-      // "Reprogramada" es un estado activo (la clienta o el staff reagendó),
+      // "Reprogramada" es un estado activo (el cliente o el staff reagendó),
       // no una cancelación — no se excluye aquí.
       const isCancelled = status.includes("cancelad")
         || status.includes("no_asistio") || status.includes("reemplazada")
@@ -1169,7 +1169,7 @@ export function buildConsolidatedDailyMatrix({
 // - "Programada" + faltan <=4h laborales para la cita -> requiresFirstReminder.
 // - "PendienteConfirmarHora" (primer recordatorio ya enviado, estampado en
 //   appointment.primerRecordatorioEnviadoEn) + ya pasó >=1h laboral desde
-//   ese envío sin que la clienta confirme/reagende -> requiresSecondReminder
+//   ese envío sin que el cliente confirme/reagende -> requiresSecondReminder
 //   Y shouldRelease (el segundo recordatorio y la liberación del horario
 //   ocurren en el mismo evento, tal como pide el encargo).
 // - Cualquier otro estadoConfirmacion (NoRequerida, HoraConfirmada,
@@ -1452,7 +1452,7 @@ export function resolveOrCreateClientProfile({
     estado: "Activo",
     telefonoVerificado: Boolean(phoneVerified),
     telefonoVerificadoEn: phoneVerified ? nowISO : null,
-    // Clientas creadas por el chatbot (sin un miembro del salón validando los
+    // Clientes creados por el chatbot (sin un miembro del salón validando los
     // datos en el momento) quedan marcadas para revisión en el Dashboard.
     needsReview: true,
     created_at: nowISO,

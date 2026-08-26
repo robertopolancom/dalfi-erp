@@ -8,7 +8,7 @@
 // - functions/api/booking/confirm.js (guarda ALREADY_REASSIGNED + bump)
 // - outputs/lib/booking-engine.js calculateAvailableSlots (libera el horario)
 //
-// Además cubre needsReview: clientas y reservas nuevas creadas por el
+// Además cubre needsReview: clientes y reservas nuevas creadas por el
 // chatbot quedan marcadas para revisión en el Dashboard.
 
 import test from "node:test";
@@ -93,7 +93,7 @@ test("confirm.js: reservar el mismo horario de una cita con EspacioLiberado la d
       {
         reservaID: "RES-NC-2", fecha: targetDate, hora: "10:00", horaFin: "11:00", duracionMin: 60,
         colaboradorID: "COL-1", colaboradorNombre: "Ana Pérez", estado: "Preaprobada", estadoConfirmacion: "EspacioLiberado",
-        clienteNombre: "Clienta Original", telefono: "8095550000",
+        clienteNombre: "Cliente Original", telefono: "8095550000",
       },
     ],
   };
@@ -103,7 +103,7 @@ test("confirm.js: reservar el mismo horario de una cita con EspacioLiberado la d
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       idempotencyKey: "IDEM-BUMP-1",
-      client: { name: "Clienta Nueva", phone: "8095551111" },
+      client: { name: "Cliente Nueva", phone: "8095551111" },
       serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
       requestedStartAt: `${targetDate}T10:00:00`,
       collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
@@ -173,7 +173,7 @@ test("needsReview: una reserva nueva del chatbot queda marcada para revisión en
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       idempotencyKey: "IDEM-REVIEW-1",
-      client: { name: "Clienta Review", phone: "8095552222" },
+      client: { name: "Cliente Review", phone: "8095552222" },
       serviceLines: [{ serviceId: "SRV-1", quantity: 1 }],
       requestedStartAt: `${targetDate}T09:00:00`,
       collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" },
@@ -195,7 +195,7 @@ test("send-reminders.js: primer recordatorio marca PendienteConfirmarHora y esta
       {
         reservaID: "RES-FIRST-1", fecha: "2020-01-01", hora: "08:00", colaboradorID: "COL-1",
         estado: "Preaprobada", estadoConfirmacion: "Programada", canalOrigen: "chatbot_whatsapp", telefono: "8095553333",
-        clienteNombre: "Clienta Tarde",
+        clienteNombre: "Cliente Tarde",
       },
     ],
   };
@@ -236,7 +236,7 @@ test("send-reminders.js: segundo recordatorio (1h laboral después del primero, 
       {
         reservaID: "RES-SECOND-1", fecha: "2020-01-01", hora: "08:00", colaboradorID: "COL-1",
         estado: "Preaprobada", estadoConfirmacion: "PendienteConfirmarHora", canalOrigen: "chatbot_whatsapp", telefono: "8095553333",
-        clienteNombre: "Clienta Tarde", primerRecordatorioEnviadoEn: "2019-12-31T18:00:00.000Z", // muy en el pasado, ya pasó de sobra 1h laboral
+        clienteNombre: "Cliente Tarde", primerRecordatorioEnviadoEn: "2019-12-31T18:00:00.000Z", // muy en el pasado, ya pasó de sobra 1h laboral
       },
     ],
   };

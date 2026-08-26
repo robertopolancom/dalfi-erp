@@ -49,7 +49,7 @@ function bookingStore() {
     async sessionAccount(tokenHash) {
       if (tokenHash === hashToken(MANICURISTA_TOKEN)) return { id: "manicurista-1", role: "manicurista" };
       if (tokenHash === hashToken(ASISTENTE_TOKEN)) return { id: "asistente-1", role: "asistente" };
-      return { id: "55555555-5555-4555-8555-555555555555", role: "clienta", client_id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" };
+      return { id: "55555555-5555-4555-8555-555555555555", role: "cliente", client_id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Pérez" };
     },
     async createAppointment(input) {
       createdAppointments.push(input);
@@ -201,13 +201,13 @@ test("POST /api/fast-booking/appointments con segments vacío responde 400", asy
   });
 });
 
-test("POST /api/fast-booking/appointments creada por clienta registra canalOrigen y creadoPor", async () => {
+test("POST /api/fast-booking/appointments creada por cliente registra canalOrigen y creadoPor", async () => {
   const store = bookingStore();
   await withServer(async (base) => {
-    const response = await fetch(`${base}/api/fast-booking/appointments`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "clienta-test-1", Cookie: "reservapp_session=test-session" }, body: JSON.stringify({ clientId: "33333333-3333-4333-8333-333333333333", serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" }) });
+    const response = await fetch(`${base}/api/fast-booking/appointments`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": "cliente-test-1", Cookie: "reservapp_session=test-session" }, body: JSON.stringify({ clientId: "33333333-3333-4333-8333-333333333333", serviceIds: ["11111111-1111-4111-8111-111111111111"], staffId: "22222222-2222-4222-8222-222222222222", date: "2026-08-15", time: "10:00" }) });
     assert.equal(response.status, 201);
     assert.equal(store.createdAppointments[0].source, "RESERVAPP_CLIENTE");
-    assert.deepEqual(store.createdAppointments[0].createdBy, { role: "clienta", accountId: "55555555-5555-4555-8555-555555555555" });
+    assert.deepEqual(store.createdAppointments[0].createdBy, { role: "cliente", accountId: "55555555-5555-4555-8555-555555555555" });
   }, undefined, store);
 });
 

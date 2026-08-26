@@ -17,7 +17,7 @@ const message = (element, text = "", ok = false) => {
 };
 const todayLocal = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santo_Domingo" }).format(new Date());
 // weekDays/holidayClosures ya los respeta la disponibilidad real del backend (server/store.mjs) --
-// esto solo evita que la clienta llegue a elegir un día que de todos modos va a salir sin horarios.
+// esto solo evita que el cliente llegue a elegir un día que de todos modos va a salir sin horarios.
 function isClosedDate(dateStr) {
   const settings = state.catalog?.schedule?.settings || {};
   const weekDays = Array.isArray(settings.weekDays) ? settings.weekDays : [1, 2, 3, 4, 5, 6];
@@ -45,7 +45,7 @@ function setClient(client) {
 
 function applyAccount(account) {
   state.account = account;
-  state.client = account?.role === "clienta" ? { id: account.clientId, name: account.name } : null;
+  state.client = account?.role === "cliente" ? { id: account.clientId, name: account.name } : null;
   $("account-button").textContent = account ? account.name : "Entrar";
   $("logout-link").classList.toggle("hidden", !account);
   // Agenda/panel de personal es una función de cuenta identificada -- sin sesión no debe ni
@@ -61,10 +61,10 @@ function applyAccount(account) {
   $("open-my-availability").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
   $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Citas activas";
-  $("mode-label").textContent = !account ? "Reserva rápida" : account.role === "clienta" ? "Mi reserva" : "Reserva del equipo";
+  $("mode-label").textContent = !account ? "Reserva rápida" : account.role === "cliente" ? "Mi reserva" : "Reserva del equipo";
   if (state.client) setClient(state.client); else $("selected-client").classList.add("hidden");
   // Cuentas de personal aterrizan directo en el panel de colaboradores (agenda) -- ya no en el
-  // wizard de reserva de la clienta -- pedido explícito de diseño.
+  // wizard de reserva del cliente -- pedido explícito de diseño.
   if (account && employeeRoles.has(account.role)) showAgenda();
 }
 
@@ -96,7 +96,7 @@ function formatSlotTime(time) {
   return new Date(`2000-01-01T${time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
 }
 
-// Antes de pedir identificación, recuerda a la clienta exactamente qué eligió -- imprescindible
+// Antes de pedir identificación, recuerda al cliente exactamente qué eligió -- imprescindible
 // en modo combo, donde eligió manicurista y hora una vez por cada servicio en pantallas
 // separadas y podría no recordar el resultado final.
 function renderBookingSelectionSummary() {
@@ -158,18 +158,18 @@ async function loadCatalog() {
 async function loadSession() {
   try {
     const { account } = await api("/api/reservapp/auth/me");
-    // Una clienta nunca debe abrir la app y encontrarse ya "logueada" -- si el dispositivo es
-    // compartido, mostraría el nombre/citas de la última clienta que reservó ahí. El cookie de
+    // Un cliente nunca debe abrir la app y encontrarse ya "logueado" -- si el dispositivo es
+    // compartido, mostraría el nombre/citas del último cliente que reservó ahí. El cookie de
     // sesión sigue vigente (no se cierra sesión), solo no se aplica automáticamente; si es
     // ella, entra normal con su teléfono y contraseña. El personal sí mantiene su sesión de 30
     // días -- comparten el tablet de recepción y no tiene sentido pedirles credenciales cada
     // vez que abren la app.
-    applyAccount(account && account.role !== "clienta" ? account : null);
+    applyAccount(account && account.role !== "cliente" ? account : null);
   } catch { applyAccount(null); }
 }
 
 // Agrupa los slots devueltos por /api/fast-booking/availability en una columna por
-// manicurista, para que la clienta compare y elija directamente cuál y a qué hora, en vez de
+// manicurista, para que el cliente compare y elija directamente cuál y a qué hora, en vez de
 // tener que elegir una manicurista a ciegas antes de ver si tiene espacio. onPick(staffId,
 // slot) decide qué pasa después (avanzar de paso, o pasar al siguiente servicio del combo).
 function renderStaffSlotsBoard(slots, onPick) {
@@ -218,7 +218,7 @@ async function loadSingleAvailability(serviceIds, date) {
 }
 
 // Paso 3, servicios combinados: se elige manicurista y hora POR SERVICIO, uno a la vez -- así,
-// si la manicurista del primer servicio no tiene espacio para el segundo, la clienta elige otra
+// si la manicurista del primer servicio no tiene espacio para el segundo, el cliente elige otra
 // distinta para ese segundo servicio en vez de quedar atascada. Cada servicio termina siendo
 // una cita independiente en el backend (createComboAppointment), vinculadas por un groupId
 // compartido para que el personal las vea como una sola visita.
@@ -303,7 +303,7 @@ const APPOINTMENT_STATUS_LABEL = { scheduled: "Agendada", confirmed: "Confirmada
 function openAppointmentDetail(item) {
   $("appointment-detail-time").textContent = `${item.start_time} – ${item.end_time}`;
   const rows = [
-    ["Clienta", item.client_name || "Cliente"],
+    ["Cliente", item.client_name || "Cliente"],
     ["Teléfono", item.client_phone || "—"],
     ["Servicios", item.services],
     ["Manicurista", item.staff_name || "—"],
@@ -496,7 +496,7 @@ $("close-appointment-detail").addEventListener("click", () => $("appointment-det
 
 // Etiquetas humanas de las dos dimensiones independientes de una cita -- mismo vocabulario que ya
 // usa el ERP legado (outputs/app.js CONFIRM_NOTES/DEPOSIT_NOTES) para que administración y
-// clientas vean exactamente el mismo lenguaje en ambos lados.
+// clientes vean exactamente el mismo lenguaje en ambos lados.
 const CONFIRM_STATUS_LABELS = {
   Programada: "Recordatorio de confirmación programado",
   PendienteConfirmarHora: "Esperando tu confirmación",
@@ -557,7 +557,7 @@ function renderAppointmentCard(apt) {
 }
 
 // Misma tarjeta que renderAppointmentCard, pero para la vista semanal del equipo (agenda() trae
-// clienta + manicurista, no solo manicurista como en /my-appointments) -- el día ya lo indica el
+// cliente + manicurista, no solo manicurista como en /my-appointments) -- el día ya lo indica el
 // encabezado del día en loadAgendaWeek, así que aquí solo hace falta la hora.
 function renderTeamAppointmentCard(apt) {
   const card = document.createElement("article");
@@ -613,8 +613,8 @@ async function loadMyAppointments(scope) {
   } catch (error) { message($("my-appointments-message"), error.message); }
 }
 
-// Vista de clienta: "Citas activas"/"Historial" -- reemplaza a la Agenda de equipo que veía
-// antes (pedido explícito: una clienta solo debe ver sus propias citas, no la agenda completa).
+// Vista del cliente: "Citas activas"/"Historial" -- reemplaza a la Agenda de equipo que veía
+// antes (pedido explícito: un cliente solo debe ver sus propias citas, no la agenda completa).
 function showClientAppointments() {
   $("booking-card").classList.add("hidden"); $("agenda-card").classList.add("hidden"); $("success-card").classList.add("hidden");
   $("client-appointments-card").classList.remove("hidden");
@@ -632,7 +632,7 @@ function showBooking() {
 
 // Identificarse es lo PRIMERO al querer reservar, antes de elegir servicios -- pedido
 // explícito de diseño ("atención personalizada" desde el primer clic, no como último paso).
-// Si ya hay sesión (clienta o personal) pasa directo a elegir servicios, como antes.
+// Si ya hay sesión (cliente o personal) pasa directo a elegir servicios, como antes.
 $("start-booking").addEventListener("click", () => {
   if (state.account) return goToStep(1);
   state.pendingBookingStart = true;
@@ -663,7 +663,7 @@ $("phone-check-form").addEventListener("submit", async (event) => {
     if (result.exists) {
       // Ya hay una ficha con ese teléfono (con o sin contraseña creada) -- el servidor nunca
       // revela el nombre aquí (auditoría de seguridad 2026-08-25: antes lo hacía, y eso permitía
-      // adivinar qué teléfonos son de clientas reales solo probando números). Confirmar que es
+      // adivinar qué teléfonos son de clientes reales solo probando números). Confirmar que es
       // ella ahora pasa por que ELLA escriba su nombre, no por leerlo del servidor.
       openConfirmName({ phone, needsPasswordOnly: Boolean(result.needsPasswordOnly) });
     } else {
@@ -797,10 +797,10 @@ $("close-login").addEventListener("click", () => $("login-dialog").close());
 $("close-client").addEventListener("click", () => $("client-dialog").close());
 
 // Dos entradas distintas al MISMO diálogo de "primera vez", con comportamiento distinto al
-// enviarlo (ver client-form submit abajo): la clienta que se registra sola (open-client)
+// enviarlo (ver client-form submit abajo): el cliente que se registra solo (open-client)
 // necesita verificar su teléfono por WhatsApp antes de que exista su ficha -- nadie del salón
 // está validando esos datos. El personal (employee-new-client) SÍ está presente validando a
-// la clienta en persona, así que no tiene sentido hacerla esperar un código; crea la ficha al
+// al cliente en persona, así que no tiene sentido hacerlo esperar un código; crea la ficha al
 // instante contra /api/fast-booking/clients (mismo endpoint que ya usa la búsqueda existente).
 function openClientDialog({ forEmployee, requireSelection = true }) {
   // El registro-invitada por WhatsApp (auto-servicio) guarda un borrador de UNA sola cita
@@ -818,14 +818,14 @@ function openClientDialog({ forEmployee, requireSelection = true }) {
   }
   state.clientDialogForEmployee = forEmployee;
   state.clientDialogRequireSelection = requireSelection;
-  $("client-dialog-title").textContent = forEmployee ? "Registrar clienta" : "Crear mi acceso";
+  $("client-dialog-title").textContent = forEmployee ? "Registrar cliente" : "Crear mi acceso";
   const hasSelection = Boolean(selectedServiceIds().length && $("staff").value && $("date").value && $("time").value);
   $("client-dialog-intro").textContent = forEmployee
     ? "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp."
     : hasSelection
       ? "Confirma tu teléfono, crea tu contraseña y tu cita quedará agendada."
       : "Confirma tu teléfono y crea tu contraseña para continuar.";
-  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar clienta" : "Continuar";
+  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar cliente" : "Continuar";
   message($("client-message"));
   if (!requireSelection || requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
 }
@@ -851,9 +851,9 @@ $("client-form").addEventListener("submit", async (event) => {
       });
       setClient(result.client);
       $("client-dialog").close();
-      message($("booking-message"), `Clienta ${result.client.name} registrada. Ya puedes confirmar la reserva.`, true);
+      message($("booking-message"), `Cliente ${result.client.name} registrado. Ya puedes confirmar la reserva.`, true);
     } catch (error) {
-      message($("client-message"), error.body?.duplicate ? "Ya existe una clienta con ese teléfono o correo." : error.message);
+      message($("client-message"), error.body?.duplicate ? "Ya existe un cliente con ese teléfono o correo." : error.message);
     } finally { button.disabled = false; }
     return;
   }
@@ -928,7 +928,7 @@ $("login-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/login", { method: "POST", body: JSON.stringify({ phone: $("login-phone").value, password: $("login-password").value }) });
     applyAccount(result.account); $("login-dialog").close(); $("login-form").reset(); message($("booking-message"), `Hola, ${result.account.name}.`, true);
-    if (state.pendingBookingStart && result.account.role === "clienta") { state.pendingBookingStart = false; goToStep(1); }
+    if (state.pendingBookingStart && result.account.role === "cliente") { state.pendingBookingStart = false; goToStep(1); }
     else if (!$("agenda-card").classList.contains("hidden")) showAgenda();
   } catch (error) { message($("login-message"), error.message); }
   finally { button.disabled = false; }
@@ -938,7 +938,7 @@ $("login-form").addEventListener("submit", async (event) => {
 // "cerrar sesión" es una acción explícita y separada, pedido de diseño para que no se confunda
 // con solo ver el nombre de la cuenta.
 $("account-button").addEventListener("click", () => { if (!state.account) { message($("login-message")); $("login-dialog").showModal(); } });
-// Dispositivo compartido (tablet de recepción, teléfono que pasa de clienta en clienta): cerrar
+// Dispositivo compartido (tablet de recepción, teléfono que pasa de cliente en cliente): cerrar
 // sesión debe dejar todo como recién cargado, para que la siguiente persona tenga que
 // identificarse desde cero y no vea ni un campo con datos de la anterior -- pedido explícito.
 function resetDeviceState() {
@@ -984,15 +984,15 @@ $("booking-form").addEventListener("submit", async (event) => {
   event.preventDefault(); message($("booking-message"));
   if (!requireBookingSelection($("booking-message"))) return;
   if (!state.account) return $("login-dialog").showModal();
-  if (!state.client) return message($("booking-message"), "Selecciona la clienta de la cita.");
+  if (!state.client) return message($("booking-message"), "Selecciona el cliente de la cita.");
   const button = $("submit-booking"); button.disabled = true; button.textContent = "Reservando…";
   const isCombo = Array.isArray(state.comboSegments) && state.comboSegments.length > 0;
   try {
     const result = await api("/api/fast-booking/appointments", {
       method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify(isCombo
-        ? { clientId: state.client.id, segments: state.comboSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: state.account.role === "clienta" ? "customer" : "employee", website: $("website").value }
-        : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: state.account.role === "clienta" ? "customer" : "employee", website: $("website").value }),
+        ? { clientId: state.client.id, segments: state.comboSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: state.account.role === "cliente" ? "customer" : "employee", website: $("website").value }
+        : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: state.account.role === "cliente" ? "customer" : "employee", website: $("website").value }),
     });
     if (isCombo) {
       const details = state.comboSegments.map((segment) => `${segment.serviceName} con ${segment.staffName} a las ${formatSlotTime(segment.time)}`).join(" · ");
@@ -1043,7 +1043,7 @@ $("create-account").addEventListener("click", async () => {
 
 // ---------- Configuración de usuarios (Fase 5) ----------
 const EMPLOYEE_STATUS_LABEL = { active: "Activa", suspended: "Suspendida", pending: "Pendiente" };
-const CLIENT_STATUS_LABEL = { active: "Activa", blocked: "Bloqueada" };
+const CLIENT_STATUS_LABEL = { active: "Activo", blocked: "Bloqueado" };
 
 $("open-user-management").addEventListener("click", () => {
   $("admin-panel").classList.remove("hidden");
@@ -1106,7 +1106,7 @@ async function loadEmployeesTable() {
         } catch (error) { message($("employees-message"), error.message); toggle.disabled = false; }
       });
       actions.append(toggle);
-      // Misma válvula de escape que en la tabla de clientas (autoservicio de "olvidé mi
+      // Misma válvula de escape que en la tabla de clientes (autoservicio de "olvidé mi
       // contraseña" apagado, ver /auth/request-password-reset) -- el personal también necesita
       // que administración pueda reiniciarle la contraseña.
       const resetPassword = document.createElement("button"); resetPassword.type = "button"; resetPassword.className = "admin-row-action";
@@ -1114,13 +1114,14 @@ async function loadEmployeesTable() {
       resetPassword.addEventListener("click", () => openAdminResetPassword({ accountId: account.id, name: account.full_name, messageTarget: "employees-message" }));
       actions.append(resetPassword);
       actions.append(clearPasswordButton({ accountId: account.id, name: account.full_name, messageTarget: "employees-message", onDone: loadEmployeesTable }));
+      actions.append(deleteAccountButton({ accountId: account.id, name: account.full_name, messageTarget: "employees-message", onDone: loadEmployeesTable }));
       row.append(name, role, status, actions);
       return row;
     }));
   } catch (error) { message($("employees-message"), error.message); }
 }
 
-// Botón compartido por la tabla de Personal y la de Clientas: en vez de que administración
+// Botón compartido por la tabla de Personal y la de Clientes: en vez de que administración
 // escriba la contraseña nueva (openAdminResetPassword), borra la que tenía para que la
 // propia persona la defina la próxima vez que ponga su teléfono en ReservApp.
 function clearPasswordButton({ accountId, name, messageTarget, onDone }) {
@@ -1134,6 +1135,44 @@ function clearPasswordButton({ accountId, name, messageTarget, onDone }) {
       message($(messageTarget), `Listo -- ${name || "esa persona"} deberá crear una contraseña nueva la próxima vez que entre.`, true);
       onDone?.();
     } catch (error) { message($(messageTarget), error.message); button.disabled = false; }
+  });
+  return button;
+}
+
+// Un paso más allá de "Reiniciar acceso": borra la cuenta de ReservApp entera (DELETE
+// /admin/accounts/:id). La ficha de la colaboradora o del cliente se queda -- lo único que
+// desaparece es el acceso a la app, y con él su teléfono queda libre para volver a invitarla.
+function deleteAccountButton({ accountId, name, messageTarget, onDone }) {
+  const button = document.createElement("button"); button.type = "button"; button.className = "admin-row-action danger";
+  button.textContent = "Borrar credenciales";
+  button.title = `${name || "Esta persona"} perderá el acceso a ReservApp; su ficha no se toca`;
+  button.addEventListener("click", async () => {
+    if (!confirm(`¿Borrar las credenciales de ReservApp de ${name || "esta persona"}?\n\nPerderá el acceso a la app y se cerrará su sesión. Su ficha y su historial no se tocan, y puedes volver a darle acceso cuando quieras.`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/reservapp/admin/accounts/${accountId}`, { method: "DELETE" });
+      message($(messageTarget), `Credenciales de ${name || "esa persona"} borradas.`, true);
+      onDone?.();
+    } catch (error) { message($(messageTarget), error.message); button.disabled = false; }
+  });
+  return button;
+}
+
+// "Borrar cliente" (DELETE /admin/clients/:id) -- borrado lógico en el ERP: la ficha desaparece
+// de las búsquedas y del listado, pero sus citas pasadas y sus facturas se quedan donde están.
+// El backend lo rechaza (409) si todavía tiene citas futuras sin cancelar.
+function deleteClientButton({ client, onDone }) {
+  const button = document.createElement("button"); button.type = "button"; button.className = "admin-row-action danger";
+  button.textContent = "Borrar cliente";
+  button.title = "Quita la ficha del ERP; el historial de citas y facturas se conserva";
+  button.addEventListener("click", async () => {
+    if (!confirm(`¿Borrar a ${client.full_name} del ERP?\n\nSu ficha deja de aparecer en búsquedas y no se le podrán agendar citas. Su historial de citas y facturas se conserva. Si vuelve al salón, hay que registrarlo de nuevo desde cero.`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/reservapp/admin/clients/${client.id}`, { method: "DELETE" });
+      message($("clients-admin-message"), `${client.full_name} fue borrado del ERP.`, true);
+      onDone?.();
+    } catch (error) { message($("clients-admin-message"), error.message); button.disabled = false; }
   });
   return button;
 }
@@ -1164,14 +1203,16 @@ async function loadClientsAdmin(query = "") {
       actions.append(toggle);
       // Mientras el autoservicio de "olvidé mi contraseña" esté apagado (ver comentario junto a
       // /auth/request-password-reset), esta es la única forma de restablecer la contraseña de
-      // una clienta -- solo aplica si ya tiene cuenta de ReservApp (account_id).
+      // un cliente -- solo aplica si ya tiene cuenta de ReservApp (account_id).
       if (client.account_id) {
         const resetPassword = document.createElement("button"); resetPassword.type = "button"; resetPassword.className = "admin-row-action";
         resetPassword.textContent = "Restablecer contraseña";
         resetPassword.addEventListener("click", () => openAdminResetPassword({ accountId: client.account_id, name: client.full_name }));
         actions.append(resetPassword);
         actions.append(clearPasswordButton({ accountId: client.account_id, name: client.full_name, messageTarget: "clients-admin-message", onDone: () => loadClientsAdmin($("clients-admin-search").value.trim()) }));
+        actions.append(deleteAccountButton({ accountId: client.account_id, name: client.full_name, messageTarget: "clients-admin-message", onDone: () => loadClientsAdmin($("clients-admin-search").value.trim()) }));
       }
+      actions.append(deleteClientButton({ client, onDone: () => loadClientsAdmin($("clients-admin-search").value.trim()) }));
       row.append(name, phone, status, actions);
       return row;
     }));

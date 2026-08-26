@@ -151,7 +151,7 @@ export async function onRequestPost({ request, env }) {
         // Segundo recordatorio sin respuesta: libera el horario en el mismo
         // paso (calculateAvailableSlots trata "EspacioLiberado" igual que
         // una cancelación) en vez de dejarlo bloqueado indefinidamente. Si
-        // el salón/la clienta confirma antes de que alguien más tome ese
+        // el salón/el cliente confirma antes de que alguien más tome ese
         // horario, vuelve a "HoraConfirmada" (ver la guarda
         // ALREADY_REASSIGNED en confirm.js); si alguien más lo toma
         // primero, esta cita queda "Reemplazada" automáticamente en ese

@@ -4,7 +4,7 @@ import test from "node:test";
 import { createApp } from "../server/app.mjs";
 import { hashToken } from "../server/reservapp-auth.mjs";
 
-// GET /api/reservapp/my-appointments -- "Citas activas"/"Historial" de una clienta en ReservApp
+// GET /api/reservapp/my-appointments -- "Citas activas"/"Historial" de un cliente en ReservApp
 // (reemplaza la vista de Agenda de equipo que veía antes por error).
 
 function documentStore() {
@@ -19,7 +19,7 @@ function bookingStoreMock() {
   return {
     listCalls,
     async sessionAccount(tokenHash) {
-      if (tokenHash === hashToken(CLIENT_TOKEN)) return { id: "client-account-1", role: "clienta", client_id: "CLI-1" };
+      if (tokenHash === hashToken(CLIENT_TOKEN)) return { id: "client-account-1", role: "cliente", client_id: "CLI-1" };
       if (tokenHash === hashToken(STAFF_TOKEN)) return { id: "staff-account-1", role: "manicurista", staff_id: "COL-1" };
       return null;
     },
@@ -47,14 +47,14 @@ test("GET /my-appointments: sin sesión responde 401", async () => {
   });
 });
 
-test("GET /my-appointments: una cuenta de personal (no clienta) no puede usar esta ruta", async () => {
+test("GET /my-appointments: una cuenta de personal (no cliente) no puede usar esta ruta", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/reservapp/my-appointments`, { headers: { Cookie: `reservapp_session=${STAFF_TOKEN}` } });
     assert.equal(response.status, 403);
   });
 });
 
-test("GET /my-appointments: clienta obtiene sus propias citas activas por defecto (scope=active), acotado a su client_id de sesión", async () => {
+test("GET /my-appointments: cliente obtiene sus propias citas activas por defecto (scope=active), acotado a su client_id de sesión", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/my-appointments`, { headers: { Cookie: `reservapp_session=${CLIENT_TOKEN}` } });
     assert.equal(response.status, 200);

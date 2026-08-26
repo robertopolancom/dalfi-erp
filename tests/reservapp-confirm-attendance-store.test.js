@@ -74,7 +74,7 @@ test("confirmAppointmentAttendance(): reserva inexistente responde missing", asy
   assert.deepEqual(result, { missing: true });
 });
 
-test("confirmAppointmentAttendance(): clientId de una clienta distinta nunca ve/confirma la cita ajena", async () => {
+test("confirmAppointmentAttendance(): clientId de un cliente distinta nunca ve/confirma la cita ajena", async () => {
   const { pool } = fakePool({ appointment: APT });
   const store = new NeonBookingStore(pool);
   const result = await store.confirmAppointmentAttendance({ legacyId: "RES-1", clientId: "CLI-OTHER" });

@@ -25,7 +25,7 @@ const fakeAppointment = (overrides = {}) => ({
   fecha: "2026-08-14",
   hora: "15:00",
   duracionMin: 75,
-  clienteNombre: "Clienta Ficticia",
+  clienteNombre: "Cliente Ficticia",
   colaboradorNombre: "Manicurista Ficticia",
   servicio: "Manicura de prueba",
   estado: "Programada",
@@ -48,10 +48,10 @@ const runtimeWithToken = (fetchImpl) => ({
   getAccessToken: async () => "fake-access-token",
 });
 
-test("buildGoogleCalendarEvent incluye clienta, manicurista y horario de inicio a fin", () => {
+test("buildGoogleCalendarEvent incluye cliente, manicurista y horario de inicio a fin", () => {
   const built = buildGoogleCalendarEvent(fakeAppointment());
   assert.ok(built);
-  assert.equal(built.event.summary, "Cita: Clienta Ficticia — Manicurista Ficticia");
+  assert.equal(built.event.summary, "Cita: Cliente Ficticia — Manicurista Ficticia");
   assert.equal(built.event.start.dateTime, "2026-08-14T15:00:00");
   assert.equal(built.event.end.dateTime, "2026-08-14T16:15:00");
   assert.match(built.event.description, /Horario: 15:00–16:15/);
@@ -106,7 +106,7 @@ test("crear una cita inserta exactamente un evento y no envía teléfono ni corr
   assert.equal(calls.length, 1);
   assert.equal(calls[0].options.method, "POST");
   const body = calls[0].options.body;
-  assert.match(body, /Clienta Ficticia/);
+  assert.match(body, /Cliente Ficticia/);
   assert.match(body, /Manicurista Ficticia/);
   assert.doesNotMatch(body, /000-000-0000/);
   assert.doesNotMatch(body, /ficticia@example\.test/);

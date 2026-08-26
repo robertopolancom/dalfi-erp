@@ -105,7 +105,7 @@ test("resolveOrCreateClientProfile completa fechaNacimiento/servicioInteres en u
 test("resolveOrCreateClientProfile marca telefonoVerificado en un cliente nuevo cuando phoneVerified es true", () => {
   const res = resolveOrCreateClientProfile({
     clientList: [],
-    client: { name: "Nueva Clienta", phone: "809-555-0166" },
+    client: { name: "Nueva Cliente", phone: "809-555-0166" },
     phoneVerified: true,
   });
 
@@ -117,7 +117,7 @@ test("resolveOrCreateClientProfile marca telefonoVerificado en un cliente nuevo 
 test("resolveOrCreateClientProfile no marca telefonoVerificado en un cliente nuevo si phoneVerified no llega (default false)", () => {
   const res = resolveOrCreateClientProfile({
     clientList: [],
-    client: { name: "Nueva Clienta", phone: "809-555-0155" },
+    client: { name: "Nueva Cliente", phone: "809-555-0155" },
   });
 
   assert.equal(res.clientRecord.telefonoVerificado, false);

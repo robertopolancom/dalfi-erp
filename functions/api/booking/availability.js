@@ -91,7 +91,7 @@ export async function onRequestGet({ request, env }) {
     const combinedDurationMinutes = durationRes.totalServiceMinutes;
 
     if (collaboratorId) {
-      // 1. Manicurista específica elegida por la clienta
+      // 1. Manicurista específica elegida por el cliente
       const staffMember = staffList.find(
         (s) => String(s.colaboradorID || s.id || s.nombreCompleto) === String(collaboratorId)
       );

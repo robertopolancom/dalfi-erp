@@ -1,5 +1,5 @@
 // Endpoint para el Chatbot Bridge: cuentas bancarias activas para mostrar cuando una
-// clienta elige "Enviar comprobante de pago -> Transferencia bancaria". Requiere
+// cliente elige "Enviar comprobante de pago -> Transferencia bancaria". Requiere
 // x-chatbot-secret (igual que clients.js) porque expone número de cuenta y cédula/RNC del
 // titular — más sensible que el catálogo de servicios/colaboradoras (services.js/staff.js),
 // que son públicos sin secreto.

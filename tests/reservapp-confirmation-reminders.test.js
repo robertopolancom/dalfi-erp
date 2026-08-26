@@ -55,7 +55,7 @@ function bookingStoreMock({ appointments = [], settings = {} } = {}) {
     markCalls, confirmCalls,
     async sessionAccount(tokenHash) {
       if (tokenHash === hashToken(ADMIN_TOKEN)) return { id: "admin-1", role: "administradora" };
-      if (tokenHash === hashToken(CLIENT_TOKEN)) return { id: "client-account-1", role: "clienta", client_id: "CLI-1" };
+      if (tokenHash === hashToken(CLIENT_TOKEN)) return { id: "client-account-1", role: "cliente", client_id: "CLI-1" };
       return null;
     },
     async businessSettings() { return { timezone: "America/Santo_Domingo", settings }; },
@@ -170,7 +170,7 @@ test("POST /api/reservapp/booking/confirm-attendance: con x-webhook-secret del b
   });
 });
 
-test("POST /api/reservapp/booking/confirm-attendance: una clienta con sesión propia confirma acotada a su client_id", async () => {
+test("POST /api/reservapp/booking/confirm-attendance: un cliente con sesión propia confirma acotada a su client_id", async () => {
   await withServer({ env: {} }, async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/booking/confirm-attendance`, {
       method: "POST", headers: { "Content-Type": "application/json", Cookie: `reservapp_session=${CLIENT_TOKEN}` },

@@ -149,7 +149,7 @@ test("GET /api/booking/bank-accounts devuelve solo cuentas bancarias activas con
   });
 });
 
-test("GET /api/booking/clients?phone= resuelve una clienta existente por teléfono", async () => {
+test("GET /api/booking/clients?phone= resuelve un cliente existente por teléfono", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/clients?phone=8095551111`, { headers: { "x-chatbot-secret": CHATBOT_SECRET } });
     const body = await res.json();
@@ -159,7 +159,7 @@ test("GET /api/booking/clients?phone= resuelve una clienta existente por teléfo
   });
 });
 
-test("GET /api/booking/clients?phone= reporta verified=false cuando la clienta no tiene el teléfono verificado", async () => {
+test("GET /api/booking/clients?phone= reporta verified=false cuando el cliente no tiene el teléfono verificado", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/clients?phone=8095551111`, { headers: { "x-chatbot-secret": CHATBOT_SECRET } });
     const body = await res.json();
@@ -167,7 +167,7 @@ test("GET /api/booking/clients?phone= reporta verified=false cuando la clienta n
   });
 });
 
-test("GET /api/booking/clients?phone= reporta verified=true cuando la clienta sí tiene el teléfono verificado", async () => {
+test("GET /api/booking/clients?phone= reporta verified=true cuando el cliente sí tiene el teléfono verificado", async () => {
   const doc = baseDoc();
   doc.clientes[0].telefonoVerificado = true;
   await withServer(doc, async (base) => {
@@ -177,11 +177,11 @@ test("GET /api/booking/clients?phone= reporta verified=true cuando la clienta s�
   });
 });
 
-test("POST /api/booking/clients crea una clienta nueva cuando el teléfono no existe", async () => {
+test("POST /api/booking/clients crea un cliente nuevo cuando el teléfono no existe", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/clients`, {
       method: "POST", headers: chatbotHeaders,
-      body: JSON.stringify({ client: { name: "Nueva Clienta", phone: "8095559999" }, senderPhone: "8095559999" }),
+      body: JSON.stringify({ client: { name: "Nueva Cliente", phone: "8095559999" }, senderPhone: "8095559999" }),
     });
     const body = await res.json();
     assert.equal(res.status, 200);
@@ -210,7 +210,7 @@ test("POST /api/booking/confirm: la primera reserva tiene éxito y la segunda a 
   });
 });
 
-test("POST /api/booking/confirm: client.phoneVerified=true marca a la clienta nueva como verificada en el ERP", async () => {
+test("POST /api/booking/confirm: client.phoneVerified=true marca al cliente nuevo como verificada en el ERP", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/confirm`, {
       method: "POST", headers: chatbotHeaders,
@@ -230,7 +230,7 @@ test("POST /api/booking/confirm: client.phoneVerified=true marca a la clienta nu
   });
 });
 
-test("POST /api/booking/confirm: sin phoneVerified, la clienta nueva queda sin verificar", async () => {
+test("POST /api/booking/confirm: sin phoneVerified, el cliente nuevo queda sin verificar", async () => {
   await withServer(baseDoc(), async (base) => {
     const res = await fetch(`${base}/api/booking/confirm`, {
       method: "POST", headers: chatbotHeaders,
@@ -283,7 +283,7 @@ test("POST /api/booking/cancel cancela una reserva existente y libera el horario
     assert.equal(cancelRes.status, 200);
     assert.equal(cancelData.status, "Cancelada");
 
-    // El horario debe quedar libre otra vez para otra clienta.
+    // El horario debe quedar libre otra vez para otro cliente.
     const retryRes = await fetch(`${base}/api/booking/confirm`, {
       method: "POST", headers: chatbotHeaders,
       body: JSON.stringify({ idempotencyKey: "IDEM-302", client: { id: "CLI-2", name: "Carmen" }, serviceLines: [{ serviceId: "SRV-1", quantity: 1 }], requestedStartAt: `${FUTURE_DATE}T11:00:00`, collaboratorPreference: { mode: "specific", collaboratorId: "COL-1" } }),

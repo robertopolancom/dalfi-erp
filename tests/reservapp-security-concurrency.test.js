@@ -8,20 +8,20 @@ function documentStore() {
   return { async read() { return { data: {}, updatedAt: "2026-08-13T00:00:00.000Z", version: 1 }; } };
 }
 
-const CLIENTA_A_TOKEN = "clienta-a-session";
-const CLIENTA_B_TOKEN = "clienta-b-session";
+const CLIENTA_A_TOKEN = "cliente-a-session";
+const CLIENTA_B_TOKEN = "cliente-b-session";
 const MANICURISTA_TOKEN = "manicurista-session";
 
-const ACCOUNT_A = { id: "acct-a", role: "clienta", client_id: "client-a" };
-const ACCOUNT_B = { id: "acct-b", role: "clienta", client_id: "client-b" };
+const ACCOUNT_A = { id: "acct-a", role: "cliente", client_id: "client-a" };
+const ACCOUNT_B = { id: "acct-b", role: "cliente", client_id: "client-b" };
 
 // Simula fielmente el filtro real de NeonBookingStore.agenda(): la fila de
 // A nunca debe salir para B y viceversa -- mismo comportamiento que el
 // `and a.client_id=$2` de la consulta SQL real (server/store.mjs), aquí
 // aplicado en JS porque no hay Postgres disponible en este entorno.
 const APPOINTMENTS_BY_CLIENT = {
-  "client-a": [{ id: "apt-a", staff_id: "staff-1", client_id: "client-a", start_time: "10:00", end_time: "11:00", client_name: "Clienta A", services: "Manicura", status: "scheduled" }],
-  "client-b": [{ id: "apt-b", staff_id: "staff-1", client_id: "client-b", start_time: "12:00", end_time: "13:00", client_name: "Clienta B", services: "Pedicura", status: "scheduled" }],
+  "client-a": [{ id: "apt-a", staff_id: "staff-1", client_id: "client-a", start_time: "10:00", end_time: "11:00", client_name: "Cliente A", services: "Manicura", status: "scheduled" }],
+  "client-b": [{ id: "apt-b", staff_id: "staff-1", client_id: "client-b", start_time: "12:00", end_time: "13:00", client_name: "Cliente B", services: "Pedicura", status: "scheduled" }],
 };
 
 function agendaBookingStore() {
@@ -35,8 +35,8 @@ function agendaBookingStore() {
     },
     async agenda({ date, account }) {
       agendaCalls.push({ date, accountId: account.id });
-      const appointments = account.role === "clienta" ? APPOINTMENTS_BY_CLIENT[account.client_id] || [] : Object.values(APPOINTMENTS_BY_CLIENT).flat();
-      return { date, visibility: account.role === "clienta" ? "own" : "team", staff: [], appointments };
+      const appointments = account.role === "cliente" ? APPOINTMENTS_BY_CLIENT[account.client_id] || [] : Object.values(APPOINTMENTS_BY_CLIENT).flat();
+      return { date, visibility: account.role === "cliente" ? "own" : "team", staff: [], appointments };
     },
   };
 }
@@ -53,7 +53,7 @@ async function withServer(store, run, { fetchImpl, env = {} } = {}) {
   finally { server.close(); await once(server, "close"); }
 }
 
-test("IDOR: la agenda de clienta A nunca incluye citas de clienta B, ni al pasar el id de B por query", async () => {
+test("IDOR: la agenda de cliente A nunca incluye citas de cliente B, ni al pasar el id de B por query", async () => {
   const store = agendaBookingStore();
   await withServer(store, async (base) => {
     const asA = await fetch(`${base}/api/reservapp/agenda?date=2026-08-20`, { headers: { Cookie: `reservapp_session=${CLIENTA_A_TOKEN}` } });
@@ -62,7 +62,7 @@ test("IDOR: la agenda de clienta A nunca incluye citas de clienta B, ni al pasar
     assert.deepEqual(bodyA.appointments.map((a) => a.id), ["apt-a"]);
     assert.equal(bodyA.appointments.some((a) => a.client_id === "client-b"), false);
 
-    // Intento de IDOR: clienta A intenta forzar el id de B por query string.
+    // Intento de IDOR: cliente A intenta forzar el id de B por query string.
     // El endpoint no lee ningún identificador del request -- solo usa la
     // cuenta resuelta del cookie de sesión -- así que esto no cambia nada.
     const attempt = await fetch(`${base}/api/reservapp/agenda?date=2026-08-20&clientId=client-b&accountId=acct-b`, {
@@ -100,7 +100,7 @@ function concurrencyBookingStore() {
       return { durationMinutes: 60, slots: [{ staffId: "staff-1", staffName: "Dalfina", time: "10:00" }] };
     },
     async sessionAccount(tokenHash) {
-      if (tokenHash === hashToken("customer-session")) return { id: "acct-a", role: "clienta", client_id: "client-1" };
+      if (tokenHash === hashToken("customer-session")) return { id: "acct-a", role: "cliente", client_id: "client-1" };
       return null;
     },
     // Simula el constraint de exclusión real de Postgres sobre
@@ -183,7 +183,7 @@ test("rate limit: relay-otp/request corta en el sexto intento de la misma manicu
       const response = await fetch(`${base}/api/reservapp/clients/relay-otp/request`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Cookie: `reservapp_session=${MANICURISTA_TOKEN}` },
-        body: JSON.stringify({ firstName: "Ana", lastName: `Clienta${i}`, phone: `809555${1000 + i}` }),
+        body: JSON.stringify({ firstName: "Ana", lastName: `Cliente${i}`, phone: `809555${1000 + i}` }),
       });
       statuses.push(response.status);
     }
