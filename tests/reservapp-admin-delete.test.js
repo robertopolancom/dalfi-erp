@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createApp } from "../server/app.mjs";
 import { NeonBookingStore } from "../server/store.mjs";
-import { hashToken } from "../server/reservapp-auth.mjs";
+import { hashToken, isClientRole } from "../server/reservapp-auth.mjs";
 
 function documentStore() {
   return { async read() { return { data: {}, updatedAt: "2026-08-26T00:00:00.000Z", version: 1 }; } };
@@ -248,4 +248,60 @@ test("ReservApp ya no dice 'clienta' en ninguna parte del panel ni del frontend"
     // \b para no confundirse con identificadores en inglés como showClientAppointments.
     assert.doesNotMatch(content, /\bclientas?\b/i, `${file} todavía dice "clienta"`);
   }
+});
+
+// ---------- Convivencia de los dos valores del rol durante el despliegue ----------
+
+// Entre que Render levanta el backend nuevo y que la migración 0016 corre en Neon, la base
+// todavía dice "clienta". Si en esa ventana el backend tratara a un cliente como personal, le
+// mostraría la agenda de todo el equipo con los teléfonos de los demás clientes.
+
+test("isClientRole() reconoce el valor nuevo y el anterior, y nada más", () => {
+  assert.equal(isClientRole("cliente"), true);
+  assert.equal(isClientRole("clienta"), true);
+  for (const role of ["manicurista", "asistente", "administradora", "superadministrador", "", null, undefined]) {
+    assert.equal(isClientRole(role), false, `${role} no es un rol de cliente`);
+  }
+});
+
+test("agenda(): una sesión con el rol viejo 'clienta' sigue viendo SOLO sus propias citas", async () => {
+  const queries = [];
+  const pool = {
+    async query(sql, params) {
+      queries.push({ sql, params });
+      if (sql.includes("from app.staff")) return { rows: [{ id: "staff-1", full_name: "Dalfina" }] };
+      return { rows: [] };
+    },
+  };
+  const store = new NeonBookingStore(pool);
+  const legacy = await store.agenda({ date: "2026-09-01", account: { role: "clienta", client_id: "client-1" } });
+  assert.equal(legacy.visibility, "own");
+  assert.deepEqual(legacy.staff, [], "un cliente no debe recibir el listado del equipo");
+  assert.ok(queries[0].sql.includes("and a.client_id=$2"), "la consulta debe acotarse a su client_id");
+  assert.deepEqual(queries[0].params, ["2026-09-01", "client-1"]);
+
+  const nuevo = await store.agenda({ date: "2026-09-01", account: { role: "cliente", client_id: "client-1" } });
+  assert.equal(nuevo.visibility, "own");
+});
+
+test("agenda(): el personal sigue viendo la agenda del equipo", async () => {
+  const pool = {
+    async query(sql) {
+      if (sql.includes("from app.staff")) return { rows: [{ id: "staff-1", full_name: "Dalfina" }] };
+      return { rows: [] };
+    },
+  };
+  const result = await new NeonBookingStore(pool).agenda({ date: "2026-09-01", account: { role: "manicurista" } });
+  assert.equal(result.visibility, "team");
+  assert.equal(result.staff.length, 1);
+});
+
+test("POST /admin/accounts: 'clienta' tampoco se acepta como rol de personal", async () => {
+  await withServer(async (base) => {
+    const response = await fetch(`${base}/api/reservapp/admin/accounts`, {
+      method: "POST", headers: { ...withCookie(ADMIN_TOKEN), "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "clienta", staffId: "staff-1", phone: "8095551212" }),
+    });
+    assert.equal(response.status, 400);
+  });
 });

@@ -4,6 +4,20 @@ import { promisify } from "node:util";
 const scrypt = promisify(crypto.scrypt);
 const KEY_LENGTH = 64;
 
+// Durante el despliegue de la migración 0016 los dos valores del rol de cliente conviven: entre
+// que Render levanta este código y que la migración corre en Neon, la base todavía dice
+// "clienta". Toda pregunta de "¿esta sesión es de un cliente?" pasa por isClientRole para que ese
+// cruce no trate a un cliente como personal -- lo vería la agenda completa del equipo, con los
+// teléfonos de los demás. Aplicada la migración en producción, LEGACY_CLIENT_ROLE se puede quitar
+// (junto con el valor 'clienta' en las consultas de store.mjs que lo nombran).
+export const CLIENT_ROLE = "cliente";
+export const LEGACY_CLIENT_ROLE = "clienta";
+export function isClientRole(role) {
+  return role === CLIENT_ROLE || role === LEGACY_CLIENT_ROLE;
+}
+
+// Roles aceptados como ENTRADA (crear/editar cuentas): solo el valor nuevo -- nadie debe poder
+// crear una cuenta con el nombre viejo del rol.
 export const RESERVAPP_ROLES = Object.freeze([
   "cliente",
   "manicurista",

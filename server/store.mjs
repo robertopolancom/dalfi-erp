@@ -1,3 +1,5 @@
+import { isClientRole } from "./reservapp-auth.mjs";
+
 export class NeonDocumentStore {
   constructor(pool) {
     this.pool = pool;
@@ -853,7 +855,7 @@ export class NeonBookingStore {
        returning *`,
       [phone, clientId],
     );
-    if (result.rows[0].role !== "cliente" || result.rows[0].client_id !== clientId) {
+    if (!isClientRole(result.rows[0].role) || result.rows[0].client_id !== clientId) {
       throw Object.assign(new Error("El teléfono pertenece a otra cuenta."), { code: "PHONE_ACCOUNT_CONFLICT" });
     }
     return result.rows[0];
@@ -880,7 +882,7 @@ export class NeonBookingStore {
               s.id staff_id, s.full_name, s.status staff_status
          from app.reservapp_accounts ra
          join app.staff s on s.id = ra.staff_id
-        where ra.role <> 'cliente'
+        where ra.role not in ('cliente','clienta')
         order by s.full_name`,
     );
     return result.rows;
@@ -909,7 +911,7 @@ export class NeonBookingStore {
     const result = await this.pool.query(
       `update app.reservapp_accounts
           set role = coalesce($2, role), status = coalesce($3, status), updated_at = now()
-        where id = $1 and role <> 'cliente'
+        where id = $1 and role not in ('cliente','clienta')
         returning id, role, status, staff_id`,
       [id, role, status],
     );
@@ -1036,7 +1038,7 @@ export class NeonBookingStore {
       await client.query(
         `update app.reservapp_accounts
             set status = $2, updated_at = now()
-          where client_id = $1 and role = 'cliente' and status in ('active','suspended')`,
+          where client_id = $1 and role in ('cliente','clienta') and status in ('active','suspended')`,
         [id, status === "blocked" ? "suspended" : "active"],
       );
       await client.query("commit");
@@ -1287,8 +1289,9 @@ export class NeonBookingStore {
 
   async agenda({ date, account }) {
     const params = [date];
-    const clientFilter = account.role === "cliente" ? "and a.client_id=$2" : "";
-    if (account.role === "cliente") params.push(account.client_id);
+    const isClient = isClientRole(account.role);
+    const clientFilter = isClient ? "and a.client_id=$2" : "";
+    if (isClient) params.push(account.client_id);
     const result = await this.pool.query(
       `select a.id,a.legacy_id,a.staff_id,s.full_name staff_name,a.client_id,c.full_name client_name,
               p.phone_original client_phone,
@@ -1308,10 +1311,10 @@ export class NeonBookingStore {
         order by a.starts_at,s.full_name`,
       params,
     );
-    const staff = account.role === "cliente"
+    const staff = isClient
       ? []
       : (await this.pool.query("select id,full_name from app.staff where status='active' order by full_name")).rows;
-    return { date, visibility: account.role === "cliente" ? "own" : "team", staff, appointments: result.rows };
+    return { date, visibility: isClient ? "own" : "team", staff, appointments: result.rows };
   }
 
   // Vista de cliente en ReservApp: "Citas activas" (próximas, sin cancelar/reasignar) e

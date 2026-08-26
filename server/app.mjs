@@ -9,6 +9,7 @@ import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
   RESERVAPP_ROLES,
   generateOtpCode,
+  isClientRole,
   hashPassword,
   hashToken,
   normalizePhone,
@@ -759,7 +760,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     // equipo), esta ruta es exclusiva de cuentas cliente y siempre usa su propio client_id de la
     // sesión, nunca uno recibido del cliente.
     app.get("/api/reservapp/my-appointments", requireReservapp, async (req, res, next) => {
-      if (req.reservapp.account.role !== "cliente") return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
+      if (!isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
       const scope = req.query.scope === "history" ? "history" : "active";
       try { res.json({ appointments: await bookingStore.listClientAppointments({ clientId: req.reservapp.account.client_id, scope }) }); }
       catch (error) { next(error); }
@@ -786,7 +787,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const role = cleanText(req.body?.role, 32);
       const staffId = cleanText(req.body?.staffId, 64);
       const phone = cleanText(req.body?.phone, 30);
-      if (!RESERVAPP_ROLES.includes(role) || role === "cliente" || !staffId || !validPhone(phone)) {
+      if (!RESERVAPP_ROLES.includes(role) || isClientRole(role) || !staffId || !validPhone(phone)) {
         return res.status(400).json({ error: "Selecciona colaboradora, rol y teléfono válidos." });
       }
       try {
@@ -817,7 +818,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     app.patch("/api/reservapp/admin/accounts/:id", bookingRateLimit, async (req, res, next) => {
       const role = req.body?.role != null ? cleanText(req.body.role, 32) : null;
       const status = req.body?.status != null ? cleanText(req.body.status, 20) : null;
-      if (role && (!RESERVAPP_ROLES.includes(role) || role === "cliente")) return res.status(400).json({ error: "Rol inválido." });
+      if (role && (!RESERVAPP_ROLES.includes(role) || isClientRole(role))) return res.status(400).json({ error: "Rol inválido." });
       if (status && !["pending", "active", "suspended"].includes(status)) return res.status(400).json({ error: "Estado inválido." });
       if (!role && !status) return res.status(400).json({ error: "Nada que actualizar." });
       try {
@@ -1251,7 +1252,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       let clientId = null;
       if (!viaBridge) {
         const session = await reservappSession(req);
-        if (session?.account.role === "cliente") {
+        if (isClientRole(session?.account.role)) {
           clientId = session.account.client_id;
         } else {
           const { allowed } = await resolveAdminAuthority(req);
@@ -1468,7 +1469,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         // distinguía el rol real de quien la creó.
         let source, createdBy;
         if (req.body?.actorType === "employee") {
-          if (appSession && appSession.account.role !== "cliente") {
+          if (appSession && !isClientRole(appSession.account.role)) {
             source = `RESERVAPP_${appSession.account.role.toUpperCase()}`;
             createdBy = { role: appSession.account.role, accountId: appSession.account.id };
           } else {
@@ -1479,7 +1480,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             createdBy = { role: erpRole, email: employee?.email || null };
           }
         } else {
-          if (!appSession || appSession.account.role !== "cliente" || appSession.account.client_id !== clientId) {
+          if (!appSession || !isClientRole(appSession.account.role) || appSession.account.client_id !== clientId) {
             return res.status(401).json({ error: "Inicia sesión con tu teléfono y contraseña para reservar." });
           }
           source = "RESERVAPP_CLIENTE";
