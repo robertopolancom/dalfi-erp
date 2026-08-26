@@ -237,11 +237,12 @@
   </form></dialog>
 
   <dialog id="quick-setup-dialog"><form id="quick-setup-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Ya te conocemos</p><h2>¡Hola de nuevo!</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
-    <p id="quick-setup-intro">¿Eres tú? Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.</p>
+    <div class="dialog-head"><div><p class="kicker">Ya confirmamos que eres tú</p><h2 id="quick-setup-title">Crea tu contraseña</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
+    <p id="quick-setup-intro">Define una contraseña para tu cuenta.</p>
+    <label>Contraseña<input id="quick-setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label>Confirmar contraseña<input id="quick-setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
     <div class="message" id="quick-setup-message" role="status"></div>
-    <button class="primary" type="submit">Sí, soy yo -- crear mi contraseña</button>
-    <button class="secondary" id="quick-setup-not-me" type="button">No soy yo</button>
+    <button class="primary" type="submit">Guardar contraseña</button>
     <a class="whatsapp-link" href="https://wa.me/18093463030" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
   </form></dialog>
 

@@ -926,6 +926,24 @@ export class NeonBookingStore {
     return true;
   }
 
+  // Autoservicio (POST /auth/set-password-after-verification): crea o reinicia su propia
+  // contraseña una vez que /auth/verify-name confirmó su identidad por nombre -- mientras Meta no
+  // apruebe la verificación real por WhatsApp (RESERVAPP_SKIP_PHONE_VERIFICATION), esta es la
+  // prueba de identidad que reemplaza al código real. Nunca reactiva una cuenta
+  // suspendida/bloqueada (where status in pending/active) -- alguien a quien administración le
+  // quitó el acceso a propósito no puede recuperarlo solo sabiendo su propio nombre; esa cuenta
+  // sigue exigiendo una acción explícita de administración.
+  async setOwnPasswordAndActivate({ id, passwordHash }) {
+    const result = await this.pool.query(
+      `update app.reservapp_accounts set password_hash=$2, status='active', updated_at=now()
+        where id=$1 and status in ('pending','active') returning id`,
+      [id, passwordHash],
+    );
+    if (!result.rowCount) return null;
+    await this.pool.query("update app.reservapp_sessions set revoked_at=now() where account_id=$1 and revoked_at is null", [id]);
+    return true;
+  }
+
   // Alternativa a resetAccountPassword: en vez de que administración escriba la contraseña
   // nueva por la persona, borra la que tenía y la deja en el mismo estado "sin contraseña
   // todavía" que una cuenta recién creada -- la próxima vez que esa persona (clienta o

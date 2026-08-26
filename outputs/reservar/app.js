@@ -679,10 +679,13 @@ $("phone-check-form").addEventListener("submit", async (event) => {
 // Paso intermedio compartido por "Es mi primera vez" y "Olvidé mi contraseña" cuando ya existe
 // una ficha con ese teléfono: en vez de que el servidor diga el nombre, la propia persona lo
 // escribe y /auth/verify-name lo compara (tolerando errores de tipografía) sin nunca revelarlo
-// -- ni siquiera la respuesta de "no coincide" distingue de "el teléfono no existía".
-function openConfirmName({ phone, needsPasswordOnly }) {
+// -- ni siquiera la respuesta de "no coincide" distingue de "el teléfono no existía". Una vez
+// verificada, "crear contraseña por primera vez" y "no recordarla" son la MISMA acción (definir
+// una contraseña nueva) -- isReset solo cambia el texto que ve, nunca la lógica.
+function openConfirmName({ phone, needsPasswordOnly, isReset = false }) {
   state.confirmNamePhone = phone;
   state.confirmNameNeedsPasswordOnly = needsPasswordOnly;
+  state.passwordResetFlow = isReset;
   $("confirm-name-value").value = "";
   message($("confirm-name-message"));
   $("confirm-name-dialog").showModal();
@@ -696,13 +699,18 @@ $("confirm-name-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/verify-name", { method: "POST", body: JSON.stringify({ phone: state.confirmNamePhone, firstName: typedName }) });
     if (!result.verified) {
-      message($("confirm-name-message"), "No pudimos confirmar tu identidad con ese nombre. Revisa que esté bien escrito, o habla con un asesor por WhatsApp.");
+      message($("confirm-name-message"), "No pudimos confirmar tu identidad con ese nombre. Revisa que esté bien escrito, o pide a administración que reinicie tu acceso.");
       return;
     }
     $("confirm-name-dialog").close();
     if (state.confirmNameNeedsPasswordOnly) {
       state.quickSetupPhone = state.confirmNamePhone;
-      $("quick-setup-intro").textContent = `¡Hola, ${typedName}! Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`;
+      state.quickSetupFirstName = typedName;
+      $("quick-setup-title").textContent = state.passwordResetFlow ? "Elige tu nueva contraseña" : "Crea tu contraseña";
+      $("quick-setup-intro").textContent = state.passwordResetFlow
+        ? `¡Hola, ${typedName}! Define una contraseña nueva.`
+        : `¡Hola, ${typedName}! Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`;
+      $("quick-setup-password").value = ""; $("quick-setup-password-confirm").value = "";
       message($("quick-setup-message"));
       $("quick-setup-dialog").showModal();
     } else {
@@ -715,44 +723,39 @@ $("confirm-name-form").addEventListener("submit", async (event) => {
 });
 
 $("close-quick-setup").addEventListener("click", () => $("quick-setup-dialog").close());
-$("quick-setup-not-me").addEventListener("click", () => {
-  $("quick-setup-dialog").close();
-  $("phone-check-value").value = "";
-  message($("phone-check-message"));
-  $("phone-check-dialog").showModal();
-});
 $("quick-setup-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const password = $("quick-setup-password").value;
+  if (password !== $("quick-setup-password-confirm").value) return message($("quick-setup-message"), "Las contraseñas no coinciden.");
   const button = event.submitter; button.disabled = true;
-  message($("quick-setup-message"), "Enviando…", true);
+  message($("quick-setup-message"), "Guardando…", true);
   try {
     const serviceIds = selectedServiceIds();
     const hasDraft = Boolean(serviceIds.length);
-    const result = await api("/api/reservapp/auth/request-setup", {
-      method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+    const result = await api("/api/reservapp/auth/set-password-after-verification", {
+      method: "POST",
       body: JSON.stringify({
-        phone: state.quickSetupPhone,
+        phone: state.quickSetupPhone, firstName: state.quickSetupFirstName, password,
         serviceIds, staffId: hasDraft ? $("staff").value : "", date: hasDraft ? $("date").value : "", time: hasDraft ? $("time").value : "",
-        notes: $("notes").value, website: $("website").value,
+        notes: $("notes").value,
       }),
     });
-    $("quick-setup-dialog").close(); message($("booking-message"), result.message, true);
-    // TEMPORAL: ver comentario en server/app.mjs junto a RESERVAPP_SKIP_PHONE_VERIFICATION.
-    if (result.activationTicket) { openSetupDialog(result.activationTicket); return; }
-    $("submit-booking").disabled = true;
-    $("verify-code-phone").value = state.quickSetupPhone; $("verify-code-code").value = "";
-    message($("verify-code-message")); $("verify-code-dialog").showModal();
-  } catch (error) {
-    message($("quick-setup-message"), error.message);
-    if (error.body?.accountExists) {
-      // Condición de carrera real (otra sesión definió la contraseña justo en este instante) --
-      // el servidor no revela el nombre aquí tampoco, ver /auth/check-phone.
-      $("quick-setup-dialog").close();
-      $("login-phone").value = state.quickSetupPhone;
-      message($("login-message"), "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", true);
-      $("login-dialog").showModal();
-    }
-  } finally { button.disabled = false; }
+    const wasPasswordReset = state.passwordResetFlow;
+    state.passwordResetFlow = false;
+    applyAccount(result.account);
+    $("quick-setup-dialog").close();
+    if (result.appointment) {
+      $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
+      $("success-summary").textContent = `Cita confirmada. Referencia: ${result.appointment.reference}`;
+    } else if (wasPasswordReset) {
+      message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
+    } else if (state.pendingBookingStart) {
+      state.pendingBookingStart = false;
+      message($("booking-message"), `Cuenta creada. ¡Hola, ${result.account.name}!`, true);
+      goToStep(1);
+    } else message($("booking-message"), result.bookingError || "Contraseña guardada. Ya puedes reservar.", !result.bookingError);
+  } catch (error) { message($("quick-setup-message"), error.message); }
+  finally { button.disabled = false; }
 });
 $("step1-back").addEventListener("click", () => goToStep(0));
 $("step1-next").addEventListener("click", () => {
@@ -887,29 +890,13 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), "Enviando…", true);
   try {
     const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
-    // No es un reset real -- nunca creó contraseña (ficha del ERP sin credenciales de ReservApp
-    // todavía). "Olvidé mi contraseña" no aplica; se le manda al mismo flujo de "solo falta
-    // definir tu contraseña" que ya usa check-phone (ver quick-setup-dialog).
-    if (result.neverHadPassword) {
+    // TEMPORAL a propósito (ver comentario junto a /auth/request-password-reset en
+    // server/app.mjs): mientras Meta no apruebe la verificación real por WhatsApp, confirma
+    // identidad por nombre en vez de mandar un código -- mismo paso intermedio que usa
+    // check-phone, tanto si nunca creó contraseña como si la olvidó.
+    if (result.needsNameConfirmation) {
       $("forgot-password-dialog").close();
-      openConfirmName({ phone: $("forgot-password-phone").value, needsPasswordOnly: true });
-      return;
-    }
-    // TEMPORAL: mientras el backend tenga apagado el autoservicio (ver comentario junto a
-    // /auth/request-password-reset en server/app.mjs), no hay código que verificar -- en vez de
-    // dejarla sin salida, se le ofrece hablar por WhatsApp con un asesor (enlace real, no solo
-    // texto) o pedirle a administración que la reinicie desde "Configuración de usuarios".
-    if (result.selfServiceDisabled) {
-      $("forgot-password-dialog").close();
-      const target = $("booking-message");
-      target.className = "message ok";
-      target.replaceChildren(
-        `${result.message} `,
-        Object.assign(document.createElement("a"), {
-          className: "whatsapp-link", href: `https://wa.me/${result.whatsappNumber || "18093463030"}`, target: "_blank", rel: "noopener",
-          textContent: "Escríbenos por WhatsApp",
-        }),
-      );
+      openConfirmName({ phone: $("forgot-password-phone").value, needsPasswordOnly: true, isReset: true });
       return;
     }
     state.passwordResetFlow = true; $("forgot-password-dialog").close(); message($("booking-message"), result.message, true);

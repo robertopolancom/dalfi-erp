@@ -641,21 +641,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       try {
         const account = await bookingStore.accountByPhone(phone);
         if (account?.password_hash) {
-          // TEMPORAL (mismo interruptor que RESERVAPP_SKIP_PHONE_VERIFICATION, ver comentario
-          // junto a /auth/request-setup): saltarse la prueba de teléfono para CREAR una cuenta
-          // nueva es un riesgo aceptable, pero hacerlo para restablecer la contraseña de una
-          // cuenta YA ACTIVA no -- cualquiera que supiera el número de otra clienta podría
-          // robarle el acceso sin que llegue ningún código real. Mientras el bridge no pueda
-          // mandar ese código por WhatsApp, el autoservicio de "olvidé mi contraseña" (para
-          // quien SÍ tiene una contraseña ya creada) queda apagado: solo administración puede
-          // restablecerla, con POST /api/reservapp/admin/accounts/:id/reset-password.
+          // TEMPORAL A PROPÓSITO (pedido explícito del dueño del negocio, 2026-08-25): estamos
+          // esperando a que Meta apruebe la verificación de la empresa -- hasta entonces el
+          // bridge no puede mandar códigos reales por WhatsApp, y RESERVAPP_SKIP_PHONE_VERIFICATION
+          // se queda en "true". Mientras tanto, /auth/verify-name + /auth/set-password-after-verification
+          // reemplazan el código real: la clienta confirma su identidad escribiendo su nombre en
+          // vez de recibir un código. Cuando Meta apruebe y se apague el interruptor, este mismo
+          // bloque vuelve a mandar el código real (rama de abajo) -- no borrar esa rama.
           if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
-            return res.status(202).json({
-              pendingConfirmation: false,
-              selfServiceDisabled: true,
-              message: "Por ahora no podemos verificar tu teléfono por WhatsApp para restablecer tu contraseña. Escríbenos y un asesor te ayuda, o pide en el salón que la administración te la reinicie.",
-              whatsappNumber: "18093463030",
-            });
+            return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
           }
           const code = generateOtpCode();
           const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
@@ -669,17 +663,75 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         // Sin contraseña creada todavía: no necesariamente "olvidó" la suya -- puede que nunca
         // haya definido ninguna (cuenta de personal invitada sin activar, o ficha del ERP sin
         // credenciales de ReservApp todavía -- mismos dos casos que reconoce /auth/check-phone).
-        // Distinguirlo evita el mensaje confuso de "restablecer" algo que nunca existió -- en su
-        // lugar, la dirige a crear su contraseña por primera vez.
-        if (account) return res.json({ pendingConfirmation: false, neverHadPassword: true });
+        if (account) return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
         const customer = await bookingStore.resolveClient({ phone });
-        if (customer) return res.json({ pendingConfirmation: false, neverHadPassword: true });
+        if (customer) return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
         // Ni cuenta ni ficha -- misma respuesta genérica que antes, este endpoint no debe servir
         // para enumerar qué teléfonos existen en el sistema.
         res.status(202).json({
           pendingConfirmation: true,
           message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",
         });
+      } catch (error) { next(error); }
+    });
+
+    // Autoservicio de contraseña una vez confirmada la identidad por nombre (/auth/verify-name):
+    // sirve tanto para crear la contraseña por primera vez como para reemplazar una que ya no
+    // recuerda -- misma acción en ambos casos, sin distinguir, porque desde aquí solo importa
+    // "ya sé quién dice ser, déjala definir una contraseña". Vuelve a verificar el nombre aquí
+    // mismo (nunca confía en que el frontend ya lo hizo en /auth/verify-name) y NUNCA reactiva
+    // una cuenta que administración suspendió/bloqueó a propósito -- esa sigue exigiendo que
+    // administración la reinicie (POST /admin/accounts/:id/reset-password o "Reiniciar acceso").
+    app.post("/api/reservapp/auth/set-password-after-verification", bookingRateLimit, async (req, res, next) => {
+      const phone = cleanText(req.body?.phone, 30);
+      const firstName = cleanText(req.body?.firstName, 80);
+      const password = String(req.body?.password || "");
+      if (!validPhone(phone) || !firstName) return res.status(400).json({ error: "Escribe tu nombre para continuar." });
+      if (!validPassword(password)) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres, una letra y un número." });
+      // Borrador de cita opcional (si venía de reservar y se identificó a mitad del wizard) --
+      // mismo criterio que request-setup: solo se valida/crea si de verdad hay una selección
+      // completa, nunca a medias.
+      const serviceIds = cleanServiceIds(req.body?.serviceIds);
+      const draft = {
+        serviceIds, staffId: cleanText(req.body?.staffId, 64), date: cleanText(req.body?.date, 10),
+        time: cleanText(req.body?.time, 5), notes: cleanText(req.body?.notes, 500),
+      };
+      const hasDraftIntent = Boolean(serviceIds.length || draft.staffId || draft.date || draft.time);
+      if (hasDraftIntent && (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time))) {
+        return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora, o deja todo vacío para solo definir tu contraseña." });
+      }
+      try {
+        const existingAccount = await bookingStore.accountByPhone(phone);
+        const customer = existingAccount ? null : await bookingStore.resolveClient({ phone });
+        const actualName = existingAccount?.full_name || customer?.full_name || "";
+        if (!actualName || !namesLooselyMatch(firstName, actualName)) {
+          return res.status(401).json({ error: "No pudimos confirmar tu identidad con ese nombre. Pide a administración que reinicie tu acceso." });
+        }
+        let accountId = existingAccount?.id;
+        let clientId = existingAccount?.client_id || customer?.id;
+        if (!accountId) accountId = (await bookingStore.ensureClientAccount({ clientId: customer.id, phone })).id;
+        const updated = await bookingStore.setOwnPasswordAndActivate({ id: accountId, passwordHash: await hashPassword(password) });
+        if (!updated) return res.status(403).json({ error: "Esta cuenta está suspendida. Pide a administración que reinicie tu acceso." });
+        const sessionToken = secureToken();
+        const sessionExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+        await bookingStore.createSession({ accountId, tokenHash: hashToken(sessionToken), expiresAt: sessionExpiresAt });
+        const account = await bookingStore.accountByPhone(phone);
+        let appointment = null;
+        let bookingError = null;
+        if (hasDraftIntent && clientId) {
+          const input = { clientId, ...draft, serviceIds, source: "RESERVAPP_CLIENTE", createdBy: { role: "clienta", accountId }, idempotencyKey: crypto.randomUUID() };
+          const availability = await bookingStore.availability(input);
+          if (availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
+            input.endTime = new Date(new Date(`2000-01-01T${draft.time}:00Z`).getTime() + availability.durationMinutes * 60_000).toISOString().slice(11, 16);
+            const created = await bookingStore.createAppointment(input);
+            if (!created.conflict && !created.missing) {
+              appointment = { id: created.appointment.id, reference: created.appointment.legacy_id };
+              if (!created.idempotent) await syncChangedAppointmentsToGoogleCalendar(env, created.previousDocument, created.document, { fetchImpl });
+            } else bookingError = "Tu contraseña quedó definida, pero el horario se ocupó. Elige otro.";
+          } else bookingError = "Tu contraseña quedó definida, pero el horario se ocupó. Elige otro.";
+        }
+        res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
+        res.json({ account: publicAccount(account), appointment, bookingError });
       } catch (error) { next(error); }
     });
 
