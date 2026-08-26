@@ -11,6 +11,14 @@ const api = async (path, options = {}) => {
   return body;
 };
 
+// La migración 0016 del ERP renombró el rol "clienta" a "cliente". Este frontend (Cloudflare) y
+// el backend (Render) se publican por separado, y la migración es un tercer paso aparte -- así
+// que la sesión puede llegar con cualquiera de los dos valores. Si aquí se compara solo contra
+// uno, en esa ventana un cliente se toma por personal: la app le pediría elegir "el cliente de
+// la cita" (búsqueda que el backend solo permite a personal) y no podría reservar.
+// Cuando la migración lleve tiempo aplicada en producción, se puede dejar solo "cliente".
+const isClientRole = (role) => role === "cliente" || role === "clienta";
+
 const message = (element, text = "", ok = false) => {
   element.textContent = text;
   element.className = ok ? "message ok" : "message";
@@ -45,7 +53,7 @@ function setClient(client) {
 
 function applyAccount(account) {
   state.account = account;
-  state.client = account?.role === "cliente" ? { id: account.clientId, name: account.name } : null;
+  state.client = isClientRole(account?.role) ? { id: account.clientId, name: account.name } : null;
   $("account-button").textContent = account ? account.name : "Entrar";
   $("logout-link").classList.toggle("hidden", !account);
   // Agenda/panel de personal es una función de cuenta identificada -- sin sesión no debe ni
@@ -61,7 +69,7 @@ function applyAccount(account) {
   $("open-my-availability").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
   $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Citas activas";
-  $("mode-label").textContent = !account ? "Reserva rápida" : account.role === "cliente" ? "Mi reserva" : "Reserva del equipo";
+  $("mode-label").textContent = !account ? "Reserva rápida" : isClientRole(account.role) ? "Mi reserva" : "Reserva del equipo";
   if (state.client) setClient(state.client); else $("selected-client").classList.add("hidden");
   // Cuentas de personal aterrizan directo en el panel de colaboradores (agenda) -- ya no en el
   // wizard de reserva del cliente -- pedido explícito de diseño.
@@ -164,7 +172,7 @@ async function loadSession() {
     // ella, entra normal con su teléfono y contraseña. El personal sí mantiene su sesión de 30
     // días -- comparten el tablet de recepción y no tiene sentido pedirles credenciales cada
     // vez que abren la app.
-    applyAccount(account && account.role !== "cliente" ? account : null);
+    applyAccount(account && !isClientRole(account.role) ? account : null);
   } catch { applyAccount(null); }
 }
 
@@ -928,7 +936,7 @@ $("login-form").addEventListener("submit", async (event) => {
   try {
     const result = await api("/api/reservapp/auth/login", { method: "POST", body: JSON.stringify({ phone: $("login-phone").value, password: $("login-password").value }) });
     applyAccount(result.account); $("login-dialog").close(); $("login-form").reset(); message($("booking-message"), `Hola, ${result.account.name}.`, true);
-    if (state.pendingBookingStart && result.account.role === "cliente") { state.pendingBookingStart = false; goToStep(1); }
+    if (state.pendingBookingStart && isClientRole(result.account.role)) { state.pendingBookingStart = false; goToStep(1); }
     else if (!$("agenda-card").classList.contains("hidden")) showAgenda();
   } catch (error) { message($("login-message"), error.message); }
   finally { button.disabled = false; }
@@ -991,8 +999,8 @@ $("booking-form").addEventListener("submit", async (event) => {
     const result = await api("/api/fast-booking/appointments", {
       method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
       body: JSON.stringify(isCombo
-        ? { clientId: state.client.id, segments: state.comboSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: state.account.role === "cliente" ? "customer" : "employee", website: $("website").value }
-        : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: state.account.role === "cliente" ? "customer" : "employee", website: $("website").value }),
+        ? { clientId: state.client.id, segments: state.comboSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }
+        : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }),
     });
     if (isCombo) {
       const details = state.comboSegments.map((segment) => `${segment.serviceName} con ${segment.staffName} a las ${formatSlotTime(segment.time)}`).join(" · ");

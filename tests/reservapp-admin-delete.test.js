@@ -243,11 +243,20 @@ test("el panel ofrece 'Borrar credenciales' en Personal y en Clientes, y 'Borrar
 });
 
 test("ReservApp ya no dice 'clienta' en ninguna parte del panel ni del frontend", () => {
-  for (const file of ["app.js", "index.html", "styles.css"]) {
+  // index.html y styles.css son presentación pura: ahí "clienta" no puede aparecer de ninguna
+  // forma. \b para no confundirse con identificadores en inglés como showClientAppointments.
+  for (const file of ["index.html", "styles.css"]) {
     const content = readFileSync(new URL(`../outputs/reservar/${file}`, import.meta.url), "utf8");
-    // \b para no confundirse con identificadores en inglés como showClientAppointments.
     assert.doesNotMatch(content, /\bclientas?\b/i, `${file} todavía dice "clienta"`);
   }
+  // En app.js el valor viejo sobrevive a propósito, pero SOLO dentro del shim de compatibilidad
+  // (isClientRole y el comentario que lo explica) -- nunca en un texto que vea alguien.
+  const app = readFileSync(new URL("../outputs/reservar/app.js", import.meta.url), "utf8");
+  const fuera = app
+    .split("\n")
+    .filter((line) => /\bclientas?\b/i.test(line))
+    .filter((line) => !/isClientRole|migración 0016 del ERP renombró/.test(line));
+  assert.deepEqual(fuera, [], 'app.js dice "clienta" fuera del shim de compatibilidad');
 });
 
 // ---------- Convivencia de los dos valores del rol durante el despliegue ----------
@@ -304,4 +313,17 @@ test("POST /admin/accounts: 'clienta' tampoco se acepta como rol de personal", a
     });
     assert.equal(response.status, 400);
   });
+});
+
+test("la PWA de ReservApp reconoce los dos valores del rol, no solo el nuevo", () => {
+  const app = readFileSync(new URL("../outputs/reservar/app.js", import.meta.url), "utf8");
+  assert.match(app, /const isClientRole = \(role\) => role === "cliente" \|\| role === "clienta";/);
+  // Ninguna decisión de "¿es un cliente?" puede comparar contra un único valor: en la ventana
+  // entre el deploy de Cloudflare y la migración, eso dejaría al cliente sin poder reservar.
+  const sinElHelper = app.split("\n").filter((line) => !line.includes("const isClientRole"));
+  assert.deepEqual(
+    sinElHelper.filter((line) => /\.role (===|!==) "cliente"/.test(line)),
+    [],
+    "queda una comparación estricta del rol fuera de isClientRole",
+  );
 });
