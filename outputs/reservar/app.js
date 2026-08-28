@@ -1103,7 +1103,9 @@ async function loadEmployeesTable() {
       const status = document.createElement("td");
       const badge = document.createElement("span"); badge.className = `admin-status ${account.status}`; badge.textContent = EMPLOYEE_STATUS_LABEL[account.status] || account.status;
       status.append(badge);
-      const actions = document.createElement("td");
+      const actionsCell = document.createElement("td");
+      const actions = document.createElement("div"); actions.className = "admin-row-actions";
+      actionsCell.append(actions);
       const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "admin-row-action";
       toggle.textContent = account.status === "suspended" ? "Reactivar" : "Suspender";
       toggle.addEventListener("click", async () => {
@@ -1123,7 +1125,7 @@ async function loadEmployeesTable() {
       actions.append(resetPassword);
       actions.append(clearPasswordButton({ accountId: account.id, name: account.full_name, messageTarget: "employees-message", onDone: loadEmployeesTable }));
       actions.append(deleteAccountButton({ accountId: account.id, name: account.full_name, messageTarget: "employees-message", onDone: loadEmployeesTable }));
-      row.append(name, role, status, actions);
+      row.append(name, role, status, actionsCell);
       return row;
     }));
   } catch (error) { message($("employees-message"), error.message); }
@@ -1198,7 +1200,9 @@ async function loadClientsAdmin(query = "") {
       const status = document.createElement("td");
       const badge = document.createElement("span"); badge.className = `admin-status ${client.status}`; badge.textContent = CLIENT_STATUS_LABEL[client.status] || client.status;
       status.append(badge);
-      const actions = document.createElement("td");
+      const actionsCell = document.createElement("td");
+      const actions = document.createElement("div"); actions.className = "admin-row-actions";
+      actionsCell.append(actions);
       const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "admin-row-action";
       toggle.textContent = client.status === "blocked" ? "Desbloquear" : "Bloquear";
       toggle.addEventListener("click", async () => {
@@ -1221,7 +1225,7 @@ async function loadClientsAdmin(query = "") {
         actions.append(deleteAccountButton({ accountId: client.account_id, name: client.full_name, messageTarget: "clients-admin-message", onDone: () => loadClientsAdmin($("clients-admin-search").value.trim()) }));
       }
       actions.append(deleteClientButton({ client, onDone: () => loadClientsAdmin($("clients-admin-search").value.trim()) }));
-      row.append(name, phone, status, actions);
+      row.append(name, phone, status, actionsCell);
       return row;
     }));
   } catch (error) { message($("clients-admin-message"), error.message); }

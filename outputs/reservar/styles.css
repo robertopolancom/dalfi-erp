@@ -172,6 +172,11 @@ dialog form{padding:28px}
 .admin-table th{text-align:left;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:800;padding:10px 12px;border-bottom:1px solid var(--line)}
 .admin-table td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
 .admin-table tr:last-child td{border-bottom:0}
+/* Personal/Clientes pueden tener 4-5 botones de acción por fila (suspender, restablecer,
+   reiniciar acceso, borrar credenciales, borrar cliente) -- sin flex-wrap, esa celda se hacía
+   más ancha que la pantalla del teléfono y los botones nuevos quedaban fuera de vista sin
+   ninguna señal de que hacía falta deslizar la tabla para verlos. */
+.admin-row-actions{display:flex;flex-wrap:wrap;gap:6px}
 .admin-status{display:inline-flex;align-items:center;gap:5px;font-size:.74rem;font-weight:800;padding:3px 9px;border-radius:999px}
 .admin-status::before{content:"";width:6px;height:6px;border-radius:50%}
 .admin-status.active{background:#e7f2ea;color:var(--brand)}
