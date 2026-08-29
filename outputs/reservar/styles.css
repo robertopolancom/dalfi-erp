@@ -76,6 +76,11 @@ fieldset{border:0;padding:0;margin:2px 0 22px}
 .primary,.secondary,.new-client{width:100%;border-radius:14px;padding:14px 18px;font-weight:900;cursor:pointer}
 .primary{border:0;background:var(--ink);color:#fff;box-shadow:0 10px 24px rgba(0,0,0,.32),inset 0 1px 0 rgba(255,255,255,.14)}
 .primary:disabled{opacity:.55;cursor:wait}
+/* CTA de portada ("Reservar") en contorno -- estilo de la plantilla de referencia comprada
+   (botón "Book your appointment" en línea fina, mayúsculas, muy espaciado). Solo el botón de
+   portada, no todos los .primary del wizard/paneles: esos llevan textos más largos ("Siguiente:
+   ver horarios") donde mayúsculas + letter-spacing habría forzado saltos de línea. */
+#start-booking{background:transparent;border:1.5px solid var(--ink);color:var(--ink);box-shadow:none;text-transform:uppercase;letter-spacing:.14em;font-weight:700;font-size:.85rem;border-radius:999px}
 .secondary{border:1px solid #D3CAB2;background:#fff;color:var(--brand-dark)}
 .new-client{border:1px dashed #B8AF8F;background:transparent;color:var(--brand-dark);margin:0 0 20px}
 .new-client span{font-size:1.2rem}
