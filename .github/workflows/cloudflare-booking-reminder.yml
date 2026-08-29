@@ -1,11 +1,19 @@
 name: Activate booking reminder cron
 
+# dalfi-erp.pages.dev (Cloudflare Pages + Supabase) fue eliminado -- el motor de recordatorios
+# vive ahora en server/app.mjs (POST /api/booking/send-reminders, Render, ssc.sebengroup.com).
+# Este workflow ya NO despliega ningún proyecto de Pages ni rota el secreto: BOOKING_REMINDER_CRON_SECRET
+# se administra a mano en el dashboard de Render (mismo valor que el secret de GitHub de abajo),
+# igual que cualquier otra variable de entorno de ese servicio. Solo despliega el Worker (Cron
+# Trigger) y verifica que el contrato del endpoint siga funcionando end-to-end.
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
       - .github/workflows/cloudflare-booking-reminder.yml
+      - workers/booking-reminder-cron/**
 
 permissions:
   contents: read
@@ -21,7 +29,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      PAGES_PROJECT: dalfi-erp
+      BOOKING_REMINDER_CRON_SECRET: ${{ secrets.BOOKING_REMINDER_CRON_SECRET }}
+      APP_BASE_URL: https://ssc.sebengroup.com
       WORKER_NAME: dalfi-erp-booking-reminder-cron
       WRANGLER_VERSION: 4.122.0
 
@@ -39,33 +48,13 @@ jobs:
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "Falta CLOUDFLARE_API_TOKEN"; exit 1; }
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Falta CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+          test -n "$BOOKING_REMINDER_CRON_SECRET" || { echo "Falta BOOKING_REMINDER_CRON_SECRET (debe ser igual al configurado en Render)"; exit 1; }
 
       - name: Install and test
         run: |
           npm ci
           node --test workers/booking-reminder-cron/tests/worker.test.js
-          node --check functions/api/booking/send-reminders.js
           node --check workers/booking-reminder-cron/worker.js
-
-      - name: Generate ephemeral shared secret
-        shell: bash
-        run: |
-          set -euo pipefail
-          value="$(openssl rand -hex 32)"
-          echo "::add-mask::$value"
-          {
-            echo "BOOKING_REMINDER_CRON_SECRET<<DALFI_SECRET_EOF"
-            echo "$value"
-            echo "DALFI_SECRET_EOF"
-          } >> "$GITHUB_ENV"
-
-      - name: Update Pages secret and deploy production
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
-            npx --yes wrangler@"$WRANGLER_VERSION" pages secret put BOOKING_REMINDER_CRON_SECRET --project-name "$PAGES_PROJECT"
-          npx --yes wrangler@"$WRANGLER_VERSION" pages deploy outputs             --project-name "$PAGES_PROJECT"             --branch main
 
       - name: Deploy Worker and activate Cron Trigger
         shell: bash
@@ -75,15 +64,15 @@ jobs:
           printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
             npx --yes wrangler@"$WRANGLER_VERSION" secret put BOOKING_REMINDER_CRON_SECRET               --config workers/booking-reminder-cron/wrangler.toml
 
-      - name: Verify endpoint contract and deployed secret names
+      - name: Verify endpoint contract against Render (ssc.sebengroup.com)
         shell: bash
         run: |
           set -euo pipefail
-          unauthorized_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}'             --request POST https://dalfi-erp.pages.dev/api/booking/send-reminders)"
+          unauthorized_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}'             --request POST "$APP_BASE_URL/api/booking/send-reminders")"
           test "$unauthorized_status" = "401"
 
           response_file="$(mktemp)"
-          authenticated_status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}'             --request POST https://dalfi-erp.pages.dev/api/booking/send-reminders             --header "x-cron-secret: $BOOKING_REMINDER_CRON_SECRET")"
+          authenticated_status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}'             --request POST "$APP_BASE_URL/api/booking/send-reminders"             --header "x-cron-secret: $BOOKING_REMINDER_CRON_SECRET")"
           test "$authenticated_status" = "200"
           node -e '
             const fs = require("fs");
@@ -101,9 +90,3 @@ jobs:
 
           npx --yes wrangler@"$WRANGLER_VERSION" secret list             --config workers/booking-reminder-cron/wrangler.toml |
             grep -q BOOKING_REMINDER_CRON_SECRET
-
-      - name: Remove secret from runner environment
-        if: always()
-        shell: bash
-        run: |
-          unset BOOKING_REMINDER_CRON_SECRET || true
