@@ -888,6 +888,12 @@ export class NeonBookingStore {
     return result.rows;
   }
 
+  // Configuración de usuarios -> Clientes muestra SOLO clientes que ya tienen cuenta de
+  // ReservApp (join, no left join) -- antes mostraba las 43+ fichas de toda la ERP (cualquier
+  // cliente facturado por el personal, tenga o no acceso a la app), lo cual hacía parecer que
+  // "todo cliente de la ERP ya está creado en ReservApp". La búsqueda que usa el personal para
+  // reservarle una cita a CUALQUIER cliente (GET /api/fast-booking/clients) es una consulta
+  // aparte y sigue mostrando la ERP completa -- ese es un uso legítimo distinto de este panel.
   async listClientsForAdmin({ query = "", limit = 200 } = {}) {
     const search = `%${query.trim()}%`;
     const result = await this.pool.query(
@@ -895,7 +901,7 @@ export class NeonBookingStore {
               ra.id account_id, ra.status account_status
          from app.clients c
          left join app.client_phones p on p.client_id = c.id and p.is_primary
-         left join app.reservapp_accounts ra on ra.client_id = c.id
+         join app.reservapp_accounts ra on ra.client_id = c.id
         where c.status <> 'deleted'
           and ($1 = '' or c.full_name ilike $2 or p.phone_original ilike $2)
         order by c.full_name
@@ -1276,6 +1282,190 @@ export class NeonBookingStore {
     } finally {
       client.release();
     }
+  }
+
+  // ---------- Autorregistro diferido (0017_reservapp_pending_registrations.sql) ----------
+  // Mismo problema que ya resolvían prepareSetup/verifySetupOtp/activateWithToken, pero sin
+  // crear todavía ni la ficha en la ERP ni la cuenta de ReservApp: si la persona abandona el
+  // formulario antes de poner su contraseña, sus datos quedan solo en esta tabla (que expira
+  // sola) y nunca tocan app.clients ni app.reservapp_accounts. Ver completePendingRegistration
+  // para el paso donde de verdad se crean (o se enlazan).
+
+  async createPendingRegistration({ phone, existingClientId = null, registration = null, draft = null, tokenHash, expiresAt }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const normalizedPhone = await client.query("select app.normalize_phone($1) value", [phone]);
+      // Invalida cualquier registro pendiente anterior para el mismo teléfono -- mismo patrón
+      // que prepareSetup usa hoy con account_id, así que solo el intento más reciente es válido.
+      await client.query(
+        "update app.reservapp_pending_registrations set consumed_at=now() where phone_normalized=$1 and consumed_at is null",
+        [normalizedPhone.rows[0].value],
+      );
+      const inserted = await client.query(
+        `insert into app.reservapp_pending_registrations
+          (phone_normalized,phone_original,existing_client_id,registration,draft,token_hash,expires_at)
+         values ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7)
+         returning id`,
+        [normalizedPhone.rows[0].value, phone, existingClientId, registration ? JSON.stringify(registration) : null, draft ? JSON.stringify(draft) : null, tokenHash, expiresAt],
+      );
+      await client.query("commit");
+      return { id: inserted.rows[0].id };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Mismo patrón de "rotar en el sitio" que verifySetupOtp (ver ese método para el porqué): al
+  // acertar el código, el propio token_hash se sustituye por un secreto nuevo largo (el
+  // "activationTicket") en vez de marcar la fila consumida -- así completePendingRegistration
+  // sirve igual para el segundo paso sin necesitar una tabla aparte.
+  async verifyPendingRegistrationOtp({ phone, codeHash, newTokenHash, newExpiresAt }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const found = await client.query(
+        `select id, token_hash, attempt_count, max_attempts
+           from app.reservapp_pending_registrations
+          where phone_normalized=app.normalize_phone($1) and consumed_at is null and expires_at>now()
+          order by created_at desc limit 1
+          for update`,
+        [phone],
+      );
+      if (!found.rowCount) {
+        await client.query("rollback");
+        return { notFound: true };
+      }
+      const row = found.rows[0];
+      if (row.attempt_count >= row.max_attempts) {
+        await client.query("rollback");
+        return { locked: true };
+      }
+      if (row.token_hash !== codeHash) {
+        await client.query("update app.reservapp_pending_registrations set attempt_count=attempt_count+1 where id=$1", [row.id]);
+        await client.query("commit");
+        return { invalid: true, attemptsRemaining: Math.max(0, row.max_attempts - row.attempt_count - 1) };
+      }
+      await client.query(
+        `update app.reservapp_pending_registrations
+            set token_hash=$2, expires_at=$3, attempt_count=0, otp_verified_at=coalesce(otp_verified_at,now())
+          where id=$1`,
+        [row.id, newTokenHash, newExpiresAt],
+      );
+      await client.query("commit");
+      return { ok: true };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // El paso final: consume el token, resuelve el cliente real (reusa la ficha si ya existía o la
+  // crea recién ahora si es de verdad nueva) y crea la cuenta de ReservApp ya con la contraseña
+  // puesta. No queda todo esto en una única transacción atómica de punta a punta (igual que
+  // request-setup tampoco lo estaba antes entre createClient/ensureClientAccount/prepareSetup) --
+  // se acepta como riesgo residual documentado: una caída del servidor justo entre "se creó el
+  // cliente" y "se puso la contraseña" podría dejar una cuenta sin contraseña, pero solo por una
+  // caída real del proceso en una ventana de milisegundos, no por abandono de la persona (que es
+  // el problema que esto resuelve). No se envuelve createClient en una transacción externa
+  // porque ese método lo usan otros flujos y tocar su forma añade más riesgo del que quita.
+  async completePendingRegistration({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt }) {
+    const lock = await this.pool.connect();
+    let pending;
+    try {
+      await lock.query("begin");
+      const found = await lock.query(
+        `select id, phone_normalized, phone_original, existing_client_id, registration, draft
+           from app.reservapp_pending_registrations
+          where token_hash=$1 and consumed_at is null and expires_at>now()
+          for update`,
+        [tokenHash],
+      );
+      if (!found.rowCount) {
+        await lock.query("rollback");
+        return null;
+      }
+      pending = found.rows[0];
+      await lock.query("update app.reservapp_pending_registrations set consumed_at=now() where id=$1", [pending.id]);
+      await lock.query("commit");
+    } catch (error) {
+      await lock.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      lock.release();
+    }
+
+    // existing_client_id puede haberse borrado ("Borrar cliente", softDeleteClient) mientras el
+    // OTP estaba en tránsito -- nunca se enlaza a una ficha ya borrada, se trata como si nunca
+    // hubiera existido y se crea una nueva con lo que la persona escribió (si su ficha original
+    // ya existía, nunca guardamos su nombre/fecha de nacimiento aparte -- ver registration más
+    // abajo -- así que en ese caso no hay con qué recrearla: se le pide volver a registrarse).
+    let clientId = null;
+    let fullName = "";
+    if (pending.existing_client_id) {
+      const check = await this.pool.query("select id, full_name from app.clients where id=$1 and status <> 'deleted'", [pending.existing_client_id]);
+      if (check.rowCount) { clientId = check.rows[0].id; fullName = check.rows[0].full_name; }
+    }
+    if (!clientId && !pending.registration) {
+      throw Object.assign(
+        new Error("Tu ficha ya no está disponible. Vuelve a registrarte desde el principio."),
+        { code: "PENDING_REGISTRATION_CLIENT_GONE" },
+      );
+    }
+    if (!clientId) {
+      const registration = pending.registration || {};
+      const legacyPayload = {
+        nombre: registration.firstName, apellido: registration.lastName,
+        nombreCompleto: `${registration.firstName || ""} ${registration.lastName || ""}`.trim(),
+        telefono: pending.phone_original, correo: registration.email, estado: "Activo",
+        origenRegistro: "RESERVAPP_CLIENTE", fechaNacimiento: registration.birthDate, sexo: registration.sex,
+        direccion: registration.address, servicioPreferido: registration.preferredService,
+        fechaRegistro: new Date().toISOString(), observaciones: "Creado al confirmar credenciales de ReservApp.",
+      };
+      const created = await this.createClient({
+        firstName: registration.firstName, lastName: registration.lastName, fullName: legacyPayload.nombreCompleto,
+        phone: pending.phone_original, email: registration.email, source: "RESERVAPP_CLIENTE", legacyPayload,
+        birthDate: registration.birthDate, sex: registration.sex, address: registration.address, preferredService: registration.preferredService,
+      });
+      if (created.duplicate) {
+        // Condición de carrera real: otro registro para el mismo teléfono terminó primero (dos
+        // pestañas, o el personal creó la ficha mientras el OTP estaba en tránsito).
+        const resolved = await this.resolveClient({ phone: pending.phone_original });
+        if (!resolved) throw Object.assign(new Error("No pudimos vincular el teléfono con una ficha de cliente."), { code: "PENDING_REGISTRATION_CLIENT_CONFLICT" });
+        clientId = resolved.id; fullName = resolved.full_name;
+      } else {
+        clientId = created.client.id; fullName = created.client.full_name;
+      }
+    }
+
+    const account = await this.ensureClientAccount({ clientId, phone: pending.phone_original });
+    const activated = await this.pool.query(
+      `update app.reservapp_accounts set password_hash=$2,status='active',verified_at=coalesce(verified_at,now()),updated_at=now()
+        where id=$1 returning id`,
+      [account.id, passwordHash],
+    );
+    if (!activated.rowCount) throw new Error("No se pudo activar la cuenta recién creada.");
+    await this.pool.query(
+      "insert into app.reservapp_sessions (account_id,token_hash,expires_at) values ($1,$2,$3)",
+      [account.id, sessionTokenHash, sessionExpiresAt],
+    );
+    // Mismo shape (snake_case) que el draft que activateWithToken saca de reservapp_booking_drafts,
+    // para que complete-setup en server/app.mjs no tenga que distinguir de dónde vino -- salvo
+    // que aquí no hay fila real que marcar "confirmada" (nunca se creó una en booking_drafts),
+    // por eso no trae `id`.
+    const draft = pending.draft
+      ? {
+          service_ids: pending.draft.serviceIds, staff_id: pending.draft.staffId,
+          appointment_date: pending.draft.date, appointment_time: pending.draft.time,
+          notes: pending.draft.notes || "", idempotency_key: pending.draft.idempotencyKey,
+        }
+      : null;
+    return { id: account.id, account_id: account.id, role: "cliente", client_id: clientId, staff_id: null, full_name: fullName, phone_normalized: pending.phone_normalized, draft };
   }
 
   async markDraftConfirmed(draftId, appointmentId) {

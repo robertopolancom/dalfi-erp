@@ -463,12 +463,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {}),
           });
         }
-        let customer = await bookingStore.resolveClient({ phone });
+        const existingClient = await bookingStore.resolveClient({ phone });
         // Si el teléfono ya corresponde a una ficha del salón (creada en el ERP directamente, por
         // el personal, o en una visita anterior), no hace falta volver a pedir nombre/apellido/
         // fecha de nacimiento -- ya los tenemos. Solo un cliente realmente nuevo debe completar
         // el formulario entero.
-        if (!customer) {
+        if (!existingClient) {
           if (!firstName || !lastName) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
           if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || birthDate > new Date().toISOString().slice(0, 10)) {
             return res.status(400).json({ error: "Introduce una fecha de nacimiento válida." });
@@ -480,22 +480,6 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
           }
         }
-        if (!customer) {
-          const id = `CLI-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-          const legacyPayload = {
-            clienteID: id, nombre: firstName, apellido: lastName, nombreCompleto: `${firstName} ${lastName}`,
-            telefono: phone, correo: email, estado: "Activo", origenRegistro: "RESERVAPP_CLIENTE",
-            fechaNacimiento: birthDate, sexo: sex, direccion: address, servicioPreferido: preferredService,
-            fechaRegistro: new Date().toISOString(), observaciones: "Creado al solicitar credenciales de ReservApp.",
-          };
-          const created = await bookingStore.createClient({
-            firstName, lastName, fullName: legacyPayload.nombreCompleto, phone, email, source: "RESERVAPP_CLIENTE", legacyPayload,
-            birthDate, sex, address, preferredService,
-          });
-          if (created.duplicate) customer = await bookingStore.resolveClient({ phone });
-          else customer = created.client;
-        }
-        if (!customer) return res.status(409).json({ error: "No pudimos vincular el teléfono con una ficha de cliente." });
         // Salvaguarda ante condición de carrera (otra solicitud creó la cuenta justo después del
         // chequeo de arriba) -- normalmente ya se resolvió en la rama de existingAccount.
         const existing = await bookingStore.accountByPhone(phone);
@@ -505,24 +489,34 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           // habría verificado el nombre antes de llegar aquí en el flujo normal.
           return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true });
         }
-        const account = await bookingStore.ensureClientAccount({ clientId: customer.id, phone });
+        // A diferencia de antes, aquí NO se crea todavía ni la ficha en la ERP ni la cuenta de
+        // ReservApp -- eso quedaría como una ficha fantasma si la persona abandona el formulario
+        // sin llegar a poner su contraseña. En vez de eso, sus datos quedan guardados aparte en
+        // reservapp_pending_registrations (ver store.mjs: createPendingRegistration) hasta que de
+        // verdad confirme el código y ponga su contraseña -- ahí, y solo ahí, completePendingRegistration
+        // consulta la ERP por su teléfono y crea (o enlaza) la ficha real. Si abandona aquí, no
+        // queda ningún rastro ni en la ERP ni en ReservApp.
         const code = generateOtpCode();
         const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-        const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
+        const registration = existingClient ? null : { firstName, lastName, email, birthDate, sex, address, preferredService };
+        await bookingStore.createPendingRegistration({
+          phone, existingClientId: existingClient?.id || null, registration,
+          draft: hasDraftIntent ? draft : null, tokenHash: hashToken(code), expiresAt,
+        });
         // TEMPORAL (quitar cuando Meta apruebe WHATSAPP_ACTIVATION_TEMPLATE_NAME en el bridge de
         // WhatsApp -- dalfi-chatbot-n8n): sin esa plantilla aprobada, el bridge no puede iniciar
         // conversación con un cliente nuevo (fuera de la ventana de 24h) y el código de
         // verificación nunca llega, dejando el autorregistro completamente bloqueado. Con
         // RESERVAPP_SKIP_PHONE_VERIFICATION=true nos "autoverificamos" el mismo código que
-        // acabamos de generar (mismo verifySetupOtp que usa /setup/verify-code, mismas reglas de
-        // expiración/consumo de un solo uso) y devolvemos el activationTicket directo, sin pasar
-        // por WhatsApp. El cliente sigue eligiendo su propia contraseña -- lo único que se salta
-        // es la prueba de que controla ese teléfono. Para revertir: borrar esta rama `if` y la
-        // env var en Render, no hace falta tocar nada más.
+        // acabamos de generar (mismo verifyPendingRegistrationOtp que usa /setup/verify-code,
+        // mismas reglas de expiración/consumo de un solo uso) y devolvemos el activationTicket
+        // directo, sin pasar por WhatsApp. El cliente sigue eligiendo su propia contraseña -- lo
+        // único que se salta es la prueba de que controla ese teléfono. Para revertir: borrar
+        // esta rama `if` y la env var en Render, no hace falta tocar nada más.
         if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
           const activationTicket = secureToken();
           const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-          const verify = await bookingStore.verifySetupOtp({ accountId: account.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
+          const verify = await bookingStore.verifyPendingRegistrationOtp({ phone, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
           if (!verify.notFound && !verify.locked && !verify.invalid) {
             return res.status(202).json({
               pendingConfirmation: false,
@@ -534,8 +528,14 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         }
         // firstName/lastName solo llegan si es un cliente realmente nuevo (ver validación
         // arriba) -- si ya existía en el ERP, usa el nombre que ya tenía su ficha.
-        const displayName = firstName && lastName ? `${firstName} ${lastName}` : customer.full_name;
-        const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: displayName });
+        const displayName = firstName && lastName ? `${firstName} ${lastName}` : existingClient.full_name;
+        // TEMPORAL: mientras RESERVAPP_SKIP_PHONE_VERIFICATION=true, la rama de arriba siempre
+        // retorna antes de llegar aquí, así que este envío real nunca se ejecuta hoy.
+        // createPendingRegistration todavía no inserta fila en reservapp_whatsapp_outbox -- el
+        // día que se apague el interruptor y este camino vuelva a ejecutarse de verdad, hace
+        // falta añadir ese insert (mismo patrón que prepareSetup) antes de confiar en el registro
+        // de entregas de sendSetupWhatsApp. outboxId va en null a propósito mientras tanto.
+        const delivery = await sendSetupWhatsApp({ outboxId: null, phone, code, name: displayName });
         res.status(202).json({
           pendingConfirmation: true,
           deliveryStatus: delivery.status,
@@ -560,15 +560,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!validPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "Código inválido." });
       try {
         const account = await bookingStore.accountByPhone(phone);
-        if (!account) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
         const activationTicket = secureToken();
         const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-        const result = await bookingStore.verifySetupOtp({
-          accountId: account.id,
-          codeHash: hashToken(code),
-          newTokenHash: hashToken(activationTicket),
-          newExpiresAt,
-        });
+        // Cuenta ya existente (invitación de personal, o alguien que ya tenía cuenta antes de
+        // este cambio) -- camino de siempre, sin tocar. Si no hay cuenta, es un autorregistro
+        // nuevo: el código vive en reservapp_pending_registrations, no en reservapp_setup_tokens,
+        // porque todavía no existe ninguna cuenta a la que colgarlo.
+        const result = account
+          ? await bookingStore.verifySetupOtp({ accountId: account.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt })
+          : await bookingStore.verifyPendingRegistrationOtp({ phone, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
         if (result.locked) return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
         if (result.notFound) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
         if (result.invalid) return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
@@ -583,7 +583,17 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       try {
         const sessionToken = secureToken();
         const sessionExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
-        const account = await bookingStore.activateWithToken({ tokenHash: hashToken(token), passwordHash: await hashPassword(password), sessionTokenHash: hashToken(sessionToken), sessionExpiresAt });
+        const tokenHash = hashToken(token);
+        const passwordHash = await hashPassword(password);
+        const sessionTokenHash = hashToken(sessionToken);
+        // Primero el camino de siempre (cuenta ya existente -- invitación de personal, o un
+        // cliente/clienta de antes de este cambio): activateWithToken. Si no encuentra el token
+        // ahí, es porque viene del autorregistro nuevo, donde todavía no existía ninguna cuenta
+        // -- completePendingRegistration recién ahí consulta la ERP por el teléfono y crea (o
+        // enlaza) la ficha real y la cuenta de ReservApp. Devuelve la misma forma que
+        // activateWithToken para que el resto de esta ruta no tenga que distinguir entre las dos.
+        let account = await bookingStore.activateWithToken({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt });
+        if (!account) account = await bookingStore.completePendingRegistration({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt });
         if (!account) return res.status(410).json({ error: "El enlace venció o ya fue utilizado. Solicita uno nuevo." });
         let appointment = null;
         let bookingError = null;
@@ -605,14 +615,21 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
             const created = await bookingStore.createAppointment(input);
             if (!created.conflict && !created.missing) {
               appointment = { id: created.appointment.id, reference: created.appointment.legacy_id };
-              await bookingStore.markDraftConfirmed(account.draft.id, created.appointment.id);
+              // account.draft.id solo existe cuando el borrador venía de reservapp_booking_drafts
+              // (camino de activateWithToken) -- el de completePendingRegistration nunca crea esa
+              // fila, así que no hay nada que marcar "confirmado" ahí.
+              if (account.draft.id) await bookingStore.markDraftConfirmed(account.draft.id, created.appointment.id);
               if (!created.idempotent) await syncChangedAppointmentsToGoogleCalendar(env, created.previousDocument, created.document, { fetchImpl });
             } else bookingError = "Tu cuenta quedó activa, pero el horario se ocupó. Inicia sesión y elige otro.";
           } else bookingError = "Tu cuenta quedó activa, pero el horario se ocupó. Inicia sesión y elige otro.";
         }
         res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
         res.json({ account: publicAccount(account), appointment, bookingError });
-      } catch (error) { next(error); }
+      } catch (error) {
+        if (error?.code === "PHONE_ACCOUNT_CONFLICT") return res.status(409).json({ error: error.message });
+        if (error?.code === "PENDING_REGISTRATION_CLIENT_GONE") return res.status(410).json({ error: error.message });
+        next(error);
+      }
     });
 
     app.post("/api/reservapp/auth/login", bookingRateLimit, async (req, res, next) => {

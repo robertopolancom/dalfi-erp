@@ -7,14 +7,22 @@ function documentStore() {
   return { async read() { return { data: {}, updatedAt: "2026-08-13T00:00:00.000Z", version: 1 }; } };
 }
 
-function bookingStore({ account = null, otpResult = null } = {}) {
+function bookingStore({ account = null, otpResult = null, pendingOtpResult = { notFound: true } } = {}) {
   const verifyCalls = [];
+  const pendingVerifyCalls = [];
   return {
     verifyCalls,
+    pendingVerifyCalls,
     async accountByPhone() { return account; },
     async verifySetupOtp(input) {
       verifyCalls.push(input);
       return otpResult;
+    },
+    // Sin cuenta (accountByPhone devuelve null), el código puede venir de un autorregistro
+    // nuevo -- ese vive en reservapp_pending_registrations, no en reservapp_setup_tokens.
+    async verifyPendingRegistrationOtp(input) {
+      pendingVerifyCalls.push(input);
+      return pendingOtpResult;
     },
   };
 }
@@ -44,7 +52,7 @@ test("POST /api/reservapp/setup/verify-code: teléfono o código con formato inv
   });
 });
 
-test("POST /api/reservapp/setup/verify-code: teléfono sin cuenta responde 410 OTP_NOT_FOUND", async () => {
+test("POST /api/reservapp/setup/verify-code: teléfono sin cuenta y sin registro pendiente responde 410 OTP_NOT_FOUND", async () => {
   const store = bookingStore({ account: null });
   await withServer(store, async (base) => {
     const response = await fetch(`${base}/api/reservapp/setup/verify-code`, {
@@ -54,7 +62,25 @@ test("POST /api/reservapp/setup/verify-code: teléfono sin cuenta responde 410 O
     });
     assert.equal(response.status, 410);
     assert.equal((await response.json()).code, "OTP_NOT_FOUND");
-    assert.equal(store.verifyCalls.length, 0);
+    assert.equal(store.verifyCalls.length, 0, "sin cuenta, nunca debe consultar reservapp_setup_tokens");
+    assert.equal(store.pendingVerifyCalls.length, 1, "en su lugar debe intentar el registro pendiente");
+  });
+});
+
+test("POST /api/reservapp/setup/verify-code: sin cuenta pero con registro pendiente válido, rota el token igual que el camino de cuenta existente", async () => {
+  const store = bookingStore({ account: null, pendingOtpResult: { ok: true } });
+  await withServer(store, async (base) => {
+    const response = await fetch(`${base}/api/reservapp/setup/verify-code`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: "8095551234", code: "482913" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.verified, true);
+    assert.equal(typeof body.activationTicket, "string");
+    assert.equal(store.pendingVerifyCalls.length, 1);
+    assert.equal(store.pendingVerifyCalls[0].phone, "8095551234");
   });
 });
 

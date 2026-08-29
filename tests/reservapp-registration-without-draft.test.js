@@ -9,10 +9,12 @@ function documentStore() {
 
 function bookingStore({ existingClient = null, existingAccount = null } = {}) {
   const prepareSetupCalls = [];
+  const createPendingRegistrationCalls = [];
   const availabilityCalls = [];
   const createClientCalls = [];
   return {
     prepareSetupCalls,
+    createPendingRegistrationCalls,
     availabilityCalls,
     createClientCalls,
     async availability(input) {
@@ -27,6 +29,11 @@ function bookingStore({ existingClient = null, existingAccount = null } = {}) {
     async accountByPhone() { return existingAccount; },
     async ensureClientAccount() { return { id: "55555555-5555-4555-8555-555555555555" }; },
     async prepareSetup(input) { prepareSetupCalls.push(input); return { outbox: { id: "outbox-1" } }; },
+    // request-setup ya no crea ni la ficha en la ERP ni la cuenta de ReservApp de inmediato --
+    // eso queda diferido a completePendingRegistration (ver server/store.mjs), que se prueba en
+    // tests/reservapp-pending-registration.test.js. Aquí solo importa QUÉ se guardó pendiente.
+    async createPendingRegistration(input) { createPendingRegistrationCalls.push(input); return { id: "pending-1" }; },
+    async verifyPendingRegistrationOtp() { return { notFound: true }; },
     async markWhatsApp() {},
   };
 }
@@ -55,7 +62,8 @@ test("request-setup: permite crear cuenta sin borrador de reserva (registro puro
     });
     assert.equal(response.status, 202);
     assert.equal(store.availabilityCalls.length, 0, "no debe consultar disponibilidad sin borrador");
-    assert.equal(store.prepareSetupCalls[0].draft, null);
+    assert.equal(store.createPendingRegistrationCalls[0].draft, null);
+    assert.equal(store.createClientCalls.length, 0, "todavía no debe crear nada en la ERP");
   });
 });
 
@@ -70,7 +78,7 @@ test("request-setup: sin fecha de nacimiento responde 400 (dato requerido para l
   });
 });
 
-test("request-setup: pasa fecha de nacimiento, sexo, dirección y servicio preferido a createClient", async () => {
+test("request-setup: guarda fecha de nacimiento, sexo, dirección y servicio preferido en el registro pendiente (createClient todavía no se llama)", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -80,11 +88,13 @@ test("request-setup: pasa fecha de nacimiento, sexo, dirección y servicio prefe
       }),
     });
     assert.equal(response.status, 202);
-    assert.equal(store.createClientCalls.length, 1);
-    assert.equal(store.createClientCalls[0].birthDate, "1995-05-20");
-    assert.equal(store.createClientCalls[0].sex, "Femenino");
-    assert.equal(store.createClientCalls[0].address, "Calle 3 #12, Santo Domingo");
-    assert.equal(store.createClientCalls[0].preferredService, "Pedicura");
+    assert.equal(store.createClientCalls.length, 0, "todavía no debe crear nada en la ERP");
+    assert.equal(store.createPendingRegistrationCalls.length, 1);
+    const { registration } = store.createPendingRegistrationCalls[0];
+    assert.equal(registration.birthDate, "1995-05-20");
+    assert.equal(registration.sex, "Femenino");
+    assert.equal(registration.address, "Calle 3 #12, Santo Domingo");
+    assert.equal(registration.preferredService, "Pedicura");
   });
 });
 
@@ -95,7 +105,7 @@ test("request-setup: un sexo fuera de la lista permitida se guarda vacío en vez
       body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20", sex: "<script>" }),
     });
     assert.equal(response.status, 202);
-    assert.equal(store.createClientCalls[0].sex, "");
+    assert.equal(store.createPendingRegistrationCalls[0].registration.sex, "");
   });
 });
 
@@ -124,7 +134,7 @@ test("request-setup: un borrador completo sigue validando disponibilidad como an
     });
     assert.equal(response.status, 202);
     assert.equal(store.availabilityCalls.length, 1);
-    assert.ok(store.prepareSetupCalls[0].draft);
+    assert.ok(store.createPendingRegistrationCalls[0].draft);
   });
 });
 
@@ -255,7 +265,9 @@ test("request-setup: teléfono con ficha ya existente en el ERP no exige nombre/
     });
     assert.equal(response.status, 202);
     assert.equal(store.createClientCalls.length, 0, "no debe crear una ficha duplicada, ya existía");
-    assert.equal(store.prepareSetupCalls.length, 1);
+    assert.equal(store.createPendingRegistrationCalls.length, 1);
+    assert.equal(store.createPendingRegistrationCalls[0].existingClientId, "33333333-3333-4333-8333-333333333333");
+    assert.equal(store.createPendingRegistrationCalls[0].registration, null, "ya hay ficha -- no hace falta guardar datos nuevos");
   }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
 });
 

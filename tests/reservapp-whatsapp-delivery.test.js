@@ -21,6 +21,12 @@ function bookingStore() {
     async accountByPhone() { return null; },
     async ensureClientAccount() { return { id: "55555555-5555-4555-8555-555555555555" }; },
     async prepareSetup() { return { outbox: { id: "outbox-1" } }; },
+    // request-setup ya no crea nada de inmediato -- eso queda diferido a
+    // completePendingRegistration (ver tests/reservapp-pending-registration.test.js).
+    async createPendingRegistration() { return { id: "pending-1" }; },
+    // Sin bypass, este camino no se prueba aquí (ver reservapp-setup-otp.test.js); con
+    // RESERVAPP_SKIP_PHONE_VERIFICATION=true cada test que lo necesita lo sobreescribe.
+    async verifyPendingRegistrationOtp() { return { notFound: true }; },
     async markWhatsApp({ outboxId, status, error }) { whatsappCalls.push({ outboxId, status, error }); },
   };
 }
@@ -55,7 +61,10 @@ test("request-setup marca el outbox como sent solo cuando el bridge confirma SEN
     });
     assert.equal(response.status, 202);
     assert.equal((await response.json()).deliveryStatus, "sent");
-    assert.deepEqual(store.whatsappCalls, [{ outboxId: "outbox-1", status: "sent", error: undefined }]);
+    // outboxId va en null a propósito: createPendingRegistration todavía no inserta fila en
+    // reservapp_whatsapp_outbox (ver comentario junto a su uso en server/app.mjs) mientras
+    // RESERVAPP_SKIP_PHONE_VERIFICATION mantenga este camino como código muerto en producción.
+    assert.deepEqual(store.whatsappCalls, [{ outboxId: null, status: "sent", error: undefined }]);
   });
 });
 
@@ -79,7 +88,7 @@ test("request-setup con RESERVAPP_SKIP_PHONE_VERIFICATION=true devuelve activati
   let bridgeCalled = false;
   const fetchImpl = async () => { bridgeCalled = true; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); };
   const store = bookingStore();
-  store.verifySetupOtp = async () => ({});
+  store.verifyPendingRegistrationOtp = async () => ({});
   const app = createApp({
     store: documentStore(), bookingStore: store, fetchImpl,
     env: {
