@@ -59,6 +59,10 @@ function applyAccount(account) {
   // Agenda/panel de personal es una función de cuenta identificada -- sin sesión no debe ni
   // aparecer el botón (pedido explícito de diseño).
   $("agenda-tab").classList.toggle("hidden", !account);
+  // Sin sesión, "Agenda" queda oculta y "Nueva reserva" se queda sola en la barra de pestañas --
+  // sin nada que alternar, es un botón que no hace nada útil en la pantalla inicial. Con sesión
+  // (cliente o personal) sí es una pestaña real junto a "Citas activas"/"Panel de colaboradores".
+  $("app-nav").classList.toggle("hidden", !account);
   $("guest-access").classList.toggle("hidden", Boolean(account));
   $("employee-client").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   const isAdmin = Boolean(account) && ["administradora", "superadministrador"].includes(account.role);
