@@ -168,10 +168,7 @@ async function loadCatalog() {
     }
     // Mismo criterio que el banner promocional: sin mensaje publicado, el elemento se queda
     // oculto y la página se ve igual que antes de que existiera esta función.
-    if (state.catalog.infoBanner) {
-      $("info-banner").textContent = state.catalog.infoBanner.text;
-      $("info-banner").classList.remove("hidden");
-    }
+    renderInfoBanner(state.catalog.infoBanner?.text);
   } catch { message($("booking-message"), "No pudimos cargar la agenda. Intenta nuevamente."); }
 }
 
@@ -1598,6 +1595,24 @@ $("banner-remove").addEventListener("click", async () => {
   } catch (error) { message($("banner-message"), error.message); }
   finally { button.disabled = false; }
 });
+
+// Resalta el teléfono dentro del mensaje informativo con enlaces de WhatsApp y llamada. El
+// texto es de administración (confiable), pero se escapa igual antes de inyectar los enlaces
+// por si acaso.
+function renderInfoBanner(text) {
+  const el = $("info-banner");
+  if (!text) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const whatsappIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="#25925a" aria-hidden="true"><path d="M12.04 2c-5.46 0-9.9 4.44-9.9 9.9 0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.9-4.44 9.9-9.9 0-2.64-1.03-5.13-2.9-7C17.17 3.03 14.68 2 12.04 2zm5.8 14.13c-.24.68-1.4 1.3-1.93 1.38-.5.08-1.12.11-1.8-.11-.42-.13-.96-.31-1.65-.6-2.9-1.25-4.8-4.16-4.94-4.35-.14-.19-1.18-1.57-1.18-3 0-1.42.75-2.12 1.02-2.41.27-.29.58-.36.78-.36.19 0 .39 0 .56.01.18.01.42-.07.66.5.24.58.83 2 .9 2.15.07.15.12.32.02.51-.1.19-.15.31-.3.48-.15.17-.31.38-.44.51-.15.15-.3.31-.13.6.17.29.75 1.24 1.62 2.01 1.11 1 2.05 1.31 2.34 1.46.29.15.46.13.63-.08.17-.21.72-.84.91-1.13.19-.29.39-.24.65-.14.27.1 1.68.79 1.97.93.29.14.48.21.55.33.07.12.07.68-.17 1.36z"/></svg>';
+  const phoneIcon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.6 10.8c1.4 2.8 3.8 5.2 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.4c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.2 1L6.6 10.8z"/></svg>';
+  const withIcons = escaped.replace(/(\d{10})/, (match) => (
+    `${match} `
+    + `<a class="info-banner-icon" href="https://wa.me/1${match}" target="_blank" rel="noopener" aria-label="Escribir por WhatsApp">${whatsappIcon}</a>`
+    + `<a class="info-banner-icon" href="tel:+1${match}" aria-label="Llamar">${phoneIcon}</a>`
+  ));
+  el.innerHTML = withIcons;
+  el.classList.remove("hidden");
+}
 
 $("info-banner-publish").addEventListener("click", async () => {
   const text = $("info-banner-text").value.trim();
