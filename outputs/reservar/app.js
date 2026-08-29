@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -107,8 +107,16 @@ function formatSlotTime(time) {
 // Antes de pedir identificación, recuerda al cliente exactamente qué eligió -- con varios
 // servicios, selectedServices() ya lista todos y state.selectedSlot es el único horario (la
 // duración combinada la calculó el backend al armar los slots, ver loadSingleAvailability).
+// Si en cambio aceptó una propuesta de horario alternativo (state.fallbackSegments, ver
+// renderAvailabilityFallback), son varias citas -- se listan todas.
 function renderBookingSelectionSummary() {
   const target = $("booking-selection-summary");
+  if (Array.isArray(state.fallbackSegments) && state.fallbackSegments.length) {
+    target.textContent = state.fallbackSegments
+      .map((seg) => `${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`)
+      .join(" · ");
+    return;
+  }
   if (state.selectedSlot) {
     const names = selectedServices().map((item) => item.name).join(", ");
     target.textContent = `${names} con ${state.selectedSlot.staffName} a las ${formatSlotTime(state.selectedSlot.time)}`;
@@ -209,6 +217,7 @@ async function loadSingleAvailability(serviceIds, date) {
   $("step3-heading").textContent = "Paso 3 · Elige horario y manicurista";
   message($("availability-message"), "Consultando agenda…", true);
   $("staff-slots-board").replaceChildren();
+  $("availability-fallback").replaceChildren();
   try {
     const result = await api(`/api/fast-booking/availability?serviceIds=${encodeURIComponent(serviceIds.join(","))}&date=${date}`);
     if (serviceIds.length > 1 && result.durationMinutes) {
@@ -216,6 +225,7 @@ async function loadSingleAvailability(serviceIds, date) {
     }
     if (!result.slots.length) {
       message($("availability-message"), "No quedan horarios para este día con ninguna manicurista. Prueba otra fecha.");
+      if (result.fallback) renderAvailabilityFallback(result.fallback);
       return;
     }
     message($("availability-message"));
@@ -226,13 +236,55 @@ async function loadSingleAvailability(serviceIds, date) {
   } catch (error) { message($("availability-message"), error.message); }
 }
 
+// Sin bloque continuo ese día para 2+ servicios, el backend ya probó una alternativa (ver
+// availabilityFallback en server/store.mjs): misma manicurista con espera (same_staff_gap),
+// distintas manicuristas lo más continuo posible (multi_staff), o ninguna de las dos
+// (contact_agent). Muestra la propuesta con un botón para aceptarla tal cual -- confirmarla es
+// la MISMA llamada con `segments` que ya usa el personal para reservas combinadas.
+function renderAvailabilityFallback(fallback) {
+  const container = $("availability-fallback");
+  container.replaceChildren();
+  const box = document.createElement("div"); box.className = "client-box";
+  if (!fallback || fallback.tier === "contact_agent") {
+    const p = document.createElement("p");
+    p.append("No encontramos cómo acomodar todos los servicios ese día. ");
+    p.append(Object.assign(document.createElement("a"), { href: "https://wa.me/18093463030", target: "_blank", rel: "noopener", textContent: "Escríbenos por WhatsApp" }));
+    p.append(" y una asesora revisa la agenda contigo.");
+    box.append(p);
+    container.append(box);
+    return;
+  }
+  const intro = document.createElement("p");
+  intro.textContent = fallback.tier === "same_staff_gap"
+    ? "No hay un horario 100% continuo ese día con una sola manicurista, pero sí podemos hacerlo así, con espera entre servicios:"
+    : "No hay con la misma manicurista ese día, pero sí repartido entre distintas manicuristas así:";
+  box.append(intro);
+  const summary = document.createElement("p");
+  const strong = document.createElement("strong");
+  strong.textContent = fallback.segments.map((seg) => `${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`).join(" · ");
+  summary.append(strong);
+  box.append(summary);
+  const confirmButton = document.createElement("button"); confirmButton.type = "button"; confirmButton.className = "primary";
+  confirmButton.textContent = "Confirmar este horario";
+  confirmButton.addEventListener("click", () => {
+    state.fallbackSegments = fallback.segments.map((seg) => ({
+      serviceIds: [seg.serviceId], staffId: seg.staffId, date: $("date").value, time: seg.time,
+      staffName: seg.staffName, serviceName: seg.serviceName,
+    }));
+    goToStep(4);
+  });
+  box.append(confirmButton);
+  container.append(box);
+}
+
 async function loadAvailability() {
   const serviceIds = selectedServiceIds();
   const date = $("date").value;
-  state.selectedSlot = null; $("time").value = ""; $("staff").value = "";
+  state.selectedSlot = null; $("time").value = ""; $("staff").value = ""; state.fallbackSegments = null;
   if (!serviceIds.length || !date) {
     message($("availability-message"), "Selecciona servicios y una fecha antes de este paso.");
     $("staff-slots-board").replaceChildren();
+    $("availability-fallback").replaceChildren();
     return;
   }
   return loadSingleAvailability(serviceIds, date);
@@ -240,6 +292,7 @@ async function loadAvailability() {
 
 function requireBookingSelection(targetMessage) {
   if (!selectedServiceIds().length) { message(targetMessage, "Selecciona al menos un servicio."); return false; }
+  if (Array.isArray(state.fallbackSegments) && state.fallbackSegments.length) return true;
   if (!$("staff").value || !$("date").value || !$("time").value) { message(targetMessage, "Selecciona manicurista, fecha y hora."); return false; }
   return true;
 }
@@ -771,6 +824,21 @@ $("close-client").addEventListener("click", () => $("client-dialog").close());
 // al cliente en persona, así que no tiene sentido hacerlo esperar un código; crea la ficha al
 // instante contra /api/fast-booking/clients (mismo endpoint que ya usa la búsqueda existente).
 function openClientDialog({ forEmployee, requireSelection = true }) {
+  // El registro-invitada por WhatsApp (auto-servicio) guarda un borrador de UNA sola cita
+  // (staff_id/appointment_date/appointment_time en una fila) -- no soporta varias citas
+  // vinculadas por groupId. Una propuesta de horario alternativo (ver availabilityFallback en
+  // server/store.mjs) sí puede ser varias citas -- en ese caso, solo el registro hecho por el
+  // personal funciona (crea la ficha al instante y la reserva se confirma después, ya con
+  // sesión iniciada).
+  if (!forEmployee && Array.isArray(state.fallbackSegments) && state.fallbackSegments.length) {
+    const target = $("booking-message");
+    target.className = "message";
+    target.replaceChildren(
+      "Para este horario con varias citas, pide a una asesora que registre tu cita: ",
+      Object.assign(document.createElement("a"), { href: "https://wa.me/18093463030", target: "_blank", rel: "noopener", textContent: "escríbenos por WhatsApp" }),
+    );
+    return;
+  }
   state.clientDialogForEmployee = forEmployee;
   state.clientDialogRequireSelection = requireSelection;
   $("client-dialog-title").textContent = forEmployee ? "Registrar cliente" : "Crear mi acceso";
@@ -906,6 +974,7 @@ function resetDeviceState() {
   $("selected-client").classList.add("hidden");
   state.client = null;
   state.selectedSlot = null;
+  state.fallbackSegments = null;
   state.pendingBookingStart = false;
   state.quickSetupPhone = null;
   goToStep(0);
@@ -939,14 +1008,25 @@ $("booking-form").addEventListener("submit", async (event) => {
   if (!state.account) return $("login-dialog").showModal();
   if (!state.client) return message($("booking-message"), "Selecciona el cliente de la cita.");
   const button = $("submit-booking"); button.disabled = true; button.textContent = "Reservando…";
+  // state.fallbackSegments solo existe si aceptó una propuesta de horario alternativo (ver
+  // renderAvailabilityFallback) -- son varias citas vinculadas por groupId, mismo mecanismo
+  // que ya usa el personal para reservas combinadas (createComboAppointment, sin cambios).
+  const isFallback = Array.isArray(state.fallbackSegments) && state.fallbackSegments.length > 0;
   try {
     const result = await api("/api/fast-booking/appointments", {
       method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
-      body: JSON.stringify({ clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }),
+      body: JSON.stringify(isFallback
+        ? { clientId: state.client.id, segments: state.fallbackSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }
+        : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }),
     });
-    const names = selectedServices().map((item) => item.name).join(", ");
-    const person = state.catalog.staff.find((item) => item.id === $("staff").value)?.name;
-    $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
+    if (isFallback) {
+      const details = state.fallbackSegments.map((seg) => `${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`).join(" · ");
+      $("success-summary").textContent = `${details}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })}. Referencia: ${result.appointments.map((item) => item.reference).join(", ")}`;
+    } else {
+      const names = selectedServices().map((item) => item.name).join(", ");
+      const person = state.catalog.staff.find((item) => item.id === $("staff").value)?.name;
+      $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
+    }
     $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden"); window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (error) {
     message($("booking-message"), error.message);

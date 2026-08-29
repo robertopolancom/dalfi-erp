@@ -359,6 +359,97 @@ export class NeonBookingStore {
     await client.query(`update app.erp_document set document=$1::jsonb, version=version+1, updated_at=clock_timestamp() where id=true`, [JSON.stringify(document)]);
   }
 
+  // staff_services es opt-in igual que staff_weekly_schedules (ver comentario más abajo): si
+  // NINGUNA colaboradora del grupo tiene ninguna fila propia en staff_services, nadie queda
+  // restringida (se asume que el salón no configuró asignaciones específicas todavía) -- pero
+  // en cuanto UNA sola fila existe para el grupo, cada colaboradora sin fila propia queda
+  // excluida de todos los servicios. Devuelve, POR SERVICIO, el set de ids de colaboradoras
+  // elegibles -- availability() exige que una colaboradora esté en el set de TODOS los
+  // servicios elegidos; availabilityFallback() (nivel 2) consulta cada servicio por separado.
+  async staffServiceEligibility({ staff, serviceIds }) {
+    const mappings = await this.pool.query(
+      `select staff_id, service_id from app.staff_services where staff_id = any($1::uuid[])`,
+      [staff.map((item) => item.id)],
+    );
+    const noRestrictions = !mappings.rowCount;
+    const mappedByStaff = new Map();
+    for (const row of mappings.rows) {
+      if (!mappedByStaff.has(row.staff_id)) mappedByStaff.set(row.staff_id, new Set());
+      mappedByStaff.get(row.staff_id).add(row.service_id);
+    }
+    const eligibility = new Map(serviceIds.map((id) => [id, new Set()]));
+    for (const person of staff) {
+      const mapped = mappedByStaff.get(person.id);
+      for (const id of serviceIds) {
+        if (noRestrictions || mapped?.has(id)) eligibility.get(id).add(person.id);
+      }
+    }
+    return eligibility;
+  }
+
+  // Horario/ausencias por colaboradora -- opt-in: una colaboradora sin ninguna fila propia en
+  // staff_weekly_schedules sigue el horario general del negocio como siempre (así se comportaba
+  // esto antes de que existiera esta tabla). Solo quien tiene AL MENOS una fila propia queda
+  // sujeta a "si no hay fila para hoy, hoy no trabaja" -- y una excepción puntual (vacaciones,
+  // medio día, etc.) siempre gana sobre el horario semanal, tenga fila o no. Devuelve
+  // Map(staffId -> {open,close} | null); null significa que esa colaboradora no trabaja ese día.
+  async staffDayWindows({ staff, date, weekday, opening, closing }) {
+    const staffIds = staff.map((item) => item.id);
+    const [weeklyToday, weeklyAny, exceptionRows] = await Promise.all([
+      this.pool.query(
+        `select staff_id, start_time, end_time from app.staff_weekly_schedules
+          where staff_id = any($1::uuid[]) and weekday=$2 and active=true`,
+        [staffIds, weekday],
+      ),
+      this.pool.query(`select distinct staff_id from app.staff_weekly_schedules where staff_id = any($1::uuid[])`, [staffIds]),
+      this.pool.query(
+        `select staff_id, start_time, end_time, available from app.staff_schedule_exceptions
+          where staff_id = any($1::uuid[]) and exception_date=$2`,
+        [staffIds, date],
+      ),
+    ]);
+    const optedIn = new Set(weeklyAny.rows.map((row) => row.staff_id));
+    const todayByStaff = new Map(weeklyToday.rows.map((row) => [row.staff_id, row]));
+    const exceptionByStaff = new Map(exceptionRows.rows.map((row) => [row.staff_id, row]));
+    const windows = new Map();
+    for (const person of staff) {
+      const exception = exceptionByStaff.get(person.id);
+      if (exception) {
+        windows.set(person.id, exception.available
+          ? { open: exception.start_time?.slice(0, 5) || opening, close: exception.end_time?.slice(0, 5) || closing }
+          : null);
+        continue;
+      }
+      if (optedIn.has(person.id)) {
+        const today = todayByStaff.get(person.id);
+        windows.set(person.id, today ? { open: today.start_time.slice(0, 5), close: today.end_time.slice(0, 5) } : null);
+        continue;
+      }
+      windows.set(person.id, { open: opening, close: closing });
+    }
+    return windows;
+  }
+
+  // Citas ya ocupadas ese día por colaboradora -- EspacioLiberado no cuenta como ocupado (ver
+  // checkConfirmationReminder en server/app.mjs: esa cita ya liberó su horario). Devuelve
+  // Map(staffId -> [{starts_at, ends_at}]).
+  async staffBusyIntervals({ staffIds, date, timezone }) {
+    const busy = await this.pool.query(
+      `select staff_id, starts_at, ends_at from app.appointments
+       where staff_id = any($1::uuid[]) and status not in ('cancelled','replaced')
+         and confirmation_status is distinct from 'EspacioLiberado'
+         and starts_at < (($2::date + interval '1 day')::timestamp at time zone $3)
+         and ends_at > ($2::date::timestamp at time zone $3)`,
+      [staffIds, date, timezone],
+    );
+    const byStaff = new Map();
+    for (const row of busy.rows) {
+      if (!byStaff.has(row.staff_id)) byStaff.set(row.staff_id, []);
+      byStaff.get(row.staff_id).push(row);
+    }
+    return byStaff;
+  }
+
   async availability({ serviceId, serviceIds, staffId, date }) {
     const catalog = await this.catalog();
     const selectedIds = uniqueServiceIds(serviceIds?.length ? serviceIds : serviceId);
@@ -378,66 +469,13 @@ export class NeonBookingStore {
     const closing = dayWindow.close;
     let staff = staffId ? catalog.staff.filter((item) => item.id === staffId) : catalog.staff;
     if (!staff.length) return { missing: "staff" };
-    const mappings = await this.pool.query(
-      `select staff_id, service_id from app.staff_services
-        where staff_id = any($1::uuid[])`,
-      [staff.map((item) => item.id)],
-    );
-    if (mappings.rowCount) {
-      staff = staff.filter((person) => {
-        const mapped = new Set(mappings.rows.filter((row) => row.staff_id === person.id).map((row) => row.service_id));
-        return selectedIds.every((id) => mapped.has(id));
-      });
-    }
+    const eligibility = await this.staffServiceEligibility({ staff, serviceIds: selectedIds });
+    staff = staff.filter((person) => selectedIds.every((id) => eligibility.get(id).has(person.id)));
     if (!staff.length) return { missing: "staff_services" };
-    // Horario/ausencias por colaboradora -- opt-in: una colaboradora sin ninguna fila propia en
-    // staff_weekly_schedules sigue el horario general del negocio como siempre (así se comportaba
-    // esto antes de que existiera esta tabla). Solo quien tiene AL MENOS una fila propia queda
-    // sujeta a "si no hay fila para hoy, hoy no trabaja" -- y una excepción puntual (vacaciones,
-    // medio día, etc.) siempre gana sobre el horario semanal, tenga fila o no.
-    const staffIds = staff.map((item) => item.id);
-    const [weeklyToday, weeklyAny, exceptionRows] = await Promise.all([
-      this.pool.query(
-        `select staff_id, start_time, end_time from app.staff_weekly_schedules
-          where staff_id = any($1::uuid[]) and weekday=$2 and active=true`,
-        [staffIds, weekday],
-      ),
-      this.pool.query(`select distinct staff_id from app.staff_weekly_schedules where staff_id = any($1::uuid[])`, [staffIds]),
-      this.pool.query(
-        `select staff_id, start_time, end_time, available from app.staff_schedule_exceptions
-          where staff_id = any($1::uuid[]) and exception_date=$2`,
-        [staffIds, date],
-      ),
-    ]);
-    const optedIn = new Set(weeklyAny.rows.map((row) => row.staff_id));
-    const todayByStaff = new Map(weeklyToday.rows.map((row) => [row.staff_id, row]));
-    const exceptionByStaff = new Map(exceptionRows.rows.map((row) => [row.staff_id, row]));
-    const staffWindows = new Map();
-    for (const person of staff) {
-      const exception = exceptionByStaff.get(person.id);
-      if (exception) {
-        staffWindows.set(person.id, exception.available
-          ? { open: exception.start_time?.slice(0, 5) || opening, close: exception.end_time?.slice(0, 5) || closing }
-          : null);
-        continue;
-      }
-      if (optedIn.has(person.id)) {
-        const today = todayByStaff.get(person.id);
-        staffWindows.set(person.id, today ? { open: today.start_time.slice(0, 5), close: today.end_time.slice(0, 5) } : null);
-        continue;
-      }
-      staffWindows.set(person.id, { open: opening, close: closing });
-    }
+    const staffWindows = await this.staffDayWindows({ staff, date, weekday, opening, closing });
     staff = staff.filter((person) => staffWindows.get(person.id));
     if (!staff.length) return { date, slots: [], closed: true };
-    const busy = await this.pool.query(
-      `select staff_id, starts_at, ends_at from app.appointments
-       where staff_id = any($1::uuid[]) and status not in ('cancelled','replaced')
-         and confirmation_status is distinct from 'EspacioLiberado'
-         and starts_at < (($2::date + interval '1 day')::timestamp at time zone $3)
-         and ends_at > ($2::date::timestamp at time zone $3)`,
-      [staff.map((item) => item.id), date, timezone],
-    );
+    const busyByStaff = await this.staffBusyIntervals({ staffIds: staff.map((item) => item.id), date, timezone });
     const toMinutes = (clock) => {
       const [hour, minute] = clock.split(":").map(Number);
       return hour * 60 + minute;
@@ -446,7 +484,7 @@ export class NeonBookingStore {
     const latest = now + maxDays * 86_400_000;
     const slots = [];
     for (const person of staff) {
-      const personBusy = busy.rows.filter((row) => row.staff_id === person.id);
+      const personBusy = busyByStaff.get(person.id) || [];
       const window = staffWindows.get(person.id);
       for (let minute = toMinutes(window.open); minute + durationMinutes <= toMinutes(window.close); minute += interval) {
         const hour = String(Math.floor(minute / 60)).padStart(2, "0");
@@ -459,6 +497,150 @@ export class NeonBookingStore {
       }
     }
     return { date, timezone, durationMinutes, totalPrice, services, slots };
+  }
+
+  // Se llama SOLO cuando availability() (bloque continuo, una sola colaboradora) no encontró
+  // nada para 2+ servicios ese día -- nunca para un solo servicio. Busca, dentro del MISMO día,
+  // una alternativa en 3 niveles de prioridad:
+  //   1. la misma colaboradora, con espera entre servicios (ya no 100% continuo).
+  //   2. distintas colaboradoras, acomodadas para que sea lo más continuo posible.
+  //   3. si ninguna de las dos anteriores encuentra nada: "habla con un agente".
+  // En los niveles 1 y 2 prueba TODOS los órdenes posibles de los servicios (no solo el orden
+  // en que se seleccionaron) y se queda con el que menos espera total acumula -- empate: el que
+  // arranca más temprano. El resultado son "segments" en el mismo shape que ya acepta
+  // POST /api/fast-booking/appointments (createComboAppointment, sin cambios) -- confirmar la
+  // propuesta es la misma llamada que ya existía para reservas combinadas.
+  async availabilityFallback({ serviceIds, date }) {
+    const catalog = await this.catalog();
+    const selectedIds = uniqueServiceIds(serviceIds);
+    const services = selectedIds.map((id) => catalog.services.find((item) => item.id === id)).filter(Boolean);
+    if (services.length < 2) return { tier: "contact_agent" };
+    // Las permutaciones crecen factorial -- con más de 6 servicios (720 órdenes) ya no vale la
+    // pena probarlas todas para un caso que de por sí ya es la excepción (el bloque continuo
+    // falló). Directo a "habla con un agente".
+    if (services.length > 6) return { tier: "contact_agent" };
+    const settings = catalog.schedule.settings || {};
+    const timezone = catalog.schedule.timezone || "America/Santo_Domingo";
+    const interval = Math.max(5, Number(settings.defaultSlotIntervalMinutes) || 15);
+    const minNotice = Math.max(0, Number(settings.minimumBookingNoticeMinutes) || 30);
+    const maxDays = Math.max(1, Number(settings.maximumAdvanceBookingDays) || 60);
+    const weekday = new Date(`${date}T12:00:00-04:00`).getDay();
+    const dayWindow = resolveBusinessDayWindow(date, settings);
+    if (!dayWindow) return { tier: "contact_agent" };
+    const { open: opening, close: closing } = dayWindow;
+    const now = Date.now();
+    const latest = now + maxDays * 86_400_000;
+    const toMinutes = (clock) => { const [hour, minute] = clock.split(":").map(Number); return hour * 60 + minute; };
+    const toClock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+
+    // Primer horario legal de `durationMinutes` para una colaboradora, en o después de
+    // earliestMinute ese día -- mismo criterio de intervalo/no-solape/minNotice que
+    // availability(), solo que arrancando desde un punto cualquiera del día en vez de la
+    // apertura, para poder encadenar un servicio detrás de otro.
+    const firstFit = (window, busy, durationMinutes, earliestMinute) => {
+      const start = Math.max(toMinutes(window.open), earliestMinute);
+      const startAligned = Math.ceil(start / interval) * interval;
+      for (let minute = startAligned; minute + durationMinutes <= toMinutes(window.close); minute += interval) {
+        const startDate = new Date(`${date}T${toClock(minute)}:00-04:00`);
+        const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
+        if (startDate.getTime() < now + minNotice * 60_000 || startDate.getTime() > latest) continue;
+        const overlaps = busy.some((row) => startDate < new Date(row.ends_at) && endDate > new Date(row.starts_at));
+        if (!overlaps) return { minute, endMinute: minute + durationMinutes };
+      }
+      return null;
+    };
+
+    const permutationsOf = (array) => {
+      if (array.length <= 1) return [array];
+      const result = [];
+      for (let i = 0; i < array.length; i++) {
+        const rest = [...array.slice(0, i), ...array.slice(i + 1)];
+        for (const perm of permutationsOf(rest)) result.push([array[i], ...perm]);
+      }
+      return result;
+    };
+    const orders = permutationsOf(services);
+
+    const toSegments = (found) => found.segments.map((seg) => ({
+      serviceId: seg.serviceId, serviceName: seg.serviceName, staffId: seg.staffId, staffName: seg.staffName,
+      time: toClock(seg.startMinute), endTime: toClock(seg.endMinute),
+    }));
+    const consider = (best, candidate) => {
+      if (!best) return candidate;
+      if (candidate.totalGapMinutes < best.totalGapMinutes) return candidate;
+      if (candidate.totalGapMinutes === best.totalGapMinutes && candidate.firstStart < best.firstStart) return candidate;
+      return best;
+    };
+
+    const staffAll = catalog.staff;
+    const eligiblePerService = await this.staffServiceEligibility({ staff: staffAll, serviceIds: selectedIds });
+
+    // ---------- Nivel 1: misma colaboradora, con espera entre servicios ----------
+    const sameStaffCandidates = staffAll.filter((person) => selectedIds.every((id) => eligiblePerService.get(id).has(person.id)));
+    if (sameStaffCandidates.length) {
+      const windows = await this.staffDayWindows({ staff: sameStaffCandidates, date, weekday, opening, closing });
+      const busyByStaff = await this.staffBusyIntervals({ staffIds: sameStaffCandidates.map((p) => p.id), date, timezone });
+      let best = null;
+      for (const person of sameStaffCandidates) {
+        const window = windows.get(person.id);
+        if (!window) continue;
+        const busy = busyByStaff.get(person.id) || [];
+        for (const order of orders) {
+          const segments = [];
+          let cursor = toMinutes(opening);
+          let firstStart = null;
+          let ok = true;
+          for (const service of order) {
+            const fit = firstFit(window, busy, service.durationMinutes, cursor);
+            if (!fit) { ok = false; break; }
+            if (firstStart === null) firstStart = fit.minute;
+            segments.push({ serviceId: service.id, serviceName: service.name, staffId: person.id, staffName: person.name, startMinute: fit.minute, endMinute: fit.endMinute });
+            cursor = fit.endMinute;
+          }
+          if (!ok) continue;
+          const totalGapMinutes = (cursor - firstStart) - order.reduce((sum, s) => sum + s.durationMinutes, 0);
+          best = consider(best, { segments, totalGapMinutes, firstStart });
+        }
+      }
+      if (best) return { tier: "same_staff_gap", totalGapMinutes: best.totalGapMinutes, segments: toSegments(best) };
+    }
+
+    // ---------- Nivel 2: distintas colaboradoras, lo más continuo posible ----------
+    const anyEligibleIds = new Set();
+    for (const id of selectedIds) for (const staffId of eligiblePerService.get(id)) anyEligibleIds.add(staffId);
+    const anyEligibleStaff = staffAll.filter((p) => anyEligibleIds.has(p.id));
+    if (anyEligibleStaff.length) {
+      const windows = await this.staffDayWindows({ staff: anyEligibleStaff, date, weekday, opening, closing });
+      const busyByStaff = await this.staffBusyIntervals({ staffIds: anyEligibleStaff.map((p) => p.id), date, timezone });
+      let best = null;
+      for (const order of orders) {
+        const segments = [];
+        let cursor = toMinutes(opening);
+        let firstStart = null;
+        let ok = true;
+        for (const service of order) {
+          let picked = null;
+          for (const staffId of eligiblePerService.get(service.id)) {
+            const window = windows.get(staffId);
+            if (!window) continue;
+            const busy = busyByStaff.get(staffId) || [];
+            const fit = firstFit(window, busy, service.durationMinutes, cursor);
+            if (fit && (!picked || fit.minute < picked.fit.minute)) picked = { person: anyEligibleStaff.find((p) => p.id === staffId), fit };
+          }
+          if (!picked) { ok = false; break; }
+          if (firstStart === null) firstStart = picked.fit.minute;
+          segments.push({ serviceId: service.id, serviceName: service.name, staffId: picked.person.id, staffName: picked.person.name, startMinute: picked.fit.minute, endMinute: picked.fit.endMinute });
+          cursor = picked.fit.endMinute;
+        }
+        if (!ok) continue;
+        const totalGapMinutes = (cursor - firstStart) - order.reduce((sum, s) => sum + s.durationMinutes, 0);
+        best = consider(best, { segments, totalGapMinutes, firstStart });
+      }
+      if (best) return { tier: "multi_staff", totalGapMinutes: best.totalGapMinutes, segments: toSegments(best) };
+    }
+
+    // ---------- Nivel 3: nada encontrado ese día ----------
+    return { tier: "contact_agent" };
   }
 
   async createClient(input) {

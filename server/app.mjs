@@ -1393,6 +1393,12 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       try {
         const result = await bookingStore.availability({ serviceIds, staffId: staffId || undefined, date });
         if (result.missing) return res.status(404).json({ error: "Servicio o colaboradora no disponible." });
+        // Sin bloque continuo para 2+ servicios (y sin restringir a una sola colaboradora en
+        // particular): busca una alternativa ese mismo día antes de rendirse -- ver
+        // availabilityFallback en server/store.mjs para los 3 niveles de prioridad.
+        if (!result.slots.length && !result.closed && !staffId && serviceIds.length > 1) {
+          result.fallback = await bookingStore.availabilityFallback({ serviceIds, date });
+        }
         res.json(result);
       } catch (error) { next(error); }
     });
