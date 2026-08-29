@@ -223,6 +223,20 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   }, 5 * 60 * 1000);
   rateLimitSweep.unref?.();
 
+  // "Mi disponibilidad" (autoservicio, ver /my-schedule-exceptions más abajo) -- restringido a
+  // administradora/superadministrador. Antes cualquier manicurista/asistente podía bloquear su
+  // propio horario; a pedido explícito del dueño del negocio, ahora solo administración puede
+  // bloquear horas (propias o de cualquier colaboradora, ver /admin/staff-schedule-exceptions).
+  const requireAdministradoraSession = async (req, res) => {
+    const session = await reservappSession(req);
+    if (session && ["administradora", "superadministrador"].includes(session.account.role)) return session;
+    res.status(403).json({ error: "No tienes permiso para esta acción." });
+    return null;
+  };
+
+  // Relay OTP (verificar el teléfono de un cliente nuevo antes de agendarle una cita, ver más
+  // abajo) sí sigue abierto a cualquier colaboradora -- la restricción de arriba es solo para
+  // "Mi disponibilidad", no para esto.
   const requireManicuristaOrAbove = async (req, res) => {
     const session = await reservappSession(req);
     if (session && ["manicurista", "asistente", "administradora", "superadministrador"].includes(session.account.role)) return session;
@@ -1195,13 +1209,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
-    // "Mi disponibilidad": cualquier colaboradora (manicurista/asistente/administradora/
-    // superadministrador, ver requireManicuristaOrAbove) marca sus propios días u horas no
-    // disponibles -- mismas tablas y misma lógica de availability() que ya usa el editor de
-    // administración, solo que acotado a la propia sesión (nunca a un staffId ajeno) y
-    // marcado created_by='staff' para que aparezca en el aviso de arriba.
+    // "Mi disponibilidad": solo administradora/superadministrador (ver requireAdministradoraSession
+    // arriba) marca sus propios días u horas no disponibles -- mismas tablas y misma lógica de
+    // availability() que ya usa el editor de administración, solo que acotado a la propia sesión
+    // (nunca a un staffId ajeno) y marcado created_by='staff' para que aparezca en el aviso de
+    // arriba. Manicurista/asistente ya no pueden bloquearse a sí mismas (pedido explícito del
+    // dueño del negocio) -- si necesitan bloquear una hora, se lo piden a administración, que sí
+    // puede bloquear cualquier colaboradora desde /admin/staff-schedule-exceptions.
     app.get("/api/reservapp/my-schedule-exceptions", bookingRateLimit, async (req, res, next) => {
-      const session = await requireManicuristaOrAbove(req, res);
+      const session = await requireAdministradoraSession(req, res);
       if (!session) return;
       if (!session.account.staff_id) return res.status(403).json({ error: "Esta cuenta no está vinculada a una colaboradora." });
       try {
@@ -1210,7 +1226,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     });
 
     app.post("/api/reservapp/my-schedule-exceptions", bookingRateLimit, async (req, res, next) => {
-      const session = await requireManicuristaOrAbove(req, res);
+      const session = await requireAdministradoraSession(req, res);
       if (!session) return;
       if (!session.account.staff_id) return res.status(403).json({ error: "Esta cuenta no está vinculada a una colaboradora." });
       const date = cleanText(req.body?.date, 10);
@@ -1233,7 +1249,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     });
 
     app.delete("/api/reservapp/my-schedule-exceptions/:date", bookingRateLimit, async (req, res, next) => {
-      const session = await requireManicuristaOrAbove(req, res);
+      const session = await requireAdministradoraSession(req, res);
       if (!session) return;
       if (!session.account.staff_id) return res.status(403).json({ error: "Esta cuenta no está vinculada a una colaboradora." });
       if (!/^\d{4}-\d{2}-\d{2}$/.test(req.params.date)) return res.status(400).json({ error: "Fecha inválida." });

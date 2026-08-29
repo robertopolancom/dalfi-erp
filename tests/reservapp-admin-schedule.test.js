@@ -9,8 +9,8 @@ function documentStore() {
 }
 
 const ADMIN_TOKEN = "admin-session-token";
+const ADMIN_WITH_STAFF_TOKEN = "admin-with-staff-session-token";
 const MANICURISTA_TOKEN = "manicurista-session-token";
-const MANICURISTA_NO_STAFF_TOKEN = "manicurista-no-staff-session-token";
 
 function bookingStore() {
   const updateBusinessSettingsCalls = [];
@@ -25,8 +25,8 @@ function bookingStore() {
     setRecentChanges(rows) { recentChanges = rows; },
     async sessionAccount(tokenHash) {
       if (tokenHash === hashToken(ADMIN_TOKEN)) return { id: "admin-1", role: "administradora" };
+      if (tokenHash === hashToken(ADMIN_WITH_STAFF_TOKEN)) return { id: "admin-3", role: "administradora", staff_id: "COL-1" };
       if (tokenHash === hashToken(MANICURISTA_TOKEN)) return { id: "manicurista-1", role: "manicurista", staff_id: "COL-1" };
-      if (tokenHash === hashToken(MANICURISTA_NO_STAFF_TOKEN)) return { id: "manicurista-2", role: "manicurista", staff_id: null };
       return null;
     },
     async businessSettings() { return { timezone: "America/Santo_Domingo", settings: { defaultOpeningTime: "09:00" } }; },
@@ -205,17 +205,30 @@ test("POST /my-schedule-exceptions: sin sesión de personal se rechaza", async (
 test("POST /my-schedule-exceptions: cuenta sin colaboradora vinculada se rechaza", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
-      method: "POST", headers: authHeaders(MANICURISTA_NO_STAFF_TOKEN), body: JSON.stringify({ date: "2026-09-01", available: false }),
+      method: "POST", headers: authHeaders(ADMIN_TOKEN), body: JSON.stringify({ date: "2026-09-01", available: false }),
     });
     assert.equal(response.status, 403);
     assert.equal(store.setStaffScheduleExceptionCalls.length, 0);
   });
 });
 
-test("POST /my-schedule-exceptions: la manicurista marca su propio staffId (nunca uno ajeno) con createdBy:'staff'", async () => {
+// Cambio de permisos a pedido explícito del dueño del negocio: manicurista/asistente ya NO
+// pueden bloquear su propio horario -- solo administración (ver requireAdministradoraSession).
+test("POST /my-schedule-exceptions: una manicurista ya no puede usar 'Mi disponibilidad' (403 por rol)", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
       method: "POST", headers: authHeaders(MANICURISTA_TOKEN),
+      body: JSON.stringify({ date: "2026-09-01", available: false, reason: "Cita médica" }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(store.setStaffScheduleExceptionCalls.length, 0);
+  });
+});
+
+test("POST /my-schedule-exceptions: una administradora con colaboradora propia marca su staffId (nunca uno ajeno) con createdBy:'staff'", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
+      method: "POST", headers: authHeaders(ADMIN_WITH_STAFF_TOKEN),
       body: JSON.stringify({ date: "2026-09-01", available: false, reason: "Cita médica", staffId: "COL-OTHER" }),
     });
     assert.equal(response.status, 200);
@@ -228,7 +241,7 @@ test("POST /my-schedule-exceptions: la manicurista marca su propio staffId (nunc
 test("POST /my-schedule-exceptions: medio día con hora de fin antes que la de inicio responde 400", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, {
-      method: "POST", headers: authHeaders(MANICURISTA_TOKEN),
+      method: "POST", headers: authHeaders(ADMIN_WITH_STAFF_TOKEN),
       body: JSON.stringify({ date: "2026-09-01", available: true, startTime: "12:00", endTime: "09:00" }),
     });
     assert.equal(response.status, 400);
@@ -236,10 +249,20 @@ test("POST /my-schedule-exceptions: medio día con hora de fin antes que la de i
   });
 });
 
-test("DELETE /my-schedule-exceptions/:date: la manicurista solo puede borrar de su propio staffId", async () => {
+test("DELETE /my-schedule-exceptions/:date: manicurista se rechaza (403 por rol)", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions/2026-09-01`, {
       method: "DELETE", headers: authHeaders(MANICURISTA_TOKEN),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(store.deleteStaffScheduleExceptionCalls.length, 0);
+  });
+});
+
+test("DELETE /my-schedule-exceptions/:date: administradora solo puede borrar de su propio staffId", async () => {
+  await withServer(async (base, store) => {
+    const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions/2026-09-01`, {
+      method: "DELETE", headers: authHeaders(ADMIN_WITH_STAFF_TOKEN),
     });
     assert.equal(response.status, 204);
     assert.equal(store.deleteStaffScheduleExceptionCalls.length, 1);
@@ -247,11 +270,11 @@ test("DELETE /my-schedule-exceptions/:date: la manicurista solo puede borrar de 
   });
 });
 
-test("GET /my-schedule-exceptions: una administradora también puede usarlo (tiene staff_id propio)", async () => {
+test("GET /my-schedule-exceptions: una administradora sin colaboradora propia también se rechaza (sin staff_id)", async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/reservapp/my-schedule-exceptions`, { headers: authHeaders(ADMIN_TOKEN) });
     // La cuenta administradora del mock no trae staff_id -- confirma que sin vínculo a
-    // colaboradora se rechaza igual que para personal, no solo para manicuristas.
+    // colaboradora se rechaza igual, no solo por rol.
     assert.equal(response.status, 403);
   });
 });

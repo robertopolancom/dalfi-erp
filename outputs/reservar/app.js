@@ -67,10 +67,11 @@ function applyAccount(account) {
   $("employee-client").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
   const isAdmin = Boolean(account) && ["administradora", "superadministrador"].includes(account.role);
   $("open-user-management").classList.toggle("hidden", !isAdmin);
-  // "Mi disponibilidad" es para cualquier colaboradora con horario propio (manicurista/asistente
-  // también, no solo administración) -- pedido explícito: cada una marca sus propios días/horas
-  // no disponibles en vez de depender de que administración lo haga por ella.
-  $("open-my-availability").classList.toggle("hidden", !account || !employeeRoles.has(account.role));
+  // "Mi disponibilidad" solo para administradora/superadministrador -- antes cualquier
+  // colaboradora (manicurista/asistente) podía bloquear su propio horario; a pedido explícito
+  // del dueño del negocio, ahora solo administración bloquea horas (propias o de cualquier
+  // colaboradora, desde "Configuración de usuarios" -> Horarios).
+  $("open-my-availability").classList.toggle("hidden", !isAdmin);
   $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
   $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Citas activas";
   $("mode-label").textContent = !account ? "Reserva rápida" : isClientRole(account.role) ? "Mi reserva" : "Reserva del equipo";
