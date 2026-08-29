@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null, appointmentDetailId: null };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null, appointmentDetailId: null, preferredAgendaStaffId: null };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -199,6 +199,7 @@ function renderStaffSlotsBoard(slots, onPick) {
   }
   board.replaceChildren(...[...byStaff.entries()].map(([staffId, group]) => {
     const column = document.createElement("section"); column.className = "staff-slots-column";
+    column.dataset.staffId = staffId;
     const heading = document.createElement("h3"); heading.textContent = group.staffName; column.append(heading);
     const list = document.createElement("div"); list.className = "slots"; column.append(list);
     for (const slot of group.slots) {
@@ -213,6 +214,17 @@ function renderStaffSlotsBoard(slots, onPick) {
     }
     return column;
   }));
+  // Si venimos de un click en la agenda vacía sobre la columna de una manicurista específica
+  // (ver startAgendaQuickBooking), resalta y desplaza a su columna aquí para que el personal no
+  // tenga que buscarla entre todas -- preferencia de un solo uso, se descarta apenas se aplica.
+  if (state.preferredAgendaStaffId) {
+    const preferredColumn = board.querySelector(`[data-staff-id="${state.preferredAgendaStaffId}"]`);
+    if (preferredColumn) {
+      preferredColumn.classList.add("preferred-staff-column");
+      preferredColumn.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+    }
+    state.preferredAgendaStaffId = null;
+  }
 }
 
 // Paso 3: consulta /api/fast-booking/availability SIN staffId -- el motor ya devuelve, en un
@@ -419,11 +431,41 @@ function renderAgendaCalendar(groups, appointments) {
       block.addEventListener("click", () => openAppointmentDetail(item));
       body.append(block);
     }
+    // Click en un espacio vacío de la columna de una manicurista (nunca en la vista "Mis citas"
+    // de un cliente, group.client): arranca el registro rápido de una cita para alguien que
+    // llamó pidiendo un horario -- pedido explícito de personal. La hora exacta la calcula el
+    // paso 3 del wizard (depende de la duración del servicio, que todavía no se eligió aquí);
+    // este click solo aproxima la hora para que el personal empiece cerca de donde tocó.
+    if (!group.client) {
+      body.classList.add("agenda-cal-body-clickable");
+      body.addEventListener("click", (event) => {
+        if (event.target.closest(".agenda-cal-block")) return;
+        const rect = body.getBoundingClientRect();
+        const offsetY = event.clientY - rect.top;
+        const clickedMinutes = openMin + Math.round(offsetY / pxPerMin);
+        const roundedMinutes = Math.min(closeMin, Math.max(openMin, Math.round(clickedMinutes / 15) * 15));
+        const time = `${String(Math.floor(roundedMinutes / 60)).padStart(2, "0")}:${String(roundedMinutes % 60).padStart(2, "0")}`;
+        startAgendaQuickBooking({ date: $("agenda-date").value, staffId: group.id, staffName: group.name, time });
+      });
+    }
     column.append(head, body);
     return column;
   }));
 
   return { hourGutter, columns };
+}
+
+// Click en zona vacía del calendario del Panel de colaboradores: arranca el wizard de reserva
+// (mismo formulario que ya usa cualquier cliente/personal) ya con la fecha fija y recordando
+// la manicurista de la columna clickeada, para que el personal registre rápido la cita de
+// quien llamó por teléfono en vez de pedirle los mismos datos desde cero.
+function startAgendaQuickBooking({ date, staffId, staffName, time }) {
+  resetDeviceState();
+  state.preferredAgendaStaffId = staffId;
+  if (date) $("date").value = date;
+  showBooking();
+  goToStep(1);
+  message($("booking-message"), `Cita para ${staffName || "una manicurista"} cerca de las ${time} el ${date} — elige el servicio para ver su disponibilidad real.`, true);
 }
 
 function renderAgendaFilters(groups) {
@@ -1020,6 +1062,7 @@ function resetDeviceState() {
   state.fallbackSegments = null;
   state.pendingBookingStart = false;
   state.quickSetupPhone = null;
+  state.preferredAgendaStaffId = null;
   goToStep(0);
 }
 
