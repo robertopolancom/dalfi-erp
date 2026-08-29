@@ -819,6 +819,15 @@ $("step4-back").addEventListener("click", () => goToStep(3));
 
 $("open-login").addEventListener("click", () => { message($("login-message")); $("login-dialog").showModal(); });
 $("close-login").addEventListener("click", () => $("login-dialog").close());
+// Mismo flujo que "Es mi primera vez" al iniciar una reserva (identify-new): reutiliza
+// phone-check-dialog para buscar el teléfono -- si ya hay ficha, pasa a crear/reiniciar
+// contraseña (openConfirmName); si no existe, abre el formulario completo de registro.
+$("login-new-user").addEventListener("click", () => {
+  $("login-dialog").close();
+  $("phone-check-value").value = "";
+  message($("phone-check-message"));
+  $("phone-check-dialog").showModal();
+});
 $("close-client").addEventListener("click", () => $("client-dialog").close());
 
 // Dos entradas distintas al MISMO diálogo de "primera vez", con comportamiento distinto al
