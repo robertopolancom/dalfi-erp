@@ -35,12 +35,12 @@ test("la SPA carga y guarda exclusivamente mediante /api/database con la version
 
 test("si el login no puede leer /api/database, la SPA no intenta guardar el respaldo local", () => {
   const loginBlock = appJs.slice(appJs.indexOf('byId("auth-form").addEventListener'), appJs.indexOf("function wireUserAdmin"));
-  assert.match(loginBlock, /No se pudo leer Supabase\. No se guardó ningún dato\./);
+  assert.match(loginBlock, /No se pudo leer la base de datos\. No se guardó ningún dato\./);
   assert.doesNotMatch(loginBlock, /else \{\s*await saveRemoteDatabase\(\)/);
 });
 
 test("el refresco remoto conserva el codigo HTTP en el estado visible sin exponer el cuerpo", () => {
-  assert.match(appJs, /Error leyendo Supabase \(HTTP \$\{status\}\)/);
+  assert.match(appJs, /Error leyendo base de datos \(HTTP \$\{status\}\)/);
   assert.match(appJs, /match\(\/HTTP\\s\+\(\\d\{3\}\)\/\)/);
 });
 
@@ -53,7 +53,7 @@ test("el login tiene timeout y no queda indefinidamente en Conectando Supabase",
 test("el login muestra el HTTP real si falla la lectura inicial de /api/database", () => {
   const loginBlock = appJs.slice(appJs.indexOf('byId("auth-form").addEventListener'), appJs.indexOf("function wireUserAdmin"));
   assert.match(loginBlock, /withSupabaseTimeout\(loadRemoteDatabase\(\)\)/);
-  assert.match(loginBlock, /No se pudo leer Supabase \(HTTP \$\{status\}\)/);
+  assert.match(loginBlock, /No se pudo leer la base de datos \(HTTP \$\{status\}\)/);
   assert.match(loginBlock, /auth\.signOut\(\)/);
 });
 

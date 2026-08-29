@@ -457,9 +457,9 @@ async function refreshRemoteDatabase({ force = false } = {}) {
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
     return true;
   } catch (error) {
-    console.warn("No se pudo refrescar Supabase.", error);
+    console.warn("No se pudo refrescar la base de datos.", error);
     const status = String(error?.message || "").match(/HTTP\s+(\d{3})/)?.[1];
-    updateSyncStatus(status ? `Error leyendo Supabase (HTTP ${status})` : "Error leyendo Supabase", "error");
+    updateSyncStatus(status ? `Error leyendo base de datos (HTTP ${status})` : "Error leyendo base de datos", "error");
     return false;
   } finally {
     isLoadingRemote = false;
@@ -509,7 +509,7 @@ function scheduleRemoteSave() {
 async function saveRemoteDatabase() {
   if (!isSupabaseReady() || !database || remoteSaveInFlight) return;
   remoteSaveInFlight = true;
-  updateSyncStatus("Guardando en Supabase...", "online");
+  updateSyncStatus("Guardando en base de datos...", "online");
   try {
     const response = await fetch("/api/database", {
       method: "PUT",
@@ -541,8 +541,8 @@ async function saveRemoteDatabase() {
     updateSyncStatus(`Conectado: ${supabaseSession.user.email}`, "online");
     return true;
   } catch (error) {
-    console.error("No se pudo guardar en Supabase.", error);
-    updateSyncStatus("Error guardando Supabase", "error");
+    console.error("No se pudo guardar en la base de datos.", error);
+    updateSyncStatus("Error guardando base de datos", "error");
     return false;
   } finally {
     remoteSaveInFlight = false;
@@ -11071,7 +11071,7 @@ function wireAuth() {
       const status = String(readError?.message || "").match(/HTTP\s+(\d{3})/)?.[1];
       await supabaseClient.auth.signOut();
       supabaseSession = null;
-      updateSyncStatus(status ? `No se pudo leer Supabase (HTTP ${status})` : "No se pudo leer Supabase", "error");
+      updateSyncStatus(status ? `No se pudo leer la base de datos (HTTP ${status})` : "No se pudo leer la base de datos", "error");
       return;
     }
     if (remoteDatabase) {
@@ -11086,7 +11086,7 @@ function wireAuth() {
       // sobrescribir datos reales o producir un error engañoso de guardado.
       await supabaseClient.auth.signOut();
       supabaseSession = null;
-      updateSyncStatus("No se pudo leer Supabase. No se guardó ningún dato.", "error");
+      updateSyncStatus("No se pudo leer la base de datos. No se guardó ningún dato.", "error");
       return;
     }
     startRemoteRefreshLoop();
