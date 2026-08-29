@@ -486,7 +486,11 @@ export class NeonBookingStore {
     for (const person of staff) {
       const personBusy = busyByStaff.get(person.id) || [];
       const window = staffWindows.get(person.id);
-      for (let minute = toMinutes(window.open); minute + durationMinutes <= toMinutes(window.close); minute += interval) {
+      // La última cita del día puede terminar después de la hora de cierre -- a diferencia de
+      // un banco, lo que importa es que la clienta haya entrado (el horario de inicio) antes de
+      // que se cierre, no que el servicio completo quepa antes del cierre. Por eso el límite del
+      // bucle es "empieza antes de cerrar" (minute < close), no "termina antes de cerrar".
+      for (let minute = toMinutes(window.open); minute < toMinutes(window.close); minute += interval) {
         const hour = String(Math.floor(minute / 60)).padStart(2, "0");
         const min = String(minute % 60).padStart(2, "0");
         const start = new Date(`${date}T${hour}:${min}:00-04:00`);
@@ -536,11 +540,18 @@ export class NeonBookingStore {
     // Primer horario legal de `durationMinutes` para una colaboradora, en o después de
     // earliestMinute ese día -- mismo criterio de intervalo/no-solape/minNotice que
     // availability(), solo que arrancando desde un punto cualquiera del día en vez de la
-    // apertura, para poder encadenar un servicio detrás de otro.
+    // apertura, para poder encadenar un servicio detrás de otro. Mismo criterio de cierre que
+    // availability() también: el límite es "empieza antes de cerrar", no "termina antes de
+    // cerrar" -- y no hace falta distinguir el último servicio de la cadena de los demás: si
+    // availabilityFallback() se está ejecutando es porque el bloque continuo completo (mismo
+    // criterio relajado) ya no cupo en ningún punto del día, así que un tramo intermedio nunca
+    // puede alcanzar a estirarse más allá de cerrar sin que esa misma ventana ya hubiera hecho
+    // caber el bloque continuo entero -- caso que availability() ya habría resuelto antes de
+    // llegar aquí.
     const firstFit = (window, busy, durationMinutes, earliestMinute) => {
       const start = Math.max(toMinutes(window.open), earliestMinute);
       const startAligned = Math.ceil(start / interval) * interval;
-      for (let minute = startAligned; minute + durationMinutes <= toMinutes(window.close); minute += interval) {
+      for (let minute = startAligned; minute < toMinutes(window.close); minute += interval) {
         const startDate = new Date(`${date}T${toClock(minute)}:00-04:00`);
         const endDate = new Date(startDate.getTime() + durationMinutes * 60_000);
         if (startDate.getTime() < now + minNotice * 60_000 || startDate.getTime() > latest) continue;

@@ -166,3 +166,19 @@ test("availability(): scheduleExceptions con open/close puntuales cambia el hora
   assert.ok(result.slots.length > 0);
   assert.ok(result.slots.every((slot) => slot.time < "13:00"));
 });
+
+// La última cita del día puede terminar después de la hora de cierre -- a diferencia de un
+// banco, lo que importa es que la clienta haya entrado antes de que se cierre, no que el
+// servicio completo quepa antes del cierre.
+test("availability(): un servicio que empieza antes de cerrar se ofrece aunque termine después del cierre (no como un banco)", async () => {
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    // SRV-1 dura 60 min (fakePool, línea 11); ventana de solo 30 min (09:00-09:30) -- antes de
+    // este cambio, ningún horario cabía completo y result.slots quedaba vacío.
+    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "09:30", maximumAdvanceBookingDays: 400 },
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
+  assert.ok(result.slots.length > 0, "debe ofrecer horarios aunque el servicio termine después del cierre");
+  assert.ok(result.slots.every((slot) => slot.time < "09:30"), "el horario de INICIO debe seguir siendo antes de cerrar");
+  assert.ok(result.slots.some((slot) => slot.time === "09:15"), "09:15 empieza antes de cerrar (09:30) aunque el servicio de 60 min termine a las 10:15");
+});
