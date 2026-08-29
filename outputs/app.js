@@ -1992,6 +1992,7 @@ function reservationStatus(record) {
 
 function resetReservationEditState(form = byId("reservation-form")) {
   if (!form) return;
+  delete form.dataset.preferredStaffId;
   const editField = byId("reservation-edit-id");
   if (editField) editField.value = "";
   const title = form.querySelector(".panel-head h3");
@@ -2037,6 +2038,7 @@ function startReservationEdit(reservationId) {
   const { record } = reservationRecordById(reservationId);
   const form = byId("reservation-form");
   if (!record || !form) return;
+  delete form.dataset.preferredStaffId;
   byId("reservation-edit-id").value = reservationId;
   form.dataset.clientId = record.clientId || record.clienteID || "";
   byId("reservation-client-search").value = record.client || record.clienteNombre || "";
@@ -2090,6 +2092,8 @@ function availableReservationStaff({ preserveSelection = true } = {}) {
   const select = byId("reservation-staff");
   const note = byId("reservation-staff-availability");
   if (!select) return [];
+  const form = byId("reservation-form");
+  const preferredStaffId = form?.dataset.preferredStaffId || "";
   const previousId = preserveSelection ? select.value : "";
   const previousName = preserveSelection ? select.selectedOptions?.[0]?.textContent?.trim() : "";
   const date = byId("reservation-date")?.value || "";
@@ -2125,8 +2129,13 @@ function availableReservationStaff({ preserveSelection = true } = {}) {
 
   select.innerHTML = `<option value="">${date && time && serviceRecord ? "Selecciona una manicurista" : "Selecciona servicio, fecha y hora"}</option>` +
     options.map((person) => `<option value="${escapeHtml(person.id)}">${escapeHtml(person.name)}</option>`).join("");
-  const matching = options.find((person) => person.id === previousId || normalize(person.name) === normalize(previousName));
+  const matching = options.find((person) => person.id === preferredStaffId) ||
+    options.find((person) => person.id === previousId || normalize(person.name) === normalize(previousName));
   if (matching) select.value = matching.id;
+  // La manicurista de la celda clickeada en la matriz es una preferencia de un solo uso: en
+  // cuanto se pudo calcular disponibilidad real (ya con servicio elegido), se descarta haya
+  // o no coincidido entre las opciones -- así no interfiere con una selección manual después.
+  if (form && serviceRecord) delete form.dataset.preferredStaffId;
   if (note) {
     note.textContent = !date || !time || !serviceRecord
       ? "Selecciona un servicio existente, fecha y hora para calcular disponibilidad."
@@ -2146,6 +2155,88 @@ function fillReservationClientFromRecord(client) {
   byId("reservation-client-phone").dataset.autofilled = "true";
   byId("reservation-client-email").dataset.autofilled = "true";
   return true;
+}
+
+// Slot pendiente mientras el menú "¿Qué quieres hacer?" (#slot-action-dialog) está abierto --
+// se llena al hacer click en una ranura "Disponible" y se consume (o se descarta al cancelar)
+// en cuanto el usuario elige una de las dos acciones.
+let pendingSlotAction = null;
+
+// Click en una ranura "Disponible" de la Matriz Consolidada Diaria: en vez de saltar directo
+// a crear una reserva, primero pregunta la intención con un menú pequeño -- crear una cita
+// nueva en esa ranura, o modificar una cita ya existente ese mismo día.
+function openSlotActionMenu({ date, time, staffId, staffName }) {
+  if (!canManageReservations()) {
+    alert("Tu usuario puede consultar la agenda, pero no crear ni modificar reservas.");
+    return;
+  }
+  pendingSlotAction = { date, time, staffId };
+  const summary = byId("slot-action-summary");
+  if (summary) summary.textContent = `${staffName || "Manicurista"} · ${date} a las ${time}`;
+  byId("slot-action-dialog")?.showModal();
+}
+
+const OPEN_RESERVATION_STATUSES = new Set(["Programada", "Confirmada", "En proceso"]);
+
+// Lista de citas abiertas (sin contar Completada/Cancelada/No asistió) el mismo día de la
+// ranura clickeada, para elegir cuál modificar sin tener que ir a buscarla en la lista larga
+// de la pestaña "Agenda y Reservas".
+function openSlotAppointmentPicker({ date }) {
+  const rows = state.reservations
+    .filter((reservation) => reservation.date === date && OPEN_RESERVATION_STATUSES.has(reservationStatus(reservation)))
+    .sort((a, b) => a.time.localeCompare(b.time));
+
+  const summary = byId("slot-appointment-picker-summary");
+  if (summary) summary.textContent = `Citas abiertas el ${date}`;
+
+  const list = byId("slot-appointment-picker-list");
+  if (list) {
+    list.innerHTML = rows.length
+      ? rows.map((reservation) => `
+          <article class="appointment">
+            <time>${escapeHtml(reservation.time)}</time>
+            <div>
+              <strong>${escapeHtml(reservation.client)}</strong>
+              <span>${escapeHtml(reservation.service)} con ${escapeHtml(reservation.staff)}</span>
+              <span>${escapeHtml(reservation.phone || "")}</span>
+            </div>
+            <div class="row-actions">
+              <span class="status-pill warning">${escapeHtml(reservationStatus(reservation))}</span>
+              <button class="secondary-btn compact slot-picker-select" data-reservation-id="${escapeHtml(reservation.id)}" type="button">Seleccionar</button>
+            </div>
+          </article>
+        `).join("")
+      : `<p class="empty">No hay citas abiertas ese día.</p>`;
+  }
+  byId("slot-appointment-picker-dialog")?.showModal();
+}
+
+// Click en una ranura "Disponible" de la Matriz Consolidada Diaria: abre el formulario de
+// "Nueva reserva" ya en modo creación (nunca edición), con fecha/hora fijas desde la celda.
+// La manicurista NO se puede fijar todavía -- availableReservationStaff() necesita que se
+// elija un servicio primero para calcular disponibilidad real (ver esa función) -- así que
+// solo se guarda como preferencia en el propio form; availableReservationStaff() la aplica
+// en cuanto la manicurista clickeada aparezca entre las opciones ya calculadas.
+function startReservationFromSlot({ date, time, staffId }) {
+  if (!canManageReservations()) {
+    alert("Tu usuario puede consultar la agenda, pero no crear reservas.");
+    return;
+  }
+  const form = byId("reservation-form");
+  if (!form || !date || !time) return;
+  resetReservationEditState(form);
+  clearAutofilledReservationClientFields();
+  byId("reservation-client-search").value = "";
+  byId("reservation-source").value = "Presencial";
+  byId("reservation-service-search").value = "";
+  byId("reservation-date").value = date;
+  byId("reservation-time").value = time;
+  form.dataset.preferredStaffId = staffId || "";
+  availableReservationStaff({ preserveSelection: false });
+  const message = byId("reservation-form-message");
+  if (message) { message.textContent = ""; message.className = "form-message"; }
+  byId("booking-tab-agenda")?.click();
+  byId("reservation-client-search")?.focus();
 }
 
 function clearAutofilledReservationClientFields() {
@@ -4443,7 +4534,7 @@ function renderConsolidatedMatrix() {
       }
 
       if (slot.status === "available") {
-        html += `<td style="background:#f0fdf4;"><span class="slot-badge available">Disponible</span></td>`;
+        html += `<td class="slot-cell-available" data-date="${escapeHtml(targetDate)}" data-time="${escapeHtml(row.time)}" data-staff-id="${escapeHtml(col.id)}" data-staff-name="${escapeHtml(col.name)}" style="background:#f0fdf4; cursor:pointer;" title="${escapeHtml(col.name)} el ${escapeHtml(targetDate)} a las ${escapeHtml(row.time)}"><span class="slot-badge available">Disponible</span></td>`;
       } else if (slot.status === "booked") {
         // Colores por `estado` (dimensión principal) + notas pequeñas por
         // `estadoConfirmacion`/`estadoDeposito` (dimensiones independientes) — ver
@@ -16455,6 +16546,35 @@ function wireForms() {
     byId("reservation-details-dialog").close();
   });
 
+  byId("slot-action-cancel")?.addEventListener("click", () => {
+    byId("slot-action-dialog")?.close();
+    pendingSlotAction = null;
+  });
+
+  byId("slot-action-create")?.addEventListener("click", () => {
+    byId("slot-action-dialog")?.close();
+    if (pendingSlotAction) startReservationFromSlot(pendingSlotAction);
+    pendingSlotAction = null;
+  });
+
+  byId("slot-action-modify")?.addEventListener("click", () => {
+    byId("slot-action-dialog")?.close();
+    if (pendingSlotAction) openSlotAppointmentPicker(pendingSlotAction);
+    pendingSlotAction = null;
+  });
+
+  byId("slot-appointment-picker-cancel")?.addEventListener("click", () => {
+    byId("slot-appointment-picker-dialog")?.close();
+  });
+
+  byId("slot-appointment-picker-list")?.addEventListener("click", (event) => {
+    const selectBtn = event.target.closest(".slot-picker-select");
+    if (!selectBtn) return;
+    byId("slot-appointment-picker-dialog")?.close();
+    byId("booking-tab-agenda")?.click();
+    startReservationEdit(selectBtn.dataset.reservationId);
+  });
+
   // Pestañas del módulo de Reservas
   const bookingTabsMap = [
     { btn: "booking-tab-agenda", panel: "booking-panel-agenda" },
@@ -16526,6 +16646,16 @@ function wireForms() {
   });
 
   document.addEventListener("click", (event) => {
+    const availableSlotCell = event.target.closest(".slot-cell-available");
+    if (availableSlotCell) {
+      openSlotActionMenu({
+        date: availableSlotCell.dataset.date,
+        time: availableSlotCell.dataset.time,
+        staffId: availableSlotCell.dataset.staffId,
+        staffName: availableSlotCell.dataset.staffName,
+      });
+      return;
+    }
     const confirmBtn = event.target.closest(".confirm-salon-reservation");
     if (confirmBtn) {
       confirmSalonReservation(confirmBtn.dataset.reservationId);

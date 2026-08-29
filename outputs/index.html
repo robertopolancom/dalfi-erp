@@ -3461,6 +3461,36 @@
       </section>
     </dialog>
 
+    <!-- Click en una ranura "Disponible" de la Matriz Consolidada Diaria: en vez de saltar
+         directo a crear, primero pregunta la intención (crear cita nueva vs. modificar una ya
+         existente ese mismo día). -->
+    <dialog id="slot-action-dialog" class="app-dialog">
+      <section class="panel form-panel">
+        <div class="panel-head">
+          <h3>¿Qué quieres hacer?</h3>
+        </div>
+        <p class="panel-note" id="slot-action-summary"></p>
+        <div class="row-actions" style="flex-direction:column; align-items:stretch; gap:8px;">
+          <button class="primary-btn" id="slot-action-create" type="button">➕ Crear nueva cita</button>
+          <button class="secondary-btn" id="slot-action-modify" type="button">📋 Modificar una cita existente</button>
+          <button class="secondary-btn" id="slot-action-cancel" type="button">Cancelar</button>
+        </div>
+      </section>
+    </dialog>
+
+    <dialog id="slot-appointment-picker-dialog" class="app-dialog">
+      <section class="panel form-panel">
+        <div class="panel-head">
+          <h3>Selecciona la cita a modificar</h3>
+        </div>
+        <p class="panel-note" id="slot-appointment-picker-summary"></p>
+        <div id="slot-appointment-picker-list" class="appointments list"></div>
+        <div class="row-actions">
+          <button class="secondary-btn" id="slot-appointment-picker-cancel" type="button">Cancelar</button>
+        </div>
+      </section>
+    </dialog>
+
     <dialog id="invoice-sent-modal" class="app-dialog invoice-modal-dialog">
       <section class="panel form-panel" style="max-width: 650px; width: 100%;">
         <div class="panel-head">

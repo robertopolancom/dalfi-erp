@@ -918,6 +918,16 @@ textarea:focus {
   font-weight: 600;
 }
 
+.slot-cell-available {
+  transition: background-color 0.1s ease;
+}
+
+.slot-cell-available:hover {
+  background: #dcfce7 !important;
+  outline: 2px solid #22c55e;
+  outline-offset: -2px;
+}
+
 .hidden {
   display: none !important;
 }
