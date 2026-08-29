@@ -303,6 +303,17 @@
   <dialog id="appointment-detail-dialog">
     <div class="dialog-head"><div><p class="kicker">Detalle de la cita</p><h2 id="appointment-detail-time">--:--</h2></div><button class="icon-button" id="close-appointment-detail" type="button" aria-label="Cerrar">×</button></div>
     <dl class="detail-list" id="appointment-detail-body"></dl>
+    <div class="dialog-actions">
+      <div class="message" id="appointment-cancel-message"></div>
+      <button class="secondary" id="appointment-cancel-toggle" type="button">Cancelar esta cita</button>
+      <div class="hidden" id="appointment-cancel-confirm">
+        <label>Motivo <span>(opcional)</span><input id="appointment-cancel-reason" type="text" maxlength="200" /></label>
+        <div class="step-actions">
+          <button class="secondary" id="appointment-cancel-back" type="button">Volver</button>
+          <button class="primary" id="appointment-cancel-submit" type="button">Confirmar cancelación</button>
+        </div>
+      </div>
+    </div>
   </dialog>
 
   <dialog id="setup-dialog"><form id="setup-form" method="dialog">

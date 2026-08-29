@@ -773,6 +773,18 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       catch (error) { next(error); }
     });
 
+    // Cancelar una cita desde la agenda del equipo -- antes solo se podía desde el ERP legado.
+    // Cualquier cuenta de personal (no cliente) puede hacerlo, igual que ya puede ver /agenda.
+    app.post("/api/reservapp/agenda/appointments/:id/cancel", requireReservapp, async (req, res, next) => {
+      if (isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo el personal puede cancelar citas desde aquí." });
+      const reason = cleanText(req.body?.reason, 200);
+      try {
+        const cancelled = await bookingStore.cancelAppointment({ id: req.params.id, reason });
+        if (!cancelled) return res.status(404).json({ error: "Esa cita no existe o ya estaba cancelada." });
+        res.json({ ok: true, appointment: cancelled });
+      } catch (error) { next(error); }
+    });
+
     // "Citas activas" / historial para un cliente -- a diferencia de /agenda (un día, vista de
     // equipo), esta ruta es exclusiva de cuentas cliente y siempre usa su propio client_id de la
     // sesión, nunca uno recibido del cliente.

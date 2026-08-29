@@ -1719,6 +1719,25 @@ export class NeonBookingStore {
     return { date, visibility: isClient ? "own" : "team", staff, appointments: result.rows };
   }
 
+  // Cancelar desde la agenda del equipo en ReservApp (antes solo era posible desde el ERP
+  // legado). Idempotente a propósito: no toca filas ya 'cancelled'/'replaced', así que un doble
+  // clic o una carrera entre dos personas del equipo no revierte nada ni pisa el motivo ya
+  // guardado -- devuelve null y la ruta responde 404, "ya estaba cancelada".
+  async cancelAppointment({ id, reason = null }) {
+    const result = await this.pool.query(
+      `update app.appointments
+          set status = 'cancelled',
+              notes = case when $2::text is not null and $2 <> ''
+                        then trim(both E'\n' from coalesce(notes,'') || E'\nCancelada: ' || $2)
+                        else notes end,
+              updated_at = clock_timestamp()
+        where id = $1 and status not in ('cancelled','replaced')
+        returning id, status`,
+      [id, reason],
+    );
+    return result.rows[0] || null;
+  }
+
   // Vista de cliente en ReservApp: "Citas activas" (próximas, sin cancelar/reasignar) e
   // "historial" (ya pasadas o canceladas/reasignadas) -- a diferencia de agenda(), no está
   // acotada a un solo día, así que un cliente ve todas sus citas activas de un vistazo en vez de

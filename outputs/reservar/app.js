@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null, appointmentDetailId: null };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -346,6 +346,12 @@ function openAppointmentDetail(item) {
     const dd = document.createElement("dd"); dd.textContent = value;
     return [dt, dd];
   }));
+  state.appointmentDetailId = item.id;
+  const cancellable = !["cancelled", "completed"].includes(item.status);
+  $("appointment-cancel-toggle").classList.toggle("hidden", !cancellable);
+  $("appointment-cancel-confirm").classList.add("hidden");
+  $("appointment-cancel-reason").value = "";
+  message($("appointment-cancel-message"));
   $("appointment-detail-dialog").showModal();
 }
 
@@ -521,6 +527,26 @@ $("agenda-view-day").addEventListener("click", () => setAgendaView("day"));
 $("agenda-view-week").addEventListener("click", () => setAgendaView("week"));
 
 $("close-appointment-detail").addEventListener("click", () => $("appointment-detail-dialog").close());
+$("appointment-cancel-toggle").addEventListener("click", () => {
+  $("appointment-cancel-confirm").classList.remove("hidden");
+  $("appointment-cancel-toggle").classList.add("hidden");
+});
+$("appointment-cancel-back").addEventListener("click", () => {
+  $("appointment-cancel-confirm").classList.add("hidden");
+  $("appointment-cancel-toggle").classList.remove("hidden");
+});
+$("appointment-cancel-submit").addEventListener("click", async () => {
+  const button = $("appointment-cancel-submit"); button.disabled = true;
+  message($("appointment-cancel-message"), "Cancelando…", true);
+  try {
+    await api(`/api/reservapp/agenda/appointments/${state.appointmentDetailId}/cancel`, {
+      method: "POST", body: JSON.stringify({ reason: $("appointment-cancel-reason").value.trim() }),
+    });
+    $("appointment-detail-dialog").close();
+    loadAgendaView();
+  } catch (error) { message($("appointment-cancel-message"), error.message); }
+  finally { button.disabled = false; }
+});
 
 // Etiquetas humanas de las dos dimensiones independientes de una cita -- mismo vocabulario que ya
 // usa el ERP legado (outputs/app.js CONFIRM_NOTES/DEPOSIT_NOTES) para que administración y

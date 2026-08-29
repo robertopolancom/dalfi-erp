@@ -254,9 +254,12 @@ dialog form{padding:28px}
 .info-banner{margin:16px 4px 0;padding:14px 18px;border-radius:16px;background:var(--soft);color:var(--brand-dark);font-size:.88rem;line-height:1.55;text-align:center}
 .info-banner-icon{display:inline-flex;vertical-align:middle;margin-left:4px}
 
-.detail-list{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;padding:0 28px 28px;margin:0}
+.detail-list{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;padding:0 28px 10px;margin:0}
 .detail-list dt{color:var(--muted);font-weight:700;font-size:.83rem}
 .detail-list dd{margin:0;font-weight:600}
+.dialog-actions{padding:0 28px 28px}
+.dialog-actions .message{margin-top:0}
+#appointment-cancel-confirm{margin-top:10px}
 dialog>.dialog-head{padding:28px 28px 12px}
 .admin-panel{border-top:1px solid var(--line);margin-top:30px;padding-top:26px}
 .admin-panel h3{margin:0}
