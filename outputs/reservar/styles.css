@@ -1,12 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Poppins:wght@300;400;500;600;700;800&display=swap');
 
-/* Paleta de marca: verde salvia + crema + casi-negro (foto de referencia del dueño del
-   negocio). Fondo de página INVERTIDO a oscuro (salvia -> carbón, --bg-1/--bg-2) a pedido
-   explícito ("dar ganas de arreglarte", referencia de app de salón con fondo oscuro y tarjeta
-   blanca flotando encima) -- la tarjeta principal (.card) se queda blanca/clara, solo el
-   fondo detrás de ella y los elementos que viven directamente sobre ese fondo (encabezado)
-   cambian a texto claro vía --on-dark/--on-dark-muted. El botón principal (.primary) usa
-   --ink (casi negro) en vez del salvia, igual que el CTA negro de la referencia. */
+/* Paleta de marca: verde salvia + crema + casi-negro. Fondo de página: foto propia del dueño
+   del negocio (mesa de mármol + café, tonos crema/beige neutros) en vez del degradado
+   oscuro anterior -- el verde salvia queda solo para detalles/letras sobre fondos claros
+   (la tarjeta, y ahora también el encabezado, ya que el fondo entero es claro). El botón
+   principal de portera (#start-booking) y la tarjeta ya usaban ese mismo criterio. */
 :root{
   color-scheme:light;
   --ink:#1C1F19;
@@ -15,31 +13,27 @@
   --brand-dark:#4B5040;
   --brand-light:#DDE0D2;
   --paper:#FAF6EE;
-  --bg-1:#4B5040;
-  --bg-2:#1C1F19;
   --line:#D8D2C0;
   --soft:#F1EEE5;
   --danger:#a5303f;
-  --on-dark:#F5F3EA;
-  --on-dark-muted:#C8C5B8;
-  --shadow:0 1px 2px rgba(0,0,0,.18),0 22px 48px rgba(0,0,0,.32);
-  --shadow-soft:0 10px 22px rgba(0,0,0,.24);
+  --shadow:0 1px 2px rgba(0,0,0,.1),0 22px 48px rgba(0,0,0,.16);
+  --shadow-soft:0 10px 22px rgba(0,0,0,.12);
   font-family:Poppins,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;min-height:100vh;background:radial-gradient(circle at 12% 0,var(--bg-1) 0,transparent 42%),linear-gradient(160deg,var(--bg-1),var(--bg-2));color:var(--brand-dark)}
+body{margin:0;min-height:100vh;background:linear-gradient(180deg,rgba(250,246,238,.5),rgba(250,246,238,.1) 30%),url('./assets/bg-hero.jpg') center/cover no-repeat;color:var(--brand-dark)}
 button,input,select,textarea{font:inherit}
 .shell{width:min(820px,100%);margin:auto;padding:32px 18px 70px}
 
 /* ---------- encabezado / marca ---------- */
 .brand{display:flex;align-items:center;gap:14px;margin:0 4px 22px}
-.brand-mark{width:56px;height:56px;object-fit:contain;filter:drop-shadow(0 8px 16px rgba(0,0,0,.35))}
+.brand-mark{width:56px;height:56px;object-fit:contain;filter:drop-shadow(0 4px 10px rgba(0,0,0,.18))}
 .brand-copy{display:flex;flex-direction:column}
-.brand-copy h1{margin:0;font-family:"Playfair Display",Georgia,serif;font-weight:500;font-size:clamp(1.55rem,4.6vw,2.4rem);letter-spacing:-.01em;color:var(--on-dark);text-wrap:balance}
-.brand-copy p{margin:3px 0 0;font-size:.76rem;color:var(--on-dark-muted);font-weight:500;letter-spacing:.05em;text-transform:uppercase}
+.brand-copy h1{margin:0;font-family:"Playfair Display",Georgia,serif;font-weight:500;font-size:clamp(1.55rem,4.6vw,2.4rem);letter-spacing:-.01em;color:var(--brand-dark);text-wrap:balance}
+.brand-copy p{margin:3px 0 0;font-size:.76rem;color:var(--muted);font-weight:500;letter-spacing:.05em;text-transform:uppercase}
 .brand-copy p .dot{margin:0 6px;opacity:.55}
-.staff-link{margin-left:auto;border:0;background:transparent;color:var(--on-dark);font-weight:800;padding:10px;cursor:pointer}
+.staff-link{margin-left:auto;border:0;background:transparent;color:var(--brand-dark);font-weight:800;padding:10px;cursor:pointer}
 
 /* ---------- tarjeta principal ---------- */
 .card{background:var(--paper);border:1px solid #FFFFFF;border-radius:26px;padding:clamp(22px,5vw,42px);box-shadow:var(--shadow);position:relative;overflow:hidden}
