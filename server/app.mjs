@@ -1008,6 +1008,29 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Segundo cuadro de mensaje, independiente del banner promocional -- sin generación por IA
+    // (administración escribe el texto final directo), pensado para notas más largas y
+    // permanentes en vez de promociones puntuales.
+    app.post("/api/reservapp/admin/info-banner", bookingRateLimit, async (req, res, next) => {
+      const text = cleanText(req.body?.text, 800);
+      if (!text) return res.status(400).json({ error: "Escribe el mensaje." });
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede publicar el mensaje." });
+        const infoBanner = await bookingStore.setInfoBanner({ text });
+        res.json({ infoBanner });
+      } catch (error) { next(error); }
+    });
+
+    app.delete("/api/reservapp/admin/info-banner", bookingRateLimit, async (req, res, next) => {
+      try {
+        const { allowed } = await resolveAdminAuthority(req);
+        if (!allowed) return res.status(403).json({ error: "Solo administración puede quitar el mensaje." });
+        await bookingStore.clearInfoBanner();
+        res.status(204).end();
+      } catch (error) { next(error); }
+    });
+
     // Panel "Horarios" -- este es el único lugar que de verdad afecta la disponibilidad real de
     // ReservApp (ver comentario junto a businessSettings() en store.mjs). El editor del ERP legado
     // sigue funcionando para mostrar/leer, pero escribir horario ahí ya no es la fuente de verdad.

@@ -155,6 +155,10 @@ export class NeonBookingStore {
       // Banner promocional configurable (Fase 6) -- null si nunca se publicó ninguno, para que
       // ReservApp se vea exactamente igual que antes de que existiera esta función.
       banner: settings.rows[0]?.settings?.banner || null,
+      // Segundo cuadro de mensaje (independiente del banner promocional): sin IA, sin colores
+      // por publicación -- solo texto, estilo fijo, para notas más largas y permanentes (ej.
+      // invitar a preguntar por servicios que no están en el menú).
+      infoBanner: settings.rows[0]?.settings?.infoBanner || null,
     };
   }
 
@@ -173,6 +177,21 @@ export class NeonBookingStore {
 
   async clearBanner() {
     await this.pool.query("update app.business_settings set settings = settings - 'banner', updated_at = now() where id = true");
+  }
+
+  async setInfoBanner(infoBanner) {
+    const result = await this.pool.query(
+      `update app.business_settings
+          set settings = settings || jsonb_build_object('infoBanner', $1::jsonb), updated_at = now()
+        where id = true
+        returning settings->'infoBanner' "infoBanner"`,
+      [JSON.stringify(infoBanner)],
+    );
+    return result.rows[0]?.infoBanner || null;
+  }
+
+  async clearInfoBanner() {
+    await this.pool.query("update app.business_settings set settings = settings - 'infoBanner', updated_at = now() where id = true");
   }
 
   // Panel "Horarios" -- mismo business_settings.settings que ya lee availability() (server/store.mjs

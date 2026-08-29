@@ -166,6 +166,12 @@ async function loadCatalog() {
       banner.style.color = state.catalog.banner.textColor;
       banner.classList.remove("hidden");
     }
+    // Mismo criterio que el banner promocional: sin mensaje publicado, el elemento se queda
+    // oculto y la página se ve igual que antes de que existiera esta función.
+    if (state.catalog.infoBanner) {
+      $("info-banner").textContent = state.catalog.infoBanner.text;
+      $("info-banner").classList.remove("hidden");
+    }
   } catch { message($("booking-message"), "No pudimos cargar la agenda. Intenta nuevamente."); }
 }
 
@@ -1093,6 +1099,7 @@ $("open-user-management").addEventListener("click", () => {
   // Si ya hay un banner publicado de una sesión anterior, reflejarlo aquí también (si no, el
   // botón "Quitar" solo aparecería después de generar y publicar uno nuevo en esta sesión).
   if (state.catalog?.banner) { generatedBanner = state.catalog.banner; renderBannerPreview(generatedBanner); $("banner-remove").classList.remove("hidden"); }
+  if (state.catalog?.infoBanner) { $("info-banner-text").value = state.catalog.infoBanner.text; $("info-banner-remove").classList.remove("hidden"); }
   // El panel aparece debajo de toda la grilla de la agenda del día -- sin este scroll, en
   // pantallas normales parece que el botón "no responde" porque no hay ningún cambio visible
   // hasta que se hace scroll manualmente (reportado en vivo 2026-08-25).
@@ -1589,6 +1596,29 @@ $("banner-remove").addEventListener("click", async () => {
     $("banner-remove").classList.add("hidden");
     message($("banner-message"), "Banner quitado.", true);
   } catch (error) { message($("banner-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+$("info-banner-publish").addEventListener("click", async () => {
+  const text = $("info-banner-text").value.trim();
+  if (!text) return message($("info-banner-message"), "Escribe el mensaje.");
+  const button = $("info-banner-publish"); button.disabled = true;
+  try {
+    await api("/api/reservapp/admin/info-banner", { method: "POST", body: JSON.stringify({ text }) });
+    message($("info-banner-message"), "Mensaje publicado.", true);
+    $("info-banner-remove").classList.remove("hidden");
+  } catch (error) { message($("info-banner-message"), error.message); }
+  finally { button.disabled = false; }
+});
+$("info-banner-remove").addEventListener("click", async () => {
+  const button = $("info-banner-remove"); button.disabled = true;
+  try {
+    await api("/api/reservapp/admin/info-banner", { method: "DELETE" });
+    $("info-banner").classList.add("hidden");
+    $("info-banner-text").value = "";
+    $("info-banner-remove").classList.add("hidden");
+    message($("info-banner-message"), "Mensaje quitado.", true);
+  } catch (error) { message($("info-banner-message"), error.message); }
   finally { button.disabled = false; }
 });
 

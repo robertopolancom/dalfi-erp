@@ -21,6 +21,7 @@
     </header>
 
     <p class="promo-banner hidden" id="promo-banner"></p>
+    <p class="info-banner hidden" id="info-banner"></p>
 
     <nav class="app-nav hidden" id="app-nav" aria-label="Secciones">
       <button class="active" id="booking-tab" type="button">Nueva reserva</button>
@@ -134,6 +135,7 @@
           <a href="#admin-section-horarios">Horarios</a>
           <a href="#admin-section-clientes">Clientes</a>
           <a href="#admin-section-banner">Banner</a>
+          <a href="#admin-section-info-banner">Mensaje info</a>
         </nav>
 
         <div class="admin-alert hidden" id="staff-schedule-changes-alert">
@@ -204,6 +206,12 @@
         <div class="step-actions"><button class="secondary" id="banner-generate" type="button">Generar con IA</button><button class="primary hidden" id="banner-publish" type="button">Publicar</button></div>
         <p class="banner-preview hidden" id="banner-preview"></p>
         <button class="secondary hidden" id="banner-remove" type="button">Quitar banner activo</button>
+
+        <h3 id="admin-section-info-banner">Mensaje informativo</h3>
+        <p>Segundo cuadro, independiente del banner promocional -- sin IA, escribes el texto final directo. Pensado para una nota fija más larga (ej. invitar a preguntar por servicios que no están en el menú), no para promociones puntuales.</p>
+        <label>Mensaje<textarea id="info-banner-text" rows="5" maxlength="800"></textarea></label>
+        <div class="message" id="info-banner-message"></div>
+        <div class="step-actions"><button class="primary" id="info-banner-publish" type="button">Publicar</button><button class="secondary hidden" id="info-banner-remove" type="button">Quitar mensaje</button></div>
       </section>
     </section>
 

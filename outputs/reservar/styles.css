@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Poppins:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Poppins:wght@300;400;500;600;700;800&display=swap');
 
 /* Paleta de marca: verde salvia + crema + casi-negro (foto de referencia del dueño del
    negocio). Fondo de página INVERTIDO a oscuro (salvia -> carbón, --bg-1/--bg-2) a pedido
@@ -14,7 +14,7 @@
   --brand:#7C8271;
   --brand-dark:#4B5040;
   --brand-light:#DDE0D2;
-  --paper:#FFFFFF;
+  --paper:#FAF6EE;
   --bg-1:#4B5040;
   --bg-2:#1C1F19;
   --line:#D8D2C0;
@@ -28,7 +28,7 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;min-height:100vh;background:radial-gradient(circle at 12% 0,var(--bg-1) 0,transparent 42%),linear-gradient(160deg,var(--bg-1),var(--bg-2));color:var(--ink)}
+body{margin:0;min-height:100vh;background:radial-gradient(circle at 12% 0,var(--bg-1) 0,transparent 42%),linear-gradient(160deg,var(--bg-1),var(--bg-2));color:var(--brand-dark)}
 button,input,select,textarea{font:inherit}
 .shell{width:min(820px,100%);margin:auto;padding:32px 18px 70px}
 
@@ -36,8 +36,8 @@ button,input,select,textarea{font:inherit}
 .brand{display:flex;align-items:center;gap:14px;margin:0 4px 22px}
 .brand-mark{width:56px;height:56px;object-fit:contain;filter:drop-shadow(0 8px 16px rgba(0,0,0,.35))}
 .brand-copy{display:flex;flex-direction:column}
-.brand-copy h1{margin:0;font-family:"Playfair Display",Georgia,serif;font-weight:700;font-size:clamp(1.55rem,4.6vw,2.4rem);letter-spacing:-.01em;color:var(--on-dark);text-wrap:balance}
-.brand-copy p{margin:3px 0 0;font-size:.76rem;color:var(--on-dark-muted);font-weight:700;letter-spacing:.03em;text-transform:uppercase}
+.brand-copy h1{margin:0;font-family:"Playfair Display",Georgia,serif;font-weight:500;font-size:clamp(1.55rem,4.6vw,2.4rem);letter-spacing:-.01em;color:var(--on-dark);text-wrap:balance}
+.brand-copy p{margin:3px 0 0;font-size:.76rem;color:var(--on-dark-muted);font-weight:500;letter-spacing:.05em;text-transform:uppercase}
 .brand-copy p .dot{margin:0 6px;opacity:.55}
 .staff-link{margin-left:auto;border:0;background:transparent;color:var(--on-dark);font-weight:800;padding:10px;cursor:pointer}
 
@@ -45,16 +45,16 @@ button,input,select,textarea{font:inherit}
 .card{background:var(--paper);border:1px solid #FFFFFF;border-radius:26px;padding:clamp(22px,5vw,42px);box-shadow:var(--shadow);position:relative;overflow:hidden}
 .progress{height:5px;background:var(--soft);border-radius:99px;margin:-8px 0 28px}
 .progress span{display:block;width:12%;height:100%;background:var(--brand-dark);border-radius:inherit;transition:width .3s}
-.kicker{text-transform:uppercase;letter-spacing:.14em;color:var(--brand);font-weight:900;font-size:.72rem;margin:0 0 6px}
-.tagline{color:var(--brand-dark);font-weight:700;font-size:1.05rem;font-style:italic;margin:0 0 14px}
-.card h2,dialog h2{font-family:"Playfair Display",Georgia,serif;font-size:clamp(1.55rem,5vw,2.25rem);letter-spacing:-.02em;margin:0;color:var(--ink)}
+.kicker{text-transform:uppercase;letter-spacing:.16em;color:var(--brand);font-weight:600;font-size:.72rem;margin:0 0 6px}
+.tagline{font-family:"Playfair Display",Georgia,serif;color:var(--brand-dark);font-weight:500;font-size:1.1rem;font-style:italic;margin:0 0 14px}
+.card h2,dialog h2{font-family:"Playfair Display",Georgia,serif;font-weight:500;font-size:clamp(1.55rem,5vw,2.25rem);letter-spacing:-.02em;margin:0;color:var(--brand-dark)}
 .intro{color:var(--muted);margin:9px 0 28px}
 
 /* ---------- formularios ---------- */
 .field-grid,.inline-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-label,legend{display:block;font-size:.83rem;font-weight:800;color:#3A3830;margin:0 0 17px}
+label,legend{display:block;font-size:.83rem;font-weight:800;color:var(--brand-dark);margin:0 0 17px}
 label span{font-weight:500;color:var(--muted)}
-input,select,textarea{width:100%;border:1px solid #D3CAB2;background:#fff;border-radius:13px;padding:14px 15px;margin-top:7px;color:var(--ink);outline:0;transition:.18s}
+input,select,textarea{width:100%;border:1px solid #D3CAB2;background:#fff;border-radius:13px;padding:14px 15px;margin-top:7px;color:var(--brand-dark);outline:0;transition:.18s}
 input:focus,select:focus,textarea:focus{border-color:var(--brand);box-shadow:0 0 0 4px rgba(124,130,113,.18)}
 textarea{resize:vertical}
 fieldset{border:0;padding:0;margin:2px 0 22px}
@@ -80,7 +80,7 @@ fieldset{border:0;padding:0;margin:2px 0 22px}
    (botón "Book your appointment" en línea fina, mayúsculas, muy espaciado). Solo el botón de
    portada, no todos los .primary del wizard/paneles: esos llevan textos más largos ("Siguiente:
    ver horarios") donde mayúsculas + letter-spacing habría forzado saltos de línea. */
-#start-booking{background:transparent;border:1.5px solid var(--ink);color:var(--ink);box-shadow:none;text-transform:uppercase;letter-spacing:.14em;font-weight:700;font-size:.85rem;border-radius:999px}
+#start-booking{background:transparent;border:1.5px solid var(--brand-dark);color:var(--brand-dark);box-shadow:none;text-transform:uppercase;letter-spacing:.16em;font-weight:500;font-size:.85rem;border-radius:999px}
 .secondary{border:1px solid #D3CAB2;background:#fff;color:var(--brand-dark)}
 .new-client{border:1px dashed #B8AF8F;background:transparent;color:var(--brand-dark);margin:0 0 20px}
 .new-client span{font-size:1.2rem}
@@ -92,7 +92,7 @@ fieldset{border:0;padding:0;margin:2px 0 22px}
 .message.ok{color:var(--brand)}
 .message a{color:inherit;font-weight:800;text-decoration:underline}
 
-.whatsapp-link{display:inline-flex;align-items:center;gap:7px;justify-content:center;width:100%;margin-top:14px;color:#25925a;font-weight:700;font-size:.88rem;text-decoration:none}
+.whatsapp-link{display:inline-flex;align-items:center;gap:7px;justify-content:center;width:100%;margin-top:14px;color:#25925a;font-weight:600;font-size:.88rem;text-decoration:none}
 .whatsapp-link:hover{text-decoration:underline}
 .whatsapp-link::before{content:"";width:9px;height:9px;border-radius:50%;background:#25925a}
 .selected-client{border:1px solid #C9C2AA;background:#F1EEE5;padding:13px 15px;border-radius:14px;margin-bottom:12px;font-weight:800}
@@ -107,7 +107,7 @@ fieldset{border:0;padding:0;margin:2px 0 22px}
 .deposit{display:flex;justify-content:space-between;align-items:center;background:var(--soft);padding:17px;border-radius:16px;margin:26px 0}
 .deposit strong{font-size:1.4rem;color:var(--brand-dark)}
 
-dialog{width:min(570px,calc(100% - 24px));border:0;border-radius:24px;padding:0;box-shadow:var(--shadow);background:var(--paper);color:var(--ink)}
+dialog{width:min(570px,calc(100% - 24px));border:0;border-radius:24px;padding:0;box-shadow:var(--shadow);background:var(--paper);color:var(--brand-dark)}
 dialog::backdrop{background:rgba(30,26,20,.55);backdrop-filter:blur(3px)}
 dialog form{padding:28px}
 .dialog-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
@@ -161,7 +161,7 @@ dialog form{padding:28px}
    (renderAgendaCalendar en app.js). --hour-px se fija desde JS para que las líneas de fondo
    coincidan exactamente con el alto usado al posicionar cada bloque. */
 .agenda-filters{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
-.agenda-filter-chip{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:999px;padding:6px 14px;font-size:.82rem;font-weight:700;cursor:pointer}
+.agenda-filter-chip{border:1px solid var(--line);background:#fff;color:var(--brand-dark);border-radius:999px;padding:6px 14px;font-size:.82rem;font-weight:700;cursor:pointer}
 .agenda-filter-chip.active{background:var(--brand-dark);color:#fff;border-color:var(--brand-dark)}
 .agenda-board{display:flex;align-items:flex-start;overflow-x:auto;border:1px solid var(--line);border-radius:17px;background:#FBFAF5;margin-top:10px}
 .agenda-hours{flex:0 0 50px;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--soft);padding-top:34px;box-sizing:border-box}
@@ -255,6 +255,9 @@ dialog form{padding:28px}
 /* ---------- banner promocional ---------- */
 .promo-banner{margin:0 4px 16px;padding:13px 18px;border-radius:16px;font-weight:700;font-size:.92rem;text-align:center}
 .banner-preview{margin:12px 0 0;padding:13px 18px;border-radius:16px;font-weight:700;font-size:.92rem;text-align:center;border:1px dashed var(--line)}
+/* Mensaje informativo (segundo cuadro, sin IA): estilo fijo, no elegido por publicación como
+   el banner promocional -- una nota más larga y permanente, no una promoción vistosa. */
+.info-banner{margin:0 4px 16px;padding:14px 18px;border-radius:16px;background:var(--soft);color:var(--brand-dark);font-size:.88rem;line-height:1.55;text-align:center}
 
 .detail-list{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;padding:0 28px 28px;margin:0}
 .detail-list dt{color:var(--muted);font-weight:700;font-size:.83rem}
