@@ -1,5 +1,17 @@
 import express from "express";
-import { resolveErpIdentity } from "../functions/api/_lib/authz.js";
+import {
+  resolveErpIdentity,
+  requireErpPermission,
+  upsertErpProfile,
+  deleteErpProfile,
+  fetchErpProfile,
+  normalizeRole,
+  permissionOverridesFromProfile,
+  sanitizePermissionOverrides,
+  PROFILE_PERMISSION_MAP,
+  defaultPermissionsForRole,
+} from "../functions/api/_lib/authz.js";
+import { insertAuditLog, resolveRequester } from "../functions/api/_lib/audit.js";
 import { authorizeDatabaseChanges, detectDatabaseChanges } from "../functions/api/_lib/database-authz.js";
 import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
@@ -1673,6 +1685,378 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       if (!row) return res.status(404).json({ error: "Base de datos no encontrada." });
       const slice = extractDomainSlice(row.data, "inventario");
       res.json({ domain: "inventario", data: slice.data, updatedAt: row.updatedAt, source: "neon" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // --- Gestion de usuarios (Supabase Auth) --------------------------------
+  // Puerto de functions/api/users.js, create-user.js y audit-log.js (Cloudflare
+  // Pages Functions). Esas rutas dejaron de desplegarse cuando la app se migro
+  // a este servidor Express en Render (ver comentario de supabaseOrigin mas
+  // arriba: "el auth legado nunca se migro"), pero outputs/app.js seguia
+  // llamando a /api/users, /api/create-user y /api/audit-log esperando estas
+  // mismas rutas. Sin ellas registradas aqui, esas peticiones caian en el
+  // catch-all de la SPA (mas abajo) y devolvian el index.html con status 200
+  // en vez de JSON: el fetch "tenia exito" pero result.users quedaba
+  // undefined, asi que el panel de Usuarios mostraba "No hay usuarios
+  // registrados" en vez de un error real, aunque Supabase Auth nunca fallo.
+  const generateTemporaryPassword = () => {
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+    const bytes = crypto.getRandomValues(new Uint8Array(10));
+    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("") + "#1";
+  };
+
+  const relayAuthError = async (res, response) => {
+    const body = await response.json().catch(() => ({ error: "No autorizado." }));
+    return res.status(response.status).json(body);
+  };
+
+  const normalizeUserEmail = (value = "") => String(value || "").trim().toLowerCase();
+
+  function isInactiveAuthUser(user) {
+    if (user.user_metadata?.estado === "Inactivo") return true;
+    if (!user.banned_until) return false;
+    return new Date(user.banned_until).getTime() > Date.now();
+  }
+
+  function toPublicUser(user, profile) {
+    return {
+      id: user.id,
+      email: user.email,
+      fullName: user.user_metadata?.full_name || "",
+      role: profile?.role || user.user_metadata?.role || "operador",
+      canReviewAccounts: profile ? Boolean(profile.can_review_accounts) : Boolean(user.user_metadata?.canReviewAccounts),
+      canReviewAudit: Boolean(profile?.can_review_audit),
+      permissions: profile ? permissionOverridesFromProfile(profile) : {},
+      estado: profile ? (profile.is_active ? "Activo" : "Inactivo") : isInactiveAuthUser(user) ? "Inactivo" : "Activo",
+      passwordResetRequired: Boolean(user.user_metadata?.password_reset_required),
+      hasSecureProfile: Boolean(profile),
+      createdAt: user.created_at,
+      lastSignInAt: user.last_sign_in_at,
+    };
+  }
+
+  app.get("/api/users", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageUsers", "administrar usuarios");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const supabaseUrl = env.SUPABASE_URL;
+      const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!supabaseUrl || !serviceRoleKey) return res.status(500).json({ error: "Faltan variables privadas de Supabase." });
+
+      const [usersResponse, profilesResponse] = await Promise.all([
+        fetchImpl(`${supabaseUrl}/auth/v1/admin/users?page=1&per_page=200`, {
+          headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+        }),
+        fetchImpl(`${supabaseUrl}/rest/v1/erp_user_profiles?select=*`, {
+          headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+        }),
+      ]);
+      const body = await usersResponse.json().catch(() => ({}));
+      if (!usersResponse.ok) {
+        return res.status(usersResponse.status).json({ error: body.msg || body.error || "No se pudo cargar usuarios." });
+      }
+      const profiles = profilesResponse.ok ? await profilesResponse.json().catch(() => []) : [];
+      const profileByUserId = new Map((profiles || []).map((row) => [row.user_id, row]));
+      res.json({ users: (body.users || []).map((user) => toPublicUser(user, profileByUserId.get(user.id))) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/users", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageUsers", "administrar usuarios");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const { identity } = auth;
+      const supabaseUrl = env.SUPABASE_URL;
+      const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!supabaseUrl || !serviceRoleKey) return res.status(500).json({ error: "Faltan variables privadas de Supabase." });
+      const requesterEmail = identity.email;
+      const requesterId = identity.userId;
+      const requesterRole = identity.role;
+
+      const payload = req.body || {};
+      const userId = String(payload.id || "").trim();
+      if (!userId) return res.status(400).json({ error: "Falta el ID del usuario." });
+
+      const currentResponse = await fetchImpl(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+        headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+      });
+      const currentUser = await currentResponse.json().catch(() => ({}));
+      if (!currentResponse.ok) {
+        return res.status(currentResponse.status).json({ error: currentUser.msg || currentUser.error || "No se pudo leer el usuario." });
+      }
+
+      const currentMetadata = currentUser.user_metadata || {};
+      const update = {};
+      const fullName = String(payload.fullName || "").trim();
+      const role = normalizeRole(payload.role);
+      const hasEstado = Object.prototype.hasOwnProperty.call(payload, "estado");
+      const estado = payload.estado === "Inactivo" ? "Inactivo" : "Activo";
+      const email = normalizeUserEmail(payload.email);
+      const password = String(payload.password || "");
+      const resetPassword = Boolean(payload.resetPassword);
+      const temporaryPassword = resetPassword ? generateTemporaryPassword() : password;
+      const hasCanReviewAccounts = Object.prototype.hasOwnProperty.call(payload, "canReviewAccounts");
+      const hasCanReviewAudit = Object.prototype.hasOwnProperty.call(payload, "canReviewAudit");
+      const hasPermissions = Object.prototype.hasOwnProperty.call(payload, "permissions");
+      const requestedPermissions = hasPermissions ? sanitizePermissionOverrides(payload.permissions) : null;
+
+      const hasUnknownPermission = hasPermissions
+        && Object.keys(payload.permissions || {}).some((key) => !Object.prototype.hasOwnProperty.call(PROFILE_PERMISSION_MAP, key));
+      if (hasPermissions && (!requestedPermissions || Object.keys(requestedPermissions).length === 0 || hasUnknownPermission)) {
+        return res.status(400).json({ error: "La matriz de permisos no es valida." });
+      }
+      if (temporaryPassword && temporaryPassword.length < 6) {
+        return res.status(400).json({ error: "La contrasena debe tener al menos 6 caracteres." });
+      }
+
+      const priorProfile = await fetchErpProfile({ ...env, fetch: fetchImpl }, userId);
+      const isActive = hasEstado ? estado !== "Inactivo" : priorProfile ? Boolean(priorProfile.is_active) : true;
+      const priorPermissions = priorProfile ? permissionOverridesFromProfile(priorProfile) : null;
+      const permissionOverrides = hasPermissions ? { ...(priorPermissions || {}), ...requestedPermissions } : priorPermissions;
+      const proposedCanManageUsers = Object.prototype.hasOwnProperty.call(permissionOverrides || {}, "canManageUsers")
+        ? permissionOverrides.canManageUsers
+        : defaultPermissionsForRole(role).can_manage_users;
+      if (userId === requesterId && (!isActive || !proposedCanManageUsers)) {
+        return res.status(400).json({ error: "No puedes inactivar tu propio usuario ni retirarte el permiso de administrar usuarios." });
+      }
+      const canReviewAccountsOverride = hasCanReviewAccounts
+        ? Boolean(payload.canReviewAccounts)
+        : priorProfile ? Boolean(priorProfile.can_review_accounts) : undefined;
+      const canReviewAuditOverride = hasCanReviewAudit
+        ? Boolean(payload.canReviewAudit)
+        : priorProfile ? Boolean(priorProfile.can_review_audit) : undefined;
+
+      const profileResult = await upsertErpProfile({ ...env, fetch: fetchImpl }, {
+        userId,
+        email: email || currentUser.email,
+        role,
+        isActive,
+        canReviewAccountsOverride,
+        canReviewAuditOverride,
+        permissionOverrides,
+      });
+      if (!profileResult.ok) {
+        console.error(`api/users PATCH: fallo sincronizar erp_user_profiles para ${userId}, se aborta sin tocar Auth: ${profileResult.error}`);
+        await insertAuditLog({ ...env, fetch: fetchImpl }, {
+          tableName: "usuarios", entityId: userId, action: "update_user", oldData: null, newData: null,
+          userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: false,
+          note: "No se pudo sincronizar el perfil seguro; la operacion se aborto sin modificar nada en Auth.",
+        }).catch(() => null);
+        return res.status(500).json({ error: "No se pudo actualizar el usuario. Intenta de nuevo." });
+      }
+
+      update.user_metadata = { ...currentMetadata, full_name: fullName, role, updated_by: requesterEmail };
+      if (email) update.email = email;
+      if (temporaryPassword) {
+        update.password = temporaryPassword;
+        update.user_metadata.password_reset_required = true;
+        update.user_metadata.password_reset_reason = resetPassword ? "admin_reset" : "admin_password_update";
+        update.user_metadata.password_reset_at = new Date().toISOString();
+      }
+      if (hasCanReviewAccounts) update.user_metadata.canReviewAccounts = Boolean(payload.canReviewAccounts);
+      if (hasEstado) {
+        update.user_metadata.estado = estado;
+        update.ban_duration = estado === "Inactivo" ? "876000h" : "none";
+      }
+
+      const response = await fetchImpl(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+        body: JSON.stringify(update),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const failureMessage = body.msg || body.message || body.error_description || body.error || "No se pudo actualizar el usuario.";
+        const compensation = priorProfile
+          ? await upsertErpProfile({ ...env, fetch: fetchImpl }, {
+              userId,
+              email: priorProfile.email,
+              role: priorProfile.role,
+              isActive: priorProfile.is_active,
+              canReviewAccountsOverride: priorProfile.can_review_accounts,
+              canReviewAuditOverride: priorProfile.can_review_audit,
+              permissionOverrides: permissionOverridesFromProfile(priorProfile),
+            })
+          : await deleteErpProfile({ ...env, fetch: fetchImpl }, userId);
+        if (!compensation.ok) {
+          console.error(`api/users PATCH: Auth rechazo el cambio Y TAMBIEN fallo revertir erp_user_profiles para ${userId}: ${compensation.error}`);
+        }
+        await insertAuditLog({ ...env, fetch: fetchImpl }, {
+          tableName: "usuarios", entityId: userId, action: resetPassword ? "reset_password" : "update_user",
+          oldData: { email: currentUser.email }, newData: null,
+          userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: false,
+          note: compensation.ok
+            ? `${failureMessage} (el perfil seguro se revirtio automaticamente)`
+            : `${failureMessage} (ADEMAS fallo revertir el perfil seguro, requiere revision manual)`,
+        }).catch(() => null);
+        return res.status(response.status).json({ error: failureMessage });
+      }
+
+      if (resetPassword) {
+        await fetchImpl(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(userId)}/logout`, {
+          method: "POST",
+          headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+        }).catch(() => null);
+        await insertAuditLog({ ...env, fetch: fetchImpl }, {
+          tableName: "usuarios", entityId: userId, action: "reset_password",
+          oldData: { email: currentUser.email, password_reset_required: Boolean(currentMetadata.password_reset_required) },
+          newData: { email: body.email, password_reset_required: true, password_reset_reason: update.user_metadata.password_reset_reason },
+          userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: true,
+          note: `Contrasena temporal generada por ${requesterEmail} para ${body.email || currentUser.email}.`,
+        }).catch(() => null);
+      }
+
+      await insertAuditLog({ ...env, fetch: fetchImpl }, {
+        tableName: "usuarios", entityId: userId, action: "update_user_permissions",
+        oldData: priorProfile ? { role: priorProfile.role, isActive: priorProfile.is_active, permissions: priorPermissions } : null,
+        newData: { role, isActive, permissions: permissionOverridesFromProfile(profileResult.profile) },
+        userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: true,
+        note: `Perfil y permisos actualizados por ${requesterEmail}.`,
+      }).catch(() => null);
+
+      res.json({ user: toPublicUser(body, profileResult.profile), temporaryPassword: resetPassword ? temporaryPassword : undefined });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/create-user", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageUsers", "crear usuarios");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const { identity } = auth;
+      const supabaseUrl = env.SUPABASE_URL;
+      const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!supabaseUrl || !serviceRoleKey) return res.status(500).json({ error: "Faltan variables privadas de Supabase." });
+      const requesterEmail = identity.email;
+      const requesterId = identity.userId;
+      const requesterRole = identity.role;
+
+      const payload = req.body || {};
+      const email = normalizeUserEmail(payload.email);
+      const password = String(payload.password || "") || generateTemporaryPassword();
+      const fullName = String(payload.fullName || "").trim();
+      const role = normalizeRole(payload.role);
+      const hasPermissions = Object.prototype.hasOwnProperty.call(payload, "permissions");
+      const permissionOverrides = hasPermissions ? sanitizePermissionOverrides(payload.permissions) : null;
+      const hasUnknownPermission = hasPermissions
+        && Object.keys(payload.permissions || {}).some((key) => !Object.prototype.hasOwnProperty.call(PROFILE_PERMISSION_MAP, key));
+
+      if (!email) return res.status(400).json({ error: "El correo es obligatorio." });
+      if (password.length < 6) return res.status(400).json({ error: "La contrasena debe tener al menos 6 caracteres." });
+      if (hasPermissions && (!permissionOverrides || Object.keys(permissionOverrides).length === 0 || hasUnknownPermission)) {
+        return res.status(400).json({ error: "La matriz de permisos no es valida." });
+      }
+
+      const createResponse = await fetchImpl(`${supabaseUrl}/auth/v1/admin/users`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+        body: JSON.stringify({
+          email,
+          password,
+          email_confirm: true,
+          user_metadata: {
+            full_name: fullName,
+            role,
+            created_by: requesterEmail,
+            password_reset_required: true,
+            password_reset_reason: "initial_password",
+            password_reset_at: new Date().toISOString(),
+          },
+        }),
+      });
+      const created = await createResponse.json().catch(() => ({}));
+      if (!createResponse.ok) {
+        const failureMessage = created.msg || created.error_description || created.error || "No se pudo crear el usuario.";
+        await insertAuditLog({ ...env, fetch: fetchImpl }, {
+          tableName: "usuarios", entityId: email, action: "create_user", oldData: null, newData: null,
+          userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: false,
+          note: `Intento de creacion de usuario fallido: ${failureMessage}`,
+        }).catch(() => null);
+        return res.status(createResponse.status).json({ error: failureMessage });
+      }
+
+      const profileResult = await upsertErpProfile({ ...env, fetch: fetchImpl }, {
+        userId: created.id, email: created.email || email, role, isActive: true, permissionOverrides,
+      });
+      if (!profileResult.ok) {
+        console.error(`api/create-user: fallo el alta de erp_user_profiles para ${created.id}, compensando (borrando el usuario Auth huerfano): ${profileResult.error}`);
+        const deleteResponse = await fetchImpl(`${supabaseUrl}/auth/v1/admin/users/${encodeURIComponent(created.id)}`, {
+          method: "DELETE",
+          headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+        }).catch((error) => {
+          console.error(`api/create-user: tambien fallo borrar el usuario Auth huerfano ${created.id}:`, error);
+          return null;
+        });
+        const compensated = Boolean(deleteResponse?.ok);
+        await insertAuditLog({ ...env, fetch: fetchImpl }, {
+          tableName: "usuarios", entityId: created.id || email, action: "create_user", oldData: null,
+          newData: { email: created.email || email, role },
+          userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: false,
+          note: compensated
+            ? "El usuario se creo en Auth pero fallo el alta del perfil seguro; se revirtio borrando el usuario Auth huerfano."
+            : `ALERTA: el usuario se creo en Auth (id ${created.id}) pero fallo el alta del perfil seguro Y TAMBIEN fallo borrarlo. Requiere revision manual en Supabase Auth.`,
+        }).catch(() => null);
+        return res.status(500).json({ error: "No se pudo completar la creacion del usuario. Intenta de nuevo o contacta soporte." });
+      }
+
+      await insertAuditLog({ ...env, fetch: fetchImpl }, {
+        tableName: "usuarios", entityId: created.id || email, action: "create_user", oldData: null,
+        newData: {
+          email: created.email || email,
+          role,
+          permissions: profileResult.profile
+            ? Object.fromEntries(Object.entries(PROFILE_PERMISSION_MAP).map(([camelKey, sqlColumn]) => [camelKey, Boolean(profileResult.profile[sqlColumn])]))
+            : null,
+          created_by: requesterEmail,
+        },
+        userId: requesterId, userEmail: requesterEmail, userRole: requesterRole, success: true,
+        note: `Usuario creado con contrasena temporal por ${requesterEmail}.`,
+      }).catch(() => null);
+
+      res.json({ id: created.id, email: created.email || email, temporaryPassword: password });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const ALLOWED_AUDIT_ACTIONS = new Set([
+    "reset_password", "invoice_edit", "invoice_edit_blocked", "reservation_edit",
+    "closing_attempt_shortage", "closing_register_confirm", "closing_treasury_confirm_range",
+    "closing_treasury_confirm_blocked", "closing_reopen", "closing_surplus", "closing_catchup_run",
+    "transfer_confirm", "create_client_from_invoice", "create_client", "edit_client",
+    "expense_create", "expense_edit",
+  ]);
+
+  app.post("/api/audit-log", async (req, res, next) => {
+    try {
+      const requester = await resolveRequester(webRequest(req), { ...env, fetch: fetchImpl });
+      if (!requester) return res.status(401).json({ error: "Sesion invalida. Vuelve a iniciar sesion." });
+      const payload = req.body || {};
+      const action = String(payload.action || "").trim();
+      if (!ALLOWED_AUDIT_ACTIONS.has(action)) return res.status(400).json({ error: "Accion de auditoria no reconocida." });
+
+      const result = await insertAuditLog({ ...env, fetch: fetchImpl }, {
+        tableName: String(payload.entity || "app").slice(0, 60),
+        entityId: String(payload.entityId || "").slice(0, 120),
+        action,
+        oldData: payload.oldData ?? null,
+        newData: payload.newData ?? null,
+        userId: requester.id,
+        userEmail: requester.email,
+        userRole: requester.role,
+        success: payload.success !== false,
+        note: payload.note ? String(payload.note).slice(0, 500) : null,
+      });
+      if (!result.ok) {
+        console.error("audit-log: fallo insertAuditLog", result.error);
+        return res.status(500).json({ error: "No se pudo registrar la auditoria." });
+      }
+      res.json({ ok: true });
     } catch (error) {
       next(error);
     }
