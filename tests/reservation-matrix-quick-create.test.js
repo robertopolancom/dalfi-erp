@@ -44,7 +44,7 @@ test("el botón 'Modificar una cita existente' abre el listado de citas abiertas
   const app = await readFile(new URL("../outputs/app.js", import.meta.url), "utf8");
   assert.match(app, /byId\("slot-action-modify"\)\?\.addEventListener\("click", \(\) => \{\s*byId\("slot-action-dialog"\)\?\.close\(\);\s*if \(pendingSlotAction\) openSlotAppointmentPicker\(pendingSlotAction\);\s*pendingSlotAction = null;\s*\}\);/);
   assert.match(app, /function openSlotAppointmentPicker\(\{ date \}\) \{/);
-  assert.match(app, /OPEN_RESERVATION_STATUSES = new Set\(\["Programada", "Confirmada", "En proceso"\]\);/);
+  assert.match(app, /OPEN_RESERVATION_STATUSES = new Set\(\["Programada", "Confirmada"\]\);/);
   assert.match(app, /reservation\.date === date && OPEN_RESERVATION_STATUSES\.has\(reservationStatus\(reservation\)\)/);
 });
 

@@ -848,6 +848,11 @@ textarea:focus {
   color: #334155;
 }
 
+.slot-badge.retrasada {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 /* Indicadores pequeños de `estadoConfirmacion` (confirmación de asistencia)
    y `estadoDeposito` (verificación de comprobante), mostrados dentro de la
    celda junto al badge de estado principal — texto simple, no badges con
@@ -925,6 +930,15 @@ textarea:focus {
 .slot-cell-available:hover {
   background: #dcfce7 !important;
   outline: 2px solid #22c55e;
+  outline-offset: -2px;
+}
+
+.slot-cell-booked {
+  transition: outline 0.1s ease;
+}
+
+.slot-cell-booked:hover {
+  outline: 2px solid #64748b;
   outline-offset: -2px;
 }
 

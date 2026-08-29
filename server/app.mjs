@@ -811,6 +811,23 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Cambiar el estatus de una cita (Programada/Confirmada/Atendida) desde un click, tanto
+    // desde el Panel de colaboradores de ReservApp como desde la matriz del ERP -- por eso el
+    // guard de autorización es requireBookingStaff (sesión de personal de ReservApp O identidad
+    // del ERP con canManageReservations), no requireReservapp a secas. "Retrasada" nunca es un
+    // valor válido aquí: se calcula solo en el frontend a partir de la hora de inicio.
+    const ALLOWED_MANUAL_STATUSES = new Set(["scheduled", "confirmed", "completed"]);
+    app.post("/api/reservapp/agenda/appointments/:id/status", async (req, res, next) => {
+      if (!(await requireBookingStaff(req, res))) return;
+      const status = cleanText(req.body?.status, 20);
+      if (!ALLOWED_MANUAL_STATUSES.has(status)) return res.status(400).json({ error: "Estatus inválido." });
+      try {
+        const updated = await bookingStore.setAppointmentStatus({ id: req.params.id, status });
+        if (!updated) return res.status(404).json({ error: "Esa cita no existe o ya está cancelada." });
+        res.json({ ok: true, appointment: updated });
+      } catch (error) { next(error); }
+    });
+
     // "Citas activas" / historial para un cliente -- a diferencia de /agenda (un día, vista de
     // equipo), esta ruta es exclusiva de cuentas cliente y siempre usa su propio client_id de la
     // sesión, nunca uno recibido del cliente.

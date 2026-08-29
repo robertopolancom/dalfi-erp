@@ -22,7 +22,7 @@
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{margin:0;min-height:100vh;background:linear-gradient(180deg,rgba(250,246,238,.5),rgba(250,246,238,.1) 30%),url('./assets/bg-hero.jpg') center/cover no-repeat;color:var(--brand-dark)}
+body{margin:0;min-height:100vh;background:linear-gradient(180deg,rgba(250,246,238,.5),rgba(250,246,238,.1) 30%),url('./assets/bg-hero.jpg') center 20%/cover no-repeat;color:var(--brand-dark)}
 button,input,select,textarea{font:inherit}
 .shell{width:min(820px,100%);margin:auto;padding:32px 18px 70px}
 
@@ -170,6 +170,7 @@ dialog form{padding:28px}
 .agenda-cal-block strong{display:block;font-size:.74rem;font-weight:800}
 .agenda-cal-block span{display:block;opacity:.9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.68rem}
 .agenda-cal-block.status-cancelled{background:#8a8a8a}
+.agenda-cal-block.status-delayed{background:#b91c1c;box-shadow:0 0 0 2px #fecaca}
 .agenda-cal-body-clickable{cursor:pointer}
 .agenda-cal-body-clickable:active{background-color:rgba(75,80,64,.06)}
 .staff-slots-column.preferred-staff-column{border-color:var(--brand-dark);box-shadow:0 0 0 2px var(--brand-dark)}

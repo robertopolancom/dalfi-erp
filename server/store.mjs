@@ -142,20 +142,24 @@ export class NeonBookingStore {
 
   async catalog() {
     const [services, staff, settings] = await Promise.all([
-      this.pool.query(`select id, name, category, base_price, duration_minutes
+      this.pool.query(`select id, legacy_id, name, category, base_price, duration_minutes
         from app.services where status = 'active' order by category nulls last, name`),
-      this.pool.query(`select id, full_name from app.staff where status = 'active' order by full_name`),
+      this.pool.query(`select id, legacy_id, full_name from app.staff where status = 'active' order by full_name`),
       this.pool.query(`select timezone, settings from app.business_settings where id = true`),
     ]);
     return {
       services: services.rows.map((row) => ({
         id: row.id,
+        // legacyId: id propio del ERP (ej. "SER-0001") -- lo usa outputs/app.js para mapear su
+        // servicioID/colaboradorID al UUID de Postgres al crear una cita, sin tabla de mapeo
+        // aparte (ver POST /api/fast-booking/appointments).
+        legacyId: row.legacy_id || null,
         name: row.name,
         category: row.category || "Servicios",
         price: Number(row.base_price),
         durationMinutes: Number(row.duration_minutes),
       })),
-      staff: staff.rows.map((row) => ({ id: row.id, name: row.full_name })),
+      staff: staff.rows.map((row) => ({ id: row.id, legacyId: row.legacy_id || null, name: row.full_name })),
       schedule: settings.rows[0] || { timezone: "America/Santo_Domingo", settings: {} },
       // Banner promocional configurable (Fase 6) -- null si nunca se publicó ninguno, para que
       // ReservApp se vea exactamente igual que antes de que existiera esta función.
@@ -965,12 +969,22 @@ export class NeonBookingStore {
         await client.query("rollback");
         return { alreadyReassigned: true, status: "Reemplazada" };
       }
+      // Antes esto solo tocaba confirmation_status -- el estatus visible (status) se quedaba
+      // en "scheduled" aunque la clienta ya hubiera confirmado la hora por WhatsApp. Ahora
+      // también se pone en "confirmed", pero solo partiendo de "scheduled": si ya está
+      // "completed" (se atendió antes de que llegara esta confirmación tardía) no lo regresa.
+      const alsoConfirmStatus = apt.status === "scheduled";
       await client.query(
-        `update app.appointments set confirmation_status='HoraConfirmada', updated_at=clock_timestamp() where id=$1`,
-        [apt.id],
+        `update app.appointments
+            set confirmation_status='HoraConfirmada',
+                status = case when $2 then 'confirmed' else status end,
+                updated_at=clock_timestamp()
+          where id=$1`,
+        [apt.id, alsoConfirmStatus],
       );
       await this.mirrorAppointmentToDocument(client, legacyId, (row) => {
         row.estadoConfirmacion = "HoraConfirmada";
+        if (alsoConfirmStatus) row.estado = "Confirmada";
         row.updated_at = new Date().toISOString();
       });
       await client.query("commit");
@@ -1729,18 +1743,67 @@ export class NeonBookingStore {
   // clic o una carrera entre dos personas del equipo no revierte nada ni pisa el motivo ya
   // guardado -- devuelve null y la ruta responde 404, "ya estaba cancelada".
   async cancelAppointment({ id, reason = null }) {
-    const result = await this.pool.query(
-      `update app.appointments
-          set status = 'cancelled',
-              notes = case when $2::text is not null and $2 <> ''
-                        then trim(both E'\n' from coalesce(notes,'') || E'\nCancelada: ' || $2)
-                        else notes end,
-              updated_at = clock_timestamp()
-        where id = $1 and status not in ('cancelled','replaced')
-        returning id, status`,
-      [id, reason],
-    );
-    return result.rows[0] || null;
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update app.appointments
+            set status = 'cancelled',
+                notes = case when $2::text is not null and $2 <> ''
+                          then trim(both E'\n' from coalesce(notes,'') || E'\nCancelada: ' || $2)
+                          else notes end,
+                updated_at = clock_timestamp()
+          where id = $1 and status not in ('cancelled','replaced')
+          returning id, status, legacy_id`,
+        [id, reason],
+      );
+      const row = result.rows[0] || null;
+      // Espejo hacia el documento del ERP -- sin esto, una cita cancelada desde ReservApp seguía
+      // viéndose "Programada" en la matriz del ERP, porque ese documento nunca se enteraba.
+      if (row?.legacy_id) {
+        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estado = "Cancelada"; doc.updated_at = new Date().toISOString(); });
+      }
+      await client.query("commit");
+      return row;
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Cambio manual de estatus (Confirmada/Atendida/Programada) desde un click en la cita, tanto
+  // desde ReservApp como desde el ERP (ver POST /api/reservapp/agenda/appointments/:id/status).
+  // 'Retrasada' NUNCA se guarda aquí -- es puramente derivada en el frontend a partir de la hora
+  // de inicio, para que nunca quede desactualizada. No permite pisar cancelled/replaced (esos
+  // solo se tocan vía cancelAppointment) ni completed hacia atrás por accidente de doble click.
+  async setAppointmentStatus({ id, status }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update app.appointments
+            set status = $2,
+                updated_at = clock_timestamp()
+          where id = $1 and status not in ('cancelled','replaced')
+          returning id, status, legacy_id`,
+        [id, status],
+      );
+      const row = result.rows[0] || null;
+      if (row?.legacy_id) {
+        const ESTADO_BY_STATUS = { scheduled: "Programada", confirmed: "Confirmada", completed: "Atendida" };
+        const estado = ESTADO_BY_STATUS[status];
+        if (estado) await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estado = estado; doc.updated_at = new Date().toISOString(); });
+      }
+      await client.query("commit");
+      return row;
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // Vista de cliente en ReservApp: "Citas activas" (próximas, sin cancelar/reasignar) e

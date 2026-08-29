@@ -15,7 +15,7 @@ function fakePool({ appointment, conflictRows = [], updateError = null }) {
       if (sql === "rollback") return {};
       if (sql.includes("for update")) return { rows: appointment ? [appointment] : [] };
       if (sql.includes("select id from app.appointments")) return { rows: conflictRows, rowCount: conflictRows.length };
-      if (sql.startsWith("update app.appointments set confirmation_status='HoraConfirmada'")) {
+      if (sql.includes("confirmation_status='HoraConfirmada'")) {
         if (updateError) throw updateError;
         return { rowCount: 1 };
       }
@@ -38,6 +38,46 @@ test("confirmAppointmentAttendance(): camino feliz, sin conflicto, confirma", as
   store.mirrorAppointmentToDocument = async () => {}; // fuera de alcance de esta prueba
   const result = await store.confirmAppointmentAttendance({ legacyId: "RES-1" });
   assert.deepEqual(result, { confirmed: true });
+});
+
+// El bug real que motivó esta tarea: confirmar la hora por WhatsApp solo tocaba
+// confirmation_status, dejando el estatus visible (status) en "scheduled" -- la cita seguía
+// viéndose "Programada" en ambos lados aunque la clienta ya hubiera confirmado.
+test("confirmAppointmentAttendance(): partiendo de 'scheduled', también pone status='confirmed' y espeja estado='Confirmada'", async () => {
+  const { pool, queries } = fakePool({ appointment: APT, conflictRows: [] });
+  const store = new NeonBookingStore(pool);
+  const mirrored = [];
+  store.mirrorAppointmentToDocument = async (client, legacyId, mutate) => {
+    const doc = {};
+    mutate(doc);
+    mirrored.push({ legacyId, doc });
+  };
+  const result = await store.confirmAppointmentAttendance({ legacyId: "RES-1" });
+  assert.deepEqual(result, { confirmed: true });
+  const updateQuery = queries.find((q) => q.sql.includes("confirmation_status='HoraConfirmada'"));
+  assert.deepEqual(updateQuery.params, ["apt-1", true]);
+  assert.equal(mirrored[0].doc.estadoConfirmacion, "HoraConfirmada");
+  assert.equal(mirrored[0].doc.estado, "Confirmada");
+});
+
+// Si ya se marcó "Atendida" (completed) antes de que llegara una confirmación tardía del
+// cliente por WhatsApp, esa confirmación no debe regresarla a "Confirmada".
+test("confirmAppointmentAttendance(): si ya estaba 'completed', NO regresa el estatus a 'confirmed'", async () => {
+  const completedApt = { ...APT, status: "completed" };
+  const { pool, queries } = fakePool({ appointment: completedApt, conflictRows: [] });
+  const store = new NeonBookingStore(pool);
+  const mirrored = [];
+  store.mirrorAppointmentToDocument = async (client, legacyId, mutate) => {
+    const doc = {};
+    mutate(doc);
+    mirrored.push({ legacyId, doc });
+  };
+  const result = await store.confirmAppointmentAttendance({ legacyId: "RES-1" });
+  assert.deepEqual(result, { confirmed: true });
+  const updateQuery = queries.find((q) => q.sql.includes("confirmation_status='HoraConfirmada'"));
+  assert.deepEqual(updateQuery.params, ["apt-1", false]);
+  assert.equal(mirrored[0].doc.estadoConfirmacion, "HoraConfirmada");
+  assert.equal(mirrored[0].doc.estado, undefined);
 });
 
 test("confirmAppointmentAttendance(): conflicto detectado por el SELECT previo responde alreadyReassigned", async () => {

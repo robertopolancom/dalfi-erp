@@ -339,7 +339,24 @@ function setupPayload() {
   };
 }
 
-const APPOINTMENT_STATUS_LABEL = { scheduled: "Agendada", confirmed: "Confirmada", cancelled: "Cancelada", completed: "Completada" };
+const APPOINTMENT_STATUS_LABEL = { scheduled: "Programada", confirmed: "Confirmada", cancelled: "Cancelada", completed: "Atendida" };
+
+// "Retrasada" nunca se guarda -- se calcula aquí comparando la hora actual contra la hora de
+// inicio de la cita, para una Programada/Confirmada que todavía no se marcó Atendida/Cancelada.
+// Misma idea que displayReservationStatus() en outputs/app.js (ERP), mismo criterio en los dos
+// lados: evita un job/cron que se pueda desincronizar, siempre correcto con solo mirar el reloj.
+function isAppointmentLate(item, now = new Date()) {
+  if (item.status !== "scheduled" && item.status !== "confirmed") return false;
+  const dateStr = item.date || $("agenda-date")?.value;
+  if (!dateStr || !item.start_time) return false;
+  const startsAt = new Date(`${dateStr}T${item.start_time}:00`);
+  return now.getTime() > startsAt.getTime();
+}
+
+function displayAppointmentStatusLabel(item, now = new Date()) {
+  if (isAppointmentLate(item, now)) return "Retrasada";
+  return APPOINTMENT_STATUS_LABEL[item.status] || item.status || "—";
+}
 
 function openAppointmentDetail(item) {
   $("appointment-detail-time").textContent = `${item.start_time} – ${item.end_time}`;
@@ -348,7 +365,7 @@ function openAppointmentDetail(item) {
     ["Teléfono", item.client_phone || "—"],
     ["Servicios", item.services],
     ["Manicurista", item.staff_name || "—"],
-    ["Estado", APPOINTMENT_STATUS_LABEL[item.status] || item.status || "—"],
+    ["Estado", displayAppointmentStatusLabel(item)],
     ["Referencia", item.legacy_id || "—"],
   ];
   if (item.notes) rows.push(["Nota", item.notes]);
@@ -364,6 +381,14 @@ function openAppointmentDetail(item) {
   $("appointment-cancel-toggle").classList.toggle("hidden", !cancellable);
   $("appointment-cancel-confirm").classList.add("hidden");
   $("appointment-cancel-reason").value = "";
+  // Cambiar estatus con un click es solo para personal -- nunca para una cliente viendo su
+  // propia cita en "Mis citas" (mismo criterio de rol que ya usa employeeRoles en toda la app).
+  const isStaff = state.account && employeeRoles.has(state.account.role);
+  $("appointment-status-actions").classList.toggle("hidden", !isStaff);
+  if (isStaff) {
+    $("appointment-mark-confirmed").classList.toggle("hidden", item.status !== "scheduled");
+    $("appointment-mark-attended").classList.toggle("hidden", !["scheduled", "confirmed"].includes(item.status));
+  }
   message($("appointment-cancel-message"));
   $("appointment-detail-dialog").showModal();
 }
@@ -420,13 +445,14 @@ function renderAgendaCalendar(groups, appointments) {
       const end = timeToMinutes(item.end_time);
       const block = document.createElement("button");
       block.type = "button";
-      block.className = `agenda-cal-block status-${item.status}`;
+      const late = isAppointmentLate(item);
+      block.className = `agenda-cal-block status-${item.status}${late ? " status-delayed" : ""}`;
       block.style.top = `${Math.max(0, (start - openMin) * pxPerMin)}px`;
       block.style.height = `${Math.max(18, (end - start) * pxPerMin - 2)}px`;
       const strong = document.createElement("strong");
       strong.textContent = `${item.start_time} · ${item.client_name || "Cliente"}`;
       const span = document.createElement("span");
-      span.textContent = item.services;
+      span.textContent = late ? `${item.services} · Retrasada` : item.services;
       block.append(strong, span);
       block.addEventListener("click", () => openAppointmentDetail(item));
       body.append(block);
@@ -590,6 +616,23 @@ $("appointment-cancel-submit").addEventListener("click", async () => {
   } catch (error) { message($("appointment-cancel-message"), error.message); }
   finally { button.disabled = false; }
 });
+
+// Cambiar estatus con un click desde el detalle de la cita -- mismo endpoint que también puede
+// llamar el ERP (ver POST /api/reservapp/agenda/appointments/:id/status en server/app.mjs).
+async function setAppointmentDetailStatus(status, button) {
+  button.disabled = true;
+  message($("appointment-cancel-message"), "Actualizando…", true);
+  try {
+    await api(`/api/reservapp/agenda/appointments/${state.appointmentDetailId}/status`, {
+      method: "POST", body: JSON.stringify({ status }),
+    });
+    $("appointment-detail-dialog").close();
+    loadAgendaView();
+  } catch (error) { message($("appointment-cancel-message"), error.message); }
+  finally { button.disabled = false; }
+}
+$("appointment-mark-confirmed").addEventListener("click", (event) => setAppointmentDetailStatus("confirmed", event.currentTarget));
+$("appointment-mark-attended").addEventListener("click", (event) => setAppointmentDetailStatus("completed", event.currentTarget));
 
 // Etiquetas humanas de las dos dimensiones independientes de una cita -- mismo vocabulario que ya
 // usa el ERP legado (outputs/app.js CONFIRM_NOTES/DEPOSIT_NOTES) para que administración y

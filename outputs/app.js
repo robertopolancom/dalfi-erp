@@ -287,6 +287,118 @@ async function loadDatabase() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Sincronización con Postgres/ReservApp (app.appointments) -- el ERP guarda todo en un
+// documento JSON único (ver loadDatabase/saveRemoteDatabase); esto es aparte, mejor esfuerzo:
+// crea/actualiza en Postgres las citas que el ERP ya guardó localmente, para que también se
+// vean en el Panel de colaboradores de ReservApp y puedan facturarse desde ahí. Si algo falla
+// (sin mapeo legacy_id todavía, red caída, el horario se ocupó mientras tanto), la reserva local
+// ya quedó guardada igual que siempre -- solo se pierde la sincronización esta vez, no se
+// bloquea ni se revierte nada.
+let postgresStaffIdByLegacyId = new Map();
+let postgresServiceIdByLegacyId = new Map();
+
+function bookingAuthHeaders() {
+  return supabaseSession?.access_token
+    ? { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` }
+    : { "Content-Type": "application/json" };
+}
+
+async function loadPostgresBookingCatalog() {
+  try {
+    const response = await fetch("/api/fast-booking/catalog");
+    if (!response.ok) return;
+    const catalog = await response.json();
+    postgresStaffIdByLegacyId = new Map((catalog.staff || []).filter((person) => person.legacyId).map((person) => [person.legacyId, person.id]));
+    postgresServiceIdByLegacyId = new Map((catalog.services || []).filter((service) => service.legacyId).map((service) => [service.legacyId, service.id]));
+  } catch (error) {
+    console.warn("[postgres-sync] No se pudo cargar el catálogo de ReservApp:", error);
+  }
+}
+
+// Busca la clienta por teléfono en Postgres (mismo endpoint que ya usa ReservApp para su propia
+// búsqueda); si no existe, la crea al instante -- igual que "employee-new-client" en
+// outputs/reservar/app.js, el personal ya la tiene en frente, no hace falta verificarla por
+// WhatsApp.
+async function ensurePostgresClient({ phone, name, email }) {
+  if (!phone) return null;
+  try {
+    const searchResponse = await fetch(`/api/fast-booking/clients?q=${encodeURIComponent(phone)}`, { headers: bookingAuthHeaders() });
+    if (searchResponse.ok) {
+      const found = (await searchResponse.json())?.clients?.[0];
+      if (found?.id) return found.id;
+    }
+    // lastName es obligatorio del lado del servidor -- un nombre de una sola palabra en el ERP
+    // (sin apellido capturado) no debe bloquear la sincronización, así que cae a un valor fijo.
+    const [firstName, ...rest] = String(name || "Cliente").trim().split(/\s+/);
+    const createResponse = await fetch("/api/fast-booking/clients", {
+      method: "POST",
+      headers: { ...bookingAuthHeaders(), "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({ firstName: firstName || "Cliente", lastName: rest.join(" ") || "Cliente", phone, email: email || "", actorType: "employee" }),
+    });
+    if (!createResponse.ok) return null;
+    return (await createResponse.json())?.client?.id || null;
+  } catch (error) {
+    console.warn("[postgres-sync] No se pudo resolver/crear la clienta en Postgres:", error);
+    return null;
+  }
+}
+
+const ESTADO_TO_PG_STATUS = { Programada: "scheduled", Confirmada: "confirmed", Atendida: "completed" };
+
+// Se llama DESPUÉS de que la reserva ya quedó guardada localmente (ver el submit de
+// #reservation-form) -- nunca antes, para que un fallo de red nunca le impida al personal
+// guardar la cita. isNew=true intenta crearla en Postgres; isNew=false solo refleja un cambio
+// de estatus/cancelación, y solo si esta reserva ya tiene un postgresAppointmentId (las
+// históricas, creadas antes de que existiera esto, se quedan sin sincronizar).
+async function syncReservationToPostgres({ isNew, reservationId, previousEstado }) {
+  if (!isSupabaseReady()) return;
+  const dbRow = dbTable("reservas").find((row) => row.reservaID === reservationId);
+  if (!dbRow) return;
+  try {
+    if (isNew) {
+      const staffPgId = postgresStaffIdByLegacyId.get(dbRow.colaboradorID);
+      const servicePgId = postgresServiceIdByLegacyId.get(dbRow.servicioID);
+      if (!staffPgId || !servicePgId) {
+        console.warn(`[postgres-sync] Manicurista o servicio de ${reservationId} todavía sin mapeo a Postgres.`);
+        return;
+      }
+      const clientId = await ensurePostgresClient({ phone: dbRow.telefono, name: dbRow.clienteNombre, email: dbRow.correo });
+      if (!clientId) return;
+      const response = await fetch("/api/fast-booking/appointments", {
+        method: "POST",
+        headers: { ...bookingAuthHeaders(), "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({
+          clientId, serviceIds: [servicePgId], staffId: staffPgId,
+          date: dbRow.fecha, time: dbRow.hora, notes: dbRow.observaciones || "", actorType: "employee",
+        }),
+      });
+      if (!response.ok) {
+        console.warn(`[postgres-sync] No se pudo crear ${reservationId} en Postgres:`, await response.text().catch(() => response.status));
+        return;
+      }
+      const result = await response.json();
+      if (result.appointment?.id) {
+        dbRow.postgresAppointmentId = result.appointment.id;
+        localStorage.setItem(dbStorageKey, JSON.stringify(database));
+        scheduleRemoteSave();
+      }
+    } else if (dbRow.postgresAppointmentId && dbRow.estado !== previousEstado) {
+      const isCancel = dbRow.estado === "Cancelada";
+      const pgStatus = ESTADO_TO_PG_STATUS[dbRow.estado];
+      if (!isCancel && !pgStatus) return; // "Retrasada" no existe como valor guardado -- nunca llega aquí
+      const path = isCancel
+        ? `/api/reservapp/agenda/appointments/${dbRow.postgresAppointmentId}/cancel`
+        : `/api/reservapp/agenda/appointments/${dbRow.postgresAppointmentId}/status`;
+      const body = isCancel ? { reason: "Cancelada desde el ERP" } : { status: pgStatus };
+      const response = await fetch(path, { method: "POST", headers: bookingAuthHeaders(), body: JSON.stringify(body) });
+      if (!response.ok) console.warn(`[postgres-sync] No se pudo reflejar el estatus de ${reservationId} en Postgres:`, await response.text().catch(() => response.status));
+    }
+  } catch (error) {
+    console.warn(`[postgres-sync] Fallo sincronizando ${reservationId} con Postgres:`, error);
+  }
+}
+
 function loadState() {
   const saved = localStorage.getItem(appStorageKey);
   if (!saved) {
@@ -1987,7 +2099,22 @@ function reservationStatus(record) {
   if (!record) return "Programada";
   const explicit = record.status || record.estado;
   if (explicit) return explicit;
-  return record.invoiceId || record.facturaID ? "Completada" : "Programada";
+  return record.invoiceId || record.facturaID ? "Atendida" : "Programada";
+}
+
+// "Retrasada" NUNCA se guarda -- se calcula aquí comparando la hora actual contra la hora de
+// inicio, solo para Programada/Confirmada que todavía no se marcaron Atendida/Cancelada. Mismo
+// criterio en outputs/reservar/app.js (isAppointmentLate): evita un job/cron que se pueda
+// desincronizar, siempre correcto con solo mirar el reloj. Usar solo en contextos de
+// presentación (matriz, listas) -- reservationStatus() sigue siendo el valor real guardado.
+function displayReservationStatus(record, now = new Date()) {
+  const status = reservationStatus(record);
+  if (!record || (status !== "Programada" && status !== "Confirmada")) return status;
+  const date = record.date || record.fecha;
+  const time = record.time || record.hora;
+  if (!date || !time) return status;
+  const startsAt = new Date(`${date}T${time}:00`);
+  return now.getTime() > startsAt.getTime() ? "Retrasada" : status;
 }
 
 function resetReservationEditState(form = byId("reservation-form")) {
@@ -2022,7 +2149,7 @@ function showReservationDetails(reservationId) {
     detail("Técnico/a", record.staff || record.colaboradorNombre),
     detail("Fecha", record.date || record.fecha),
     detail("Hora", record.time || record.hora),
-    detail("Estado", reservationStatus(record)),
+    detail("Estado", displayReservationStatus(record)),
     detail("Origen", record.source || record.canalOrigen),
     detail("Observaciones", record.note || record.observaciones),
     detail("Factura", record.invoiceId || record.facturaID),
@@ -2176,7 +2303,7 @@ function openSlotActionMenu({ date, time, staffId, staffName }) {
   byId("slot-action-dialog")?.showModal();
 }
 
-const OPEN_RESERVATION_STATUSES = new Set(["Programada", "Confirmada", "En proceso"]);
+const OPEN_RESERVATION_STATUSES = new Set(["Programada", "Confirmada"]);
 
 // Lista de citas abiertas (sin contar Completada/Cancelada/No asistió) el mismo día de la
 // ranura clickeada, para elegir cuál modificar sin tener que ir a buscarla en la lista larga
@@ -2201,7 +2328,7 @@ function openSlotAppointmentPicker({ date }) {
               <span>${escapeHtml(reservation.phone || "")}</span>
             </div>
             <div class="row-actions">
-              <span class="status-pill warning">${escapeHtml(reservationStatus(reservation))}</span>
+              <span class="status-pill warning">${escapeHtml(displayReservationStatus(reservation))}</span>
               <button class="secondary-btn compact slot-picker-select" data-reservation-id="${escapeHtml(reservation.id)}" type="button">Seleccionar</button>
             </div>
           </article>
@@ -4264,8 +4391,8 @@ function renderAppointments(target, rows, emptyMessage) {
   }
   target.innerHTML = rows
     .map((reservation) => {
-      const status = reservationStatus(reservation);
-      const statusClass = status === "Cancelada" || status === "No asistió" ? "danger" : status === "Completada" ? "success" : "warning";
+      const status = displayReservationStatus(reservation);
+      const statusClass = status === "Cancelada" || status === "No asistió" || status === "Retrasada" ? "danger" : status === "Completada" || status === "Atendida" ? "success" : "warning";
       return `
         <article class="appointment">
           <time>${reservation.time}</time>
@@ -4543,9 +4670,17 @@ function renderConsolidatedMatrix() {
           preaprobada: { bg: "#eff6ff", badgeClass: "preaprobada", label: "Preaprobada" },
           confirmada: { bg: "#f0fdf4", badgeClass: "confirmada", label: "Reservada hasta " + slot.busyUntil },
           reprogramada: { bg: "#eef2ff", badgeClass: "reprogramada", label: "Reprogramada" },
-          completada: { bg: "#f8fafc", badgeClass: "completada", label: "Completada" },
+          // "completada" se conserva por compatibilidad con reservas viejas que todavía guardan
+          // ese valor (antes del rename a "Atendida"); las nuevas ya guardan "atendida" directo.
+          completada: { bg: "#f8fafc", badgeClass: "completada", label: "Atendida" },
+          atendida: { bg: "#f8fafc", badgeClass: "completada", label: "Atendida" },
+          // "Retrasada" nunca se guarda -- ver displayReservationStatus. Solo aparece aquí
+          // cuando ya pasó la hora y la cita sigue Programada/Confirmada.
+          retrasada: { bg: "#fef2f2", badgeClass: "retrasada", label: "Retrasada" },
         };
-        const estadoKey = String(slot.appointmentStatus || "").toLowerCase();
+        // displayReservationStatus (no slot.appointmentStatus directo) para que "Retrasada" se
+        // calcule aquí mismo a partir de la hora real de la cita, no de un valor guardado.
+        const estadoKey = displayReservationStatus(slot.appointment, new Date()).toLowerCase();
         const style = ESTADO_STYLE[estadoKey] || { bg: "#fef2f2", badgeClass: "booked", label: "Reservada hasta " + slot.busyUntil };
         const isPre = estadoKey === "preaprobada";
 
@@ -4568,7 +4703,7 @@ function renderConsolidatedMatrix() {
         const depositNote = DEPOSIT_NOTES[depositState];
 
         html += `
-          <td style="background:${style.bg};">
+          <td class="slot-cell-booked" data-reservation-id="${escapeHtml(slot.appointmentId)}" style="background:${style.bg}; cursor:pointer;" title="Ver o modificar esta cita">
             <span class="slot-badge ${style.badgeClass}">${style.label}</span>
             <div style="font-size:12px; font-weight:600; margin-top:2px;">${escapeHtml(slot.clientName)}</div>
             <div style="font-size:11px; color:#475569;">${escapeHtml(slot.service)}</div>
@@ -16661,6 +16796,17 @@ function wireForms() {
       confirmSalonReservation(confirmBtn.dataset.reservationId);
       return;
     }
+    // Click en cualquier otra parte de una celda ocupada de la matriz (no el botón "Confirmar",
+    // ya manejado arriba): abre esa cita en modo edición -- mismo camino de siempre
+    // (startReservationEdit), para que cambiar el estatus sea un click de distancia también
+    // desde la matriz, no solo desde la lista de la pestaña "Agenda y Reservas".
+    const bookedCell = event.target.closest(".slot-cell-booked");
+    if (bookedCell && bookedCell.dataset.reservationId) {
+      if (!canManageReservations()) { showReservationDetails(bookedCell.dataset.reservationId); return; }
+      byId("booking-tab-agenda")?.click();
+      startReservationEdit(bookedCell.dataset.reservationId);
+      return;
+    }
     const reviewResBtn = event.target.closest(".mark-reservation-reviewed");
     if (reviewResBtn) {
       markReservationReviewed(reviewResBtn.dataset.reservationId);
@@ -16684,7 +16830,7 @@ function wireForms() {
     byId(fieldId)?.addEventListener("input", () => availableReservationStaff());
   });
 
-  byId("reservation-form").addEventListener("submit", (event) => {
+  byId("reservation-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const formMessage = byId("reservation-form-message");
     const setMessage = (text, kind = "") => {
@@ -16735,6 +16881,10 @@ function wireForms() {
     const serviceRecord = findServiceByName(service);
     const editId = byId("reservation-edit-id")?.value || "";
     const currentReservation = editId ? reservationRecordById(editId) : null;
+    // Se captura ANTES de mutar el registro más abajo (Object.assign sobre el mismo objeto) --
+    // es la única forma de saber después si el estatus realmente cambió, para no llamar a
+    // Postgres quando no hacía falta (ver syncReservationToPostgres).
+    const previousEstado = currentReservation?.dbRecord?.estado || null;
     if (editId && !currentReservation?.record) {
       setMessage("Esta cita ya no existe (puede que otra persona la haya eliminado). Se actualizó la agenda.", "error");
       resetReservationEditState(event.target);
@@ -16830,6 +16980,9 @@ function wireForms() {
       saveState();
       renderAll();
       setMessage(editId ? "Cita actualizada correctamente." : "Cita guardada correctamente.", "success");
+      // Mejor esfuerzo, después de que la reserva ya quedó guardada localmente -- nunca bloquea
+      // ni revierte el guardado si esto falla (ver syncReservationToPostgres).
+      syncReservationToPostgres({ isNew: !editId, reservationId, previousEstado });
     } catch (error) {
       console.error("Error guardando la cita", error);
       setMessage(`No se pudo guardar la cita: ${error.message || error}`, "error");
@@ -18223,6 +18376,9 @@ function wireInventoryCollaboratorAuditPhase() {
 
 async function init() {
   await loadDatabase();
+  // No bloqueante a propósito: si esto falla o tarda, el ERP sigue funcionando exactamente
+  // igual que hoy -- solo se pierde el mapeo para sincronizar reservas nuevas con Postgres.
+  loadPostgresBookingCatalog();
   // Crear catalogos de inventario exige el permiso correspondiente. El seed
   // local ya contiene las cinco mesas; en una base remota antigua solo una
   // sesion autorizada de inventario completa las que falten.
