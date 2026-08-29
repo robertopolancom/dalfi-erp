@@ -171,6 +171,17 @@
         </div>
         <ul class="admin-list" id="holiday-closures-list"></ul>
 
+        <h4>Horario especial de un día (para todo el negocio)</h4>
+        <p><small>Para un domingo u otro día normalmente cerrado que sí va a abrir, o un feriado con horario reducido en vez de cerrado completo. Deja Apertura y Cierre vacíos para cerrar ese día por completo (igual que "Días cerrados" arriba).</small></p>
+        <div class="field-grid three">
+          <label>Fecha<input id="schedule-exception-date" type="date" /></label>
+          <label>Apertura <span>(vacío = cerrado)</span><input id="schedule-exception-open" type="time" /></label>
+          <label>Cierre <span>(vacío = cerrado)</span><input id="schedule-exception-close" type="time" /></label>
+        </div>
+        <label>Motivo <span>(opcional)</span><input id="schedule-exception-label" type="text" maxlength="120" /></label>
+        <button class="secondary" id="schedule-exception-add" type="button">Guardar horario especial</button>
+        <ul class="admin-list" id="schedule-exceptions-list"></ul>
+
         <h4>Horario por colaboradora</h4>
         <label>Colaboradora<select id="staff-schedule-select"><option value="">Selecciona</option></select></label>
         <div class="schedule-grid" id="staff-weekdays-grid"></div>
@@ -239,8 +250,8 @@
 
   <dialog id="confirm-name-dialog"><form id="confirm-name-form" method="dialog">
     <div class="dialog-head"><div><p class="kicker">Confirmemos que eres tú</p><h2>¿Cuál es tu nombre?</h2></div><button class="icon-button" id="close-confirm-name" type="button" aria-label="Cerrar">×</button></div>
-    <p>Ya tenemos una ficha con este teléfono. Escribe tu nombre para confirmar que eres tú -- nunca lo mostramos aquí primero, por tu seguridad.</p>
-    <label>Tu nombre<input id="confirm-name-value" type="text" autocomplete="given-name" required /></label>
+    <p>Ya tenemos una ficha con este teléfono. Escribe tu primer nombre para confirmar que eres tú -- nunca lo mostramos aquí primero, por tu seguridad.</p>
+    <label>Tu nombre <span>(solo el primero, ej. "María")</span><input id="confirm-name-value" type="text" autocomplete="given-name" placeholder="Solo tu primer nombre" required /></label>
     <div class="message" id="confirm-name-message" role="status"></div>
     <button class="primary" type="submit">Continuar</button>
     <a class="whatsapp-link" href="https://wa.me/18093463030" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>

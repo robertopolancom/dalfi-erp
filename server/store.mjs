@@ -92,7 +92,12 @@ export function resolveBusinessDayWindow(dateStr, settings = {}) {
   const scheduleExceptions = Array.isArray(settings.scheduleExceptions) ? settings.scheduleExceptions : [];
   const dateException = scheduleExceptions.find((exc) => exc?.date === dateStr);
   const dateExceptionClosed = dateException && !dateException.open && !dateException.close;
-  if (businessClosedToday || (settings.holidayClosures || []).includes(dateStr) || dateExceptionClosed) return null;
+  const dateExceptionOpensSpecially = Boolean(dateException?.open && dateException?.close);
+  if (dateExceptionClosed) return null;
+  // Con horario propio (open+close) la excepción manda de verdad sobre weekDays/holidayClosures
+  // -- si no, "domingo con horario especial" (weekDays no incluye domingo) nunca podría abrir,
+  // contradiciendo la prioridad ya documentada arriba.
+  if (!dateExceptionOpensSpecially && (businessClosedToday || (settings.holidayClosures || []).includes(dateStr))) return null;
   const open = dateException?.open || dayOverride?.open || settings.defaultOpeningTime || "09:00";
   const close = dateException?.close || dayOverride?.close || settings.defaultClosingTime || "18:00";
   return { open, close };

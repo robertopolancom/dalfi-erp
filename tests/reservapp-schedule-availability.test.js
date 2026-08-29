@@ -167,6 +167,36 @@ test("availability(): scheduleExceptions con open/close puntuales cambia el hora
   assert.ok(result.slots.every((slot) => slot.time < "13:00"));
 });
 
+// Bug real encontrado en auditoría: el comentario de resolveBusinessDayWindow ya decía que
+// scheduleExceptions manda sobre weekDays/holidayClosures, pero el código devolvía cerrado de
+// todos modos si el día de la semana no estaba en weekDays -- así que "domingo con horario
+// especial" (weekDays no incluye domingo por defecto) nunca podía abrir. Corregido: con open+close
+// propios, la excepción sí abre un día normalmente cerrado.
+test("availability(): scheduleExceptions con open/close propios abre un domingo aunque weekDays no lo incluya (disponibilidad especial)", async () => {
+  const sunday = "2026-08-30"; // domingo
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    businessSettings: {
+      defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400,
+      scheduleExceptions: [{ date: sunday, open: "10:00", close: "14:00", label: "Domingo especial" }],
+    },
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: sunday });
+  assert.equal(result.closed, undefined);
+  assert.ok(result.slots.length > 0, "el domingo con excepción especial debe tener horarios");
+  assert.ok(result.slots.every((slot) => slot.time >= "10:00" && slot.time < "14:00"));
+});
+
+test("availability(): un domingo normal (sin excepción) sigue cerrado por defecto", async () => {
+  const sunday = "2026-08-30";
+  const store = new NeonBookingStore(fakePool({
+    staff: STAFF,
+    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400 },
+  }));
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: sunday });
+  assert.equal(result.closed, true);
+});
+
 // La última cita del día puede terminar después de la hora de cierre -- a diferencia de un
 // banco, lo que importa es que la clienta haya entrado antes de que se cierre, no que el
 // servicio completo quepa antes del cierre.

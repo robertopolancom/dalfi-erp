@@ -1303,6 +1303,7 @@ $("clients-admin-search").addEventListener("input", () => {
 // días que tenga fila (opt-in: sin ninguna fila, sigue el general como siempre).
 const WEEKDAY_LABELS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
 let businessHolidayClosures = [];
+let businessScheduleExceptions = [];
 
 function renderScheduleGrid(container, { dayValues, prefix }) {
   container.replaceChildren(...WEEKDAY_LABELS.map((label, day) => {
@@ -1351,6 +1352,29 @@ function renderHolidayClosuresList() {
   }));
 }
 
+function renderScheduleExceptionsList() {
+  $("schedule-exceptions-list").replaceChildren(...businessScheduleExceptions.map((exc) => {
+    const li = document.createElement("li");
+    const dateLabel = new Date(`${exc.date}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" });
+    const hoursLabel = exc.open && exc.close ? `${exc.open}–${exc.close}` : "Cerrado todo el día";
+    const label = document.createElement("span");
+    label.textContent = `${dateLabel} · ${hoursLabel}${exc.label ? ` (${exc.label})` : ""}`;
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "admin-row-action"; remove.textContent = "Quitar";
+    remove.addEventListener("click", async () => {
+      remove.disabled = true;
+      try {
+        await api("/api/reservapp/admin/business-settings", {
+          method: "PATCH",
+          body: JSON.stringify({ scheduleExceptions: businessScheduleExceptions.filter((item) => item.date !== exc.date) }),
+        });
+        loadBusinessHours();
+      } catch (error) { message($("business-hours-message"), error.message); remove.disabled = false; }
+    });
+    li.append(label, remove);
+    return li;
+  }));
+}
+
 async function loadBusinessHours() {
   message($("business-hours-message"), "Cargando…", true);
   try {
@@ -1365,6 +1389,10 @@ async function loadBusinessHours() {
     renderScheduleGrid($("business-weekdays-grid"), { dayValues, prefix: "business" });
     businessHolidayClosures = Array.isArray(settings.holidayClosures) ? [...settings.holidayClosures].sort() : [];
     renderHolidayClosuresList();
+    businessScheduleExceptions = Array.isArray(settings.scheduleExceptions)
+      ? [...settings.scheduleExceptions].sort((a, b) => a.date.localeCompare(b.date))
+      : [];
+    renderScheduleExceptionsList();
     message($("business-hours-message"));
   } catch (error) { message($("business-hours-message"), error.message); }
 }
@@ -1388,6 +1416,24 @@ $("holiday-closure-add").addEventListener("click", async () => {
   try {
     await api("/api/reservapp/admin/business-settings", { method: "PATCH", body: JSON.stringify({ holidayClosures: [...businessHolidayClosures, date] }) });
     $("holiday-closure-date").value = "";
+    loadBusinessHours();
+  } catch (error) { message($("business-hours-message"), error.message); }
+  finally { button.disabled = false; }
+});
+
+$("schedule-exception-add").addEventListener("click", async () => {
+  const date = $("schedule-exception-date").value;
+  const open = $("schedule-exception-open").value;
+  const close = $("schedule-exception-close").value;
+  const label = $("schedule-exception-label").value;
+  if (!date) return message($("business-hours-message"), "Elige una fecha.");
+  if ((open && !close) || (!open && close)) return message($("business-hours-message"), "Pon apertura y cierre, o deja ambos vacíos para cerrar el día completo.");
+  if (open && close && open >= close) return message($("business-hours-message"), "La hora de cierre debe ser posterior a la de apertura.");
+  const button = $("schedule-exception-add"); button.disabled = true;
+  try {
+    const nextExceptions = [...businessScheduleExceptions.filter((item) => item.date !== date), { date, open: open || null, close: close || null, label }];
+    await api("/api/reservapp/admin/business-settings", { method: "PATCH", body: JSON.stringify({ scheduleExceptions: nextExceptions }) });
+    $("schedule-exception-date").value = ""; $("schedule-exception-open").value = ""; $("schedule-exception-close").value = ""; $("schedule-exception-label").value = "";
     loadBusinessHours();
   } catch (error) { message($("business-hours-message"), error.message); }
   finally { button.disabled = false; }
