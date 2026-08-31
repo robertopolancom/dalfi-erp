@@ -27,6 +27,13 @@ img{max-width:100%}
 a{color:inherit}
 .wrap{width:min(1080px,100%);margin:0 auto;padding:0 24px}
 
+/* ---------- promo bar ---------- */
+.promo-bar{
+  background:var(--clay);color:var(--paper);
+  text-align:center;padding:10px 24px;
+  font-family:Poppins;font-weight:600;font-size:.84rem;letter-spacing:.01em;
+}
+
 /* ---------- nav ---------- */
 .nav{
   position:sticky;top:0;z-index:40;

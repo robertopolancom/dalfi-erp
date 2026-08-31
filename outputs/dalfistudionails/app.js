@@ -202,12 +202,20 @@
     }
   }
 
+  function applyPromo(content) {
+    var bar = document.getElementById("promo-bar");
+    if (!bar) return;
+    var promo = content.promo;
+    bar.style.display = promo && promo.enabled !== false && promo.text ? "" : "none";
+  }
+
   function applySiteContent(content) {
     if (content.contact) content.contact.instagramHandleDisplay = "@" + (content.contact.instagramHandle || "");
     applyTextNodes(content);
     applyWhatsappLinks(content);
     applyInstagramLinks(content);
     applyLists(content);
+    applyPromo(content);
   }
 
   fetch(CONTENT_API)

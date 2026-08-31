@@ -3297,6 +3297,17 @@
               página — eso sigue siendo trabajo de código.
             </p>
             <form id="site-content-form">
+              <h4 style="margin: 0 0 8px;">Promoción (barra arriba de la página)</h4>
+              <div class="form-grid" style="display:grid; grid-template-columns: auto 1fr; gap: 16px; align-items:center; margin-bottom:24px;">
+                <label style="display:flex; align-items:center; gap:8px;">
+                  <input id="sc-promo-enabled" type="checkbox" /> Mostrar
+                </label>
+                <label>
+                  Texto de la promoción
+                  <input id="sc-promo-text" maxlength="160" placeholder="Ej. 15% de descuento en tu cita, reservando por esta página o por ReservApp." />
+                </label>
+              </div>
+
               <h4 style="margin: 0 0 8px;">Portada</h4>
               <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom:16px;">
                 <label>

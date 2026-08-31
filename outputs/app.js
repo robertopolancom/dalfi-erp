@@ -5062,6 +5062,9 @@ async function renderSiteContentForm() {
     return;
   }
 
+  if (byId("sc-promo-enabled")) byId("sc-promo-enabled").checked = content.promo?.enabled !== false;
+  if (byId("sc-promo-text")) byId("sc-promo-text").value = content.promo?.text || "";
+
   if (byId("sc-hero-kicker")) byId("sc-hero-kicker").value = content.hero?.kicker || "";
   if (byId("sc-hero-headline")) byId("sc-hero-headline").value = content.hero?.headline || "";
   if (byId("sc-hero-headline-accent")) byId("sc-hero-headline-accent").value = content.hero?.headlineAccent || "";
@@ -5119,6 +5122,10 @@ async function saveSiteContent(event) {
   }));
 
   const content = {
+    promo: {
+      enabled: Boolean(byId("sc-promo-enabled")?.checked),
+      text: byId("sc-promo-text")?.value?.trim() || "",
+    },
     hero: {
       kicker: byId("sc-hero-kicker")?.value?.trim() || "",
       headline: byId("sc-hero-headline")?.value?.trim() || "",
