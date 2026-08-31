@@ -13,78 +13,90 @@
 
 <nav class="nav" id="nav">
   <div class="wrap nav-row">
-    <a class="wordmark" href="#top">
+    <a class="wordmark" href="#inicio" data-page-link="inicio">
       <svg class="mark" viewBox="0 0 30 30" fill="none"><circle cx="15" cy="15" r="14" stroke="#4B5040" stroke-width="1.4"/><path d="M10 16.5c1.6 2 3.4 3 5 3s3.4-1 5-3" stroke="#4B5040" stroke-width="1.4" stroke-linecap="round"/><circle cx="11.4" cy="12" r="1.15" fill="#4B5040"/><circle cx="18.6" cy="12" r="1.15" fill="#4B5040"/></svg>
       <span class="name">Dalfi <em>Studio Nails</em></span>
     </a>
-    <div class="nav-links">
-      <a class="section-link" href="#servicios">Servicios</a>
-      <a class="section-link" href="#estudio">Galería</a>
-      <a class="section-link" href="#ubicacion">Ubicación</a>
-      <a class="btn btn-primary btn-sm js-reservar" href="https://reservapp.sebengroup.com">Reservar</a>
+    <div class="nav-tabs" role="tablist">
+      <a class="nav-tab" href="#inicio" data-page-link="inicio">Inicio</a>
+      <a class="nav-tab" href="#servicios" data-page-link="servicios">Servicios</a>
+      <a class="nav-tab" href="#galeria" data-page-link="galeria">Galería</a>
+      <a class="nav-tab" href="#ubicacion" data-page-link="ubicacion">Ubicación</a>
     </div>
+    <a class="btn btn-primary btn-sm js-reservar" href="https://reservapp.sebengroup.com">Reservar</a>
   </div>
 </nav>
 
 <main id="top">
-  <header class="hero">
-    <div class="wrap hero-grid">
-      <div>
-        <p class="kicker">Baní · Peravia, República Dominicana</p>
-        <h1 class="headline">El cuidado de tus manos, <span class="accent">hecho con calma.</span></h1>
-        <p class="lede">Manicura, pedicura, uñas esculpidas y nail art en un espacio pensado para el detalle — sin prisa, con productos de calidad y manos que saben lo que hacen.</p>
-        <div class="hero-actions">
-          <a class="btn btn-primary js-reservar" href="https://reservapp.sebengroup.com">
-            Reservar mi cita
-          </a>
-          <a class="btn btn-ghost" href="#servicios">Ver servicios</a>
-        </div>
-        <div class="hero-meta">
-          <div><strong>6+</strong>servicios especializados</div>
-          <div><strong>1</strong>estudio en el centro de Baní</div>
-          <div><strong>&amp;</strong>academia de formación</div>
-        </div>
-      </div>
-      <div class="bottles" aria-hidden="true">
-        <div class="bottle-unit" style="animation-delay:.05s">
-          <div class="bottle" style="background:#B7BDA9"></div>
-          <span class="bottle-name">Musgo</span>
-        </div>
-        <div class="bottle-unit" style="animation-delay:.18s">
-          <div class="bottle" style="background:#E7DEC8"></div>
-          <span class="bottle-name">Lino</span>
-        </div>
-        <div class="bottle-unit" style="animation-delay:.30s">
-          <div class="bottle" style="background:#DCC8B8"></div>
-          <span class="bottle-name">Arena</span>
-        </div>
-        <div class="bottle-unit" style="animation-delay:.42s">
-          <div class="bottle" style="background:#8B9481"></div>
-          <span class="bottle-name">Salvia</span>
-        </div>
-      </div>
-    </div>
-  </header>
 
-  <section class="band" id="estudio-intro">
-    <div class="wrap about" id="estudio">
-      <div>
-        <p class="kicker">Sobre el estudio</p>
-        <p>Dalfi Studio Nails nació en Baní para devolverle el ritual a cuidarse las manos. Cada cita es un espacio propio: sin prisa, con productos de calidad y un ojo puesto en los detalles que después se notan.</p>
-        <p>Además del estudio, formamos a quienes quieren aprender el oficio — Dalfi Studio Nails &amp; Academy acompaña tanto a la clienta que quiere verse bien hoy como a la futura manicurista que quiere aprender bien.</p>
-        <div class="about-caption">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4B5040" stroke-width="2"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21Z"/><circle cx="12" cy="9.5" r="2.3"/></svg>
-          Calle Duarte No. 60, esq. Beller · Baní, Peravia
+  <section class="page" id="page-inicio" data-page="inicio">
+    <header class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="kicker">Baní · Peravia, República Dominicana</p>
+          <h1 class="headline">El cuidado de tus manos, <span class="accent">hecho con calma.</span></h1>
+          <p class="lede">Manicura, pedicura, uñas esculpidas y nail art en un espacio pensado para el detalle — sin prisa, con productos de calidad y manos que saben lo que hacen.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary js-reservar" href="https://reservapp.sebengroup.com">
+              Reservar mi cita
+            </a>
+            <a class="btn btn-ghost" href="#servicios" data-page-link="servicios">Ver servicios</a>
+          </div>
+          <div class="hero-meta">
+            <div><strong>6+</strong>servicios especializados</div>
+            <div><strong>1</strong>estudio en el centro de Baní</div>
+            <div><strong>&amp;</strong>academia de formación</div>
+          </div>
+        </div>
+        <div class="bottles" aria-hidden="true">
+          <div class="bottle-unit" style="animation-delay:.05s">
+            <div class="bottle" style="background:#B7BDA9"></div>
+            <span class="bottle-name">Musgo</span>
+          </div>
+          <div class="bottle-unit" style="animation-delay:.18s">
+            <div class="bottle" style="background:#E7DEC8"></div>
+            <span class="bottle-name">Lino</span>
+          </div>
+          <div class="bottle-unit" style="animation-delay:.30s">
+            <div class="bottle" style="background:#DCC8B8"></div>
+            <span class="bottle-name">Arena</span>
+          </div>
+          <div class="bottle-unit" style="animation-delay:.42s">
+            <div class="bottle" style="background:#8B9481"></div>
+            <span class="bottle-name">Salvia</span>
+          </div>
         </div>
       </div>
-      <blockquote class="pull">
-        “No es solo esmalte — es el rato que te tomas para ti.”
-      </blockquote>
+    </header>
+
+    <div class="band">
+      <div class="wrap about">
+        <div>
+          <p class="kicker">Sobre el estudio</p>
+          <p>Dalfi Studio Nails nació en Baní para devolverle el ritual a cuidarse las manos. Cada cita es un espacio propio: sin prisa, con productos de calidad y un ojo puesto en los detalles que después se notan.</p>
+          <p>Además del estudio, formamos a quienes quieren aprender el oficio — Dalfi Studio Nails &amp; Academy acompaña tanto a la clienta que quiere verse bien hoy como a la futura manicurista que quiere aprender bien.</p>
+          <div class="about-caption">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4B5040" stroke-width="2"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21Z"/><circle cx="12" cy="9.5" r="2.3"/></svg>
+            Calle Duarte No. 60, esq. Beller · Baní, Peravia
+          </div>
+        </div>
+        <blockquote class="pull">
+          “No es solo esmalte — es el rato que te tomas para ti.”
+        </blockquote>
+      </div>
     </div>
+
+    <section class="final">
+      <div class="wrap">
+        <h2>“Reserva tu momento — nosotras nos encargamos del resto.”</h2>
+        <p>Elige el servicio, el día y la hora que mejor te queden. La confirmación y el recordatorio te llegan directo por WhatsApp.</p>
+        <a class="btn btn-primary js-reservar" href="https://reservapp.sebengroup.com">Reservar mi cita</a>
+      </div>
+    </section>
   </section>
 
-  <section id="servicios">
-    <div class="wrap">
+  <section class="page" id="page-servicios" data-page="servicios">
+    <div class="wrap page-inner">
       <div class="section-head">
         <h2>Servicios</h2>
         <p>Lo que hacemos, tal como te lo explicaríamos en el sillón. Los precios y la disponibilidad exacta se confirman al reservar.</p>
@@ -124,8 +136,8 @@
     </div>
   </section>
 
-  <section class="band">
-    <div class="wrap">
+  <section class="page" id="page-galeria" data-page="galeria">
+    <div class="wrap page-inner">
       <div class="section-head">
         <h2>Un vistazo al estudio</h2>
         <p>Esta sección la iremos llenando con fotos reales del salón, el trabajo del equipo y el día a día — por ahora, una muestra de la paleta con la que trabajamos.</p>
@@ -153,8 +165,8 @@
     </div>
   </section>
 
-  <section id="ubicacion">
-    <div class="wrap contact">
+  <section class="page" id="page-ubicacion" data-page="ubicacion">
+    <div class="wrap contact page-inner">
       <div>
         <p class="kicker">Visítanos o escríbenos</p>
         <h2 class="contact-h2">Te esperamos en Baní</h2>
@@ -185,13 +197,6 @@
     </div>
   </section>
 
-  <section class="final">
-    <div class="wrap">
-      <h2>“Reserva tu momento — nosotras nos encargamos del resto.”</h2>
-      <p>Elige el servicio, el día y la hora que mejor te queden. La confirmación y el recordatorio te llegan directo por WhatsApp.</p>
-      <a class="btn btn-primary js-reservar" href="https://reservapp.sebengroup.com">Reservar mi cita</a>
-    </div>
-  </section>
 </main>
 
 <footer>
