@@ -207,6 +207,32 @@ footer{padding:40px 0 48px;border-top:1px solid var(--line)}
 #reservar-dialog .dialog-close:hover{color:var(--sage-deep);border-color:var(--sage-deep)}
 #reservar-frame{width:100%;height:calc(100% - 57px);border:0;background:var(--paper-deep)}
 
+/* ---------- botón flotante de WhatsApp ---------- */
+/* Verde real de WhatsApp a propósito, no la paleta salvia del resto del sitio -- es un
+   widget de reconocimiento instantáneo (como un ícono de impresora), no una decisión de
+   marca. Fijo y visible en las 4 páginas (vive fuera de .page, nunca se oculta al cambiar
+   de pestaña). Conecta al WhatsApp con chatbot del estudio (809-346-3030), no al número
+   personal que aparece en Ubicación. */
+.whatsapp-fab{
+  position:fixed;right:20px;bottom:20px;z-index:50;
+  display:flex;align-items:center;gap:10px;
+  background:#25D366;color:#fff;text-decoration:none;
+  border-radius:999px;padding:14px 20px 14px 14px;
+  box-shadow:0 10px 26px rgba(37,211,102,.4), 0 2px 6px rgba(0,0,0,.12);
+  transition:transform .18s ease, box-shadow .18s ease;
+}
+.whatsapp-fab:hover{transform:translateY(-2px);box-shadow:0 14px 30px rgba(37,211,102,.48), 0 2px 6px rgba(0,0,0,.14)}
+.whatsapp-fab:focus-visible{outline:2px solid var(--sage-deep);outline-offset:3px}
+.whatsapp-fab svg{flex:none}
+.whatsapp-fab span{font-family:Poppins;font-weight:600;font-size:.86rem;white-space:nowrap}
+
+@media (max-width:640px){
+  .whatsapp-fab{padding:14px;right:16px;bottom:16px}
+  .whatsapp-fab span{
+    position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;
+  }
+}
+
 @media (max-width:820px){
   .hero-grid{grid-template-columns:1fr;gap:40px}
   .bottles{padding-top:0}
