@@ -107,6 +107,21 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     }
     next();
   });
+  // GET /api/site-content/:siteKey lo consume dalfistudionails.sebengroup.com desde su propio
+  // origen (Cloudflare Worker aparte, no este servidor) -- a diferencia del resto del ERP, sí
+  // necesita CORS para que el navegador deje leer la respuesta. Es contenido público de solo
+  // lectura, sin cookies/Authorization, así que no lleva Allow-Credentials.
+  app.use("/api/site-content", (req, res, next) => {
+    const allowedOrigin = String(env.SITE_CONTENT_ALLOWED_ORIGIN || "https://dalfistudionails.sebengroup.com").replace(/\/$/, "");
+    const origin = String(req.get("origin") || "").replace(/\/$/, "");
+    if (origin && origin === allowedOrigin) {
+      res.set("Access-Control-Allow-Origin", allowedOrigin);
+      res.set("Access-Control-Allow-Methods", "GET,OPTIONS");
+      res.vary("Origin");
+    }
+    if (req.method === "OPTIONS") return res.status(204).end();
+    next();
+  });
   app.use((req, res, next) => {
     const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.sebengroup.com").toLowerCase();
     const suiteHost = String(env.SEBEN_SUITE_HOST || "ssc.sebengroup.com").toLowerCase();
@@ -1766,6 +1781,34 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     } catch (error) {
       next(error);
     }
+  });
+
+  // --- Contenido editable de páginas públicas de marketing ----------------
+  // Un documento JSON por sitio (hoy solo "dalfistudionails"), leído sin auth por la propia
+  // página pública en cada carga y editado desde el panel "Página web" del ERP (outputs/app.js),
+  // gateado por canManageConfiguration -- ver getSiteContent/saveSiteContent en server/store.mjs.
+  const KNOWN_SITE_CONTENT_KEYS = new Set(["dalfistudionails"]);
+
+  app.get("/api/site-content/:siteKey", async (req, res, next) => {
+    try {
+      if (!KNOWN_SITE_CONTENT_KEYS.has(req.params.siteKey)) return res.status(404).json({ error: "Sitio no encontrado." });
+      const row = await bookingStore.getSiteContent(req.params.siteKey);
+      if (!row) return res.status(404).json({ error: "Sitio no encontrado." });
+      res.json(row);
+    } catch (error) { next(error); }
+  });
+
+  app.put("/api/site-content/:siteKey", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageConfiguration", "editar el contenido del sitio");
+      if (auth.error) return relayAuthError(res, auth.error);
+      if (!KNOWN_SITE_CONTENT_KEYS.has(req.params.siteKey)) return res.status(404).json({ error: "Sitio no encontrado." });
+      if (!req.body?.content || typeof req.body.content !== "object" || Array.isArray(req.body.content)) {
+        return res.status(400).json({ error: "Contenido inválido." });
+      }
+      const saved = await bookingStore.saveSiteContent(req.params.siteKey, req.body.content, auth.identity.email);
+      res.json(saved);
+    } catch (error) { next(error); }
   });
 
   // --- Gestion de usuarios (Supabase Auth) --------------------------------

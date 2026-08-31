@@ -38,6 +38,7 @@
           <button class="nav-item" data-view="reports" type="button">Reportes</button>
           <button class="nav-item user-admin-only hidden" data-view="users" type="button">Usuarios</button>
           <button class="nav-item" data-view="settings" type="button">Base de datos</button>
+          <button class="nav-item admin-only hidden" data-view="site-content" type="button">Página web</button>
         </nav>
       </aside>
 
@@ -3283,6 +3284,140 @@
               <div class="simple-list" id="tss-config-list"></div>
             </section>
           </div>
+        </section>
+
+        <section id="site-content" class="view">
+          <section class="panel panel-wide">
+            <div class="panel-head">
+              <h3>Página web — dalfistudionails.sebengroup.com</h3>
+            </div>
+            <p class="panel-note" style="margin: 0 0 16px;">
+              Este formulario cambia el contenido real de la página pública de clientes (textos,
+              servicios, galería y datos de contacto). No cambia el diseño ni la estructura de la
+              página — eso sigue siendo trabajo de código.
+            </p>
+            <form id="site-content-form">
+              <h4 style="margin: 0 0 8px;">Portada</h4>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom:16px;">
+                <label>
+                  Texto pequeño sobre el título
+                  <input id="sc-hero-kicker" maxlength="120" />
+                </label>
+                <label>
+                  Título principal
+                  <input id="sc-hero-headline" maxlength="160" />
+                </label>
+                <label>
+                  Parte destacada del título
+                  <input id="sc-hero-headline-accent" maxlength="160" />
+                </label>
+              </div>
+              <label style="display:block; margin-bottom:16px;">
+                Texto debajo del título
+                <textarea id="sc-hero-lede" rows="2" maxlength="400"></textarea>
+              </label>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom:24px;">
+                <label>Dato 1 (número) <input id="sc-hero-meta-0-value" maxlength="12" /></label>
+                <label>Dato 1 (texto) <input id="sc-hero-meta-0-label" maxlength="60" /></label>
+                <label>Dato 2 (número) <input id="sc-hero-meta-1-value" maxlength="12" /></label>
+                <label>Dato 2 (texto) <input id="sc-hero-meta-1-label" maxlength="60" /></label>
+                <label>Dato 3 (número) <input id="sc-hero-meta-2-value" maxlength="12" /></label>
+                <label>Dato 3 (texto) <input id="sc-hero-meta-2-label" maxlength="60" /></label>
+              </div>
+
+              <h4 style="margin: 0 0 8px;">Quiénes somos</h4>
+              <label style="display:block; margin-bottom:12px;">
+                Primer párrafo
+                <textarea id="sc-about-p1" rows="3" maxlength="500"></textarea>
+              </label>
+              <label style="display:block; margin-bottom:12px;">
+                Segundo párrafo
+                <textarea id="sc-about-p2" rows="3" maxlength="500"></textarea>
+              </label>
+              <label style="display:block; margin-bottom:12px;">
+                Tercer párrafo
+                <textarea id="sc-about-p3" rows="3" maxlength="500"></textarea>
+              </label>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom:24px;">
+                <label>
+                  Dirección corta (junto al ícono de mapa)
+                  <input id="sc-about-address-caption" maxlength="160" />
+                </label>
+                <label>
+                  Frase destacada (cita)
+                  <input id="sc-about-quote" maxlength="200" />
+                </label>
+              </div>
+
+              <h4 style="margin: 0 0 8px;">Llamado a reservar (cierre de la página de Inicio)</h4>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom:24px;">
+                <label>
+                  Título
+                  <input id="sc-final-headline" maxlength="160" />
+                </label>
+                <label>
+                  Texto
+                  <input id="sc-final-text" maxlength="240" />
+                </label>
+              </div>
+
+              <h4 style="margin: 0 0 8px;">Servicios</h4>
+              <div id="sc-services-list" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;"></div>
+              <button class="secondary-btn compact" type="button" id="sc-service-add-btn" style="margin-bottom:24px;">Agregar servicio</button>
+
+              <h4 style="margin: 0 0 8px;">Galería</h4>
+              <label style="display:block; margin-bottom:12px;">
+                Texto de introducción de la galería
+                <textarea id="sc-gallery-intro" rows="2" maxlength="300"></textarea>
+              </label>
+              <div id="sc-gallery-list" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;"></div>
+              <button class="secondary-btn compact" type="button" id="sc-gallery-add-btn" style="margin-bottom:24px;">Agregar espacio de galería</button>
+              <p class="panel-note" style="margin: -16px 0 24px;">
+                La galería todavía no admite subir fotos reales desde aquí — cada espacio es un
+                nombre/etiqueta (o "Foto próximamente" si no hay imagen). Subir fotos reales es una
+                mejora aparte, pendiente.
+              </p>
+
+              <h4 style="margin: 0 0 8px;">Contacto</h4>
+              <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom:24px;">
+                <label>
+                  Dirección — línea 1
+                  <input id="sc-contact-address1" maxlength="160" />
+                </label>
+                <label>
+                  Dirección — línea 2
+                  <input id="sc-contact-address2" maxlength="160" />
+                </label>
+                <label>
+                  WhatsApp (solo números, con código de país)
+                  <input id="sc-contact-whatsapp" maxlength="20" placeholder="18093463030" />
+                </label>
+                <label>
+                  WhatsApp (como se muestra en pantalla)
+                  <input id="sc-contact-whatsapp-display" maxlength="30" placeholder="+1 (809) 346-3030" />
+                </label>
+                <label>
+                  Instagram (sin @)
+                  <input id="sc-contact-instagram" maxlength="60" placeholder="dalfistudionails" />
+                </label>
+                <label>
+                  Horario
+                  <input id="sc-contact-horario" maxlength="160" />
+                </label>
+                <label>
+                  Mapa — texto corto (ej. "Centro de Baní")
+                  <input id="sc-contact-map-label" maxlength="60" />
+                </label>
+                <label>
+                  Mapa — texto largo
+                  <input id="sc-contact-map-text" maxlength="200" />
+                </label>
+              </div>
+
+              <p id="site-content-message" class="form-message"></p>
+              <button class="primary-btn" type="submit">Guardar cambios</button>
+            </form>
+          </section>
         </section>
 
         <section id="users" class="view">

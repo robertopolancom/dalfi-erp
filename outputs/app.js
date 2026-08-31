@@ -4971,6 +4971,205 @@ async function saveBusinessSchedule(event) {
   if (submitButton) submitButton.disabled = false;
 }
 
+// Contenido editable de dalfistudionails.sebengroup.com (ver GET/PUT /api/site-content/:siteKey
+// en server/app.mjs). A diferencia del resto de este archivo, esto NO vive en `database.data` --
+// es un documento aparte en Neon, así que se carga con fetch propio al entrar a la vista (ver
+// switchToView) en vez de venir ya resuelto desde /api/database al arrancar la app.
+let pendingSiteContentServices = [];
+let pendingSiteContentGallery = [];
+const SITE_CONTENT_KEY = "dalfistudionails";
+
+function siteContentServiceRowHtml(service, index) {
+  return `
+    <div class="panel" style="padding:12px;" data-sc-service-index="${index}">
+      <div class="form-grid" style="display:grid; grid-template-columns: 2fr 1fr; gap:8px; margin-bottom:8px;">
+        <label>Nombre <input class="sc-service-title" data-index="${index}" value="${escapeHtml(service.title || "")}" maxlength="80" /></label>
+        <label>Etiqueta corta <input class="sc-service-note" data-index="${index}" value="${escapeHtml(service.note || "")}" maxlength="40" /></label>
+      </div>
+      <label style="display:block; margin-bottom:8px;">Descripción
+        <textarea class="sc-service-description" data-index="${index}" rows="2" maxlength="240">${escapeHtml(service.description || "")}</textarea>
+      </label>
+      <button class="secondary-btn compact sc-service-remove" data-index="${index}" type="button">Eliminar servicio</button>
+    </div>
+  `;
+}
+
+function siteContentGalleryRowHtml(item, index) {
+  return `
+    <div class="panel" style="padding:12px;" data-sc-gallery-index="${index}">
+      <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap:8px; margin-bottom:8px;">
+        <label>Nombre <input class="sc-gallery-label" data-index="${index}" value="${escapeHtml(item.label || "")}" maxlength="40" /></label>
+        <label>Etiqueta <input class="sc-gallery-tag" data-index="${index}" value="${escapeHtml(item.tag || "")}" maxlength="30" /></label>
+        <label>Color (opcional, ej. #B7BDA9) <input class="sc-gallery-color" data-index="${index}" value="${escapeHtml(item.color || "")}" maxlength="10" /></label>
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; margin-bottom:8px;">
+        <input type="checkbox" class="sc-gallery-coming-soon" data-index="${index}" ${item.comingSoon ? "checked" : ""} /> Marco "Foto próximamente" (sin color)
+      </label>
+      <button class="secondary-btn compact sc-gallery-remove" data-index="${index}" type="button">Eliminar espacio</button>
+    </div>
+  `;
+}
+
+function readSiteContentServicesFromDom() {
+  return pendingSiteContentServices.map((_, index) => ({
+    title: document.querySelector(`.sc-service-title[data-index="${index}"]`)?.value?.trim() || "",
+    description: document.querySelector(`.sc-service-description[data-index="${index}"]`)?.value?.trim() || "",
+    note: document.querySelector(`.sc-service-note[data-index="${index}"]`)?.value?.trim() || "",
+  }));
+}
+
+function readSiteContentGalleryFromDom() {
+  return pendingSiteContentGallery.map((_, index) => ({
+    label: document.querySelector(`.sc-gallery-label[data-index="${index}"]`)?.value?.trim() || "",
+    tag: document.querySelector(`.sc-gallery-tag[data-index="${index}"]`)?.value?.trim() || "",
+    color: document.querySelector(`.sc-gallery-color[data-index="${index}"]`)?.value?.trim() || null,
+    comingSoon: Boolean(document.querySelector(`.sc-gallery-coming-soon[data-index="${index}"]`)?.checked),
+  }));
+}
+
+function renderSiteContentServicesList() {
+  const container = byId("sc-services-list");
+  if (!container) return;
+  container.innerHTML = pendingSiteContentServices.map((service, index) => siteContentServiceRowHtml(service, index)).join("")
+    || `<p class="panel-note">Sin servicios agregados.</p>`;
+}
+
+function renderSiteContentGalleryList() {
+  const container = byId("sc-gallery-list");
+  if (!container) return;
+  container.innerHTML = pendingSiteContentGallery.map((item, index) => siteContentGalleryRowHtml(item, index)).join("")
+    || `<p class="panel-note">Sin espacios de galería agregados.</p>`;
+}
+
+async function renderSiteContentForm() {
+  const message = byId("site-content-message");
+  const setMessage = (text, kind = "") => {
+    if (!message) return;
+    message.textContent = text;
+    message.className = kind ? `form-message ${kind}` : "form-message";
+  };
+  if (message) setMessage("Cargando…");
+  let content;
+  try {
+    const response = await fetch(`/api/site-content/${SITE_CONTENT_KEY}`, {
+      headers: supabaseSession ? { Authorization: `Bearer ${supabaseSession.access_token}` } : {},
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const row = await response.json();
+    content = row.content;
+  } catch (error) {
+    setMessage(`No se pudo cargar el contenido de la página: ${error.message}`, "error");
+    return;
+  }
+
+  if (byId("sc-hero-kicker")) byId("sc-hero-kicker").value = content.hero?.kicker || "";
+  if (byId("sc-hero-headline")) byId("sc-hero-headline").value = content.hero?.headline || "";
+  if (byId("sc-hero-headline-accent")) byId("sc-hero-headline-accent").value = content.hero?.headlineAccent || "";
+  if (byId("sc-hero-lede")) byId("sc-hero-lede").value = content.hero?.lede || "";
+  (content.hero?.metaItems || []).slice(0, 3).forEach((item, index) => {
+    if (byId(`sc-hero-meta-${index}-value`)) byId(`sc-hero-meta-${index}-value`).value = item.value || "";
+    if (byId(`sc-hero-meta-${index}-label`)) byId(`sc-hero-meta-${index}-label`).value = item.label || "";
+  });
+
+  if (byId("sc-about-p1")) byId("sc-about-p1").value = content.about?.paragraphs?.[0] || "";
+  if (byId("sc-about-p2")) byId("sc-about-p2").value = content.about?.paragraphs?.[1] || "";
+  if (byId("sc-about-p3")) byId("sc-about-p3").value = content.about?.paragraphs?.[2] || "";
+  if (byId("sc-about-address-caption")) byId("sc-about-address-caption").value = content.about?.addressCaption || "";
+  if (byId("sc-about-quote")) byId("sc-about-quote").value = content.about?.quote || "";
+
+  if (byId("sc-final-headline")) byId("sc-final-headline").value = content.final?.headline || "";
+  if (byId("sc-final-text")) byId("sc-final-text").value = content.final?.text || "";
+
+  pendingSiteContentServices = Array.isArray(content.services) ? content.services.map((s) => ({ ...s })) : [];
+  renderSiteContentServicesList();
+
+  if (byId("sc-gallery-intro")) byId("sc-gallery-intro").value = content.gallery?.intro || "";
+  pendingSiteContentGallery = Array.isArray(content.gallery?.items) ? content.gallery.items.map((g) => ({ ...g })) : [];
+  renderSiteContentGalleryList();
+
+  if (byId("sc-contact-address1")) byId("sc-contact-address1").value = content.contact?.addressLine1 || "";
+  if (byId("sc-contact-address2")) byId("sc-contact-address2").value = content.contact?.addressLine2 || "";
+  if (byId("sc-contact-whatsapp")) byId("sc-contact-whatsapp").value = content.contact?.whatsapp || "";
+  if (byId("sc-contact-whatsapp-display")) byId("sc-contact-whatsapp-display").value = content.contact?.whatsappDisplay || "";
+  if (byId("sc-contact-instagram")) byId("sc-contact-instagram").value = content.contact?.instagramHandle || "";
+  if (byId("sc-contact-horario")) byId("sc-contact-horario").value = content.contact?.horario || "";
+  if (byId("sc-contact-map-label")) byId("sc-contact-map-label").value = content.contact?.mapLabel || "";
+  if (byId("sc-contact-map-text")) byId("sc-contact-map-text").value = content.contact?.mapText || "";
+
+  const form = byId("site-content-form");
+  if (form) form.querySelectorAll("input, textarea, button").forEach((el) => { el.disabled = !canManageConfiguration(); });
+  setMessage(canManageConfiguration() ? "" : "Puedes ver el contenido, pero no tienes permiso para editarlo.", canManageConfiguration() ? "" : "error");
+}
+
+async function saveSiteContent(event) {
+  event.preventDefault();
+  const message = byId("site-content-message");
+  const setMessage = (text, kind = "") => {
+    if (!message) return;
+    message.textContent = text;
+    message.className = kind ? `form-message ${kind}` : "form-message";
+  };
+  const submitButton = event.submitter || document.querySelector("#site-content-form button[type=submit]");
+  if (submitButton) submitButton.disabled = true;
+  setMessage("Guardando…");
+
+  const metaItems = [0, 1, 2].map((index) => ({
+    value: byId(`sc-hero-meta-${index}-value`)?.value?.trim() || "",
+    label: byId(`sc-hero-meta-${index}-label`)?.value?.trim() || "",
+  }));
+
+  const content = {
+    hero: {
+      kicker: byId("sc-hero-kicker")?.value?.trim() || "",
+      headline: byId("sc-hero-headline")?.value?.trim() || "",
+      headlineAccent: byId("sc-hero-headline-accent")?.value?.trim() || "",
+      lede: byId("sc-hero-lede")?.value?.trim() || "",
+      metaItems,
+    },
+    about: {
+      paragraphs: [byId("sc-about-p1")?.value?.trim() || "", byId("sc-about-p2")?.value?.trim() || "", byId("sc-about-p3")?.value?.trim() || ""],
+      addressCaption: byId("sc-about-address-caption")?.value?.trim() || "",
+      quote: byId("sc-about-quote")?.value?.trim() || "",
+    },
+    final: {
+      headline: byId("sc-final-headline")?.value?.trim() || "",
+      text: byId("sc-final-text")?.value?.trim() || "",
+    },
+    services: readSiteContentServicesFromDom(),
+    gallery: {
+      intro: byId("sc-gallery-intro")?.value?.trim() || "",
+      items: readSiteContentGalleryFromDom(),
+    },
+    contact: {
+      addressLine1: byId("sc-contact-address1")?.value?.trim() || "",
+      addressLine2: byId("sc-contact-address2")?.value?.trim() || "",
+      whatsapp: byId("sc-contact-whatsapp")?.value?.replace(/\D/g, "") || "",
+      whatsappDisplay: byId("sc-contact-whatsapp-display")?.value?.trim() || "",
+      instagramHandle: byId("sc-contact-instagram")?.value?.trim().replace(/^@/, "") || "",
+      horario: byId("sc-contact-horario")?.value?.trim() || "",
+      mapLabel: byId("sc-contact-map-label")?.value?.trim() || "",
+      mapText: byId("sc-contact-map-text")?.value?.trim() || "",
+    },
+  };
+
+  try {
+    const response = await fetch(`/api/site-content/${SITE_CONTENT_KEY}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify({ content }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `HTTP ${response.status}`);
+    }
+    setMessage("Cambios guardados. La página pública los mostrará en su próxima carga.", "success");
+  } catch (error) {
+    setMessage(`No se pudo guardar: ${error.message}`, "error");
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+}
+
 function payrollPeriodRange(period, cut) {
   const [year, monthNumber] = String(period || month).split("-").map(Number);
   const lastDay = new Date(year, monthNumber, 0).getDate();
@@ -11205,6 +11404,7 @@ function switchToView(viewId) {
   if (viewId === "cash") safeRender("cierres de caja", renderCash);
   if (viewId === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
   if (viewId === "retail-sales") safeRender("ventas directas", renderRetailSales);
+  if (viewId === "site-content") safeRender("página web", renderSiteContentForm);
   return true;
 }
 
@@ -16853,6 +17053,36 @@ function wireForms() {
     if (byId("biz-exception-close")) byId("biz-exception-close").value = "";
     if (byId("biz-exception-label")) byId("biz-exception-label").value = "";
     if (message) { message.textContent = ""; message.className = "form-message"; }
+  });
+
+  byId("site-content-form")?.addEventListener("submit", saveSiteContent);
+
+  byId("sc-service-add-btn")?.addEventListener("click", () => {
+    pendingSiteContentServices = readSiteContentServicesFromDom();
+    pendingSiteContentServices.push({ title: "", description: "", note: "" });
+    renderSiteContentServicesList();
+  });
+
+  byId("sc-gallery-add-btn")?.addEventListener("click", () => {
+    pendingSiteContentGallery = readSiteContentGalleryFromDom();
+    pendingSiteContentGallery.push({ label: "", tag: "", color: "", comingSoon: false });
+    renderSiteContentGalleryList();
+  });
+
+  document.addEventListener("click", (event) => {
+    const removeService = event.target.closest(".sc-service-remove");
+    if (removeService) {
+      pendingSiteContentServices = readSiteContentServicesFromDom();
+      pendingSiteContentServices.splice(Number(removeService.dataset.index), 1);
+      renderSiteContentServicesList();
+      return;
+    }
+    const removeGalleryItem = event.target.closest(".sc-gallery-remove");
+    if (removeGalleryItem) {
+      pendingSiteContentGallery = readSiteContentGalleryFromDom();
+      pendingSiteContentGallery.splice(Number(removeGalleryItem.dataset.index), 1);
+      renderSiteContentGalleryList();
+    }
   });
 
   document.addEventListener("change", (event) => {

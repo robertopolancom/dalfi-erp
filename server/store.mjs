@@ -1951,4 +1951,27 @@ export class NeonBookingStore {
     );
     return { purgedCount: result.rowCount };
   }
+
+  // Contenido editable de las páginas públicas de marketing (ej. dalfistudionails.sebengroup.com)
+  // -- un documento JSON por sitio, sin historial (igual que el resto del esquema de este
+  // proyecto: la edición sobrescribe, no versiona). Ver GET/PUT /api/site-content/:siteKey.
+  async getSiteContent(siteKey) {
+    const result = await this.pool.query(
+      `select site_key, content, updated_at, updated_by from app.site_content where site_key=$1`,
+      [siteKey],
+    );
+    return result.rows[0] || null;
+  }
+
+  async saveSiteContent(siteKey, content, updatedBy) {
+    const result = await this.pool.query(
+      `insert into app.site_content (site_key, content, updated_at, updated_by)
+       values ($1,$2,now(),$3)
+       on conflict (site_key) do update
+         set content=excluded.content, updated_at=excluded.updated_at, updated_by=excluded.updated_by
+       returning site_key, content, updated_at, updated_by`,
+      [siteKey, content, updatedBy],
+    );
+    return result.rows[0];
+  }
 }
