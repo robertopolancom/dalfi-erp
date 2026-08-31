@@ -828,6 +828,32 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // El personal revisa el comprobante de depósito subido por el cliente -- mismo guard que
+    // /status (personal de ReservApp o identidad del ERP con canManageReservations).
+    app.get("/api/reservapp/agenda/appointments/:id/deposit", async (req, res, next) => {
+      if (!(await requireBookingStaff(req, res))) return;
+      try {
+        const receipt = await bookingStore.getDepositReceipt({ appointmentId: req.params.id });
+        if (!receipt) return res.status(404).json({ error: "Todavía no hay un comprobante subido para esta cita." });
+        res.json({ receipt });
+      } catch (error) { next(error); }
+    });
+
+    app.post("/api/reservapp/agenda/appointments/:id/deposit/review", async (req, res, next) => {
+      if (!(await requireBookingStaff(req, res))) return;
+      const approve = req.body?.approve === true;
+      const note = cleanText(req.body?.note, 200);
+      try {
+        const session = await reservappSession(req);
+        const reviewedBy = session?.account.role ? `${session.account.role}:${session.account.id}` : "erp";
+        const updated = await bookingStore.reviewDepositReceipt({ appointmentId: req.params.id, approve, reviewedBy, note: note || null });
+        res.json({ ok: true, appointment: updated });
+      } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
+    });
+
     // "Citas activas" / historial para un cliente -- a diferencia de /agenda (un día, vista de
     // equipo), esta ruta es exclusiva de cuentas cliente y siempre usa su propio client_id de la
     // sesión, nunca uno recibido del cliente.
@@ -836,6 +862,28 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const scope = req.query.scope === "history" ? "history" : "active";
       try { res.json({ appointments: await bookingStore.listClientAppointments({ clientId: req.reservapp.account.client_id, scope }) }); }
       catch (error) { next(error); }
+    });
+
+    // El cliente sube la foto del comprobante del depósito de RD$500 -- ver
+    // submitDepositReceipt en server/store.mjs. Base64 en JSON (no multipart) porque el límite
+    // de body ya está en 8MB (MAX_BODY_BYTES) y evita sumar una dependencia como multer solo
+    // para esto -- este repo solo depende de express+pg.
+    const ALLOWED_DEPOSIT_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+    app.post("/api/reservapp/my-appointments/:id/deposit", requireReservapp, async (req, res, next) => {
+      if (!isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
+      const mimeType = cleanText(req.body?.mimeType, 20);
+      const imageBase64 = String(req.body?.imageBase64 || "");
+      if (!ALLOWED_DEPOSIT_MIME_TYPES.has(mimeType)) return res.status(400).json({ error: "La imagen debe ser JPEG, PNG o WEBP." });
+      if (!imageBase64) return res.status(400).json({ error: "Falta la imagen del comprobante." });
+      try {
+        const updated = await bookingStore.submitDepositReceipt({
+          appointmentId: req.params.id, clientId: req.reservapp.account.client_id, imageBase64, mimeType,
+        });
+        res.json({ ok: true, appointment: updated });
+      } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
     });
 
     // Compartido por todos los endpoints de "Configuración de usuarios" -- misma regla que ya

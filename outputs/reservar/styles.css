@@ -241,6 +241,8 @@ dialog form{padding:28px}
 .appointment-badge.deposit-rechazado{background:#fef2f2;color:#b91c1c}
 .appointment-badge.deposit-pendiente{background:#f1f5f9;color:#475569}
 .appointment-card .appointment-confirm-btn{align-self:flex-start;margin-top:4px}
+.deposit-upload{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
+.deposit-upload .deposit-upload-message{font-size:.78rem;color:#b91c1c}
 
 /* ---------- vista semanal de la agenda del equipo ---------- */
 .agenda-view-nav{margin:0 0 12px;max-width:260px}

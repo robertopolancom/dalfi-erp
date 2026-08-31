@@ -693,7 +693,74 @@ function renderAppointmentCard(apt) {
     btn.addEventListener("click", () => confirmMyAppointment(apt.legacy_id, btn));
     card.append(btn);
   }
+
+  // El comprobante se puede subir mientras el depósito esté "Pendiente" (nunca se subió nada) o
+  // "Rechazado" (el personal lo rechazó -- se sobrescribe con el nuevo, ver submitDepositReceipt
+  // en server/store.mjs). Una vez queda "ComprobanteRecibido"/"PendienteVerificacion"/"Verificado"
+  // no hay nada más que el cliente pueda hacer aquí.
+  if (DEPOSIT_UPLOADABLE_STATES.has(depositStatus)) {
+    card.append(depositUploadControl(apt.id));
+  }
   return card;
+}
+
+const DEPOSIT_UPLOADABLE_STATES = new Set(["Pendiente", "Rechazado"]);
+const DEPOSIT_MAX_DIMENSION = 1600;
+const DEPOSIT_JPEG_QUALITY = 0.8;
+
+// Redimensiona/comprime la foto en un <canvas> antes de mandarla -- una foto de cámara sin tocar
+// puede pesar varios MB, y el body JSON del backend tiene un límite de 8MB (MAX_BODY_BYTES en
+// server/app.mjs); esto la deja típicamente por debajo de 300-500KB.
+function compressImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const scale = Math.min(1, DEPOSIT_MAX_DIMENSION / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", DEPOSIT_JPEG_QUALITY);
+      resolve({ mimeType: "image/jpeg", imageBase64: dataUrl.split(",")[1] });
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("No se pudo leer la imagen.")); };
+    img.src = objectUrl;
+  });
+}
+
+function depositUploadControl(appointmentId) {
+  const wrap = document.createElement("div"); wrap.className = "deposit-upload";
+  const input = document.createElement("input");
+  input.type = "file"; input.accept = "image/*"; input.capture = "environment"; input.className = "hidden";
+  const btn = document.createElement("button");
+  btn.className = "secondary compact deposit-upload-btn"; btn.type = "button";
+  btn.textContent = "Cargar comprobante";
+  const msg = document.createElement("span"); msg.className = "deposit-upload-message";
+
+  btn.addEventListener("click", () => input.click());
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    btn.disabled = true; btn.textContent = "Subiendo…"; msg.textContent = "";
+    try {
+      const { mimeType, imageBase64 } = await compressImageFile(file);
+      await api(`/api/reservapp/my-appointments/${appointmentId}/deposit`, {
+        method: "POST", body: JSON.stringify({ mimeType, imageBase64 }),
+      });
+      await loadMyAppointments(state.myAppointmentsScope || "active");
+    } catch (error) {
+      msg.textContent = error.message;
+      btn.disabled = false; btn.textContent = "Cargar comprobante";
+    } finally {
+      input.value = "";
+    }
+  });
+
+  wrap.append(input, btn, msg);
+  return wrap;
 }
 
 // Misma tarjeta que renderAppointmentCard, pero para la vista semanal del equipo (agenda() trae

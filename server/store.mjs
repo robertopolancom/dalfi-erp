@@ -1835,4 +1835,102 @@ export class NeonBookingStore {
     );
     return result.rows;
   }
+
+  // El cliente sube la foto del comprobante de depósito (RD$500, ya exigido desde que se crea
+  // la cita -- ver deposit_status/deposit_amount en el insert de app.appointments más arriba).
+  // Solo se puede subir si la cita es suya y si todavía no hay un comprobante bajo revisión o ya
+  // aprobado -- después de un rechazo sí se puede volver a subir (sobrescribe la fila anterior,
+  // no se guarda historial). Deja la cita en 'ComprobanteRecibido', a la espera de que el
+  // personal la revise (ver reviewDepositReceipt).
+  async submitDepositReceipt({ appointmentId, clientId, imageBase64, mimeType }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const aptResult = await client.query(
+        `select id, client_id, legacy_id, deposit_status from app.appointments where id=$1 for update`,
+        [appointmentId],
+      );
+      const appointment = aptResult.rows[0];
+      if (!appointment || String(appointment.client_id) !== String(clientId)) {
+        throw Object.assign(new Error("Esa cita no existe o no te pertenece."), { status: 404 });
+      }
+      if (!["Pendiente", "Rechazado"].includes(appointment.deposit_status)) {
+        throw Object.assign(new Error("El comprobante de esta cita ya está en revisión o ya fue confirmado."), { status: 400 });
+      }
+      await client.query(
+        `insert into app.appointment_deposit_receipts (appointment_id, image_data, mime_type, uploaded_at, reviewed_by, reviewed_at, review_note)
+         values ($1,$2,$3,now(),null,null,null)
+         on conflict (appointment_id) do update
+           set image_data=excluded.image_data, mime_type=excluded.mime_type, uploaded_at=excluded.uploaded_at,
+               reviewed_by=null, reviewed_at=null, review_note=null`,
+        [appointmentId, imageBase64, mimeType],
+      );
+      const updated = await client.query(
+        `update app.appointments set deposit_status='ComprobanteRecibido', updated_at=clock_timestamp()
+          where id=$1 returning id, deposit_status, legacy_id`,
+        [appointmentId],
+      );
+      const row = updated.rows[0];
+      if (row?.legacy_id) {
+        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estadoDeposito = "ComprobanteRecibido"; doc.updated_at = new Date().toISOString(); });
+      }
+      await client.query("commit");
+      return row;
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Trae el comprobante para que el personal lo vea desde el detalle de la reserva en el ERP
+  // (ver GET /api/reservapp/agenda/appointments/:id/deposit).
+  async getDepositReceipt({ appointmentId }) {
+    const result = await this.pool.query(
+      `select appointment_id, image_data, mime_type, uploaded_at, reviewed_by, reviewed_at, review_note
+         from app.appointment_deposit_receipts where appointment_id=$1`,
+      [appointmentId],
+    );
+    return result.rows[0] || null;
+  }
+
+  // El personal aprueba o rechaza el comprobante ya subido -- mismo espejo hacia
+  // app.erp_document que el resto de cambios de estatus (ver setAppointmentStatus/
+  // cancelAppointment) para que la matriz del ERP no quede desactualizada.
+  async reviewDepositReceipt({ appointmentId, approve, reviewedBy, note = null }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const receipt = await client.query(
+        `select appointment_id from app.appointment_deposit_receipts where appointment_id=$1 for update`,
+        [appointmentId],
+      );
+      if (!receipt.rows[0]) throw Object.assign(new Error("Todavía no hay un comprobante subido para esta cita."), { status: 400 });
+      const newStatus = approve ? "Verificado" : "Rechazado";
+      await client.query(
+        `update app.appointment_deposit_receipts
+            set reviewed_by=$2, reviewed_at=clock_timestamp(), review_note=$3
+          where appointment_id=$1`,
+        [appointmentId, reviewedBy, note],
+      );
+      const updated = await client.query(
+        `update app.appointments set deposit_status=$2, updated_at=clock_timestamp()
+          where id=$1 returning id, deposit_status, legacy_id`,
+        [appointmentId, newStatus],
+      );
+      const row = updated.rows[0];
+      if (!row) throw Object.assign(new Error("Esa cita no existe."), { status: 404 });
+      if (row.legacy_id) {
+        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estadoDeposito = newStatus; doc.updated_at = new Date().toISOString(); });
+      }
+      await client.query("commit");
+      return row;
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }

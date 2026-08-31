@@ -2130,6 +2130,18 @@ function resetReservationEditState(form = byId("reservation-form")) {
   if (statusField) statusField.value = "Programada";
 }
 
+const DEPOSIT_STATUS_ERP_LABELS = {
+  Pendiente: "Depósito pendiente",
+  ComprobanteRecibido: "Comprobante recibido -- pendiente de revisar",
+  PendienteVerificacion: "Comprobante recibido -- pendiente de revisar",
+  Verificado: "Depósito confirmado",
+  Rechazado: "Depósito rechazado",
+};
+// Estados en los que ya hay un comprobante subido esperando que el personal lo revise -- ver
+// submitDepositReceipt en server/store.mjs (el único que este flujo produce hoy es
+// "ComprobanteRecibido"; "PendienteVerificacion" queda por si se usa en el futuro).
+const DEPOSIT_REVIEW_PENDING_STATES = new Set(["ComprobanteRecibido", "PendienteVerificacion"]);
+
 function showReservationDetails(reservationId) {
   const { record } = reservationRecordById(reservationId);
   const dialog = byId("reservation-details-dialog");
@@ -2141,7 +2153,8 @@ function showReservationDetails(reservationId) {
       <span>${escapeHtml(value || "—")}</span>
     </div>
   `;
-  content.innerHTML = [
+  const depositStatus = record.estadoDeposito;
+  const rows = [
     detail("Cliente", record.client || record.clienteNombre),
     detail("Teléfono", record.phone || record.telefono),
     detail("Correo", record.email || record.correo),
@@ -2153,8 +2166,76 @@ function showReservationDetails(reservationId) {
     detail("Origen", record.source || record.canalOrigen),
     detail("Observaciones", record.note || record.observaciones),
     detail("Factura", record.invoiceId || record.facturaID),
-  ].join("");
+  ];
+  // No todas las reservas tienen depósito (las presenciales creadas a mano no traen
+  // estadoDeposito) -- solo se muestra la fila cuando aplica, nunca se asume "Pendiente" por
+  // defecto como sí hace el frontend del cliente.
+  if (depositStatus) {
+    rows.push(detail("Depósito", `RD$${record.montoDeposito || 500} -- ${DEPOSIT_STATUS_ERP_LABELS[depositStatus] || depositStatus}`));
+  }
+  content.innerHTML = rows.join("") + `<div id="deposit-review-area"></div>`;
   dialog.showModal();
+  if (depositStatus && DEPOSIT_REVIEW_PENDING_STATES.has(depositStatus)) {
+    loadDepositReviewArea(reservationId);
+  }
+}
+
+// Trae el comprobante subido por el cliente y lo pinta con botones de Confirmar/Rechazar --
+// aparte de showReservationDetails porque implica una llamada de red (GET .../deposit) y no
+// queremos bloquear la apertura del diálogo mientras carga.
+async function loadDepositReviewArea(reservationId) {
+  const area = byId("deposit-review-area");
+  if (!area) return;
+  area.innerHTML = `<p class="deposit-review-loading">Cargando comprobante…</p>`;
+  try {
+    const response = await fetch(`/api/reservapp/agenda/appointments/${reservationId}/deposit`, { headers: bookingAuthHeaders() });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "No se pudo cargar el comprobante.");
+    const receipt = payload.receipt;
+    if (!canManageReservations()) {
+      area.innerHTML = `<img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${receipt.image_data}" alt="Comprobante de depósito" />`;
+      return;
+    }
+    area.innerHTML = `
+      <img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${receipt.image_data}" alt="Comprobante de depósito" />
+      <div class="deposit-review-actions">
+        <button type="button" class="secondary-btn compact deposit-review-btn approve" data-reservation-id="${escapeHtml(reservationId)}" data-approve="true">Confirmar depósito</button>
+        <button type="button" class="secondary-btn compact deposit-review-btn reject" data-reservation-id="${escapeHtml(reservationId)}" data-approve="false">Rechazar</button>
+      </div>
+      <p class="deposit-review-message"></p>
+    `;
+  } catch (error) {
+    area.innerHTML = `<p class="deposit-review-loading">${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function reviewDeposit(reservationId, approve) {
+  const area = byId("deposit-review-area");
+  const msg = area?.querySelector(".deposit-review-message");
+  area?.querySelectorAll(".deposit-review-btn").forEach((btn) => { btn.disabled = true; });
+  try {
+    const response = await fetch(`/api/reservapp/agenda/appointments/${reservationId}/deposit/review`, {
+      method: "POST", headers: bookingAuthHeaders(), body: JSON.stringify({ approve }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "No se pudo actualizar el depósito.");
+    // El endpoint ya escribió estadoDeposito en app.erp_document server-side -- se recarga el
+    // documento remoto en vez de mutar el estado local + saveState() (patrón de
+    // confirmSalonReservation) para no arriesgarse a que una copia local desactualizada
+    // sobreescriba lo que el servidor acaba de guardar.
+    const remoteDatabase = await loadRemoteDatabase();
+    if (remoteDatabase) {
+      database = remoteDatabase;
+      ensureDatabaseShape();
+      localStorage.setItem(dbStorageKey, JSON.stringify(database));
+      state = stateFromDatabase(database);
+      renderAll();
+    }
+    showReservationDetails(reservationId);
+  } catch (error) {
+    if (msg) msg.textContent = error.message;
+    area?.querySelectorAll(".deposit-review-btn").forEach((btn) => { btn.disabled = false; });
+  }
 }
 
 function startReservationEdit(reservationId) {
@@ -16679,6 +16760,12 @@ function wireForms() {
 
   byId("reservation-details-close").addEventListener("click", () => {
     byId("reservation-details-dialog").close();
+  });
+
+  byId("reservation-details-content").addEventListener("click", (event) => {
+    const button = event.target.closest(".deposit-review-btn");
+    if (!button) return;
+    reviewDeposit(button.dataset.reservationId, button.dataset.approve === "true");
   });
 
   byId("slot-action-cancel")?.addEventListener("click", () => {
