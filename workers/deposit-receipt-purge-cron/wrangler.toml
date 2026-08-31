@@ -1,0 +1,21 @@
+# Worker independiente (NO Cloudflare Pages) que dispara la limpieza diaria de comprobantes de
+# depósito ya resueltos hace 5+ días. Ver workers/deposit-receipt-purge-cron/README.md para el
+# paso a paso de configuracion y despliegue (ninguno de esos pasos se ejecuto como parte de esta
+# tarea).
+name = "dalfi-erp-deposit-receipt-purge-cron"
+main = "worker.js"
+compatibility_date = "2026-07-09"
+
+# Variable NO secreta: el backend real (Render + Neon) al que este Worker le hace fetch().
+[vars]
+APP_BASE_URL = "https://ssc.sebengroup.com"
+
+# DEPOSIT_RECEIPT_PURGE_CRON_SECRET se configura por separado como Secret (nunca en este archivo
+# ni en Git): "wrangler secret put DEPOSIT_RECEIPT_PURGE_CRON_SECRET". Debe ser EXACTAMENTE el
+# mismo valor que env.DEPOSIT_RECEIPT_PURGE_CRON_SECRET en el servicio de Render (dalfi-erp) que
+# ya usa POST /api/booking/purge-deposit-receipts en server/app.mjs.
+
+# Una vez al dia (8am UTC = 4am hora RD) alcanza de sobra: la ventana es de 5 dias, no de horas,
+# asi que no hace falta correr mas seguido -- corre fuera de horario de negocio a proposito.
+[triggers]
+crons = ["0 8 * * *"]

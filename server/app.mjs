@@ -1383,6 +1383,19 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Disparado por workers/deposit-receipt-purge-cron (una vez al día) -- borra SOLO la foto del
+    // comprobante de depósito de citas ya Atendidas/Canceladas hace 5+ días, nunca la fila ni la
+    // cita (ver purgeExpiredDepositReceipts en server/store.mjs). Mismo patrón de secreto por
+    // cabecera que /api/booking/send-reminders, con su propio secreto dedicado.
+    app.post("/api/booking/purge-deposit-receipts", bookingRateLimit, async (req, res, next) => {
+      const expectedSecret = env.DEPOSIT_RECEIPT_PURGE_CRON_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar DEPOSIT_RECEIPT_PURGE_CRON_SECRET." });
+      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      try {
+        res.json({ ok: true, ...(await bookingStore.purgeExpiredDepositReceipts()) });
+      } catch (error) { next(error); }
+    });
+
     // Confirma la asistencia de una cita -- llamado por el Chatbot Bridge cuando el cliente
     // responde "1. Confirmar mi hora" por WhatsApp (x-webhook-secret compartido, mismo que usa el
     // bridge para notify-invoice-sent.js), por el botón "Confirmar cita en salón" del ERP legado

@@ -2192,6 +2192,12 @@ async function loadDepositReviewArea(reservationId) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || "No se pudo cargar el comprobante.");
     const receipt = payload.receipt;
+    // El cron de limpieza (workers/deposit-receipt-purge-cron) borra la foto -- nunca la fila --
+    // 5 días después de que la cita queda Atendida/Cancelada (ver purgeExpiredDepositReceipts).
+    if (!receipt.image_data) {
+      area.innerHTML = `<p class="deposit-review-loading">El comprobante se eliminó automáticamente 5 días después de que esta cita se cerró (ya no ocupa espacio en la base).</p>`;
+      return;
+    }
     if (!canManageReservations()) {
       area.innerHTML = `<img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${receipt.image_data}" alt="Comprobante de depósito" />`;
       return;

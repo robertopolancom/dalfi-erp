@@ -137,3 +137,32 @@ test("getDepositReceipt(): sin fila, devuelve null", async () => {
   const result = await store.getDepositReceipt({ appointmentId: "apt-inexistente" });
   assert.equal(result, null);
 });
+
+// purgeExpiredDepositReceipts(): borra SOLO la foto (image_data/mime_type) de citas Atendidas o
+// Canceladas hace 5+ dias -- nunca la fila (reviewed_by/reviewed_at/review_note sobreviven como
+// auditoria) ni la cita. Ver workers/deposit-receipt-purge-cron/.
+test("purgeExpiredDepositReceipts(): un solo UPDATE, filtra por status Atendida/Cancelada + 5 dias + solo filas con foto todavia", async () => {
+  const queries = [];
+  const pool = {
+    query: async (sql, params) => {
+      queries.push({ sql, params });
+      return { rowCount: 3, rows: [{ appointment_id: "apt-1" }, { appointment_id: "apt-2" }, { appointment_id: "apt-3" }] };
+    },
+  };
+  const store = new NeonBookingStore(pool);
+  const result = await store.purgeExpiredDepositReceipts();
+  assert.deepEqual(result, { purgedCount: 3 });
+  assert.equal(queries.length, 1);
+  const sql = queries[0].sql;
+  assert.match(sql, /set image_data = null, mime_type = null/);
+  assert.match(sql, /status in \('completed','cancelled'\)/);
+  assert.match(sql, /updated_at <= now\(\) - interval '5 days'/);
+  assert.match(sql, /r\.image_data is not null/);
+});
+
+test("purgeExpiredDepositReceipts(): nada que purgar, devuelve purgedCount 0", async () => {
+  const pool = { query: async () => ({ rowCount: 0, rows: [] }) };
+  const store = new NeonBookingStore(pool);
+  const result = await store.purgeExpiredDepositReceipts();
+  assert.deepEqual(result, { purgedCount: 0 });
+});

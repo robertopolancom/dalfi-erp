@@ -1933,4 +1933,22 @@ export class NeonBookingStore {
       client.release();
     }
   }
+
+  // Borra SOLO la foto del comprobante (nunca la fila) 5 días después de que la cita quede
+  // Atendida o Cancelada -- así no se acumulan fotos de citas ya resueltas ocupando la base,
+  // pero el rastro de auditoría (quién revisó el depósito y cuándo) se queda para siempre. Ver
+  // POST /api/booking/purge-deposit-receipts y workers/deposit-receipt-purge-cron/.
+  async purgeExpiredDepositReceipts() {
+    const result = await this.pool.query(
+      `update app.appointment_deposit_receipts r
+          set image_data = null, mime_type = null
+         from app.appointments a
+        where a.id = r.appointment_id
+          and a.status in ('completed','cancelled')
+          and a.updated_at <= now() - interval '5 days'
+          and r.image_data is not null
+        returning r.appointment_id`,
+    );
+    return { purgedCount: result.rowCount };
+  }
 }

@@ -1,0 +1,6 @@
+{
+  "name": "dalfi-erp-deposit-receipt-purge-cron",
+  "private": true,
+  "type": "module",
+  "description": "Worker de Cloudflare Cron Trigger que dispara /api/booking/purge-deposit-receipts. Sin dependencias: usa solo fetch/AbortController/console, ya disponibles en el runtime de Workers."
+}
