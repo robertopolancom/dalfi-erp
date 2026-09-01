@@ -1035,7 +1035,7 @@ function stateFromDatabase(db) {
 function createDatabaseFromState(source) {
   return {
     meta: {
-      name: "Dalfi Studio Nail ERP Database",
+      name: "Dalfi Studio Nails ERP Database",
       version: 1,
       sourceFile: "database.json fallback",
       generatedAt: new Date().toISOString(),

@@ -1,4 +1,4 @@
-# Manual de uso - Dalfi Studio Nail & Academy ERP
+# Manual de uso - Dalfi Studio Nails & Academy ERP
 
 Fecha de elaboración: 2026-07-02  
 Aplicación: NailUnit ERP / ERP Centro de Uñas  

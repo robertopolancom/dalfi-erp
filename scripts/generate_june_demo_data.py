@@ -178,7 +178,7 @@ for aid, acc_type, name, entity, product, opening in accounts:
         "entidad": entity,
         "tipoProducto": product,
         "numeroCuenta": aid.replace("TEST-CTA-", "000-"),
-        "titular": "Dalfi Studio Nail",
+        "titular": "Dalfi Studio Nails",
         "documentoTitular": "JUN-TEST",
         "moneda": "DOP",
         "balanceInicial": opening,

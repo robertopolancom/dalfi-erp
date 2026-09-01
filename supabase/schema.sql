@@ -1,4 +1,4 @@
--- Esquema inicial Supabase para Dalfi Studio Nail & Academy ERP
+-- Esquema inicial Supabase para Dalfi Studio Nails & Academy ERP
 -- Fase base: tablas flexibles compatibles con el database.json actual.
 -- En una fase posterior se pueden normalizar más columnas y relaciones.
 

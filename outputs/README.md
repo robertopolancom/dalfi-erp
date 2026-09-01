@@ -13,7 +13,7 @@ Aplicación web local para operar un centro de uñas con:
 - Egresos para gastos, costos, inversiones, avances y transferencias entre cuentas/cajas.
 - Mantenimiento de clientes y servicios.
 - Mantenimiento ampliado de colaboradores y cuentas/cajas.
-- Base de datos normalizada en `database.json`, creada desde el Excel de Dalfi Studio Nail.
+- Base de datos normalizada en `database.json`, creada desde el Excel de Dalfi Studio Nails.
 
 ## Uso
 
