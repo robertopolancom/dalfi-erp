@@ -17,6 +17,7 @@ import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { businessMinutesBetween } from "./store.mjs";
+import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending } from "./email.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
   RESERVAPP_ROLES,
@@ -39,6 +40,18 @@ const RELAY_OTP_TTL_MS = 10 * 60 * 1000;
 const RELAY_OTP_MAX_ATTEMPTS = 5;
 const RELAY_OTP_REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RELAY_OTP_REQUEST_LIMIT_MAX = 5;
+
+// Ventana de negocio para el recordatorio horario de comprobantes de depósito pendientes de
+// revisar (ver POST /api/booking/send-deposit-review-reminders): 8am-11pm hora de Santo
+// Domingo, todos los días -- fuera de eso no se manda nada. Fija a propósito (no usa
+// business_settings/weekDays de la agenda): es la ventana en la que alguien del personal puede
+// razonablemente leer un correo, no el horario de atención al público.
+function isWithinDepositReminderWindow(date = new Date()) {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: "America/Santo_Domingo", hourCycle: "h23", hour: "2-digit" }).format(date),
+  );
+  return hour >= 8 && hour < 23;
+}
 
 function identityStatus(identity) {
   if (identity.error === "unauthenticated") return [401, "Sesion requerida."];
@@ -840,7 +853,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const updated = await bookingStore.setAppointmentStatus({ id: req.params.id, status });
         if (!updated) return res.status(404).json({ error: "Esa cita no existe o ya está cancelada." });
         res.json({ ok: true, appointment: updated });
-      } catch (error) { next(error); }
+      } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
     });
 
     // El personal revisa el comprobante de depósito subido por el cliente -- mismo guard que
@@ -895,6 +911,16 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           appointmentId: req.params.id, clientId: req.reservapp.account.client_id, imageBase64, mimeType,
         });
         res.json({ ok: true, appointment: updated });
+        // Mejor esfuerzo, después de responder -- nunca bloquea la subida del comprobante.
+        bookingStore.appointmentSummary(req.params.id)
+          .then((s) => {
+            if (!s) return;
+            return notifyDepositReceiptUploaded(env, {
+              legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
+              staffName: s.staff_name, date: s.date, time: s.time,
+            });
+          })
+          .catch(() => {});
       } catch (error) {
         if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
@@ -1411,14 +1437,39 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Disparado por workers/deposit-review-reminder-cron cada hora -- si estamos dentro de la
+    // ventana de negocio (8am-11pm hora de Santo Domingo), manda un correo recordatorio al
+    // personal por cada cita que sigue con un comprobante de depósito subido sin revisar
+    // (deposit_status='ComprobanteRecibido'). Fuera de esa ventana no manda nada (no se rompe
+    // nada por saltarse ejecuciones nocturnas -- el próximo tick dentro de la ventana retoma).
+    app.post("/api/booking/send-deposit-review-reminders", bookingRateLimit, async (req, res, next) => {
+      const expectedSecret = env.DEPOSIT_REVIEW_REMINDER_CRON_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar DEPOSIT_REVIEW_REMINDER_CRON_SECRET." });
+      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      try {
+        if (!isWithinDepositReminderWindow()) return res.json({ ok: true, skipped: "outside_window", sent: 0 });
+        const pending = await bookingStore.listPendingDepositReviews();
+        let sent = 0;
+        for (const s of pending) {
+          const result = await notifyDepositReviewPending(env, {
+            legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
+            staffName: s.staff_name, date: s.date, time: s.time,
+          });
+          if (result.sent) sent += 1;
+        }
+        res.json({ ok: true, pending: pending.length, sent });
+      } catch (error) { next(error); }
+    });
+
     // Confirma la asistencia de una cita -- llamado por el Chatbot Bridge cuando el cliente
     // responde "1. Confirmar mi hora" por WhatsApp (x-webhook-secret compartido, mismo que usa el
     // bridge para notify-invoice-sent.js), por el botón "Confirmar cita en salón" del ERP legado
     // (sesión de administración), o por el propio cliente desde "Citas activas" en ReservApp
     // (sesión cliente -- acotada a su propio client_id dentro de confirmAppointmentAttendance,
-    // nunca confía en el reservationId por sí solo). Si el horario ya fue tomado por otra reserva
-    // mientras esta esperaba (EspacioLiberado -> otra cita ocupó esa colaboradora+horario),
-    // responde alreadyReassigned:true para que quien llama le pida al cliente elegir otro horario.
+    // nunca confía en el reservationId por sí solo). Confirmar asistencia NUNCA aparta el
+    // horario (eso solo lo hace el depósito aprobado o la autorización manual de administración,
+    // ver reviewDepositReceipt/setAppointmentStatus) -- alreadyReassigned:true aquí solo puede
+    // pasar si esta cita puntual ya quedó cancelada/reasignada por otro lado mientras tanto.
     app.post("/api/reservapp/booking/confirm-attendance", bookingRateLimit, async (req, res, next) => {
       const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
       const viaBridge = bridgeSecret && (req.get("x-webhook-secret") || "") === bridgeSecret;
@@ -1680,6 +1731,13 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           let calendarSync = { skipped: true, reason: "combo" };
           for (const appt of result.appointments) {
             if (!appt.idempotent) calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, appt.previousDocument, appt.document, { fetchImpl });
+            if (!appt.idempotent && appt.legacyPayload) {
+              const p = appt.legacyPayload;
+              notifyNewAppointment(env, {
+                legacyId: p.reservaID, clientName: p.clienteNombre, serviceName: p.servicio,
+                staffName: p.colaboradorNombre, date: p.fecha, time: p.hora,
+              }).catch(() => {});
+            }
           }
           return res.status(201).json({
             appointments: result.appointments.map((a) => ({ id: a.appointment.id, reference: a.appointment.legacy_id })),
@@ -1696,6 +1754,15 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         if (result.conflict) return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
         if (result.missing) return res.status(404).json({ error: "Cliente, servicio o colaboradora no disponible." });
         const calendarSync = result.idempotent ? { skipped: true, reason: "idempotent" } : await syncChangedAppointmentsToGoogleCalendar(env, result.previousDocument, result.document, { fetchImpl });
+        // Mejor esfuerzo, nunca bloquea ni revierte la reserva si el correo falla (ver
+        // sendBusinessEmail en server/email.mjs).
+        if (!result.idempotent && result.legacyPayload) {
+          const p = result.legacyPayload;
+          notifyNewAppointment(env, {
+            legacyId: p.reservaID, clientName: p.clienteNombre, serviceName: p.servicio,
+            staffName: p.colaboradorNombre, date: p.fecha, time: p.hora,
+          }).catch(() => {});
+        }
         res.status(result.idempotent ? 200 : 201).json({
           appointment: { id: result.appointment.id, reference: result.appointment.legacy_id },
           idempotent: Boolean(result.idempotent), depositAmount: 500, calendarSync,

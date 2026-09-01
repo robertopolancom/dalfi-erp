@@ -36,6 +36,14 @@ services:
         sync: false
       - key: CHATBOT_SECRET
         sync: false
+      - key: DEPOSIT_REVIEW_REMINDER_CRON_SECRET
+        sync: false
+      # Avisos por correo al personal (nueva reserva, comprobante subido, recordatorio
+      # horario) -- Gmail SMTP con contraseña de aplicación, ver server/email.mjs.
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
       # TEMPORAL: en "true" salta la verificación de WhatsApp del autorregistro en ReservApp
       # mientras Meta aprueba WHATSAPP_ACTIVATION_TEMPLATE_NAME (dalfi-chatbot-n8n). Quitar esta
       # var (o ponerla en "false") apenas la plantilla esté aprobada y el envío funcione de

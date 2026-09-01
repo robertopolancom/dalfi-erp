@@ -458,13 +458,19 @@ export class NeonBookingStore {
     return windows;
   }
 
-  // Citas ya ocupadas ese día por colaboradora -- EspacioLiberado no cuenta como ocupado (ver
+  // Citas ya ocupadas ese día por colaboradora -- una cita recién creada (status='scheduled')
+  // NO aparta su horario todavía: solo pasa a bloquear cuando el personal la confirma
+  // (status='confirmed'/'completed'), ya sea aprobando el depósito o autorizando la cita sin
+  // depósito (ver reviewDepositReceipt/setAppointmentStatus más abajo, y el mismo criterio en
+  // el constraint appointments_no_staff_overlap, neon/migrations/0024). Mientras tanto, varias
+  // reservas 'scheduled' pueden coexistir sobre el mismo horario sin chocar -- la primera que se
+  // confirme gana el horario. EspacioLiberado tampoco cuenta como ocupado (ver
   // checkConfirmationReminder en server/app.mjs: esa cita ya liberó su horario). Devuelve
   // Map(staffId -> [{starts_at, ends_at}]).
   async staffBusyIntervals({ staffIds, date, timezone }) {
     const busy = await this.pool.query(
       `select staff_id, starts_at, ends_at from app.appointments
-       where staff_id = any($1::uuid[]) and status not in ('cancelled','replaced')
+       where staff_id = any($1::uuid[]) and status in ('confirmed','completed')
          and confirmation_status is distinct from 'EspacioLiberado'
          and starts_at < (($2::date + interval '1 day')::timestamp at time zone $3)
          and ends_at > ($2::date::timestamp at time zone $3)`,
@@ -932,11 +938,15 @@ export class NeonBookingStore {
     }
   }
 
-  // Confirma la asistencia de una cita (respuesta del cliente por WhatsApp vía el Chatbot
-  // Bridge, o el botón "Confirmar cita en salón" del ERP legado). Si el horario ya fue tomado por
-  // otra cita (esta quedó "EspacioLiberado" y alguien más reservó exactamente esa colaboradora +
-  // horario mientras tanto), rechaza con alreadyReassigned:true para que quien llama le pida a la
-  // cliente elegir otro horario -- nunca resucita una cita por encima de una reserva nueva.
+  // Confirma la ASISTENCIA de una cita (respuesta del cliente por WhatsApp vía el Chatbot
+  // Bridge, o el botón "Confirmar cita en salón" del ERP legado) -- esto es independiente de
+  // apartar el horario. Apartar el horario (status='confirmed') solo lo hace reviewDepositReceipt
+  // (depósito aprobado) o setAppointmentStatus (autorización manual de administración) -- nunca
+  // la propia clienta confirmando por WhatsApp que va a asistir, ni el personal marcando que ya
+  // llegó. Por eso esta función SOLO toca confirmation_status (deja de mandarle recordatorios de
+  // asistencia), nunca status -- y por lo mismo nunca puede chocar con el constraint
+  // appointments_no_staff_overlap (que solo mira status), así que no hace falta pre-chequear
+  // conflictos de horario aquí.
   // clientId: cuando lo llama una sesión de cliente (no el bridge ni administración), acota la
   // confirmación a SU PROPIA cita -- nunca confía en un legacyId ajeno. null/omitido para
   // llamadas ya autorizadas de otra forma (bridge, administración).
@@ -945,8 +955,7 @@ export class NeonBookingStore {
     try {
       await client.query("begin");
       const current = await client.query(
-        `select id, legacy_id, staff_id, client_id, starts_at, ends_at, status, confirmation_status
-           from app.appointments where legacy_id=$1 for update`,
+        `select id, legacy_id, client_id, status from app.appointments where legacy_id=$1 for update`,
         [legacyId],
       );
       const apt = current.rows[0];
@@ -958,47 +967,18 @@ export class NeonBookingStore {
         await client.query("rollback");
         return { alreadyReassigned: true, status: apt.status };
       }
-      const conflict = await client.query(
-        `select id from app.appointments
-          where staff_id=$1 and id<>$2 and status not in ('cancelled','replaced')
-            and starts_at < $4 and ends_at > $3
-          limit 1`,
-        [apt.staff_id, apt.id, apt.starts_at, apt.ends_at],
-      );
-      if (conflict.rowCount) {
-        await client.query("rollback");
-        return { alreadyReassigned: true, status: "Reemplazada" };
-      }
-      // Antes esto solo tocaba confirmation_status -- el estatus visible (status) se quedaba
-      // en "scheduled" aunque la clienta ya hubiera confirmado la hora por WhatsApp. Ahora
-      // también se pone en "confirmed", pero solo partiendo de "scheduled": si ya está
-      // "completed" (se atendió antes de que llegara esta confirmación tardía) no lo regresa.
-      const alsoConfirmStatus = apt.status === "scheduled";
       await client.query(
-        `update app.appointments
-            set confirmation_status='HoraConfirmada',
-                status = case when $2 then 'confirmed' else status end,
-                updated_at=clock_timestamp()
-          where id=$1`,
-        [apt.id, alsoConfirmStatus],
+        `update app.appointments set confirmation_status='HoraConfirmada', updated_at=clock_timestamp() where id=$1`,
+        [apt.id],
       );
       await this.mirrorAppointmentToDocument(client, legacyId, (row) => {
         row.estadoConfirmacion = "HoraConfirmada";
-        if (alsoConfirmStatus) row.estado = "Confirmada";
         row.updated_at = new Date().toISOString();
       });
       await client.query("commit");
       return { confirmed: true };
     } catch (error) {
       await client.query("rollback").catch(() => {});
-      // Ventana de carrera real entre el chequeo de conflicto de arriba (un SELECT normal, no
-      // bloquea inserciones nuevas de otras sesiones) y este UPDATE: si alguien más reservó
-      // exactamente ese staff_id+horario en el instante entre medio, este UPDATE reintroduce la
-      // fila al alcance de la restricción de exclusión (confirmation_status deja de ser
-      // 'EspacioLiberado') y Postgres la rechaza con 23P01 -- mismo código que ya maneja
-      // createAppointment(). Sin este catch, esa carrera se veía como un 500 genérico en vez del
-      // 409 ALREADY_REASSIGNED que sí espera el frontend.
-      if (error?.code === "23P01") return { alreadyReassigned: true, status: "Reemplazada" };
       throw error;
     } finally {
       client.release();
@@ -1778,6 +1758,10 @@ export class NeonBookingStore {
   // 'Retrasada' NUNCA se guarda aquí -- es puramente derivada en el frontend a partir de la hora
   // de inicio, para que nunca quede desactualizada. No permite pisar cancelled/replaced (esos
   // solo se tocan vía cancelAppointment) ni completed hacia atrás por accidente de doble click.
+  // Pasar a 'confirmed' aquí es la vía de "autorización de administración" (confirma la cita sin
+  // depósito) -- la otra vía es reviewDepositReceipt (aprobar el comprobante). Ambas apuntan al
+  // mismo status, así que ambas pueden chocar con el constraint appointments_no_staff_overlap
+  // (neon/migrations/0024) si otra cita ya ganó ese horario -- se traduce a un 409 legible.
   async setAppointmentStatus({ id, status }) {
     const client = await this.pool.connect();
     try {
@@ -1800,6 +1784,9 @@ export class NeonBookingStore {
       return row;
     } catch (error) {
       await client.query("rollback").catch(() => {});
+      if (error?.code === "23P01") {
+        throw Object.assign(new Error("Ese horario ya quedó confirmado con otra cita mientras tanto. Reprograma esta antes de confirmarla."), { status: 409 });
+      }
       throw error;
     } finally {
       client.release();
@@ -1832,6 +1819,49 @@ export class NeonBookingStore {
         order by a.starts_at ${isActive ? "asc" : "desc"}
         limit 100`,
       [clientId],
+    );
+    return result.rows;
+  }
+
+  // Resumen liviano de una cita para los avisos por correo al personal (nueva reserva,
+  // comprobante subido, recordatorio pendiente de revisar) -- server/email.mjs.
+  async appointmentSummary(id) {
+    const result = await this.pool.query(
+      `select a.legacy_id, c.full_name client_name, s.full_name staff_name,
+              to_char(a.starts_at at time zone bs.timezone,'YYYY-MM-DD') date,
+              to_char(a.starts_at at time zone bs.timezone,'HH24:MI') time,
+              coalesce(string_agg(distinct x.service_name_snapshot, ', '),'Cita') service_name
+         from app.appointments a
+         left join app.clients c on c.id=a.client_id
+         left join app.staff s on s.id=a.staff_id
+         left join app.appointment_services x on x.appointment_id=a.id
+         cross join app.business_settings bs
+        where a.id=$1
+        group by a.legacy_id, c.full_name, s.full_name, bs.timezone`,
+      [id],
+    );
+    return result.rows[0] || null;
+  }
+
+  // Citas con comprobante de depósito subido y todavía sin revisar (deposit_status
+  // 'ComprobanteRecibido') -- alimenta el recordatorio horario por correo al personal (ver
+  // POST /api/booking/send-deposit-review-reminders en server/app.mjs). No filtra por fecha: lo
+  // que importa es que el comprobante siga sin aprobarse/rechazarse, sin importar cuándo es la
+  // cita.
+  async listPendingDepositReviews() {
+    const result = await this.pool.query(
+      `select a.legacy_id, c.full_name client_name, s.full_name staff_name,
+              to_char(a.starts_at at time zone bs.timezone,'YYYY-MM-DD') date,
+              to_char(a.starts_at at time zone bs.timezone,'HH24:MI') time,
+              coalesce(string_agg(distinct x.service_name_snapshot, ', '),'Cita') service_name
+         from app.appointments a
+         left join app.clients c on c.id=a.client_id
+         left join app.staff s on s.id=a.staff_id
+         left join app.appointment_services x on x.appointment_id=a.id
+         cross join app.business_settings bs
+        where a.deposit_status='ComprobanteRecibido' and a.status not in ('cancelled','replaced')
+        group by a.legacy_id, c.full_name, s.full_name, bs.timezone
+        order by a.starts_at`,
     );
     return result.rows;
   }
@@ -1897,7 +1927,13 @@ export class NeonBookingStore {
 
   // El personal aprueba o rechaza el comprobante ya subido -- mismo espejo hacia
   // app.erp_document que el resto de cambios de estatus (ver setAppointmentStatus/
-  // cancelAppointment) para que la matriz del ERP no quede desactualizada.
+  // cancelAppointment) para que la matriz del ERP no quede desactualizada. Aprobar el depósito
+  // es una de las dos únicas formas de confirmar una cita (la otra es setAppointmentStatus,
+  // autorización manual sin depósito) -- así que aprobar también pasa status a 'confirmed', que
+  // es lo que de verdad aparta el horario (ver staffBusyIntervals). Si para entonces ese horario
+  // ya lo ganó otra cita confirmada, el constraint appointments_no_staff_overlap
+  // (neon/migrations/0024) rechaza el update con 23P01 -- se traduce a un 409 legible en vez de
+  // reventar como error 500, para que el personal sepa que tiene que reprogramar esta cita.
   async reviewDepositReceipt({ appointmentId, approve, reviewedBy, note = null }) {
     const client = await this.pool.connect();
     try {
@@ -1915,19 +1951,29 @@ export class NeonBookingStore {
         [appointmentId, reviewedBy, note],
       );
       const updated = await client.query(
-        `update app.appointments set deposit_status=$2, updated_at=clock_timestamp()
-          where id=$1 returning id, deposit_status, legacy_id`,
+        approve
+          ? `update app.appointments set deposit_status=$2, status='confirmed', updated_at=clock_timestamp()
+              where id=$1 returning id, deposit_status, status, legacy_id`
+          : `update app.appointments set deposit_status=$2, updated_at=clock_timestamp()
+              where id=$1 returning id, deposit_status, status, legacy_id`,
         [appointmentId, newStatus],
       );
       const row = updated.rows[0];
       if (!row) throw Object.assign(new Error("Esa cita no existe."), { status: 404 });
       if (row.legacy_id) {
-        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estadoDeposito = newStatus; doc.updated_at = new Date().toISOString(); });
+        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => {
+          doc.estadoDeposito = newStatus;
+          if (approve) doc.estado = "Confirmada";
+          doc.updated_at = new Date().toISOString();
+        });
       }
       await client.query("commit");
       return row;
     } catch (error) {
       await client.query("rollback").catch(() => {});
+      if (error?.code === "23P01") {
+        throw Object.assign(new Error("Ese horario ya quedó confirmado con otra cita mientras tanto. Reprograma esta antes de aprobar el depósito."), { status: 409 });
+      }
       throw error;
     } finally {
       client.release();

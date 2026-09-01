@@ -1,0 +1,24 @@
+# Worker independiente (NO Cloudflare Pages) que dispara el recordatorio horario por correo de
+# comprobantes de depósito subidos y sin revisar. Ver
+# workers/deposit-review-reminder-cron/README.md para el paso a paso de configuracion y
+# despliegue (ninguno de esos pasos se ejecuto como parte de esta tarea).
+name = "dalfi-erp-deposit-review-reminder-cron"
+main = "worker.js"
+compatibility_date = "2026-07-09"
+
+# Variable NO secreta: el backend real (Render + Neon) al que este Worker le hace fetch().
+[vars]
+APP_BASE_URL = "https://ssc.sebengroup.com"
+
+# DEPOSIT_REVIEW_REMINDER_CRON_SECRET se configura por separado como Secret (nunca en este
+# archivo ni en Git): "wrangler secret put DEPOSIT_REVIEW_REMINDER_CRON_SECRET". Debe ser
+# EXACTAMENTE el mismo valor que env.DEPOSIT_REVIEW_REMINDER_CRON_SECRET en el servicio de
+# Render (dalfi-erp) que ya usa POST /api/booking/send-deposit-review-reminders en
+# server/app.mjs.
+
+# Una vez por hora, todas las horas -- el endpoint decide si esta dentro de la ventana de
+# negocio (8am-11pm hora de Santo Domingo, ver isWithinDepositReminderWindow en
+# server/app.mjs) y no manda nada si no lo esta. Mismo patron que
+# workers/booking-reminder-cron/wrangler.toml.
+[triggers]
+crons = ["0 * * * *"]

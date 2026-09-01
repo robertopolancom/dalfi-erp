@@ -953,7 +953,7 @@ $("quick-setup-form").addEventListener("submit", async (event) => {
     $("quick-setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
-      $("success-summary").textContent = `Cita confirmada. Referencia: ${result.appointment.reference}`;
+      $("success-summary").textContent = `Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`;
     } else if (wasPasswordReset) {
       message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
     } else if (state.pendingBookingStart) {
@@ -1241,7 +1241,7 @@ $("setup-form").addEventListener("submit", async (event) => {
     state.activationTicket = null; state.passwordResetFlow = false; applyAccount(result.account); $("setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
-      $("success-summary").textContent = `Cita confirmada. Referencia: ${result.appointment.reference}`;
+      $("success-summary").textContent = `Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`;
     } else if (wasPasswordReset) {
       message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
     } else if (state.pendingBookingStart) {

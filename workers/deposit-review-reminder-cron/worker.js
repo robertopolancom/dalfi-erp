@@ -1,0 +1,105 @@
+// Worker programado (Cloudflare Cron Trigger) para el backend real de Dalfi ERP (Render + Neon).
+//
+// Responsabilidad UNICA: en cada disparo, hacer una llamada HTTP autenticada a
+// POST /api/booking/send-deposit-review-reminders en server/app.mjs (Render, dominio
+// ssc.sebengroup.com) para que mande un correo recordatorio al personal por cada cita que sigue
+// con un comprobante de depósito subido sin revisar. Este Worker NUNCA accede a Neon
+// directamente ni decide la ventana de negocio (8am-11pm) ni qué cuenta como "pendiente de
+// revisar": toda esa lógica vive en server/app.mjs (isWithinDepositReminderWindow) y
+// server/store.mjs (listPendingDepositReviews). Mismo patrón que
+// workers/booking-reminder-cron/ y workers/deposit-receipt-purge-cron/.
+//
+// Corre una vez por hora, TODAS las horas -- el endpoint decide internamente si está dentro de
+// la ventana de negocio y responde {skipped:"outside_window"} sin mandar nada si no lo está. Así
+// la ventana de negocio se define en un solo lugar (server-side), no repartida entre la
+// expresión cron (que corre en UTC) y el servidor.
+
+const DEFAULT_TIMEOUT_MS = 20000;
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+// Registra unicamente datos no sensibles: nunca el secreto, nunca la
+// cabecera Authorization completa, nunca el cuerpo crudo de la respuesta.
+function logResult({ ok, status, durationMs, outcome }) {
+  const safeStatus = Number.isInteger(status) ? status : 0;
+  console.log(
+    JSON.stringify({
+      job: "dalfi-erp-deposit-review-reminder-cron",
+      at: nowIso(),
+      ok,
+      status: safeStatus,
+      durationMs,
+      outcome,
+    }),
+  );
+}
+
+// Nucleo testable: recibe env y un fetch inyectable (para pruebas con mocks,
+// nunca red real) en vez de usar el global directamente.
+async function runDepositReviewReminderCron(env, fetchImpl = fetch) {
+  const baseUrl = env.APP_BASE_URL;
+  const secret = env.DEPOSIT_REVIEW_REMINDER_CRON_SECRET;
+  const timeoutMs = Number(env.REQUEST_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+
+  if (!baseUrl) {
+    throw new Error("Falta configurar APP_BASE_URL en el Worker.");
+  }
+  if (!secret) {
+    throw new Error("Falta configurar el secret DEPOSIT_REVIEW_REMINDER_CRON_SECRET en el Worker.");
+  }
+
+  // new URL(...) valida el formato de APP_BASE_URL antes de usarlo (evita
+  // construir una URL invalida a partir de una variable mal configurada).
+  const endpoint = new URL("/api/booking/send-deposit-review-reminders", baseUrl).toString();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const startedAt = Date.now();
+
+  try {
+    // El secreto SIEMPRE va en una cabecera, nunca en la query string.
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { "x-cron-secret": secret },
+      signal: controller.signal,
+    });
+    const durationMs = Date.now() - startedAt;
+
+    if (!response.ok) {
+      logResult({ ok: false, status: response.status, durationMs, outcome: "http_error" });
+      throw new Error(`El recordatorio de depositos respondio ${response.status}.`);
+    }
+
+    logResult({ ok: true, status: response.status, durationMs, outcome: "success" });
+    return { ok: true, status: response.status, durationMs };
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    if (error.name === "AbortError") {
+      logResult({ ok: false, status: 0, durationMs, outcome: "timeout" });
+      throw new Error(`El recordatorio de depositos no respondio dentro de ${timeoutMs}ms (timeout).`);
+    }
+    if (!(error instanceof Error) || !/respondio \d+\./.test(error.message)) {
+      // Error de red (DNS, conexion rechazada, etc.), no un error HTTP ya logueado arriba.
+      logResult({ ok: false, status: 0, durationMs, outcome: "network_error" });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export default {
+  async scheduled(controllerEvent, env, ctx) {
+    // Una sola solicitud por ejecucion (sin reintentos agresivos dentro de la misma ejecucion):
+    // si esta falla, el disparo de la hora siguiente es la recuperacion natural.
+    ctx.waitUntil(
+      runDepositReviewReminderCron(env).catch((error) => {
+        console.error(`dalfi-erp-deposit-review-reminder-cron: ${error.message}`);
+      }),
+    );
+  },
+};
+
+export { runDepositReviewReminderCron };
