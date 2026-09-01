@@ -89,7 +89,11 @@
   function applyTextNodes(content) {
     document.querySelectorAll("[data-cms]").forEach(function (el) {
       var value = getPath(content, el.dataset.cms);
-      if (typeof value === "string") el.textContent = value;
+      if (typeof value !== "string") return;
+      el.textContent = value;
+      // Campos opcionales (ej. hero.badge) se ocultan si el admin los deja vacíos, en vez de
+      // mostrar una etiqueta/recuadro visualmente vacío.
+      if (el.dataset.cmsOptional !== undefined) el.style.display = value ? "" : "none";
     });
   }
 

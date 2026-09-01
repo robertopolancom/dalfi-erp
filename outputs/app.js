@@ -5065,6 +5065,7 @@ async function renderSiteContentForm() {
   if (byId("sc-promo-enabled")) byId("sc-promo-enabled").checked = content.promo?.enabled !== false;
   if (byId("sc-promo-text")) byId("sc-promo-text").value = content.promo?.text || "";
 
+  if (byId("sc-hero-badge")) byId("sc-hero-badge").value = content.hero?.badge || "";
   if (byId("sc-hero-kicker")) byId("sc-hero-kicker").value = content.hero?.kicker || "";
   if (byId("sc-hero-headline")) byId("sc-hero-headline").value = content.hero?.headline || "";
   if (byId("sc-hero-headline-accent")) byId("sc-hero-headline-accent").value = content.hero?.headlineAccent || "";
@@ -5127,6 +5128,7 @@ async function saveSiteContent(event) {
       text: byId("sc-promo-text")?.value?.trim() || "",
     },
     hero: {
+      badge: byId("sc-hero-badge")?.value?.trim() || "",
       kicker: byId("sc-hero-kicker")?.value?.trim() || "",
       headline: byId("sc-hero-headline")?.value?.trim() || "",
       headlineAccent: byId("sc-hero-headline-accent")?.value?.trim() || "",

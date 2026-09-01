@@ -72,6 +72,12 @@ a{color:inherit}
 /* ---------- hero ---------- */
 .hero{padding:76px 0 64px;overflow:hidden}
 .hero-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:56px;align-items:center}
+.hero-badge{
+  display:inline-flex;align-items:center;
+  font-family:Poppins;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--clay);border:1px solid var(--clay);border-radius:999px;
+  padding:6px 14px;margin:0 0 16px;
+}
 .kicker{
   display:inline-flex;align-items:center;gap:8px;
   font-size:.74rem;font-weight:600;text-transform:uppercase;letter-spacing:.16em;
