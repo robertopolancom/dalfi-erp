@@ -927,6 +927,28 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       }
     });
 
+    // Cuentas bancarias activas para mostrar junto al botón "Cargar comprobante" -- mismos campos
+    // y mismo filtro (tipoCuenta="Banco" + estado activo) que ya usa el ERP legado en
+    // bankAccounts()/isBankAccount() de outputs/app.js, para no duplicar cuentas de caja/efectivo.
+    app.get("/api/reservapp/bank-accounts", requireReservapp, async (req, res, next) => {
+      try {
+        const row = await store.read();
+        const cuentas = Array.isArray(row?.data?.cuentas) ? row.data.cuentas : [];
+        const accounts = cuentas
+          .filter((a) => String(a.tipoCuenta || "") === "Banco" && String(a.estado || "Activo").toLowerCase() === "activo")
+          .map((a) => ({
+            banco: a.entidad || "",
+            tipoProducto: a.tipoProducto || "",
+            numeroCuenta: a.numeroCuenta || "",
+            titular: a.titular || "",
+            documento: a.documentoTitular || "",
+            tipoDocumento: a.tipoDocumentoTitular || "Cédula",
+          }))
+          .filter((a) => a.banco && a.numeroCuenta);
+        res.json({ accounts });
+      } catch (error) { next(error); }
+    });
+
     // Compartido por todos los endpoints de "Configuración de usuarios" -- misma regla que ya
     // usaba POST /admin/accounts: administradora/superadministrador de ReservApp, o personal
     // del ERP legado con canManageUsers, pero SOLO un superadministrador de ReservApp puede
@@ -1458,6 +1480,39 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           if (result.sent) sent += 1;
         }
         res.json({ ok: true, pending: pending.length, sent });
+      } catch (error) { next(error); }
+    });
+
+    // Cuentas bancarias activas para que el Chatbot Bridge (dalfi-chatbot-n8n, ver
+    // src/erp-adapter.js listBankAccounts()) las muestre cuando la clienta pide transferir el
+    // depósito de RD$500 -- secreto por cabecera dedicado (x-chatbot-secret / env CHATBOT_SECRET,
+    // ya declarado en render.yaml pero sin usar hasta ahora), igual patrón que
+    // /api/booking/send-reminders pero con su propio nombre de cabecera porque este es tráfico
+    // entrante del bridge, no de un cron. El bridge guarda ese mismo valor como
+    // ERP_CHATBOT_SECRET (ver erp-adapter.js) -- el nombre de la variable no tiene que coincidir
+    // entre los dos servicios, solo el secreto en sí. Mismo filtro y mismos nombres de campo que
+    // ya espera buildPaymentAccountCandidate() del lado del bot (banco/tipoCuenta/numeroCuenta/
+    // titular/documento/tipoDocumento) para no tener que tocar ese código.
+    app.get("/api/booking/bank-accounts", bookingRateLimit, async (req, res, next) => {
+      const expectedSecret = env.CHATBOT_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
+      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de chatbot inválido." });
+      try {
+        const row = await store.read();
+        const cuentas = Array.isArray(row?.data?.cuentas) ? row.data.cuentas : [];
+        const accounts = cuentas
+          .filter((a) => String(a.tipoCuenta || "") === "Banco" && String(a.estado || "Activo").toLowerCase() === "activo")
+          .map((a) => ({
+            id: String(a.cuentaID || a.id || ""),
+            banco: a.entidad || "",
+            tipoCuenta: a.tipoProducto || "",
+            numeroCuenta: a.numeroCuenta || "",
+            titular: a.titular || "",
+            documento: a.documentoTitular || "",
+            tipoDocumento: a.tipoDocumentoTitular || "Cédula",
+          }))
+          .filter((a) => a.banco && a.numeroCuenta);
+        res.json({ success: true, accounts });
       } catch (error) { next(error); }
     });
 

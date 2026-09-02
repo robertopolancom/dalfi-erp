@@ -244,6 +244,14 @@ dialog form{padding:28px}
 .appointment-card .appointment-confirm-btn{align-self:flex-start;margin-top:4px}
 .deposit-upload{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
 .deposit-upload .deposit-upload-message{font-size:.78rem;color:#b91c1c}
+.deposit-upload .bank-accounts{flex-basis:100%}
+
+.bank-accounts{background:var(--soft);border-radius:14px;padding:12px 15px;margin:14px 0;text-align:left;font-size:.85rem;line-height:1.45}
+.bank-accounts-title{font-weight:600;margin:0 0 8px;color:var(--brand-dark)}
+.bank-account{padding:8px 0;border-top:1px solid rgba(0,0,0,.08);display:flex;flex-direction:column;gap:1px}
+.bank-account:first-of-type{border-top:0;padding-top:0}
+.bank-account strong{color:var(--brand-dark)}
+.bank-account span{color:var(--muted)}
 
 /* ---------- vista semanal de la agenda del equipo ---------- */
 .agenda-view-nav{margin:0 0 12px;max-width:260px}

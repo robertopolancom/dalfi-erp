@@ -708,6 +708,44 @@ const DEPOSIT_UPLOADABLE_STATES = new Set(["Pendiente", "Rechazado"]);
 const DEPOSIT_MAX_DIMENSION = 1600;
 const DEPOSIT_JPEG_QUALITY = 0.8;
 
+// Se pide una sola vez por sesión y se reutiliza en la pantalla de éxito (justo después de
+// reservar) y en "Mis citas" (mientras el comprobante siga pendiente) -- ver GET
+// /api/reservapp/bank-accounts en server/app.mjs, que ya filtra a cuentas de tipo Banco activas.
+let bankAccountsPromise = null;
+function fetchBankAccounts() {
+  if (!bankAccountsPromise) {
+    bankAccountsPromise = api("/api/reservapp/bank-accounts").catch((error) => {
+      bankAccountsPromise = null; // permite reintentar la próxima vez que se pinte el panel
+      throw error;
+    });
+  }
+  return bankAccountsPromise;
+}
+
+function renderBankAccounts(container) {
+  container.textContent = "Cargando cuentas para transferir…";
+  fetchBankAccounts()
+    .then(({ accounts }) => {
+      container.textContent = "";
+      if (!accounts?.length) { container.textContent = "Consulta las cuentas disponibles con el salón."; return; }
+      const title = document.createElement("p"); title.className = "bank-accounts-title";
+      title.textContent = "Cuentas para transferir el depósito:";
+      container.append(title);
+      accounts.forEach((account) => {
+        const row = document.createElement("div"); row.className = "bank-account";
+        const bankLine = document.createElement("strong");
+        bankLine.textContent = account.tipoProducto ? `${account.banco} (${account.tipoProducto})` : account.banco;
+        const numberLine = document.createElement("span");
+        numberLine.textContent = `Cuenta: ${account.numeroCuenta}`;
+        const holderLine = document.createElement("span");
+        holderLine.textContent = account.documento ? `${account.titular} · ${account.tipoDocumento}: ${account.documento}` : account.titular;
+        row.append(bankLine, numberLine, holderLine);
+        container.append(row);
+      });
+    })
+    .catch(() => { container.textContent = "No se pudieron cargar las cuentas. Consulta con el salón."; });
+}
+
 // Redimensiona/comprime la foto en un <canvas> antes de mandarla -- una foto de cámara sin tocar
 // puede pesar varios MB, y el body JSON del backend tiene un límite de 8MB (MAX_BODY_BYTES en
 // server/app.mjs); esto la deja típicamente por debajo de 300-500KB.
@@ -733,6 +771,9 @@ function compressImageFile(file) {
 
 function depositUploadControl(appointmentId) {
   const wrap = document.createElement("div"); wrap.className = "deposit-upload";
+  const accounts = document.createElement("div"); accounts.className = "bank-accounts";
+  renderBankAccounts(accounts);
+  wrap.append(accounts);
   const input = document.createElement("input");
   input.type = "file"; input.accept = "image/*"; input.capture = "environment"; input.className = "hidden";
   const btn = document.createElement("button");
@@ -954,6 +995,7 @@ $("quick-setup-form").addEventListener("submit", async (event) => {
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = `Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`;
+      renderBankAccounts($("success-bank-accounts"));
     } else if (wasPasswordReset) {
       message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
     } else if (state.pendingBookingStart) {
@@ -1224,6 +1266,7 @@ $("booking-form").addEventListener("submit", async (event) => {
       $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
     }
     $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden"); window.scrollTo({ top: 0, behavior: "smooth" });
+    renderBankAccounts($("success-bank-accounts"));
   } catch (error) {
     message($("booking-message"), error.message);
     if (error.body?.conflict) goToStep(3); // el horario se ocupó -- vuelve a elegir de la lista fresca
@@ -1242,6 +1285,7 @@ $("setup-form").addEventListener("submit", async (event) => {
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = `Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`;
+      renderBankAccounts($("success-bank-accounts"));
     } else if (wasPasswordReset) {
       message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
     } else if (state.pendingBookingStart) {
