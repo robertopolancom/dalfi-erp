@@ -268,7 +268,7 @@ function renderAvailabilityFallback(fallback) {
   if (!fallback || fallback.tier === "contact_agent") {
     const p = document.createElement("p");
     p.append("No encontramos cómo acomodar todos los servicios ese día. ");
-    p.append(Object.assign(document.createElement("a"), { href: "https://wa.me/18093463030", target: "_blank", rel: "noopener", textContent: "Escríbenos por WhatsApp" }));
+    p.append(Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: "Escríbenos por WhatsApp" }));
     p.append(" y una asesora revisa la agenda contigo.");
     box.append(p);
     container.append(box);
@@ -1072,7 +1072,7 @@ function openClientDialog({ forEmployee, requireSelection = true }) {
     target.className = "message";
     target.replaceChildren(
       "Para este horario con varias citas, pide a una asesora que registre tu cita: ",
-      Object.assign(document.createElement("a"), { href: "https://wa.me/18093463030", target: "_blank", rel: "noopener", textContent: "escríbenos por WhatsApp" }),
+      Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: "escríbenos por WhatsApp" }),
     );
     return;
   }

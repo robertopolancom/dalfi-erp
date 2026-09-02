@@ -54,19 +54,19 @@ export async function notifyNewAppointment(env, appointment, createTransportImpl
   const line = aptLine(appointment);
   return sendBusinessEmail(env, {
     subject: `Nueva reserva por revisar -- ${appointment.clientName || "Cliente"}`,
-    text: `${line}\n\nTodavía no está confirmada: falta que se confirme el depósito de RD$500.`,
-    html: `<p>${line}</p><p>Todavía no está confirmada: falta que se confirme el depósito de RD$500.</p>`,
+    text: `${line}\n\nTodavía no está confirmada: falta que se confirme el depósito de RD$500. Al revisarla, confírmala en ReservApp.`,
+    html: `<p>${line}</p><p>Todavía no está confirmada: falta que se confirme el depósito de RD$500. Al revisarla, confírmala en ReservApp.</p>`,
   }, createTransportImpl);
 }
 
 // La clienta subió su foto del comprobante -- listo para que el personal lo revise y
-// apruebe/rechace desde SSC.
+// apruebe/rechace en ReservApp.
 export async function notifyDepositReceiptUploaded(env, appointment, createTransportImpl = nodemailer.createTransport) {
   const line = aptLine(appointment);
   return sendBusinessEmail(env, {
     subject: `Comprobante de depósito subido -- ${appointment.clientName || "Cliente"}`,
-    text: `${line}\n\nLa clienta ya subió su comprobante de depósito. Revísalo y confirma o rechaza la reserva desde SSC.`,
-    html: `<p>${line}</p><p>La clienta ya subió su comprobante de depósito. Revísalo y confirma o rechaza la reserva desde SSC.</p>`,
+    text: `${line}\n\nLa clienta ya subió su comprobante de depósito. Revísalo y confirma o rechaza la reserva en ReservApp.`,
+    html: `<p>${line}</p><p>La clienta ya subió su comprobante de depósito. Revísalo y confirma o rechaza la reserva en ReservApp.</p>`,
   }, createTransportImpl);
 }
 
