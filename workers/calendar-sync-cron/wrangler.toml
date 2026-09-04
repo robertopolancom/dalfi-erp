@@ -1,0 +1,15 @@
+# RETIRADO 2026-09-04 -- este Worker ya no existe en Cloudflare, ver README.md.
+# Se conserva el archivo para que quede constancia de cómo estaba configurado.
+name = "dalfi-erp-calendar-sync-cron"
+main = "worker.js"
+compatibility_date = "2026-07-09"
+
+[vars]
+# Apuntaba a dalfi-erp.pages.dev, un proyecto borrado el 2026-08-24. Si algún día
+# se revive, va https://sebensuiteconnect.dalfistudio.com -- pero antes hay que
+# escribir /api/calendar/google-pull en server/app.mjs, que hoy no existe.
+APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"
+
+# Disparaba CADA MINUTO. 1.440 invocaciones fallidas al día durante 11 días.
+[triggers]
+crons = ["* * * * *"]
