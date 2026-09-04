@@ -232,7 +232,14 @@ async function loadCatalog() {
     // Mismo criterio que el banner promocional: sin mensaje publicado, el elemento se queda
     // oculto y la página se ve igual que antes de que existiera esta función.
     renderInfoBanner(state.catalog.infoBanner?.text);
-  } catch { message($("booking-message"), t("No pudimos cargar la agenda. Intenta nuevamente.", "We couldn't load the schedule. Please try again.")); }
+  } catch (error) {
+    // El mensaje visible se queda genérico a propósito, pero el error real va a la
+    // consola: este bloque toca red Y DOM, así que un fallo aquí puede no ser del backend.
+    // El 2026-09-04 un bug de DOM (applyLanguage borraba los <select> de sus <label>) dejó la
+    // app inservible mientras el catálogo respondía 200 y la consola estaba limpia.
+    console.error("[ReservApp] loadCatalog() falló:", error);
+    message($("booking-message"), t("No pudimos cargar la agenda. Intenta nuevamente.", "We couldn't load the schedule. Please try again."));
+  }
 }
 
 async function loadSession() {
@@ -245,7 +252,15 @@ async function loadSession() {
     // días -- comparten el tablet de recepción y no tiene sentido pedirles credenciales cada
     // vez que abren la app.
     applyAccount(account && !isClientRole(account.role) ? account : null);
-  } catch { applyAccount(null); }
+  } catch (error) {
+    // Sin sesión, /auth/me responde 401 y caer aquí es lo normal -- por eso no se avisa al
+    // usuario. Pero CUALQUIER otro fallo (CORS mal configurado, el ERP caído, un error de
+    // JS) también aterriza aquí y se vería igual que un simple "no ha iniciado sesión", que
+    // es un disfraz peligroso. El 401 esperado se registra como info; lo demás, como error.
+    if (error?.status === 401) console.info("[ReservApp] sin sesión activa (401 esperado).");
+    else console.error("[ReservApp] el chequeo de sesión falló por algo que NO es un 401:", error);
+    applyAccount(null);
+  }
 }
 
 // Agrupa los slots devueltos por /api/fast-booking/availability en una columna por
