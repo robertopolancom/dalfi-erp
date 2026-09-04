@@ -37,7 +37,9 @@ services:
       # sirve desde la raíz, www y nails a la vez. El cuarto de la lista,
       # dalfistudionails.sebengroup.com, SIGUE VIVO a propósito: es el sitio que Meta puede
       # estar visitando durante la verificación de empresa, en revisión desde principios de
-      # septiembre de 2026. Quitarlo solo cuando Meta apruebe.
+      # septiembre de 2026. Quitarlo SOLO cuando Meta apruebe, y en el orden que explica
+      # docs/PENDIENTES.md (sección 1) -- cambiar el sitio en Business Manager antes de que
+      # aprueben reinicia la revisión desde cero.
       - key: SITE_CONTENT_ALLOWED_ORIGIN
         value: https://dalfistudio.com,https://www.dalfistudio.com,https://nails.dalfistudio.com,https://dalfistudionails.sebengroup.com
       - key: RESERVAPP_PUBLIC_URL

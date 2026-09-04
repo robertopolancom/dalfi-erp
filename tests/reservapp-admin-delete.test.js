@@ -242,6 +242,11 @@ test("el panel ofrece 'Borrar credenciales' en Personal y en Clientes, y 'Borrar
   assert.equal(app.match(/deleteClientButton\(\{/g).length, 2, "definición + Clientes");
 });
 
+// Esta prueba es estricta a propósito: rechaza la palabra incluso en comentarios nuevos.
+// NO la relajes -- si un cambio la rompe, se reformula el texto. Distinguir comentario de
+// cadena por regex es frágil y no vale el riesgo de que la palabra se cuele en algo visible.
+// La regla completa (y la funcionalidad pendiente de redactar según el género cuando SÍ se
+// conoce) está en docs/PENDIENTES.md, sección 2.
 test("ReservApp ya no dice 'clienta' en ninguna parte del panel ni del frontend", () => {
   // index.html y styles.css son presentación pura: ahí "clienta" no puede aparecer de ninguna
   // forma. \b para no confundirse con identificadores en inglés como showClientAppointments.
