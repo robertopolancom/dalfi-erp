@@ -23,15 +23,22 @@ services:
       - key: ADMIN_EMAILS
         sync: false
       - key: FAST_BOOKING_ORIGIN
-        value: https://reservapp.sebengroup.com
+        value: https://reservapp.dalfistudio.com
       - key: FAST_BOOKING_HOST
-        value: reservapp.sebengroup.com
+        value: reservapp.dalfistudio.com
       - key: SEBEN_SUITE_HOST
-        value: ssc.sebengroup.com
+        value: sebensuiteconnect.dalfistudio.com
+      # Orígenes que pueden LEER GET /api/site-content/:siteKey (el contenido que el
+      # personal edita desde el panel "Página web" del ERP). La misma página de Nails se
+      # sirve desde la raíz, www y nails a la vez, y durante la migración también desde el
+      # hostname viejo. En el corte limpio se borra el último de la lista; si se borra la
+      # variable entera, el código cae al valor por defecto, que ya son los tres nuevos.
+      - key: SITE_CONTENT_ALLOWED_ORIGIN
+        value: https://dalfistudio.com,https://www.dalfistudio.com,https://nails.dalfistudio.com,https://dalfistudionails.sebengroup.com
       - key: RESERVAPP_PUBLIC_URL
-        value: https://reservapp.sebengroup.com
+        value: https://reservapp.dalfistudio.com
       - key: CHATBOT_BRIDGE_URL
-        value: https://bot.sebengroup.com
+        value: https://bot.dalfistudio.com
       - key: ERP_WEBHOOK_SECRET
         sync: false
       - key: CHATBOT_SECRET

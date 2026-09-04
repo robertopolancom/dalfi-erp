@@ -1,4 +1,34 @@
-# dalfi-erp-closing-cron
+# dalfi-erp-closing-cron — RETIRADO 2026-09-03
+
+> **Este Worker ya no existe en Cloudflare.** Se borró de la cuenta el
+> 2026-09-03 durante la migración a `dalfistudio.com`. No lo vuelvas a
+> desplegar sin leer esto.
+>
+> **Por qué:** llamaba a `POST /api/run-closing-catchup`, que es una Pages
+> Function (`functions/api/run-closing-catchup.js`). El proyecto
+> `dalfi-erp.pages.dev` se borró el 2026-08-24 y el backend vivo de Render
+> (`server/app.mjs`) nunca tuvo esa ruta. Desde entonces el cron disparaba
+> cada noche (03:59 UTC = 23:59 Santo Domingo) contra un dominio muerto:
+> no generaba ningún cierre, solo errores.
+>
+> **Qué haría falta para revivirlo:** portar la lógica de
+> `functions/api/run-closing-catchup.js` (~22 KB, escrita contra Supabase) al
+> backend Express/Neon, y recién ahí volver a desplegar este Worker con
+> `APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"` y un `CLOSING_CRON_SECRET`
+> nuevo. Es un proyecto propio, no un cambio de configuración.
+>
+> **Qué NO se pierde:** `ensureProvisionalClosings()` en `outputs/app.js` corre
+> en cada carga del ERP (línea ~18719, dentro del arranque) y rellena hacia
+> atrás TODAS las fechas vencidas sin cierre, hasta 370 días, creando el par
+> register + treasury por día y guardando con `saveState()`. Ningún cierre sin
+> confirmar se pierde por no tener este Worker: aparecen la próxima vez que
+> alguien abre el ERP.
+>
+> **Lo único que aportaba este Worker** era generarlos a las 23:59 sin que
+> nadie abriera el navegador. Además escribía contra Supabase
+> (`erp_records` + service role key) y los datos vivos están en Neon, así que
+> republicarlo tal cual metería cierres en una base que el ERP ya no lee.
+
 
 Worker de Cloudflare (Cron Trigger) que dispara el catch-up de cierres de
 dalfi-erp cuando nadie tiene el ERP abierto en el navegador. Es un

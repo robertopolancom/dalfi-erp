@@ -49,11 +49,11 @@
 
 // El botón "Reservar" abre ReservApp en un modal incrustado (iframe) en vez de navegar
 // fuera de la página -- la clienta nunca pierde el contexto de la página del estudio.
-// Entrar directo a reservapp.sebengroup.com (sin pasar por aquí) sigue funcionando
+// Entrar directo a reservapp.dalfistudio.com (sin pasar por aquí) sigue funcionando
 // exactamente igual, sin ningún wrapper -- ver outputs/reservar/_headers (frame-ancestors
 // solo permite este dominio, ningún otro puede enmarcar ReservApp).
 (function () {
-  var RESERVAPP_URL = "https://reservapp.sebengroup.com";
+  var RESERVAPP_URL = "https://reservapp.dalfistudio.com";
   var dialog = document.getElementById("reservar-dialog");
   var frame = document.getElementById("reservar-frame");
   var closeBtn = document.getElementById("reservar-close");
@@ -72,13 +72,13 @@
   });
 })();
 
-// Contenido editable desde el panel "Página web" del ERP (ssc.sebengroup.com) -- ver
+// Contenido editable desde el panel "Página web" del ERP (sebensuiteconnect.dalfistudio.com) -- ver
 // GET /api/site-content/dalfistudionails en server/app.mjs. El HTML de arriba ya trae el
 // contenido real como valor por defecto, así que si este fetch falla o tarda la página se ve
 // completa igual -- esto solo la actualiza en el sitio si hay una respuesta válida. El contenido
 // viene de la red, así que nunca se usa innerHTML con él: solo textContent/atributos.
 (function () {
-  var CONTENT_API = "https://ssc.sebengroup.com/api/site-content/dalfistudionails";
+  var CONTENT_API = "https://sebensuiteconnect.dalfistudio.com/api/site-content/dalfistudionails";
 
   function getPath(obj, path) {
     return path.split(".").reduce(function (value, key) {

@@ -1998,7 +1998,7 @@ export class NeonBookingStore {
     return { purgedCount: result.rowCount };
   }
 
-  // Contenido editable de las páginas públicas de marketing (ej. dalfistudionails.sebengroup.com)
+  // Contenido editable de las páginas públicas de marketing (ej. dalfistudio.com)
   // -- un documento JSON por sitio, sin historial (igual que el resto del esquema de este
   // proyecto: la edición sobrescribe, no versiona). Ver GET/PUT /api/site-content/:siteKey.
   async getSiteContent(siteKey) {

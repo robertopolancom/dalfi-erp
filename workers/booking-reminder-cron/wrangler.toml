@@ -11,7 +11,7 @@ compatibility_date = "2026-07-09"
 # dalfi-erp.pages.dev (Cloudflare Pages + Supabase) se eliminó -- la lógica de recordatorios se
 # portó a POST /api/booking/send-reminders en server/app.mjs (ver ahí checkConfirmationReminder).
 [vars]
-APP_BASE_URL = "https://ssc.sebengroup.com"
+APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"
 
 # BOOKING_REMINDER_CRON_SECRET se configura por separado como Secret (nunca
 # en este archivo ni en Git): "wrangler secret put BOOKING_REMINDER_CRON_SECRET".

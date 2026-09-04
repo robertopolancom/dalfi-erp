@@ -4,7 +4,7 @@ La migración se ejecuta primero en la rama `migration-staging`. La rama `main`
 no recibe datos reales hasta completar reconciliación, pruebas funcionales y un
 corte final reversible.
 
-## ⚠️ NO activar `reservapp.sebengroup.com` todavía
+## ⚠️ NO activar `reservapp.dalfistudio.com` todavía
 
 `server/app.mjs` (Render) ya cubre `GET`/`PUT /api/database` (el
 personal SÍ puede leer y guardar — facturación, citas, nómina, cierres —
@@ -23,8 +23,8 @@ Neon (`app.appointments`) y Supabase (documento único vía `erp_records`)
 invisible para el personal que usa `dalfi-erp.pages.dev`, y viceversa.
 
 Mientras esto no esté resuelto (portar los endpoints faltantes a Render),
-NO apuntar el dominio público `reservapp.sebengroup.com` a este
-servicio — solo `ssc.sebengroup.com` (sin difusión pública) para pruebas
+NO apuntar el dominio público `reservapp.dalfistudio.com` a este
+servicio — solo `sebensuiteconnect.dalfistudio.com` (sin difusión pública) para pruebas
 controladas.
 
 ## Reglas

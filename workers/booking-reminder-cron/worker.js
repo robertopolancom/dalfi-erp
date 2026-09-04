@@ -2,7 +2,7 @@
 //
 // Responsabilidad UNICA: en cada disparo, hacer una llamada HTTP autenticada
 // a POST /api/booking/send-reminders en server/app.mjs (Render, dominio
-// ssc.sebengroup.com) para que envie los recordatorios de confirmacion de
+// sebensuiteconnect.dalfistudio.com) para que envie los recordatorios de confirmacion de
 // asistencia de TODA cita futura (sin importar canal de origen) y las
 // escale (liberando su horario) cuando llegan a su hora sin confirmarse.
 // Este Worker NUNCA accede a Neon directamente ni duplica ninguna regla de
@@ -12,7 +12,7 @@
 //
 // Este Worker antes llamaba a dalfi-erp.pages.dev (Cloudflare Pages +
 // Supabase), proyecto ya eliminado -- ahora apunta a APP_BASE_URL
-// (ssc.sebengroup.com) via wrangler.toml, sin cambios en esta logica.
+// (sebensuiteconnect.dalfistudio.com) via wrangler.toml, sin cambios en esta logica.
 
 const DEFAULT_TIMEOUT_MS = 20000;
 

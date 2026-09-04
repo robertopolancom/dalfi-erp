@@ -164,7 +164,7 @@ test("la expresion cron activa vive UNICAMENTE en wrangler.toml, no hardcodeada 
 });
 
 test("APP_BASE_URL en wrangler.toml apunta al backend real (Render + Neon), no a un placeholder", () => {
-  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/ssc\.sebengroup\.com"/);
+  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/sebensuiteconnect\.dalfistudio\.com"/);
 });
 
 test("workers/deposit-review-reminder-cron/README.md no contiene ningun secreto real, solo placeholders", () => {

@@ -1,8 +1,8 @@
 -- Contenido editable de las páginas públicas de marketing (por ahora solo
--- dalfistudionails.sebengroup.com) -- un documento JSON por sitio, sin historial, igual que el
+-- dalfistudio.com) -- un documento JSON por sitio, sin historial, igual que el
 -- resto del esquema de este proyecto: la edición sobrescribe, no versiona. Ver
 -- getSiteContent/saveSiteContent en server/store.mjs y GET/PUT /api/site-content/:siteKey en
--- server/app.mjs. El panel de administración vive en el ERP (ssc.sebengroup.com), gateado por
+-- server/app.mjs. El panel de administración vive en el ERP (sebensuiteconnect.dalfistudio.com), gateado por
 -- canManageConfiguration -- ver functions/api/_lib/authz.js.
 create table if not exists app.site_content (
   site_key text primary key,

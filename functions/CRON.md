@@ -52,7 +52,7 @@ como pide el encargo de este cambio.
   - **escalar a un agente humano** (`booking.preapproved_escalation`) cuando
     la hora de la cita ya llego y sigue sin confirmarse en el salon.
 
-  Ambos casos llaman a `POST https://bot.sebengroup.com/webhook/overdue-reminders`
+  Ambos casos llaman a `POST https://bot.dalfistudio.com/webhook/overdue-reminders`
   del Chatbot Bridge, autenticado con `env.ERP_WEBHOOK_SECRET` (cabecera
   `x-webhook-secret`, el mismo secreto compartido que usa
   `notify-invoice-sent.js`). El progreso de cada cita (`lastReminderCycleSent`,
@@ -81,7 +81,7 @@ ERP_WEBHOOK_SECRET = <el mismo secreto compartido que se configuro en el .env
 ```
 
 `CHATBOT_BRIDGE_URL` no hace falta configurarla salvo que el bridge deje de
-vivir en `https://bot.sebengroup.com` — tanto `send-reminders.js` como
+vivir en `https://bot.dalfistudio.com` — tanto `send-reminders.js` como
 `notify-invoice-sent.js` usan ese dominio por defecto si la variable no esta
 presente.
 

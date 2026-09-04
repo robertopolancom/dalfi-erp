@@ -2,7 +2,7 @@
 
 Worker de Cloudflare (Cron Trigger) que dispara la limpieza diaria de fotos de comprobantes de
 depósito ya resueltas -- mismo patrón que `workers/booking-reminder-cron/`, aplicado a
-`POST /api/booking/purge-deposit-receipts` en `server/app.mjs` (Render + Neon, `ssc.sebengroup.com`).
+`POST /api/booking/purge-deposit-receipts` en `server/app.mjs` (Render + Neon, `sebensuiteconnect.dalfistudio.com`).
 
 ## Por qué existe
 
@@ -48,7 +48,7 @@ solapadas, nunca fallan ni vuelven a tocar un comprobante ya purgado.
 
 - `worker.js`: el Worker (`export default { async scheduled(...) }`).
 - `wrangler.toml`: configuración de Wrangler (variable NO secreta
-  `APP_BASE_URL = "https://ssc.sebengroup.com"`; Cron Trigger activo una vez al día).
+  `APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"`; Cron Trigger activo una vez al día).
 - `package.json`: solo declara `"type": "module"` (sin dependencias).
 - `tests/worker.test.js`: pruebas con `fetch` mockeado, sin red real.
 
@@ -86,7 +86,7 @@ activa al desplegar.
 ## 4. Probar manualmente una ejecución
 
 ```bash
-curl -X POST "https://ssc.sebengroup.com/api/booking/purge-deposit-receipts" \
+curl -X POST "https://sebensuiteconnect.dalfistudio.com/api/booking/purge-deposit-receipts" \
   -H "x-cron-secret: <el mismo valor configurado en los pasos 1 y 2>"
 ```
 

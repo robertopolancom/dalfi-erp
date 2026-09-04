@@ -1,5 +1,5 @@
 // Panel de administración "Página web" (ERP) para editar el contenido de
-// dalfistudionails.sebengroup.com sin tocar código -- ver GET/PUT /api/site-content/:siteKey en
+// dalfistudio.com sin tocar código -- ver GET/PUT /api/site-content/:siteKey en
 // server/app.mjs y getSiteContent/saveSiteContent en server/store.mjs. GET es público (lo consume
 // la página pública en cada carga); PUT exige canManageConfiguration.
 

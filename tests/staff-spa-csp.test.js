@@ -1,5 +1,5 @@
 // Cobertura del hallazgo "Atención" de la auditoría de seguridad (2026-08-23): la SPA del
-// personal en ssc.sebengroup.com no tenía Content-Security-Policy ni frame-ancestors, a
+// personal en sebensuiteconnect.dalfistudio.com no tenía Content-Security-Policy ni frame-ancestors, a
 // diferencia de ReservApp que ya lo tiene vía outputs/reservar/_headers.
 
 import assert from "node:assert/strict";

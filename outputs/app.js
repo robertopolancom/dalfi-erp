@@ -4971,7 +4971,7 @@ async function saveBusinessSchedule(event) {
   if (submitButton) submitButton.disabled = false;
 }
 
-// Contenido editable de dalfistudionails.sebengroup.com (ver GET/PUT /api/site-content/:siteKey
+// Contenido editable de dalfistudio.com (ver GET/PUT /api/site-content/:siteKey
 // en server/app.mjs). A diferencia del resto de este archivo, esto NO vive en `database.data` --
 // es un documento aparte en Neon, así que se carga con fetch propio al entrar a la vista (ver
 // switchToView) en vez de venir ya resuelto desde /api/database al arrancar la app.

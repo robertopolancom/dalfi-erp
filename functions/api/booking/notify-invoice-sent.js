@@ -34,7 +34,7 @@ export async function onRequestPost({ request, env }) {
     return json({ error: "Falta configurar ERP_WEBHOOK_SECRET en Cloudflare Pages." }, 500);
   }
 
-  const bridgeBase = (env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+  const bridgeBase = (env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
   const safeFetch = env.fetch || fetch;
 
   let response;

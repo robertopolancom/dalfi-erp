@@ -105,7 +105,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   });
   app.use(express.json({ limit: MAX_BODY_BYTES }));
   app.use(["/api/fast-booking", "/api/reservapp"], (req, res, next) => {
-    const allowedOrigin = String(env.FAST_BOOKING_ORIGIN || "https://reservapp.sebengroup.com").replace(/\/$/, "");
+    const allowedOrigin = String(env.FAST_BOOKING_ORIGIN || "https://reservapp.dalfistudio.com").replace(/\/$/, "");
     const origin = String(req.get("origin") || "").replace(/\/$/, "");
     if (origin && origin === allowedOrigin) {
       res.set("Access-Control-Allow-Origin", allowedOrigin);
@@ -120,15 +120,24 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     }
     next();
   });
-  // GET /api/site-content/:siteKey lo consume dalfistudionails.sebengroup.com desde su propio
+  // GET /api/site-content/:siteKey lo consume dalfistudio.com desde su propio
   // origen (Cloudflare Worker aparte, no este servidor) -- a diferencia del resto del ERP, sí
   // necesita CORS para que el navegador deje leer la respuesta. Es contenido público de solo
   // lectura, sin cookies/Authorization, así que no lleva Allow-Credentials.
   app.use("/api/site-content", (req, res, next) => {
-    const allowedOrigin = String(env.SITE_CONTENT_ALLOWED_ORIGIN || "https://dalfistudionails.sebengroup.com").replace(/\/$/, "");
+    // La misma página de Nails se sirve desde varios hostnames a la vez (raíz, www y
+    // nails), así que esto acepta una LISTA separada por comas y devuelve el origen que
+    // coincidió -- nunca "*", porque entonces cualquier sitio podría leer la respuesta.
+    const allowedOrigins = String(
+      env.SITE_CONTENT_ALLOWED_ORIGIN ||
+        "https://dalfistudio.com,https://www.dalfistudio.com,https://nails.dalfistudio.com",
+    )
+      .split(",")
+      .map((value) => value.trim().replace(/\/$/, ""))
+      .filter(Boolean);
     const origin = String(req.get("origin") || "").replace(/\/$/, "");
-    if (origin && origin === allowedOrigin) {
-      res.set("Access-Control-Allow-Origin", allowedOrigin);
+    if (origin && allowedOrigins.includes(origin)) {
+      res.set("Access-Control-Allow-Origin", origin);
       res.set("Access-Control-Allow-Methods", "GET,OPTIONS");
       res.vary("Origin");
     }
@@ -136,8 +145,8 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     next();
   });
   app.use((req, res, next) => {
-    const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.sebengroup.com").toLowerCase();
-    const suiteHost = String(env.SEBEN_SUITE_HOST || "ssc.sebengroup.com").toLowerCase();
+    const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.dalfistudio.com").toLowerCase();
+    const suiteHost = String(env.SEBEN_SUITE_HOST || "sebensuiteconnect.dalfistudio.com").toLowerCase();
     const requestHost = String(req.hostname || "").toLowerCase();
     if (requestHost === bookingHost && req.path === "/") return res.redirect(302, "/reservar/");
     if (requestHost === suiteHost) res.set("X-Seben-Application", "Seben Suite Connect");
@@ -302,7 +311,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   const sendSetupWhatsApp = async ({ outboxId, phone, code, name, purpose = "setup" }) => {
     const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
     if (!bridgeSecret) return { status: "pending_configuration" };
-    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
     // El siguiente paso (verify-code -> complete-setup) es idéntico para setup y reset -- solo
     // cambia este texto para no confundir a alguien restableciendo su contraseña con el
     // mensaje de "primera vez".
@@ -349,7 +358,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   const sendRelayOtpWhatsApp = async ({ outboxId, phone, code, name }) => {
     const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
     if (!bridgeSecret) return { status: "pending_configuration" };
-    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
     try {
       const response = await fetchImpl(`${bridgeBase}/webhook/reservapp-activation`, {
         method: "POST",
@@ -385,7 +394,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   const sendConfirmationReminderWhatsApp = async ({ reservationId, phone, clientName, date, time, service, stage }) => {
     const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
     if (!bridgeSecret) return { ok: false, reason: "pending_configuration" };
-    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
     const text = stage === "second"
       ? `Hola ${clientName || ""}. Tu cita de ${service || "tu servicio"} el ${date} a las ${time} está a punto de liberarse porque no hemos recibido tu confirmación. Responde "1" para confirmar tu hora ahora mismo, o la podríamos ofrecer a otro cliente.`.trim()
       : `Hola ${clientName || ""}. Recuerda tu cita de ${service || "tu servicio"} hoy/mañana ${date} a las ${time}. Responde "1" para confirmar tu asistencia o "2" para reagendar.`.trim();
@@ -1135,7 +1144,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         const { allowed } = await resolveAdminAuthority(req);
         if (!allowed) return res.status(403).json({ error: "Solo administración puede generar el banner." });
         const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
-        const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+        const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
         const response = await fetchImpl(`${bridgeBase}/webhook/generate-banner`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },

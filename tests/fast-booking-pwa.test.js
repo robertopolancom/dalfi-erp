@@ -252,7 +252,7 @@ test("el subdominio reservapp abre directamente la PWA", async () => {
   await withServer(async (base) => {
     const url = new URL(base);
     const response = await new Promise((resolve, reject) => {
-      const request = http.get({ hostname: url.hostname, port: url.port, path: "/", headers: { Host: "reservapp.sebengroup.com" } }, resolve);
+      const request = http.get({ hostname: url.hostname, port: url.port, path: "/", headers: { Host: "reservapp.dalfistudio.com" } }, resolve);
       request.on("error", reject);
     });
     assert.equal(response.statusCode, 302);
@@ -261,11 +261,11 @@ test("el subdominio reservapp abre directamente la PWA", async () => {
   });
 });
 
-test("ssc.sebengroup.com conserva la portada ERP de Seben Suite Connect", async () => {
+test("sebensuiteconnect.dalfistudio.com conserva la portada ERP de Seben Suite Connect", async () => {
   await withServer(async (base) => {
     const url = new URL(base);
     const response = await new Promise((resolve, reject) => {
-      const request = http.get({ hostname: url.hostname, port: url.port, path: "/", headers: { Host: "ssc.sebengroup.com" } }, resolve);
+      const request = http.get({ hostname: url.hostname, port: url.port, path: "/", headers: { Host: "sebensuiteconnect.dalfistudio.com" } }, resolve);
       request.on("error", reject);
     });
     assert.notEqual(response.statusCode, 302);
@@ -276,11 +276,11 @@ test("ssc.sebengroup.com conserva la portada ERP de Seben Suite Connect", async 
 
 test("la API permite CORS solamente a ReservApp", async () => {
   await withServer(async (base) => {
-    const allowed = await fetch(`${base}/api/fast-booking/catalog`, { headers: { Origin: "https://reservapp.sebengroup.com" } });
-    assert.equal(allowed.headers.get("access-control-allow-origin"), "https://reservapp.sebengroup.com");
+    const allowed = await fetch(`${base}/api/fast-booking/catalog`, { headers: { Origin: "https://reservapp.dalfistudio.com" } });
+    assert.equal(allowed.headers.get("access-control-allow-origin"), "https://reservapp.dalfistudio.com");
     const denied = await fetch(`${base}/api/fast-booking/catalog`, { headers: { Origin: "https://malicioso.example" } });
     assert.equal(denied.headers.get("access-control-allow-origin"), null);
-    const preflight = await fetch(`${base}/api/fast-booking/appointments`, { method: "OPTIONS", headers: { Origin: "https://reservapp.sebengroup.com", "Access-Control-Request-Method": "POST" } });
+    const preflight = await fetch(`${base}/api/fast-booking/appointments`, { method: "OPTIONS", headers: { Origin: "https://reservapp.dalfistudio.com", "Access-Control-Request-Method": "POST" } });
     assert.equal(preflight.status, 204);
   });
 });

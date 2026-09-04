@@ -83,7 +83,7 @@ export async function onRequestPost({ request, env }) {
   if (!supabaseUrl || !serviceRoleKey) return json({ error: "Faltan variables privadas de Supabase en Cloudflare Pages." }, 500);
   if (!env.ERP_WEBHOOK_SECRET) return json({ error: "Falta configurar ERP_WEBHOOK_SECRET en Cloudflare Pages." }, 500);
 
-  const bridgeBase = (env.CHATBOT_BRIDGE_URL || "https://bot.sebengroup.com").replace(/\/$/, "");
+  const bridgeBase = (env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
   const bridgeUrl = `${bridgeBase}/webhook/overdue-reminders`;
 
   let document;

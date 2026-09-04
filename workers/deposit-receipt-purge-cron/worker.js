@@ -2,7 +2,7 @@
 //
 // Responsabilidad UNICA: en cada disparo, hacer una llamada HTTP autenticada a
 // POST /api/booking/purge-deposit-receipts en server/app.mjs (Render, dominio
-// ssc.sebengroup.com) para que borre SOLO la foto (nunca la fila ni la cita) del comprobante de
+// sebensuiteconnect.dalfistudio.com) para que borre SOLO la foto (nunca la fila ni la cita) del comprobante de
 // depósito de citas que llevan 5+ días Atendidas o Canceladas. Este Worker NUNCA accede a Neon
 // directamente ni duplica ninguna regla de negocio (qué cuenta como "5 días", qué estados
 // disparan la limpieza, etc.): toda esa lógica vive en server/store.mjs
