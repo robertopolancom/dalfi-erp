@@ -87,13 +87,22 @@ Con esto `sebengroup.com` queda solo con lo de SEBEN: `cash`,
 
 ### La regla
 
-Nunca asumir el género del cliente en texto visible. La forma femenina solo se
-usa si el sistema **de verdad** conoce el género de esa persona. El salón atiende
-sobre todo mujeres, pero también hombres, y darles el femenino por defecto en un
-correo es un error que el cliente ve.
+**"Cliente" es la forma por defecto, para todo el mundo.** No es un parche
+neutro ni un circunloquio: es la forma inclusiva, y sirve tanto para mujeres
+como para hombres. Se escribe "cliente" y ya está — no "el/la cliente", no
+"la persona que reserva", no "cliente/a".
 
-Hoy **todo el producto es neutro**, que es el comportamiento correcto por
-defecto. Está cubierto por la prueba `"ReservApp ya no dice 'clienta'…"` en
+**"Clienta" solo se usa donde conste que esa persona es mujer.** Es la
+excepción, y exige que el sistema lo sepa de verdad: sexo declarado en la ficha.
+Nunca por inferencia del nombre, ni porque el salón atienda sobre todo mujeres.
+
+El motivo es concreto: Dalfi Studio Nails también atiende hombres, y decirle
+"clienta" a un hombre en un correo o un WhatsApp es un error que él ve. La
+asimetría importa — llamar "cliente" a una mujer es correcto e inclusivo;
+llamar "clienta" a un hombre es un fallo.
+
+Hoy **todo el producto dice "cliente"**, que es exactamente el comportamiento
+correcto. Está cubierto por la prueba `"ReservApp ya no dice 'clienta'…"` en
 `tests/reservapp-admin-delete.test.js`, que es deliberadamente estricta —
 rechaza la palabra incluso en comentarios nuevos. **Dejarla así**: si un cambio
 la rompe, se reformula el texto, no se relaja la prueba.
@@ -121,7 +130,11 @@ la interfaz, donde el texto es genérico y no va dirigido a una persona concreta
 
 ### La condición que no se puede saltar
 
-**Siempre caer en neutro cuando el campo diga "No especificado"**, que es el
+**Siempre decir "cliente" cuando el campo diga "No especificado"**, que es el
 valor por defecto del formulario y probablemente el de la mayoría de las fichas
-ya existentes. La rama con género es la excepción, no la norma: si se invierte,
-el resultado es peor que dejarlo todo neutro como está hoy.
+ya existentes. Y "cliente" también, obviamente, cuando diga "Masculino".
+
+La rama femenina es la excepción y se activa con una sola condición: sexo
+declarado "Femenino". Si esa condición se implementa al revés — femenino por
+defecto y masculino como excepción — el resultado es peor que dejarlo todo como
+está hoy, porque el fallo cae justo sobre quien menos lo espera.
