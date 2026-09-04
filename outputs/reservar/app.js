@@ -1,7 +1,46 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null, appointmentDetailId: null, preferredAgendaStaffId: null };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null, appointmentDetailId: null, preferredAgendaStaffId: null, language: "es" };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
+
+// Botón EN/ES junto al login -- solo traduce el flujo de reserva/registro/"Mis citas" de la
+// cliente (pedido explícito); la agenda y "Configuración de usuarios" del personal se quedan en
+// español siempre, por eso el botón se oculta para cuentas de personal (ver applyAccount). Dos
+// mecanismos conviven: t(es, en) para texto armado en JS en tiempo de ejecución (plantillas con
+// variables), y el atributo data-en en el HTML para texto estático -- applyLanguage() recorre
+// [data-en] y guarda el español original en data-es la primera vez, para poder volver a español
+// sin recargar la página.
+function t(es, en) {
+  return state.language === "en" ? en : es;
+}
+
+function applyLanguage(lang) {
+  state.language = lang;
+  try { localStorage.setItem("reservapp_lang", lang); } catch { /* modo privado o cuota llena -- no afecta la sesión actual */ }
+  document.querySelectorAll("[data-en]").forEach((el) => {
+    if (el.dataset.es === undefined) el.dataset.es = el.textContent;
+    el.textContent = lang === "en" ? el.dataset.en : el.dataset.es;
+  });
+  document.querySelectorAll("[data-en-placeholder]").forEach((el) => {
+    if (el.dataset.esPlaceholder === undefined) el.dataset.esPlaceholder = el.getAttribute("placeholder") || "";
+    el.setAttribute("placeholder", lang === "en" ? el.dataset.enPlaceholder : el.dataset.esPlaceholder);
+  });
+  $("lang-toggle").textContent = lang === "en" ? "ES" : "EN";
+  $("lang-toggle").setAttribute("aria-label", lang === "en" ? "Cambiar a español" : "Switch to English");
+  document.documentElement.lang = lang;
+  // mode-label ("Reserva rápida"/"Mi reserva") y agenda-tab ("Citas activas") los arma
+  // applyAccount() con t(), no [data-en] -- sin este re-aplique, un toggle después de que ya
+  // cargó la sesión los dejaba pegados en el idioma con el que se pintaron la última vez
+  // (bug real, encontrado probando el toggle a mano antes de dar esto por terminado).
+  applyAccount(state.account);
+  // Contenido ya pintado en pantalla que no pasa por [data-en] (tarjetas/mensajes generados en
+  // JS con fechas/horas formateadas o plantillas con variables) -- se vuelve a pedir/pintar para
+  // que refleje el idioma nuevo sin tener que recargar la página.
+  if (!$("client-appointments-card").classList.contains("hidden")) loadMyAppointments(state.myAppointmentsScope || "active");
+  if (!$("booking-card").classList.contains("hidden") && state.wizardStep === 3) loadAvailability();
+  if (!$("success-card").classList.contains("hidden")) renderBankAccounts($("success-bank-accounts"));
+}
+$("lang-toggle").addEventListener("click", () => applyLanguage(state.language === "en" ? "es" : "en"));
 
 const api = async (path, options = {}) => {
   const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...(options.headers || {}) };
@@ -46,7 +85,7 @@ const employeeRoles = new Set(["manicurista", "asistente", "administradora", "su
 
 function setClient(client) {
   state.client = client;
-  $("selected-client").textContent = `✓ Cliente: ${client.name || client.firstName}`;
+  $("selected-client").textContent = t(`✓ Cliente: ${client.name || client.firstName}`, `✓ Client: ${client.name || client.firstName}`);
   $("selected-client").classList.remove("hidden");
   $("progress-bar").style.width = "78%";
 }
@@ -54,8 +93,12 @@ function setClient(client) {
 function applyAccount(account) {
   state.account = account;
   state.client = isClientRole(account?.role) ? { id: account.clientId, name: account.name } : null;
-  $("account-button").textContent = account ? account.name : "Entrar";
+  $("account-button").textContent = account ? account.name : t("Entrar", "Log in");
   $("logout-link").classList.toggle("hidden", !account);
+  // El botón de idioma solo traduce el flujo del cliente (reserva/registro/Mis citas) -- para
+  // el personal se oculta, ya que su pantalla (agenda/Configuración de usuarios) se queda en
+  // español siempre y un botón que no hace nada visible ahí solo confundiría.
+  $("lang-toggle").classList.toggle("hidden", Boolean(account) && employeeRoles.has(account.role));
   // Agenda/panel de personal es una función de cuenta identificada -- sin sesión no debe ni
   // aparecer el botón (pedido explícito de diseño).
   $("agenda-tab").classList.toggle("hidden", !account);
@@ -73,8 +116,8 @@ function applyAccount(account) {
   // colaboradora, desde "Configuración de usuarios" -> Horarios).
   $("open-my-availability").classList.toggle("hidden", !isAdmin);
   $("admin-panel").classList.add("hidden"); // siempre arranca cerrado, se abre con el botón de arriba
-  $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : "Citas activas";
-  $("mode-label").textContent = !account ? "Reserva rápida" : isClientRole(account.role) ? "Mi reserva" : "Reserva del equipo";
+  $("agenda-tab").textContent = account && employeeRoles.has(account.role) ? "Panel de colaboradores" : t("Citas activas", "Active appointments");
+  $("mode-label").textContent = !account ? t("Reserva rápida", "Quick booking") : isClientRole(account.role) ? t("Mi reserva", "My booking") : "Reserva del equipo";
   if (state.client) setClient(state.client); else $("selected-client").classList.add("hidden");
   // Cuentas de personal aterrizan directo en el panel de colaboradores (agenda) -- ya no en el
   // wizard de reserva del cliente -- pedido explícito de diseño.
@@ -84,7 +127,9 @@ function applyAccount(account) {
 function updateServiceSummary() {
   const services = selectedServices();
   const duration = services.reduce((sum, item) => sum + item.durationMinutes, 0);
-  $("service-summary").firstElementChild.textContent = services.length ? `${services.length} servicio${services.length === 1 ? "" : "s"}` : "Selecciona uno o más servicios";
+  $("service-summary").firstElementChild.textContent = services.length
+    ? t(`${services.length} servicio${services.length === 1 ? "" : "s"}`, `${services.length} service${services.length === 1 ? "" : "s"}`)
+    : t("Selecciona uno o más servicios", "Select one or more services");
   // Sin precio a propósito: los precios los confirma una asesora (misma política que el
   // chatbot de WhatsApp), no se cotizan solos en la app.
   $("service-summary").lastElementChild.textContent = `${duration} min`;
@@ -106,7 +151,7 @@ function goToStep(step) {
 }
 
 function formatSlotTime(time) {
-  return new Date(`2000-01-01T${time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
+  return new Date(`2000-01-01T${time}:00`).toLocaleTimeString(state.language === "en" ? "en-US" : "es-DO", { hour: "numeric", minute: "2-digit" });
 }
 
 // Antes de pedir identificación, recuerda al cliente exactamente qué eligió -- con varios
@@ -118,13 +163,13 @@ function renderBookingSelectionSummary() {
   const target = $("booking-selection-summary");
   if (Array.isArray(state.fallbackSegments) && state.fallbackSegments.length) {
     target.textContent = state.fallbackSegments
-      .map((seg) => `${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`)
+      .map((seg) => t(`${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`, `${seg.serviceName} with ${seg.staffName} at ${formatSlotTime(seg.time)}`))
       .join(" · ");
     return;
   }
   if (state.selectedSlot) {
     const names = selectedServices().map((item) => item.name).join(", ");
-    target.textContent = `${names} con ${state.selectedSlot.staffName} a las ${formatSlotTime(state.selectedSlot.time)}`;
+    target.textContent = t(`${names} con ${state.selectedSlot.staffName} a las ${formatSlotTime(state.selectedSlot.time)}`, `${names} with ${state.selectedSlot.staffName} at ${formatSlotTime(state.selectedSlot.time)}`);
     return;
   }
   target.textContent = "";
@@ -170,7 +215,7 @@ async function loadCatalog() {
     // Mismo criterio que el banner promocional: sin mensaje publicado, el elemento se queda
     // oculto y la página se ve igual que antes de que existiera esta función.
     renderInfoBanner(state.catalog.infoBanner?.text);
-  } catch { message($("booking-message"), "No pudimos cargar la agenda. Intenta nuevamente."); }
+  } catch { message($("booking-message"), t("No pudimos cargar la agenda. Intenta nuevamente.", "We couldn't load the schedule. Please try again.")); }
 }
 
 async function loadSession() {
@@ -204,7 +249,7 @@ function renderStaffSlotsBoard(slots, onPick) {
     const list = document.createElement("div"); list.className = "slots"; column.append(list);
     for (const slot of group.slots) {
       const button = document.createElement("button"); button.type = "button"; button.className = "slot";
-      button.textContent = new Date(`2000-01-01T${slot.time}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" });
+      button.textContent = formatSlotTime(slot.time);
       button.addEventListener("click", () => {
         document.querySelectorAll(".slot").forEach((item) => item.classList.remove("selected"));
         button.classList.add("selected");
@@ -234,17 +279,17 @@ function renderStaffSlotsBoard(slots, onPick) {
 // horario para todo el bloque, con una sola manicurista que sepa hacer todos los servicios
 // elegidos, en vez de repartirlos en horarios sueltos.
 async function loadSingleAvailability(serviceIds, date) {
-  $("step3-heading").textContent = "Paso 3 · Elige horario y manicurista";
-  message($("availability-message"), "Consultando agenda…", true);
+  $("step3-heading").textContent = t("Paso 3 · Elige horario y manicurista", "Step 3 · Choose a time and manicurist");
+  message($("availability-message"), t("Consultando agenda…", "Checking schedule…"), true);
   $("staff-slots-board").replaceChildren();
   $("availability-fallback").replaceChildren();
   try {
     const result = await api(`/api/fast-booking/availability?serviceIds=${encodeURIComponent(serviceIds.join(","))}&date=${date}`);
     if (serviceIds.length > 1 && result.durationMinutes) {
-      $("step3-heading").textContent = `Paso 3 · Elige horario y manicurista (${result.durationMinutes} min en total)`;
+      $("step3-heading").textContent = t(`Paso 3 · Elige horario y manicurista (${result.durationMinutes} min en total)`, `Step 3 · Choose a time and manicurist (${result.durationMinutes} min total)`);
     }
     if (!result.slots.length) {
-      message($("availability-message"), "No quedan horarios para este día con ninguna manicurista. Prueba otra fecha.");
+      message($("availability-message"), t("No quedan horarios para este día con ninguna manicurista. Prueba otra fecha.", "No times are left this day with any manicurist. Try another date."));
       if (result.fallback) renderAvailabilityFallback(result.fallback);
       return;
     }
@@ -267,25 +312,25 @@ function renderAvailabilityFallback(fallback) {
   const box = document.createElement("div"); box.className = "client-box";
   if (!fallback || fallback.tier === "contact_agent") {
     const p = document.createElement("p");
-    p.append("No encontramos cómo acomodar todos los servicios ese día. ");
-    p.append(Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: "Escríbenos por WhatsApp" }));
-    p.append(" y una asesora revisa la agenda contigo.");
+    p.append(t("No encontramos cómo acomodar todos los servicios ese día. ", "We couldn't find a way to fit all the services that day. "));
+    p.append(Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: t("Escríbenos por WhatsApp", "Message us on WhatsApp") }));
+    p.append(t(" y una asesora revisa la agenda contigo.", " and an advisor will review the schedule with you."));
     box.append(p);
     container.append(box);
     return;
   }
   const intro = document.createElement("p");
   intro.textContent = fallback.tier === "same_staff_gap"
-    ? "No hay un horario 100% continuo ese día con una sola manicurista, pero sí podemos hacerlo así, con espera entre servicios:"
-    : "No hay con la misma manicurista ese día, pero sí repartido entre distintas manicuristas así:";
+    ? t("No hay un horario 100% continuo ese día con una sola manicurista, pero sí podemos hacerlo así, con espera entre servicios:", "There's no fully continuous time that day with a single manicurist, but we can do it this way, with a wait between services:")
+    : t("No hay con la misma manicurista ese día, pero sí repartido entre distintas manicuristas así:", "Not with the same manicurist that day, but split between different manicurists like this:");
   box.append(intro);
   const summary = document.createElement("p");
   const strong = document.createElement("strong");
-  strong.textContent = fallback.segments.map((seg) => `${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`).join(" · ");
+  strong.textContent = fallback.segments.map((seg) => t(`${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`, `${seg.serviceName} with ${seg.staffName} at ${formatSlotTime(seg.time)}`)).join(" · ");
   summary.append(strong);
   box.append(summary);
   const confirmButton = document.createElement("button"); confirmButton.type = "button"; confirmButton.className = "primary";
-  confirmButton.textContent = "Confirmar este horario";
+  confirmButton.textContent = t("Confirmar este horario", "Confirm this time");
   confirmButton.addEventListener("click", () => {
     state.fallbackSegments = fallback.segments.map((seg) => ({
       serviceIds: [seg.serviceId], staffId: seg.staffId, date: $("date").value, time: seg.time,
@@ -311,9 +356,9 @@ async function loadAvailability() {
 }
 
 function requireBookingSelection(targetMessage) {
-  if (!selectedServiceIds().length) { message(targetMessage, "Selecciona al menos un servicio."); return false; }
+  if (!selectedServiceIds().length) { message(targetMessage, t("Selecciona al menos un servicio.", "Select at least one service.")); return false; }
   if (Array.isArray(state.fallbackSegments) && state.fallbackSegments.length) return true;
-  if (!$("staff").value || !$("date").value || !$("time").value) { message(targetMessage, "Selecciona manicurista, fecha y hora."); return false; }
+  if (!$("staff").value || !$("date").value || !$("time").value) { message(targetMessage, t("Selecciona manicurista, fecha y hora.", "Select manicurist, date, and time.")); return false; }
   return true;
 }
 
@@ -339,7 +384,7 @@ function setupPayload() {
   };
 }
 
-const APPOINTMENT_STATUS_LABEL = { scheduled: "Programada", confirmed: "Confirmada", cancelled: "Cancelada", completed: "Atendida" };
+const APPOINTMENT_STATUS_LABEL = { scheduled: "Programada", confirmed: "Confirmada", cancelled: "Cancelada", completed: "Atendida", no_show: "No asistió" };
 
 // "Retrasada" nunca se guarda -- se calcula aquí comparando la hora actual contra la hora de
 // inicio de la cita, para una Programada/Confirmada que todavía no se marcó Atendida/Cancelada.
@@ -358,6 +403,16 @@ function displayAppointmentStatusLabel(item, now = new Date()) {
   return APPOINTMENT_STATUS_LABEL[item.status] || item.status || "—";
 }
 
+function formatIsoTimeLocal(iso) {
+  return new Date(iso).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit", timeZone: "America/Santo_Domingo" });
+}
+
+const ADMIN_ROLES = new Set(["administradora", "superadministrador"]);
+// Comprobante subido, todavía sin que administración decida -- los mismos dos deposit_status que
+// ya usa DEPOSIT_UPLOADABLE_STATES del lado contrario (aquí lo que puede ENTRAR a revisión, no lo
+// que puede volver a subirse).
+const DEPOSIT_REVIEWABLE_STATES = new Set(["ComprobanteRecibido", "PendienteVerificacion"]);
+
 function openAppointmentDetail(item) {
   $("appointment-detail-time").textContent = `${item.start_time} – ${item.end_time}`;
   const rows = [
@@ -371,27 +426,72 @@ function openAppointmentDetail(item) {
   if (item.notes) rows.push(["Nota", item.notes]);
   if (item.group_id) rows.push(["Servicio combinado", "Sí, con más de una manicurista"]);
   if (Number(item.deposit_amount) > 0) rows.push(["Depósito", `RD$${item.deposit_amount} (${item.deposit_status || "pendiente"})`]);
+  // moved_from lo pone resolveDisplacedAppointments (server/store.mjs) cuando esta cita perdió su
+  // horario porque otra, con el mismo staff+hora, se confirmó primero (permitido a propósito
+  // desde la migración 0024) -- hay que escribirle al cliente a confirmar si el nuevo horario le
+  // sirve, así que se deja bien visible en el detalle, no solo como nota en el calendario.
+  if (item.moved_from) {
+    rows.push(["Cita movida", `Se movió de las ${formatIsoTimeLocal(item.moved_from.originalStartsAt)} -- el horario original lo confirmó otro cliente. Escríbele para confirmar si le sirve esta hora.`]);
+  }
   $("appointment-detail-body").replaceChildren(...rows.flatMap(([label, value]) => {
     const dt = document.createElement("dt"); dt.textContent = label;
     const dd = document.createElement("dd"); dd.textContent = value;
     return [dt, dd];
   }));
   state.appointmentDetailId = item.id;
-  const cancellable = !["cancelled", "completed"].includes(item.status);
+  const cancellable = !["cancelled", "completed", "no_show"].includes(item.status);
   $("appointment-cancel-toggle").classList.toggle("hidden", !cancellable);
   $("appointment-cancel-confirm").classList.add("hidden");
   $("appointment-cancel-reason").value = "";
   // Cambiar estatus con un click es solo para personal -- nunca para una cliente viendo su
   // propia cita en "Mis citas" (mismo criterio de rol que ya usa employeeRoles en toda la app).
   const isStaff = state.account && employeeRoles.has(state.account.role);
+  // Confirmar asistencia (autorizar sin depósito) y Confirmar depósito deciden si un horario
+  // queda apartado -- solo administración, nunca manicurista/asistente (pedido explícito, mismo
+  // guard que ya aplica el servidor en POST .../status y .../deposit/review). Manicurista/
+  // asistente solo ven Atendida/No asistió, uno al lado del otro.
+  const isAdmin = Boolean(state.account) && ADMIN_ROLES.has(state.account.role);
   $("appointment-status-actions").classList.toggle("hidden", !isStaff);
   if (isStaff) {
-    $("appointment-mark-confirmed").classList.toggle("hidden", item.status !== "scheduled");
-    $("appointment-mark-attended").classList.toggle("hidden", !["scheduled", "confirmed"].includes(item.status));
+    $("appointment-mark-confirmed").classList.toggle("hidden", !isAdmin || item.status !== "scheduled");
+    const canMarkOutcome = ["scheduled", "confirmed"].includes(item.status);
+    $("appointment-mark-attended").classList.toggle("hidden", !canMarkOutcome);
+    $("appointment-mark-no-show").classList.toggle("hidden", !canMarkOutcome);
   }
+  renderDepositReview(item, isAdmin);
   message($("appointment-cancel-message"));
   $("appointment-detail-dialog").showModal();
 }
+
+// Sección "Confirmar cita": solo administración, y solo si hay un comprobante subido esperando
+// revisión -- no muestra la foto (la revisión real del comprobante pasa fuera de la app, por
+// donde lo haya recibido administración); esto solo deja confirmar/rechazar una vez ya lo
+// revisó. El calendario ya avisa "Comprobante recibido" para que sepa que hay algo que revisar
+// antes de entrar aquí (ver layoutOverlappingItems más abajo).
+function renderDepositReview(item, isAdmin) {
+  const box = $("appointment-deposit-review");
+  const shouldShow = isAdmin && DEPOSIT_REVIEWABLE_STATES.has(item.deposit_status);
+  box.classList.toggle("hidden", !shouldShow);
+  message($("appointment-deposit-message"));
+}
+
+async function reviewAppointmentDeposit(approve, button) {
+  button.disabled = true;
+  message($("appointment-deposit-message"), approve ? "Confirmando…" : "Rechazando…", true);
+  try {
+    const result = await api(`/api/reservapp/agenda/appointments/${state.appointmentDetailId}/deposit/review`, {
+      method: "POST", body: JSON.stringify({ approve }),
+    });
+    $("appointment-detail-dialog").close();
+    if (result.appointment?.displaced?.length) {
+      message($("agenda-message"), `Depósito confirmado. Se movió automáticamente ${result.appointment.displaced.length === 1 ? "1 cita" : `${result.appointment.displaced.length} citas`} que compartían ese horario -- revisa "Cita movida" en el calendario.`, true);
+    }
+    loadAgendaView();
+  } catch (error) { message($("appointment-deposit-message"), error.message); }
+  finally { button.disabled = false; }
+}
+$("appointment-deposit-approve").addEventListener("click", (event) => reviewAppointmentDeposit(true, event.currentTarget));
+$("appointment-deposit-reject").addEventListener("click", (event) => reviewAppointmentDeposit(false, event.currentTarget));
 
 // Vista de calendario del día: una columna por manicurista, citas posicionadas por hora real en
 // vez de apiladas en una lista -- pedido explícito de diseño ("vista de calendario del día...
@@ -401,6 +501,47 @@ function openAppointmentDetail(item) {
 function timeToMinutes(value) {
   const [h, m] = String(value).split(":").map(Number);
   return h * 60 + m;
+}
+
+// Desde la migración 0024 (server/store.mjs, appointments_no_staff_overlap) una cita
+// 'scheduled' (sin confirmar) ya NO bloquea el horario de nadie más -- así que dos citas
+// pueden compartir manicurista+horario mientras ninguna esté confirmada. Antes de esto la
+// grilla nunca necesitaba manejar solapes reales; ahora sí, o la segunda cita queda tapada
+// exactamente detrás de la primera (mismo top/height, mismo ancho de columna) y la
+// administradora nunca se entera de que existe. Agrupa por "clusters" de horario solapado y
+// les reparte el ancho de la columna en carriles, como cualquier calendario tipo Google
+// Calendar/Outlook -- fuera de un solape, un ítem sigue ocupando toda la columna.
+function layoutOverlappingItems(items) {
+  const withRange = items
+    .map((item) => ({ item, start: timeToMinutes(item.start_time), end: timeToMinutes(item.end_time) }))
+    .sort((a, b) => a.start - b.start);
+  const clusters = [];
+  let current = [];
+  let clusterEnd = -Infinity;
+  for (const entry of withRange) {
+    if (current.length && entry.start >= clusterEnd) {
+      clusters.push(current);
+      current = [];
+      clusterEnd = -Infinity;
+    }
+    current.push(entry);
+    clusterEnd = Math.max(clusterEnd, entry.end);
+  }
+  if (current.length) clusters.push(current);
+
+  const laidOut = [];
+  for (const cluster of clusters) {
+    const laneEnds = []; // hora de fin de la última cita puesta en cada carril
+    for (const entry of cluster) {
+      let lane = laneEnds.findIndex((end) => end <= entry.start);
+      if (lane === -1) { lane = laneEnds.length; laneEnds.push(entry.end); }
+      else laneEnds[lane] = entry.end;
+      entry.lane = lane;
+    }
+    const totalLanes = laneEnds.length;
+    for (const entry of cluster) laidOut.push({ ...entry, totalLanes });
+  }
+  return laidOut;
 }
 
 function renderAgendaCalendar(groups, appointments) {
@@ -440,19 +581,36 @@ function renderAgendaCalendar(groups, appointments) {
     body.style.height = `${bodyHeight}px`;
     body.style.setProperty("--hour-px", "60px");
     const items = appointments.filter((item) => group.client ? true : item.staff_id === group.id);
-    for (const item of items) {
-      const start = timeToMinutes(item.start_time);
-      const end = timeToMinutes(item.end_time);
+    for (const { item, start, end, lane, totalLanes } of layoutOverlappingItems(items)) {
       const block = document.createElement("button");
       block.type = "button";
       const late = isAppointmentLate(item);
-      block.className = `agenda-cal-block status-${item.status}${late ? " status-delayed" : ""}`;
+      // 'scheduled' = todavía sin confirmar (ni depósito aprobado ni autorización manual, ver
+      // appointments_no_staff_overlap en server/store.mjs) -- el único estado donde puede haber
+      // otra cita chocando en el mismo horario, así que es justo el que la administradora
+      // necesita poder distinguir de un vistazo para saber si debe revisar el comprobante.
+      const pending = item.status === "scheduled";
+      const moved = Boolean(item.moved_from);
+      block.className = `agenda-cal-block status-${item.status}${late ? " status-delayed" : ""}${pending ? " status-pending-confirm" : ""}${moved ? " status-moved" : ""}`;
       block.style.top = `${Math.max(0, (start - openMin) * pxPerMin)}px`;
       block.style.height = `${Math.max(18, (end - start) * pxPerMin - 2)}px`;
+      if (totalLanes > 1) {
+        block.style.left = `calc(4px + (100% - 8px) * ${lane}/${totalLanes})`;
+        block.style.right = "auto";
+        block.style.width = `calc((100% - 8px)/${totalLanes} - 3px)`;
+      }
       const strong = document.createElement("strong");
       strong.textContent = `${item.start_time} · ${item.client_name || "Cliente"}`;
       const span = document.createElement("span");
-      span.textContent = late ? `${item.services} · Retrasada` : item.services;
+      // appointmentStatusMessage() siempre dice en qué parte del ciclo de vida está la cita
+      // (pendiente confirmar depósito / comprobante recibido / depósito confirmado / confirmada
+      // en seguimiento / asistió / no asistió / cancelada) -- pedido explícito, nunca solo
+      // avisar cuando hay algo pendiente. Retrasada/Cita movida se suman aparte porque son
+      // transversales a cualquiera de esos estatus, no un estatus más.
+      const notes = [item.services, appointmentStatusMessage(item)];
+      if (late) notes.push("Retrasada");
+      if (moved) notes.push("Cita movida");
+      span.textContent = notes.join(" · ");
       block.append(strong, span);
       block.addEventListener("click", () => openAppointmentDetail(item));
       body.append(block);
@@ -623,37 +781,82 @@ async function setAppointmentDetailStatus(status, button) {
   button.disabled = true;
   message($("appointment-cancel-message"), "Actualizando…", true);
   try {
-    await api(`/api/reservapp/agenda/appointments/${state.appointmentDetailId}/status`, {
+    const result = await api(`/api/reservapp/agenda/appointments/${state.appointmentDetailId}/status`, {
       method: "POST", body: JSON.stringify({ status }),
     });
     $("appointment-detail-dialog").close();
+    if (result.appointment?.displaced?.length) {
+      message($("agenda-message"), `Cita confirmada. Se movió automáticamente ${result.appointment.displaced.length === 1 ? "1 cita" : `${result.appointment.displaced.length} citas`} que compartían ese horario -- revisa "Cita movida" en el calendario.`, true);
+    }
     loadAgendaView();
   } catch (error) { message($("appointment-cancel-message"), error.message); }
   finally { button.disabled = false; }
 }
 $("appointment-mark-confirmed").addEventListener("click", (event) => setAppointmentDetailStatus("confirmed", event.currentTarget));
 $("appointment-mark-attended").addEventListener("click", (event) => setAppointmentDetailStatus("completed", event.currentTarget));
+$("appointment-mark-no-show").addEventListener("click", (event) => setAppointmentDetailStatus("no_show", event.currentTarget));
 
 // Etiquetas humanas de las dos dimensiones independientes de una cita -- mismo vocabulario que ya
 // usa el ERP legado (outputs/app.js CONFIRM_NOTES/DEPOSIT_NOTES) para que administración y
 // clientes vean exactamente el mismo lenguaje en ambos lados.
-const CONFIRM_STATUS_LABELS = {
+// Objetos, no funciones -- se leen por valor donde se usan (renderAppointmentCard,
+// renderTeamAppointmentCard, openAppointmentDetail), así que "cambian de idioma solos" en la
+// siguiente vez que se pinten después de un toggle, sin tener que tocar cada sitio que los usa.
+// Compartidos con el detalle de cita del personal (staff-only) a propósito -- son solo 10
+// etiquetas cortas, no vale la pena duplicar el objeto por un caso tan chico.
+const CONFIRM_STATUS_LABELS_ES = {
   Programada: "Recordatorio de confirmación programado",
   PendienteConfirmarHora: "Esperando tu confirmación",
   EspacioLiberado: "Tu horario podría liberarse pronto -- confirma ya",
   HoraConfirmada: "Asistencia confirmada",
   NoRequerida: "Sin recordatorio necesario",
 };
-const DEPOSIT_STATUS_LABELS = {
+const CONFIRM_STATUS_LABELS_EN = {
+  Programada: "Confirmation reminder scheduled",
+  PendienteConfirmarHora: "Waiting for your confirmation",
+  EspacioLiberado: "Your time slot could be released soon -- confirm now",
+  HoraConfirmada: "Attendance confirmed",
+  NoRequerida: "No reminder needed",
+};
+const DEPOSIT_STATUS_LABELS_ES = {
   Pendiente: "Depósito pendiente",
   ComprobanteRecibido: "Comprobante recibido",
   PendienteVerificacion: "Verificando comprobante",
   Verificado: "Depósito confirmado",
   Rechazado: "Depósito rechazado",
 };
+const DEPOSIT_STATUS_LABELS_EN = {
+  Pendiente: "Deposit pending",
+  ComprobanteRecibido: "Receipt received",
+  PendienteVerificacion: "Verifying receipt",
+  Verificado: "Deposit confirmed",
+  Rechazado: "Deposit rejected",
+};
+// Alias language-aware -- se leen con [] en el resto del archivo, así que un getter dinámico
+// evita tener que tocar cada uso existente uno por uno.
+const CONFIRM_STATUS_LABELS = new Proxy({}, { get: (_, key) => (state.language === "en" ? CONFIRM_STATUS_LABELS_EN : CONFIRM_STATUS_LABELS_ES)[key] });
+const DEPOSIT_STATUS_LABELS = new Proxy({}, { get: (_, key) => (state.language === "en" ? DEPOSIT_STATUS_LABELS_EN : DEPOSIT_STATUS_LABELS_ES)[key] });
 // Mismos tres estados que PENDING_CONFIRMATION_STATES en outputs/app.js -- son los únicos en los
 // que confirmar todavía tiene sentido (HoraConfirmada/NoRequerida ya no necesitan acción).
 const CONFIRMABLE_STATES = new Set(["Programada", "PendienteConfirmarHora", "EspacioLiberado"]);
+
+// Un solo mensaje que siempre refleja en qué parte del ciclo de vida está la cita -- pedido
+// explícito: el calendario del Panel de colaboradoras debe decir siempre el estatus real
+// (pendiente de confirmar depósito / depósito confirmado / confirmada en seguimiento / asistió /
+// etc.), no solo avisar cuando hay algo pendiente. 'confirmed' se separa en dos mensajes según
+// CÓMO se ganó el horario (ver setAppointmentStatus/reviewDepositReceipt en server/store.mjs):
+// con depósito aprobado (deposit_status='Verificado') o con autorización manual de
+// administración sin depósito ("en seguimiento" -- se sigue de cerca hasta que asista).
+function appointmentStatusMessage(item) {
+  if (item.status === "cancelled") return t("Cancelada", "Cancelled");
+  if (item.status === "no_show") return t("No asistió", "No-show");
+  if (item.status === "completed") return t("Asistió", "Attended");
+  if (item.status === "confirmed") {
+    return item.deposit_status === "Verificado" ? t("Depósito confirmado", "Deposit confirmed") : t("Confirmada en seguimiento", "Confirmed, being followed up");
+  }
+  // 'scheduled': todavía no gana el horario -- distingue si ya hay algo que revisar o no.
+  return DEPOSIT_REVIEWABLE_STATES.has(item.deposit_status) ? t("Comprobante recibido", "Receipt received") : t("Pendiente confirmar depósito", "Pending deposit confirmation");
+}
 
 function badgeEl(text, className) {
   const span = document.createElement("span");
@@ -667,15 +870,15 @@ function renderAppointmentCard(apt) {
   card.className = "appointment-card";
 
   const top = document.createElement("div"); top.className = "appointment-top";
-  const service = document.createElement("span"); service.className = "appointment-service"; service.textContent = apt.services || "Cita";
+  const service = document.createElement("span"); service.className = "appointment-service"; service.textContent = apt.services || t("Cita", "Appointment");
   const when = document.createElement("span"); when.className = "appointment-when";
-  when.textContent = `${new Date(`${apt.date}T12:00:00`).toLocaleDateString("es-DO", { weekday: "short", day: "numeric", month: "short" })} · ${formatSlotTime(apt.start_time)}`;
+  when.textContent = `${new Date(`${apt.date}T12:00:00`).toLocaleDateString(state.language === "en" ? "en-US" : "es-DO", { weekday: "short", day: "numeric", month: "short" })} · ${formatSlotTime(apt.start_time)}`;
   top.append(service, when);
   card.append(top);
 
   if (apt.staff_name) {
     const meta = document.createElement("div"); meta.className = "appointment-meta";
-    meta.textContent = `Con ${apt.staff_name}`;
+    meta.textContent = t(`Con ${apt.staff_name}`, `With ${apt.staff_name}`);
     card.append(meta);
   }
 
@@ -684,14 +887,38 @@ function renderAppointmentCard(apt) {
   if (confirmLabel) badges.append(badgeEl(confirmLabel, `confirm-${String(apt.confirmation_status).toLowerCase()}`));
   const depositStatus = apt.deposit_status && DEPOSIT_STATUS_LABELS[apt.deposit_status] ? apt.deposit_status : "Pendiente";
   badges.append(badgeEl(DEPOSIT_STATUS_LABELS[depositStatus], `deposit-${depositStatus.toLowerCase()}`));
+  if (apt.moved_from) badges.append(badgeEl(t("Cita movida", "Appointment moved"), "moved"));
   card.append(badges);
 
+  // moved_from lo pone resolveDisplacedAppointments (server/store.mjs) cuando esta cita perdió
+  // su horario porque otro cliente con la misma manicurista+hora confirmó primero (permitido a
+  // propósito desde la migración 0024) -- se le explica aquí mismo, junto a la nueva hora, en vez
+  // de dejar que solo lo note por el badge.
+  if (apt.moved_from) {
+    const notice = document.createElement("p"); notice.className = "appointment-moved-notice";
+    notice.textContent = t(
+      `Tu cita se movió de las ${formatIsoTimeLocal(apt.moved_from.originalStartsAt)} a las ${formatSlotTime(apt.start_time)} porque ese horario se confirmó con otro cliente mientras esperábamos tu comprobante. Si esta hora no te sirve, escríbenos por WhatsApp para reprogramar.`,
+      `Your appointment moved from ${formatIsoTimeLocal(apt.moved_from.originalStartsAt)} to ${formatSlotTime(apt.start_time)} because that time was confirmed by another client while we were waiting for your receipt. If this time doesn't work for you, message us on WhatsApp to reschedule.`,
+    );
+    card.append(notice);
+  }
+
   if (CONFIRMABLE_STATES.has(apt.confirmation_status)) {
+    const row = document.createElement("div"); row.className = "appointment-confirm-row";
     const btn = document.createElement("button");
     btn.className = "primary compact appointment-confirm-btn"; btn.type = "button";
-    btn.textContent = "Confirmar mi hora";
+    btn.textContent = t("Confirmar hora reservada", "Confirm reserved time");
     btn.addEventListener("click", () => confirmMyAppointment(apt.legacy_id, btn));
-    card.append(btn);
+    const modifyLink = Object.assign(document.createElement("a"), {
+      className: "secondary compact appointment-modify-link", target: "_blank", rel: "noopener",
+      href: `https://wa.me/18296679289?text=${encodeURIComponent(t(
+        `Hola, quisiera modificar mi cita (referencia ${apt.legacy_id}), del ${apt.date} a las ${formatSlotTime(apt.start_time)}.`,
+        `Hi, I'd like to modify my appointment (reference ${apt.legacy_id}) on ${apt.date} at ${formatSlotTime(apt.start_time)}.`,
+      ))}`,
+      textContent: t("Modificar", "Modify"),
+    });
+    row.append(btn, modifyLink);
+    card.append(row);
   }
 
   // El comprobante se puede subir mientras el depósito esté "Pendiente" (nunca se subió nada) o
@@ -723,27 +950,27 @@ function fetchBankAccounts() {
 }
 
 function renderBankAccounts(container) {
-  container.textContent = "Cargando cuentas para transferir…";
+  container.textContent = t("Cargando cuentas para transferir…", "Loading transfer accounts…");
   fetchBankAccounts()
     .then(({ accounts }) => {
       container.textContent = "";
-      if (!accounts?.length) { container.textContent = "Consulta las cuentas disponibles con el salón."; return; }
+      if (!accounts?.length) { container.textContent = t("Consulta las cuentas disponibles con el salón.", "Check with the salon for available accounts."); return; }
       const title = document.createElement("p"); title.className = "bank-accounts-title";
-      title.textContent = "Cuentas para transferir el depósito:";
+      title.textContent = t("Cuentas para transferir el depósito:", "Accounts to transfer the deposit:");
       container.append(title);
       accounts.forEach((account) => {
         const row = document.createElement("div"); row.className = "bank-account";
         const bankLine = document.createElement("strong");
         bankLine.textContent = account.tipoProducto ? `${account.banco} (${account.tipoProducto})` : account.banco;
         const numberLine = document.createElement("span");
-        numberLine.textContent = `Cuenta: ${account.numeroCuenta}`;
+        numberLine.textContent = t(`Cuenta: ${account.numeroCuenta}`, `Account: ${account.numeroCuenta}`);
         const holderLine = document.createElement("span");
         holderLine.textContent = account.documento ? `${account.titular} · ${account.tipoDocumento}: ${account.documento}` : account.titular;
         row.append(bankLine, numberLine, holderLine);
         container.append(row);
       });
     })
-    .catch(() => { container.textContent = "No se pudieron cargar las cuentas. Consulta con el salón."; });
+    .catch(() => { container.textContent = t("No se pudieron cargar las cuentas. Consulta con el salón.", "Couldn't load the accounts. Check with the salon."); });
 }
 
 // Redimensiona/comprime la foto en un <canvas> antes de mandarla -- una foto de cámara sin tocar
@@ -764,7 +991,7 @@ function compressImageFile(file) {
       const dataUrl = canvas.toDataURL("image/jpeg", DEPOSIT_JPEG_QUALITY);
       resolve({ mimeType: "image/jpeg", imageBase64: dataUrl.split(",")[1] });
     };
-    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("No se pudo leer la imagen.")); };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error(t("No se pudo leer la imagen.", "Couldn't read the image."))); };
     img.src = objectUrl;
   });
 }
@@ -778,14 +1005,14 @@ function depositUploadControl(appointmentId) {
   input.type = "file"; input.accept = "image/*"; input.capture = "environment"; input.className = "hidden";
   const btn = document.createElement("button");
   btn.className = "secondary compact deposit-upload-btn"; btn.type = "button";
-  btn.textContent = "Cargar comprobante";
+  btn.textContent = t("Cargar comprobante", "Upload receipt");
   const msg = document.createElement("span"); msg.className = "deposit-upload-message";
 
   btn.addEventListener("click", () => input.click());
   input.addEventListener("change", async () => {
     const file = input.files?.[0];
     if (!file) return;
-    btn.disabled = true; btn.textContent = "Subiendo…"; msg.textContent = "";
+    btn.disabled = true; btn.textContent = t("Subiendo…", "Uploading…"); msg.textContent = "";
     try {
       const { mimeType, imageBase64 } = await compressImageFile(file);
       await api(`/api/reservapp/my-appointments/${appointmentId}/deposit`, {
@@ -794,7 +1021,7 @@ function depositUploadControl(appointmentId) {
       await loadMyAppointments(state.myAppointmentsScope || "active");
     } catch (error) {
       msg.textContent = error.message;
-      btn.disabled = false; btn.textContent = "Cargar comprobante";
+      btn.disabled = false; btn.textContent = t("Cargar comprobante", "Upload receipt");
     } finally {
       input.value = "";
     }
@@ -824,23 +1051,29 @@ function renderTeamAppointmentCard(apt) {
   }
 
   const badges = document.createElement("div"); badges.className = "appointment-badges";
+  // Primer badge: el estatus real de la cita en su ciclo de vida (misma función que ya usa el
+  // calendario del día, ver appointmentStatusMessage) -- pedido explícito, siempre visible, no
+  // solo cuando hay algo pendiente. Los badges de abajo (recordatorio de asistencia, depósito)
+  // se quedan como detalle adicional, no reemplazan a este.
+  badges.append(badgeEl(appointmentStatusMessage(apt), `lifecycle-${apt.status}`));
   const confirmLabel = CONFIRM_STATUS_LABELS[apt.confirmation_status];
   if (confirmLabel) badges.append(badgeEl(confirmLabel, `confirm-${String(apt.confirmation_status).toLowerCase()}`));
   const depositStatus = apt.deposit_status && DEPOSIT_STATUS_LABELS[apt.deposit_status] ? apt.deposit_status : "Pendiente";
   badges.append(badgeEl(DEPOSIT_STATUS_LABELS[depositStatus], `deposit-${depositStatus.toLowerCase()}`));
+  if (apt.moved_from) badges.append(badgeEl(`Cita movida (era ${formatIsoTimeLocal(apt.moved_from.originalStartsAt)})`, "moved"));
   card.append(badges);
 
   return card;
 }
 
 async function confirmMyAppointment(reservationId, btn) {
-  btn.disabled = true; btn.textContent = "Confirmando…";
+  btn.disabled = true; btn.textContent = t("Confirmando…", "Confirming…");
   try {
     await api("/api/reservapp/booking/confirm-attendance", { method: "POST", body: JSON.stringify({ reservationId }) });
     await loadMyAppointments(state.myAppointmentsScope || "active");
   } catch (error) {
     message($("my-appointments-message"), error.message);
-    btn.disabled = false; btn.textContent = "Confirmar mi hora";
+    btn.disabled = false; btn.textContent = t("Confirmar hora reservada", "Confirm reserved time");
   }
 }
 
@@ -848,12 +1081,12 @@ async function loadMyAppointments(scope) {
   state.myAppointmentsScope = scope;
   $("my-appointments-active-tab").classList.toggle("active", scope === "active");
   $("my-appointments-history-tab").classList.toggle("active", scope === "history");
-  message($("my-appointments-message"), "Cargando…", true);
+  message($("my-appointments-message"), t("Cargando…", "Loading…"), true);
   try {
     const result = await api(`/api/reservapp/my-appointments?scope=${scope}`);
     $("my-appointments-list").replaceChildren();
     if (!result.appointments.length) {
-      message($("my-appointments-message"), scope === "active" ? "No tienes citas activas por el momento." : "Aún no tienes historial de citas.");
+      message($("my-appointments-message"), scope === "active" ? t("No tienes citas activas por el momento.", "You have no active appointments right now.") : t("Aún no tienes historial de citas.", "You don't have any appointment history yet."));
       return;
     }
     message($("my-appointments-message"));
@@ -903,7 +1136,7 @@ $("close-phone-check").addEventListener("click", () => $("phone-check-dialog").c
 $("phone-check-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter; button.disabled = true;
-  message($("phone-check-message"), "Buscando…", true);
+  message($("phone-check-message"), t("Buscando…", "Searching…"), true);
   const phone = $("phone-check-value").value;
   try {
     const result = await api("/api/reservapp/auth/check-phone", { method: "POST", body: JSON.stringify({ phone }) });
@@ -943,27 +1176,27 @@ $("confirm-name-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter; button.disabled = true;
   const typedName = $("confirm-name-value").value.trim();
-  message($("confirm-name-message"), "Verificando…", true);
+  message($("confirm-name-message"), t("Verificando…", "Verifying…"), true);
   try {
     const result = await api("/api/reservapp/auth/verify-name", { method: "POST", body: JSON.stringify({ phone: state.confirmNamePhone, firstName: typedName }) });
     if (!result.verified) {
-      message($("confirm-name-message"), "No pudimos confirmar tu identidad con ese nombre. Revisa que esté bien escrito, o pide a administración que reinicie tu acceso.");
+      message($("confirm-name-message"), t("No pudimos confirmar tu identidad con ese nombre. Revisa que esté bien escrito, o pide a administración que reinicie tu acceso.", "We couldn't confirm your identity with that name. Check that it's spelled correctly, or ask administration to reset your access."));
       return;
     }
     $("confirm-name-dialog").close();
     if (state.confirmNameNeedsPasswordOnly) {
       state.quickSetupPhone = state.confirmNamePhone;
       state.quickSetupFirstName = typedName;
-      $("quick-setup-title").textContent = state.passwordResetFlow ? "Elige tu nueva contraseña" : "Crea tu contraseña";
+      $("quick-setup-title").textContent = state.passwordResetFlow ? t("Elige tu nueva contraseña", "Choose your new password") : t("Crea tu contraseña", "Create your password");
       $("quick-setup-intro").textContent = state.passwordResetFlow
-        ? `¡Hola, ${typedName}! Define una contraseña nueva.`
-        : `¡Hola, ${typedName}! Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`;
+        ? t(`¡Hola, ${typedName}! Define una contraseña nueva.`, `Hi, ${typedName}! Set a new password.`)
+        : t(`¡Hola, ${typedName}! Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`, `Hi, ${typedName}! You already have a record with us -- you just need to create your password.`);
       $("quick-setup-password").value = ""; $("quick-setup-password-confirm").value = "";
       message($("quick-setup-message"));
       $("quick-setup-dialog").showModal();
     } else {
       $("login-phone").value = state.confirmNamePhone;
-      message($("login-message"), `¿Eres tú, ${typedName}? Ingresa tu contraseña para confirmar.`, true);
+      message($("login-message"), t(`¿Eres tú, ${typedName}? Ingresa tu contraseña para confirmar.`, `Is that you, ${typedName}? Enter your password to confirm.`), true);
       $("login-dialog").showModal();
     }
   } catch (error) { message($("confirm-name-message"), error.message); }
@@ -974,9 +1207,9 @@ $("close-quick-setup").addEventListener("click", () => $("quick-setup-dialog").c
 $("quick-setup-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const password = $("quick-setup-password").value;
-  if (password !== $("quick-setup-password-confirm").value) return message($("quick-setup-message"), "Las contraseñas no coinciden.");
+  if (password !== $("quick-setup-password-confirm").value) return message($("quick-setup-message"), t("Las contraseñas no coinciden.", "Passwords don't match."));
   const button = event.submitter; button.disabled = true;
-  message($("quick-setup-message"), "Guardando…", true);
+  message($("quick-setup-message"), t("Guardando…", "Saving…"), true);
   try {
     const serviceIds = selectedServiceIds();
     const hasDraft = Boolean(serviceIds.length);
@@ -994,21 +1227,21 @@ $("quick-setup-form").addEventListener("submit", async (event) => {
     $("quick-setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
-      $("success-summary").textContent = `Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`;
+      $("success-summary").textContent = t(`Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`, `Appointment registered, pending confirmation. Reference: ${result.appointment.reference}`);
       renderBankAccounts($("success-bank-accounts"));
     } else if (wasPasswordReset) {
-      message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
+      message($("booking-message"), t(`Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, `Password updated. Welcome back, ${result.account.name}.`), true);
     } else if (state.pendingBookingStart) {
       state.pendingBookingStart = false;
-      message($("booking-message"), `Cuenta creada. ¡Hola, ${result.account.name}!`, true);
+      message($("booking-message"), t(`Cuenta creada. ¡Hola, ${result.account.name}!`, `Account created. Hi, ${result.account.name}!`), true);
       goToStep(1);
-    } else message($("booking-message"), result.bookingError || "Contraseña guardada. Ya puedes reservar.", !result.bookingError);
+    } else message($("booking-message"), result.bookingError || t("Contraseña guardada. Ya puedes reservar.", "Password saved. You can book now."), !result.bookingError);
   } catch (error) { message($("quick-setup-message"), error.message); }
   finally { button.disabled = false; }
 });
 $("step1-back").addEventListener("click", () => goToStep(0));
 $("step1-next").addEventListener("click", () => {
-  if (!selectedServiceIds().length) return message($("booking-message"), "Selecciona al menos un servicio.");
+  if (!selectedServiceIds().length) return message($("booking-message"), t("Selecciona al menos un servicio.", "Select at least one service."));
   message($("booking-message"));
   goToStep(2);
 });
@@ -1020,13 +1253,13 @@ $("date").addEventListener("change", () => {
   if (!$("date").value || !isClosedDate($("date").value)) return;
   const closedDate = $("date").value;
   $("date").value = nextOpenDate(closedDate);
-  message($("booking-message"), `Ese día no laboramos -- te muestro el próximo día disponible.`, true);
+  message($("booking-message"), t("Ese día no laboramos -- te muestro el próximo día disponible.", "We're closed that day -- showing you the next available day."), true);
 });
 $("step2-next").addEventListener("click", () => {
-  if (!$("date").value) return message($("booking-message"), "Elige una fecha.");
+  if (!$("date").value) return message($("booking-message"), t("Elige una fecha.", "Choose a date."));
   if (isClosedDate($("date").value)) {
     $("date").value = nextOpenDate($("date").value);
-    message($("booking-message"), "Ese día no laboramos -- te muestro el próximo día disponible.", true);
+    message($("booking-message"), t("Ese día no laboramos -- te muestro el próximo día disponible.", "We're closed that day -- showing you the next available day."), true);
     return;
   }
   message($("booking-message"));
@@ -1071,21 +1304,21 @@ function openClientDialog({ forEmployee, requireSelection = true }) {
     const target = $("booking-message");
     target.className = "message";
     target.replaceChildren(
-      "Para este horario con varias citas, pide a una asesora que registre tu cita: ",
-      Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: "escríbenos por WhatsApp" }),
+      t("Para este horario con varias citas, pide a una asesora que registre tu cita: ", "For this multi-appointment time slot, please ask an advisor to book it for you: "),
+      Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: t("escríbenos por WhatsApp", "message us on WhatsApp") }),
     );
     return;
   }
   state.clientDialogForEmployee = forEmployee;
   state.clientDialogRequireSelection = requireSelection;
-  $("client-dialog-title").textContent = forEmployee ? "Registrar cliente" : "Crear mi acceso";
+  $("client-dialog-title").textContent = forEmployee ? "Registrar cliente" : t("Crear mi acceso", "Create my access");
   const hasSelection = Boolean(selectedServiceIds().length && $("staff").value && $("date").value && $("time").value);
   $("client-dialog-intro").textContent = forEmployee
     ? "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp."
     : hasSelection
-      ? "Confirma tu teléfono, crea tu contraseña y tu cita quedará agendada."
-      : "Confirma tu teléfono y crea tu contraseña para continuar.";
-  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar cliente" : "Continuar";
+      ? t("Confirma tu teléfono, crea tu contraseña y tu cita quedará agendada.", "Confirm your phone number, create your password, and your appointment will be booked.")
+      : t("Confirma tu teléfono y crea tu contraseña para continuar.", "Confirm your phone number and create your password to continue.");
+  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar cliente" : t("Continuar", "Continue");
   message($("client-message"));
   if (!requireSelection || requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
 }
@@ -1117,7 +1350,7 @@ $("client-form").addEventListener("submit", async (event) => {
     } finally { button.disabled = false; }
     return;
   }
-  message($("client-message"), "Guardando…", true);
+  message($("client-message"), t("Guardando…", "Saving…"), true);
   try {
     const result = await api("/api/reservapp/auth/request-setup", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(setupPayload()) });
     $("client-dialog").close(); message($("booking-message"), result.message, true);
@@ -1134,7 +1367,7 @@ $("client-form").addEventListener("submit", async (event) => {
       // Condición de carrera real -- el servidor no revela el nombre aquí, ver /auth/check-phone.
       $("client-dialog").close();
       $("login-phone").value = $("new-phone").value;
-      message($("login-message"), "Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", true);
+      message($("login-message"), t("Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", "That phone number already has an account. Enter your password to confirm."), true);
       $("login-dialog").showModal();
     }
   } finally { button.disabled = false; }
@@ -1147,7 +1380,7 @@ $("open-forgot-password").addEventListener("click", () => { $("login-dialog").cl
 $("close-forgot-password").addEventListener("click", () => $("forgot-password-dialog").close());
 
 $("forgot-password-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), "Enviando…", true);
+  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), t("Enviando…", "Sending…"), true);
   try {
     const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
     // TEMPORAL a propósito (ver comentario junto a /auth/request-password-reset en
@@ -1169,13 +1402,13 @@ $("forgot-password-form").addEventListener("submit", async (event) => {
 function openSetupDialog(activationTicket) {
   state.activationTicket = activationTicket; $("verify-code-dialog").close();
   $("setup-password").value = ""; $("setup-password-confirm").value = ""; message($("setup-message"));
-  $("setup-dialog-title").textContent = state.passwordResetFlow ? "Elige tu nueva contraseña" : "Crea tu contraseña";
-  $("setup-form").querySelector("button[type=submit]").textContent = state.passwordResetFlow ? "Guardar nueva contraseña" : "Activar y confirmar cita";
+  $("setup-dialog-title").textContent = state.passwordResetFlow ? t("Elige tu nueva contraseña", "Choose your new password") : t("Crea tu contraseña", "Create your password");
+  $("setup-form").querySelector("button[type=submit]").textContent = state.passwordResetFlow ? t("Guardar nueva contraseña", "Save new password") : t("Activar y confirmar cita", "Activate and confirm appointment");
   $("setup-dialog").showModal();
 }
 
 $("verify-code-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("verify-code-message"), "Verificando…", true);
+  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("verify-code-message"), t("Verificando…", "Verifying…"), true);
   try {
     const result = await api("/api/reservapp/setup/verify-code", { method: "POST", body: JSON.stringify({ phone: $("verify-code-phone").value, code: $("verify-code-code").value }) });
     openSetupDialog(result.activationTicket);
@@ -1184,10 +1417,10 @@ $("verify-code-form").addEventListener("submit", async (event) => {
 });
 
 $("login-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("login-message"), "Entrando…", true);
+  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("login-message"), t("Entrando…", "Logging in…"), true);
   try {
     const result = await api("/api/reservapp/auth/login", { method: "POST", body: JSON.stringify({ phone: $("login-phone").value, password: $("login-password").value }) });
-    applyAccount(result.account); $("login-dialog").close(); $("login-form").reset(); message($("booking-message"), `Hola, ${result.account.name}.`, true);
+    applyAccount(result.account); $("login-dialog").close(); $("login-form").reset(); message($("booking-message"), t(`Hola, ${result.account.name}.`, `Hi, ${result.account.name}.`), true);
     if (state.pendingBookingStart && isClientRole(result.account.role)) { state.pendingBookingStart = false; goToStep(1); }
     else if (!$("agenda-card").classList.contains("hidden")) showAgenda();
   } catch (error) { message($("login-message"), error.message); }
@@ -1244,8 +1477,8 @@ $("booking-form").addEventListener("submit", async (event) => {
   event.preventDefault(); message($("booking-message"));
   if (!requireBookingSelection($("booking-message"))) return;
   if (!state.account) return $("login-dialog").showModal();
-  if (!state.client) return message($("booking-message"), "Selecciona el cliente de la cita.");
-  const button = $("submit-booking"); button.disabled = true; button.textContent = "Reservando…";
+  if (!state.client) return message($("booking-message"), t("Selecciona el cliente de la cita.", "Select the appointment's client."));
+  const button = $("submit-booking"); button.disabled = true; button.textContent = t("Reservando…", "Booking…");
   // state.fallbackSegments solo existe si aceptó una propuesta de horario alternativo (ver
   // renderAvailabilityFallback) -- son varias citas vinculadas por groupId, mismo mecanismo
   // que ya usa el personal para reservas combinadas (createComboAppointment, sin cambios).
@@ -1257,13 +1490,22 @@ $("booking-form").addEventListener("submit", async (event) => {
         ? { clientId: state.client.id, segments: state.fallbackSegments.map(({ serviceIds, staffId, date, time }) => ({ serviceIds, staffId, date, time })), notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }
         : { clientId: state.client.id, serviceIds: selectedServiceIds(), staffId: $("staff").value, date: $("date").value, time: $("time").value, notes: $("notes").value, actorType: isClientRole(state.account.role) ? "customer" : "employee", website: $("website").value }),
     });
+    const summaryLocale = state.language === "en" ? "en-US" : "es-DO";
     if (isFallback) {
-      const details = state.fallbackSegments.map((seg) => `${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`).join(" · ");
-      $("success-summary").textContent = `${details}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })}. Referencia: ${result.appointments.map((item) => item.reference).join(", ")}`;
+      const details = state.fallbackSegments.map((seg) => t(`${seg.serviceName} con ${seg.staffName} a las ${formatSlotTime(seg.time)}`, `${seg.serviceName} with ${seg.staffName} at ${formatSlotTime(seg.time)}`)).join(" · ");
+      $("success-summary").textContent = t(
+        `${details}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString(summaryLocale, { dateStyle: "long" })}. Referencia: ${result.appointments.map((item) => item.reference).join(", ")}`,
+        `${details}, on ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString(summaryLocale, { dateStyle: "long" })}. Reference: ${result.appointments.map((item) => item.reference).join(", ")}`,
+      );
     } else {
       const names = selectedServices().map((item) => item.name).join(", ");
       const person = state.catalog.staff.find((item) => item.id === $("staff").value)?.name;
-      $("success-summary").textContent = `${names} con ${person}, el ${new Date(`${$("date").value}T12:00:00`).toLocaleDateString("es-DO", { dateStyle: "long" })} a las ${new Date(`2000-01-01T${$("time").value}:00`).toLocaleTimeString("es-DO", { hour: "numeric", minute: "2-digit" })}. Referencia: ${result.appointment.reference}`;
+      const dateLabel = new Date(`${$("date").value}T12:00:00`).toLocaleDateString(summaryLocale, { dateStyle: "long" });
+      const timeLabel = formatSlotTime($("time").value);
+      $("success-summary").textContent = t(
+        `${names} con ${person}, el ${dateLabel} a las ${timeLabel}. Referencia: ${result.appointment.reference}`,
+        `${names} with ${person}, on ${dateLabel} at ${timeLabel}. Reference: ${result.appointment.reference}`,
+      );
     }
     $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden"); window.scrollTo({ top: 0, behavior: "smooth" });
     renderBankAccounts($("success-bank-accounts"));
@@ -1271,28 +1513,28 @@ $("booking-form").addEventListener("submit", async (event) => {
     message($("booking-message"), error.message);
     if (error.body?.conflict) goToStep(3); // el horario se ocupó -- vuelve a elegir de la lista fresca
   }
-  finally { button.disabled = false; button.textContent = "Confirmar reserva"; }
+  finally { button.disabled = false; button.textContent = t("Confirmar reserva", "Confirm booking"); }
 });
 
 $("setup-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const password = $("setup-password").value;
-  if (password !== $("setup-password-confirm").value) return message($("setup-message"), "Las contraseñas no coinciden.");
-  const button = event.submitter; button.disabled = true; message($("setup-message"), "Activando…", true);
+  if (password !== $("setup-password-confirm").value) return message($("setup-message"), t("Las contraseñas no coinciden.", "Passwords don't match."));
+  const button = event.submitter; button.disabled = true; message($("setup-message"), t("Activando…", "Activating…"), true);
   try {
     const result = await api("/api/reservapp/auth/complete-setup", { method: "POST", body: JSON.stringify({ token: state.activationTicket, password }) });
     const wasPasswordReset = state.passwordResetFlow;
     state.activationTicket = null; state.passwordResetFlow = false; applyAccount(result.account); $("setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
-      $("success-summary").textContent = `Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`;
+      $("success-summary").textContent = t(`Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`, `Appointment registered, pending confirmation. Reference: ${result.appointment.reference}`);
       renderBankAccounts($("success-bank-accounts"));
     } else if (wasPasswordReset) {
-      message($("booking-message"), `Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, true);
+      message($("booking-message"), t(`Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, `Password updated. Welcome back, ${result.account.name}.`), true);
     } else if (state.pendingBookingStart) {
       state.pendingBookingStart = false;
-      message($("booking-message"), `Cuenta creada. ¡Hola, ${result.account.name}!`, true);
+      message($("booking-message"), t(`Cuenta creada. ¡Hola, ${result.account.name}!`, `Account created. Hi, ${result.account.name}!`), true);
       goToStep(1);
-    } else message($("booking-message"), result.bookingError || "Cuenta activada. Ya puedes reservar.", !result.bookingError);
+    } else message($("booking-message"), result.bookingError || t("Cuenta activada. Ya puedes reservar.", "Account activated. You can book now."), !result.bookingError);
   } catch (error) { message($("setup-message"), error.message); }
   finally { button.disabled = false; }
 });
@@ -1919,6 +2161,9 @@ $("agenda-next").addEventListener("click", () => { const step = state.agendaView
 $("new-booking").addEventListener("click", () => location.reload());
 
 async function boot() {
+  let savedLang = "es";
+  try { savedLang = localStorage.getItem("reservapp_lang") || "es"; } catch { /* modo privado -- se queda en español */ }
+  applyLanguage(savedLang);
   await Promise.all([loadCatalog(), loadSession()]);
   goToStep(0);
 }

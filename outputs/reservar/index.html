@@ -15,15 +15,16 @@
       <img class="brand-mark" src="./assets/dalfi-icon.png" alt="Dalfi Studio Nails &amp; Academy" />
       <div class="brand-copy"><h1>Dalfi Studio</h1><p>ReservApp <span class="dot">·</span> Seben Suite Connect</p></div>
       <div class="account-group">
+        <button class="lang-toggle" id="lang-toggle" type="button" aria-label="Switch to English">EN</button>
         <button class="account-button" id="account-button" type="button">Entrar</button>
-        <button class="logout-link hidden" id="logout-link" type="button">Cerrar sesión</button>
+        <button class="logout-link hidden" id="logout-link" type="button" data-en="Log out">Cerrar sesión</button>
       </div>
     </header>
 
     <p class="promo-banner hidden" id="promo-banner"></p>
 
     <nav class="app-nav hidden" id="app-nav" aria-label="Secciones">
-      <button class="active" id="booking-tab" type="button">Nueva reserva</button>
+      <button class="active" id="booking-tab" type="button" data-en="New booking">Nueva reserva</button>
       <button class="hidden" id="agenda-tab" type="button">Agenda</button>
     </nav>
 
@@ -32,77 +33,77 @@
       <p class="kicker" id="mode-label">Reserva rápida</p>
 
       <div class="wizard-step" data-step="0">
-        <p class="tagline">Tu forma rápida de reservar tu cita en Dalfi Studio</p>
-        <h2>Reserva en 3 pasos</h2>
-        <p class="intro">Elige tus servicios, el día, y el horario con la manicurista que prefieras — todo en un mismo lugar.</p>
-        <button class="primary" id="start-booking" type="button">Reservar</button>
-        <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener">¿Prefieres ayuda personalizada? Escríbenos por WhatsApp</a>
+        <p class="tagline" data-en="Your quick way to book your appointment at Dalfi Studio">Tu forma rápida de reservar tu cita en Dalfi Studio</p>
+        <h2 data-en="Book in 3 steps">Reserva en 3 pasos</h2>
+        <p class="intro" data-en="Choose your services, day, and time with your preferred manicurist — all in one place.">Elige tus servicios, el día, y el horario con la manicurista que prefieras — todo en un mismo lugar.</p>
+        <button class="primary" id="start-booking" type="button" data-en="Book now">Reservar</button>
+        <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Prefer personal help? Message us on WhatsApp">¿Prefieres ayuda personalizada? Escríbenos por WhatsApp</a>
       </div>
 
       <form id="booking-form">
         <div class="message" id="booking-message" role="status"></div>
         <div class="wizard-step hidden" data-step="1">
-          <h2>Paso 1 · Elige tus servicios</h2>
-          <p class="intro">Puedes combinar varios servicios. Calculamos automáticamente el tiempo total.</p>
-          <div class="step-actions-top"><button class="secondary" id="step1-back-top" type="button">Atrás</button><button class="primary" id="step1-next-top" type="button">Siguiente: elegir día</button></div>
+          <h2 data-en="Step 1 · Choose your services">Paso 1 · Elige tus servicios</h2>
+          <p class="intro" data-en="You can combine several services. We calculate the total time automatically.">Puedes combinar varios servicios. Calculamos automáticamente el tiempo total.</p>
+          <div class="step-actions-top"><button class="secondary" id="step1-back-top" type="button" data-en="Back">Atrás</button><button class="primary" id="step1-next-top" type="button" data-en="Next: choose a day">Siguiente: elegir día</button></div>
           <fieldset class="service-field">
-            <legend>Servicios</legend>
-            <div class="service-list" id="service-list"><p class="empty">Cargando servicios…</p></div>
-            <div class="service-summary" id="service-summary"><span>Selecciona uno o más servicios</span><strong>0 min</strong></div>
+            <legend data-en="Services">Servicios</legend>
+            <div class="service-list" id="service-list"><p class="empty" data-en="Loading services…">Cargando servicios…</p></div>
+            <div class="service-summary" id="service-summary"><span data-en="Select one or more services">Selecciona uno o más servicios</span><strong>0 min</strong></div>
           </fieldset>
-          <div class="step-actions"><button class="secondary" id="step1-back" type="button">Atrás</button><button class="primary" id="step1-next" type="button">Siguiente: elegir día</button></div>
+          <div class="step-actions"><button class="secondary" id="step1-back" type="button" data-en="Back">Atrás</button><button class="primary" id="step1-next" type="button" data-en="Next: choose a day">Siguiente: elegir día</button></div>
         </div>
 
         <div class="wizard-step hidden" data-step="2">
-          <h2>Paso 2 · Elige el día</h2>
-          <div class="step-actions-top"><button class="secondary" id="step2-back-top" type="button">Atrás</button><button class="primary" id="step2-next-top" type="button">Siguiente: ver horarios</button></div>
-          <label class="hidden">Manicurista<select id="staff"><option value="">Cualquiera</option></select></label>
-          <label>Fecha<input id="date" type="date" required /></label>
-          <div class="step-actions"><button class="secondary" id="step2-back" type="button">Atrás</button><button class="primary" id="step2-next" type="button">Siguiente: ver horarios</button></div>
+          <h2 data-en="Step 2 · Choose a day">Paso 2 · Elige el día</h2>
+          <div class="step-actions-top"><button class="secondary" id="step2-back-top" type="button" data-en="Back">Atrás</button><button class="primary" id="step2-next-top" type="button" data-en="Next: view times">Siguiente: ver horarios</button></div>
+          <label class="hidden" data-en="Manicurist">Manicurista<select id="staff"><option value="" data-en="Any">Cualquiera</option></select></label>
+          <label data-en="Date">Fecha<input id="date" type="date" required /></label>
+          <div class="step-actions"><button class="secondary" id="step2-back" type="button" data-en="Back">Atrás</button><button class="primary" id="step2-next" type="button" data-en="Next: view times">Siguiente: ver horarios</button></div>
         </div>
 
         <div class="wizard-step hidden" data-step="3">
           <h2 id="step3-heading">Paso 3 · Elige horario y manicurista</h2>
-          <p class="intro">Estos son los horarios libres de cada manicurista ese día para lo que elegiste.</p>
+          <p class="intro" data-en="These are the available times for each manicurist that day, for what you selected.">Estos son los horarios libres de cada manicurista ese día para lo que elegiste.</p>
           <input id="time" type="hidden" required />
           <div class="message" id="availability-message"></div>
           <div class="staff-slots-board" id="staff-slots-board"></div>
           <div id="availability-fallback"></div>
-          <div class="step-actions"><button class="secondary" id="step3-back" type="button">Atrás</button></div>
+          <div class="step-actions"><button class="secondary" id="step3-back" type="button" data-en="Back">Atrás</button></div>
         </div>
 
         <div class="wizard-step hidden" data-step="4">
-          <h2>Último paso · Confirma tu cita</h2>
+          <h2 data-en="Last step · Confirm your appointment">Último paso · Confirma tu cita</h2>
           <p class="intro" id="booking-selection-summary"></p>
           <section class="client-box" id="guest-access">
-            <div><span class="step-dot">1</span><div><strong>Identifícate para reservar</strong><small>Puedes revisar horarios como invitada. Para confirmar necesitas credenciales.</small></div></div>
-            <div class="access-actions"><button class="secondary" id="open-login" type="button">Ya tengo cuenta</button><button class="new-client" id="open-client" type="button">Es mi primera vez</button></div>
+            <div><span class="step-dot">1</span><div><strong data-en="Identify yourself to book">Identifícate para reservar</strong><small data-en="You can check available times as a guest. To confirm, you'll need an account.">Puedes revisar horarios como invitada. Para confirmar necesitas credenciales.</small></div></div>
+            <div class="access-actions"><button class="secondary" id="open-login" type="button" data-en="I already have an account">Ya tengo cuenta</button><button class="new-client" id="open-client" type="button" data-en="It's my first time">Es mi primera vez</button></div>
           </section>
 
           <section class="client-box hidden" id="employee-client">
-            <div><span class="step-dot">1</span><div><strong>Cliente de la cita</strong><small>Todo el equipo puede reservar para un cliente registrado.</small></div></div>
-            <label>Buscar por nombre o teléfono<input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" /></label>
+            <div><span class="step-dot">1</span><div><strong data-en="Appointment's client">Cliente de la cita</strong><small data-en="Any team member can book for a registered client.">Todo el equipo puede reservar para un cliente registrado.</small></div></div>
+            <label data-en="Search by name or phone">Buscar por nombre o teléfono<input id="client-search" type="search" autocomplete="off" placeholder="Escribe al menos 2 caracteres" data-en-placeholder="Type at least 2 characters" /></label>
             <div class="search-results" id="client-results"></div>
-            <button class="new-client compact" id="employee-new-client" type="button">Es su primera vez</button>
+            <button class="new-client compact" id="employee-new-client" type="button" data-en="It's their first time">Es su primera vez</button>
           </section>
 
           <div class="selected-client hidden" id="selected-client" aria-live="polite"></div>
-          <label>Nota <span>(opcional)</span><textarea id="notes" rows="3" maxlength="500" placeholder="Diseño, preferencia o información importante"></textarea></label>
+          <label data-en="Note">Nota <span data-en="(optional)">(opcional)</span><textarea id="notes" rows="3" maxlength="500" placeholder="Diseño, preferencia o información importante" data-en-placeholder="Design, preference, or any important information"></textarea></label>
           <label class="trap" aria-hidden="true">Sitio web<input id="website" tabindex="-1" autocomplete="off" /></label>
-          <button class="primary" id="submit-booking" type="submit">Confirmar reserva</button>
-          <p class="policy">Se requiere un depósito de <strong>RD$500</strong>. La cita se crea en Dalfi y se publica en Google Calendar sin permitir cambios desde Google.</p>
-          <div class="step-actions"><button class="secondary" id="step4-back" type="button">Atrás</button></div>
+          <button class="primary" id="submit-booking" type="submit" data-en="Confirm booking">Confirmar reserva</button>
+          <p class="policy"><span data-en="A deposit of">Se requiere un depósito de</span> <strong>RD$500</strong><span data-en=" is required. Your appointment is created in Dalfi and published to Google Calendar, and changes can't be made from Google.">. La cita se crea en Dalfi y se publica en Google Calendar sin permitir cambios desde Google.</span></p>
+          <div class="step-actions"><button class="secondary" id="step4-back" type="button" data-en="Back">Atrás</button></div>
         </div>
       </form>
     </section>
 
     <section class="card client-appointments-card hidden" id="client-appointments-card">
       <div class="agenda-head">
-        <div><p class="kicker">Mis citas</p><h2>Citas activas</h2></div>
+        <div><p class="kicker" data-en="My appointments">Mis citas</p><h2 data-en="Active appointments">Citas activas</h2></div>
       </div>
       <div class="app-nav client-appointments-nav">
-        <button class="active" id="my-appointments-active-tab" type="button">Activas</button>
-        <button id="my-appointments-history-tab" type="button">Historial</button>
+        <button class="active" id="my-appointments-active-tab" type="button" data-en="Active">Activas</button>
+        <button id="my-appointments-history-tab" type="button" data-en="History">Historial</button>
       </div>
       <div class="message" id="my-appointments-message"></div>
       <div class="client-appointments-list" id="my-appointments-list"></div>
@@ -226,101 +227,110 @@
     </section>
 
     <section class="card success hidden" id="success-card" aria-live="polite">
-      <div class="success-icon">✓</div><p class="kicker">Cita registrada</p><h2>Todavía no está apartado tu horario</h2>
-      <p class="deposit-notice">Este horario se aparta solo cuando el salón confirme tu depósito de RD$500 -- mientras tanto, alguien más podría tomarlo. Sube tu comprobante desde "Mis citas" para asegurarlo cuanto antes.</p>
-      <p id="success-summary"></p><div class="deposit"><span>Depósito para separar</span><strong>RD$500</strong></div>
+      <div class="success-icon">✓</div><p class="kicker" data-en="Appointment registered">Cita registrada</p><h2 data-en="Your time slot isn't reserved yet">Todavía no está apartado tu horario</h2>
+      <p class="deposit-notice" data-en='This time slot is only reserved once the salon confirms your RD$500 deposit -- until then, someone else could take it. Upload your receipt from "My appointments" to secure it as soon as possible.'>Este horario se aparta solo cuando el salón confirme tu depósito de RD$500 -- mientras tanto, alguien más podría tomarlo. Sube tu comprobante desde "Mis citas" para asegurarlo cuanto antes.</p>
+      <p id="success-summary"></p><div class="deposit"><span data-en="Deposit to reserve">Depósito para separar</span><strong>RD$500</strong></div>
       <div class="bank-accounts" id="success-bank-accounts"></div>
-      <button class="secondary" id="new-booking" type="button">Hacer otra reserva</button>
+      <button class="secondary" id="new-booking" type="button" data-en="Book another appointment">Hacer otra reserva</button>
     </section>
 
     <p class="info-banner hidden" id="info-banner"></p>
   </main>
 
   <dialog id="identify-dialog"><form id="identify-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Antes de reservar</p><h2>¿Ya eres cliente del salón?</h2></div><button class="icon-button" id="close-identify" type="button" aria-label="Cerrar">×</button></div>
-    <p>Para darte atención personalizada, primero identifícate.</p>
-    <div class="access-actions"><button class="secondary" id="identify-login" type="button">Ya tengo cuenta</button><button class="new-client" id="identify-new" type="button">Es mi primera vez</button></div>
+    <div class="dialog-head"><div><p class="kicker" data-en="Before booking">Antes de reservar</p><h2 data-en="Are you already a salon client?">¿Ya eres cliente del salón?</h2></div><button class="icon-button" id="close-identify" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="To give you personalized service, please identify yourself first.">Para darte atención personalizada, primero identifícate.</p>
+    <div class="access-actions"><button class="secondary" id="identify-login" type="button" data-en="I already have an account">Ya tengo cuenta</button><button class="new-client" id="identify-new" type="button" data-en="It's my first time">Es mi primera vez</button></div>
   </form></dialog>
 
   <dialog id="phone-check-dialog"><form id="phone-check-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2>Tu número de teléfono</h2></div><button class="icon-button" id="close-phone-check" type="button" aria-label="Cerrar">×</button></div>
-    <p>Así confirmamos si ya tienes una cuenta o creamos una nueva.</p>
-    <label>Teléfono<input id="phone-check-value" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <div class="dialog-head"><div><p class="kicker" data-en="First visit">Primera visita</p><h2 data-en="Your phone number">Tu número de teléfono</h2></div><button class="icon-button" id="close-phone-check" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="This way we confirm whether you already have an account or create a new one.">Así confirmamos si ya tienes una cuenta o creamos una nueva.</p>
+    <label data-en="Phone">Teléfono<input id="phone-check-value" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <div class="message" id="phone-check-message" role="status"></div>
-    <button class="primary" type="submit">Continuar</button>
+    <button class="primary" type="submit" data-en="Continue">Continuar</button>
   </form></dialog>
 
   <dialog id="confirm-name-dialog"><form id="confirm-name-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Confirmemos que eres tú</p><h2>¿Cuál es tu nombre?</h2></div><button class="icon-button" id="close-confirm-name" type="button" aria-label="Cerrar">×</button></div>
-    <p>Ya tenemos una ficha con este teléfono. Escribe tu primer nombre para confirmar que eres tú -- nunca lo mostramos aquí primero, por tu seguridad.</p>
-    <label>Tu nombre <span>(solo el primero, ej. "María")</span><input id="confirm-name-value" type="text" autocomplete="given-name" placeholder="Solo tu primer nombre" required /></label>
+    <div class="dialog-head"><div><p class="kicker" data-en="Let's confirm it's you">Confirmemos que eres tú</p><h2 data-en="What's your name?">¿Cuál es tu nombre?</h2></div><button class="icon-button" id="close-confirm-name" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="We already have a record with this phone number. Type your first name to confirm it's you -- for your security, we never show it here first.">Ya tenemos una ficha con este teléfono. Escribe tu primer nombre para confirmar que eres tú -- nunca lo mostramos aquí primero, por tu seguridad.</p>
+    <label data-en="Your name">Tu nombre <span data-en='(first name only, e.g. "Maria")'>(solo el primero, ej. "María")</span><input id="confirm-name-value" type="text" autocomplete="given-name" placeholder="Solo tu primer nombre" data-en-placeholder="Just your first name" required /></label>
     <div class="message" id="confirm-name-message" role="status"></div>
-    <button class="primary" type="submit">Continuar</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
+    <button class="primary" type="submit" data-en="Continue">Continuar</button>
+    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
   </form></dialog>
 
   <dialog id="quick-setup-dialog"><form id="quick-setup-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Ya confirmamos que eres tú</p><h2 id="quick-setup-title">Crea tu contraseña</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
-    <p id="quick-setup-intro">Define una contraseña para tu cuenta.</p>
-    <label>Contraseña<input id="quick-setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
-    <label>Confirmar contraseña<input id="quick-setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <div class="dialog-head"><div><p class="kicker" data-en="We've confirmed it's you">Ya confirmamos que eres tú</p><h2 id="quick-setup-title" data-en="Create your password">Crea tu contraseña</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
+    <p id="quick-setup-intro" data-en="Set a password for your account.">Define una contraseña para tu cuenta.</p>
+    <label data-en="Password">Contraseña<input id="quick-setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label data-en="Confirm password">Confirmar contraseña<input id="quick-setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
     <div class="message" id="quick-setup-message" role="status"></div>
-    <button class="primary" type="submit">Guardar contraseña</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
+    <button class="primary" type="submit" data-en="Save password">Guardar contraseña</button>
+    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
   </form></dialog>
 
   <dialog id="client-dialog"><form id="client-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Primera visita</p><h2 id="client-dialog-title">Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
-    <p id="client-dialog-intro">Confirma tu teléfono y crea tu contraseña para continuar.</p>
-    <div class="field-grid"><label>Nombre<input id="first-name" autocomplete="given-name" required /></label><label>Apellido<input id="last-name" autocomplete="family-name" required /></label></div>
-    <label>Teléfono de WhatsApp<input id="new-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
-    <label>Correo <span>(opcional)</span><input id="new-email" type="email" autocomplete="email" /></label>
-    <label>Fecha de nacimiento<input id="new-birthdate" type="date" autocomplete="bday" required /></label>
+    <div class="dialog-head"><div><p class="kicker" data-en="First visit">Primera visita</p><h2 id="client-dialog-title" data-en="Create my access">Crear mi acceso</h2></div><button class="icon-button" id="close-client" type="button" aria-label="Cerrar">×</button></div>
+    <p id="client-dialog-intro" data-en="Confirm your phone number and create your password to continue.">Confirma tu teléfono y crea tu contraseña para continuar.</p>
+    <div class="field-grid"><label data-en="First name">Nombre<input id="first-name" autocomplete="given-name" required /></label><label data-en="Last name">Apellido<input id="last-name" autocomplete="family-name" required /></label></div>
+    <label data-en="WhatsApp phone number">Teléfono de WhatsApp<input id="new-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <label data-en="Email">Correo <span data-en="(optional)">(opcional)</span><input id="new-email" type="email" autocomplete="email" /></label>
+    <label data-en="Date of birth">Fecha de nacimiento<input id="new-birthdate" type="date" autocomplete="bday" required /></label>
     <div class="field-grid">
-      <label>Sexo <span>(opcional)</span>
-        <select id="new-sex"><option value="">No especificado</option><option value="Femenino">Femenino</option><option value="Masculino">Masculino</option></select>
+      <label data-en="Sex">Sexo <span data-en="(optional)">(opcional)</span>
+        <select id="new-sex"><option value="" data-en="Not specified">No especificado</option><option value="Femenino" data-en="Female">Femenino</option><option value="Masculino" data-en="Male">Masculino</option></select>
       </label>
-      <label>Servicio de preferencia <span>(opcional)</span><select id="new-preferred-service"><option value="">Cualquiera</option></select></label>
+      <label data-en="Preferred service">Servicio de preferencia <span data-en="(optional)">(opcional)</span><select id="new-preferred-service"><option value="" data-en="Any">Cualquiera</option></select></label>
     </div>
-    <label>Dirección <span>(opcional)</span><textarea id="new-address" rows="2"></textarea></label>
-    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit">Continuar</button>
+    <label data-en="Address">Dirección <span data-en="(optional)">(opcional)</span><textarea id="new-address" rows="2"></textarea></label>
+    <div class="message" id="client-message" role="status"></div><button class="primary" type="submit" data-en="Continue">Continuar</button>
   </form></dialog>
 
   <dialog id="login-dialog"><form id="login-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Acceso seguro</p><h2>Iniciar sesión</h2></div><button class="icon-button" id="close-login" type="button" aria-label="Cerrar">×</button></div>
-    <label>Teléfono<input id="login-phone" type="tel" inputmode="tel" autocomplete="username" required /></label>
-    <label>Contraseña<input id="login-password" type="password" autocomplete="current-password" required /></label>
-    <div class="message" id="login-message"></div><button class="primary" type="submit">Entrar</button>
-    <button class="new-client" id="login-new-user" type="button">Usuario nuevo · crear cuenta</button>
-    <button class="secondary" id="open-verify-code" type="button">¿Recibiste un código de activación por WhatsApp?</button>
-    <button class="secondary" id="open-forgot-password" type="button">¿Olvidaste tu contraseña?</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
+    <div class="dialog-head"><div><p class="kicker" data-en="Secure access">Acceso seguro</p><h2 data-en="Log in">Iniciar sesión</h2></div><button class="icon-button" id="close-login" type="button" aria-label="Cerrar">×</button></div>
+    <label data-en="Phone">Teléfono<input id="login-phone" type="tel" inputmode="tel" autocomplete="username" required /></label>
+    <label data-en="Password">Contraseña<input id="login-password" type="password" autocomplete="current-password" required /></label>
+    <div class="message" id="login-message"></div><button class="primary" type="submit" data-en="Log in">Entrar</button>
+    <button class="new-client" id="login-new-user" type="button" data-en="New user · create account">Usuario nuevo · crear cuenta</button>
+    <button class="secondary" id="open-verify-code" type="button" data-en="Did you receive an activation code via WhatsApp?">¿Recibiste un código de activación por WhatsApp?</button>
+    <button class="secondary" id="open-forgot-password" type="button" data-en="Forgot your password?">¿Olvidaste tu contraseña?</button>
+    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
   </form></dialog>
 
   <dialog id="forgot-password-dialog"><form id="forgot-password-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Acceso seguro</p><h2>Restablecer contraseña</h2></div><button class="icon-button" id="close-forgot-password" type="button" aria-label="Cerrar">×</button></div>
-    <p>Intentamos enviarte por WhatsApp un código de 6 dígitos. Si no está disponible por ahora, te lo decimos aquí.</p>
-    <label>Teléfono<input id="forgot-password-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
-    <div class="message" id="forgot-password-message"></div><button class="primary" type="submit">Enviarme el código por WhatsApp</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
+    <div class="dialog-head"><div><p class="kicker" data-en="Secure access">Acceso seguro</p><h2 data-en="Reset password">Restablecer contraseña</h2></div><button class="icon-button" id="close-forgot-password" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="We'll try to send you a 6-digit code via WhatsApp. If that's not available right now, we'll let you know here.">Intentamos enviarte por WhatsApp un código de 6 dígitos. Si no está disponible por ahora, te lo decimos aquí.</p>
+    <label data-en="Phone">Teléfono<input id="forgot-password-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <div class="message" id="forgot-password-message"></div><button class="primary" type="submit" data-en="Send me the code via WhatsApp">Enviarme el código por WhatsApp</button>
+    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
   </form></dialog>
 
   <dialog id="verify-code-dialog"><form id="verify-code-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Confirmación de WhatsApp</p><h2>Escribe tu código</h2></div><button class="icon-button" id="close-verify-code" type="button" aria-label="Cerrar">×</button></div>
-    <p>Te llegó un código de 6 dígitos por WhatsApp. Vence en 10 minutos.</p>
-    <label>Teléfono de WhatsApp<input id="verify-code-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
-    <label>Código de 6 dígitos<input id="verify-code-code" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="one-time-code" required /></label>
-    <div class="message" id="verify-code-message"></div><button class="primary" type="submit">Verificar código</button>
+    <div class="dialog-head"><div><p class="kicker" data-en="WhatsApp confirmation">Confirmación de WhatsApp</p><h2 data-en="Enter your code">Escribe tu código</h2></div><button class="icon-button" id="close-verify-code" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="You received a 6-digit code via WhatsApp. It expires in 10 minutes.">Te llegó un código de 6 dígitos por WhatsApp. Vence en 10 minutos.</p>
+    <label data-en="WhatsApp phone number">Teléfono de WhatsApp<input id="verify-code-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <label data-en="6-digit code">Código de 6 dígitos<input id="verify-code-code" type="text" inputmode="numeric" pattern="\d{6}" maxlength="6" autocomplete="one-time-code" required /></label>
+    <div class="message" id="verify-code-message"></div><button class="primary" type="submit" data-en="Verify code">Verificar código</button>
   </form></dialog>
 
   <dialog id="appointment-detail-dialog">
     <div class="dialog-head"><div><p class="kicker">Detalle de la cita</p><h2 id="appointment-detail-time">--:--</h2></div><button class="icon-button" id="close-appointment-detail" type="button" aria-label="Cerrar">×</button></div>
     <dl class="detail-list" id="appointment-detail-body"></dl>
+    <div class="hidden deposit-review" id="appointment-deposit-review">
+      <p class="kicker">Comprobante recibido</p>
+      <div class="message" id="appointment-deposit-message"></div>
+      <div class="step-actions">
+        <button class="secondary" id="appointment-deposit-reject" type="button">Rechazar</button>
+        <button class="primary" id="appointment-deposit-approve" type="button">Confirmar cita</button>
+      </div>
+    </div>
     <div class="dialog-actions">
       <div class="message" id="appointment-cancel-message"></div>
       <div class="hidden" id="appointment-status-actions">
         <button class="secondary" id="appointment-mark-confirmed" type="button">Confirmar asistencia</button>
-        <button class="secondary" id="appointment-mark-attended" type="button">Marcar como atendida</button>
+        <button class="secondary" id="appointment-mark-attended" type="button">Atendida</button>
+        <button class="secondary" id="appointment-mark-no-show" type="button">No asistió</button>
       </div>
       <button class="secondary" id="appointment-cancel-toggle" type="button">Cancelar esta cita</button>
       <div class="hidden" id="appointment-cancel-confirm">
@@ -334,11 +344,11 @@
   </dialog>
 
   <dialog id="setup-dialog"><form id="setup-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker">Teléfono verificado</p><h2 id="setup-dialog-title">Crea tu contraseña</h2></div></div>
-    <p>Debe tener 8 caracteres o más, al menos una letra y un número.</p>
-    <label>Nueva contraseña<input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
-    <label>Repetir contraseña<input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
-    <div class="message" id="setup-message"></div><button class="primary" type="submit">Activar y confirmar cita</button>
+    <div class="dialog-head"><div><p class="kicker" data-en="Phone verified">Teléfono verificado</p><h2 id="setup-dialog-title" data-en="Create your password">Crea tu contraseña</h2></div></div>
+    <p data-en="Must be at least 8 characters, with at least one letter and one number.">Debe tener 8 caracteres o más, al menos una letra y un número.</p>
+    <label data-en="New password">Nueva contraseña<input id="setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <label data-en="Repeat password">Repetir contraseña<input id="setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
+    <div class="message" id="setup-message"></div><button class="primary" type="submit" data-en="Activate and confirm appointment">Activar y confirmar cita</button>
   </form></dialog>
 
   <dialog id="admin-reset-password-dialog"><form id="admin-reset-password-form" method="dialog">
