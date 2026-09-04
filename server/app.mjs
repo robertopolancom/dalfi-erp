@@ -105,10 +105,17 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   });
   app.use(express.json({ limit: MAX_BODY_BYTES }));
   app.use(["/api/fast-booking", "/api/reservapp"], (req, res, next) => {
-    const allowedOrigin = String(env.FAST_BOOKING_ORIGIN || "https://reservapp.dalfistudio.com").replace(/\/$/, "");
+    // Lista separada por comas: durante la migración de dominio ReservApp vive a la vez en
+    // reservapp.dalfistudio.com y en el hostname viejo. Se devuelve el origen que coincidió,
+    // nunca "*" -- aquí va Allow-Credentials, y "*" con credenciales ni siquiera es válido.
+    const allowedOrigins = String(env.FAST_BOOKING_ORIGIN || "https://reservapp.dalfistudio.com")
+      .split(",")
+      .map((value) => value.trim().replace(/\/$/, ""))
+      .filter(Boolean);
     const origin = String(req.get("origin") || "").replace(/\/$/, "");
-    if (origin && origin === allowedOrigin) {
-      res.set("Access-Control-Allow-Origin", allowedOrigin);
+    const originAllowed = Boolean(origin) && allowedOrigins.includes(origin);
+    if (originAllowed) {
+      res.set("Access-Control-Allow-Origin", origin);
       res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
       res.set("Access-Control-Allow-Headers", "Authorization,Content-Type,Idempotency-Key");
       res.set("Access-Control-Allow-Credentials", "true");
@@ -116,7 +123,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       res.vary("Origin");
     }
     if (req.method === "OPTIONS") {
-      return origin === allowedOrigin ? res.status(204).end() : res.status(403).end();
+      return originAllowed ? res.status(204).end() : res.status(403).end();
     }
     next();
   });
