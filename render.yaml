@@ -22,21 +22,22 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
-      # Orígenes que pueden llamar a /api/fast-booking y /api/reservapp. Durante la
-      # migración ReservApp vive en los dos dominios a la vez; en el corte limpio se quita
-      # el segundo. Este servicio es Blueprint managed: render.yaml MANDA y sobrescribe
-      # cualquier edición hecha a mano en el dashboard de Render.
+      # Orígenes que pueden llamar a /api/fast-booking y /api/reservapp. El hostname viejo
+      # (reservapp.sebengroup.com) se retiró en el corte limpio del 2026-09-04.
+      # Este servicio es Blueprint managed: render.yaml MANDA y sobrescribe cualquier
+      # edición hecha a mano en el dashboard de Render.
       - key: FAST_BOOKING_ORIGIN
-        value: https://reservapp.dalfistudio.com,https://reservapp.sebengroup.com
+        value: https://reservapp.dalfistudio.com
       - key: FAST_BOOKING_HOST
         value: reservapp.dalfistudio.com
       - key: SEBEN_SUITE_HOST
         value: sebensuiteconnect.dalfistudio.com
       # Orígenes que pueden LEER GET /api/site-content/:siteKey (el contenido que el
       # personal edita desde el panel "Página web" del ERP). La misma página de Nails se
-      # sirve desde la raíz, www y nails a la vez, y durante la migración también desde el
-      # hostname viejo. En el corte limpio se borra el último de la lista; si se borra la
-      # variable entera, el código cae al valor por defecto, que ya son los tres nuevos.
+      # sirve desde la raíz, www y nails a la vez. El cuarto de la lista,
+      # dalfistudionails.sebengroup.com, SIGUE VIVO a propósito: es el sitio que Meta puede
+      # estar visitando durante la verificación de empresa, en revisión desde principios de
+      # septiembre de 2026. Quitarlo solo cuando Meta apruebe.
       - key: SITE_CONTENT_ALLOWED_ORIGIN
         value: https://dalfistudio.com,https://www.dalfistudio.com,https://nails.dalfistudio.com,https://dalfistudionails.sebengroup.com
       - key: RESERVAPP_PUBLIC_URL
