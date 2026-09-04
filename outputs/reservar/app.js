@@ -18,8 +18,25 @@ function applyLanguage(lang) {
   state.language = lang;
   try { localStorage.setItem("reservapp_lang", lang); } catch { /* modo privado o cuota llena -- no afecta la sesión actual */ }
   document.querySelectorAll("[data-en]").forEach((el) => {
-    if (el.dataset.es === undefined) el.dataset.es = el.textContent;
-    el.textContent = lang === "en" ? el.dataset.en : el.dataset.es;
+    // Se traducen SOLO los nodos de texto directos del elemento, nunca con textContent:
+    // asignar textContent borra todos los hijos, y en este HTML hay 23 <label data-en>
+    // que envuelven su propio <select>/<input> (staff, date, login-phone,
+    // login-password, los de registro...). Con textContent esos controles
+    // desaparecían del DOM en cada carga -- applyLanguage() corre al arrancar para
+    // restaurar el idioma guardado, no solo al pulsar el botón -- y despues
+    // loadCatalog() moria en $("staff").add(...), dejando la app entera inservible.
+    const textNodes = [...el.childNodes].filter((node) => node.nodeType === Node.TEXT_NODE);
+    if (el.dataset.es === undefined) {
+      el.dataset.es = textNodes.map((node) => node.nodeValue).join("").trim();
+    }
+    const text = lang === "en" ? el.dataset.en : el.dataset.es;
+    if (textNodes.length) {
+      textNodes[0].nodeValue = text;
+      // El resto se vacia para no dejar duplicada la etiqueta en el otro idioma.
+      for (let i = 1; i < textNodes.length; i += 1) textNodes[i].nodeValue = "";
+    } else {
+      el.prepend(document.createTextNode(text));
+    }
   });
   document.querySelectorAll("[data-en-placeholder]").forEach((el) => {
     if (el.dataset.esPlaceholder === undefined) el.dataset.esPlaceholder = el.getAttribute("placeholder") || "";
