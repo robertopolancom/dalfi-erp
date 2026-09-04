@@ -22,8 +22,12 @@ services:
         sync: false
       - key: ADMIN_EMAILS
         sync: false
+      # Orígenes que pueden llamar a /api/fast-booking y /api/reservapp. Durante la
+      # migración ReservApp vive en los dos dominios a la vez; en el corte limpio se quita
+      # el segundo. Este servicio es Blueprint managed: render.yaml MANDA y sobrescribe
+      # cualquier edición hecha a mano en el dashboard de Render.
       - key: FAST_BOOKING_ORIGIN
-        value: https://reservapp.dalfistudio.com
+        value: https://reservapp.dalfistudio.com,https://reservapp.sebengroup.com
       - key: FAST_BOOKING_HOST
         value: reservapp.dalfistudio.com
       - key: SEBEN_SUITE_HOST
