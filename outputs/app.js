@@ -344,7 +344,7 @@ async function ensurePostgresClient({ phone, name, email }) {
   }
 }
 
-const ESTADO_TO_PG_STATUS = { Programada: "scheduled", Confirmada: "confirmed", Atendida: "completed" };
+const ESTADO_TO_PG_STATUS = { Programada: "scheduled", Confirmada: "confirmed", Atendida: "completed", "No asistió": "no_show" };
 
 // Se llama DESPUÉS de que la reserva ya quedó guardada localmente (ver el submit de
 // #reservation-form) -- nunca antes, para que un fallo de red nunca le impida al personal
@@ -2172,6 +2172,13 @@ function showReservationDetails(reservationId) {
   // defecto como sí hace el frontend del cliente.
   if (depositStatus) {
     rows.push(detail("Depósito", `RD$${record.montoDeposito || 500} -- ${DEPOSIT_STATUS_ERP_LABELS[depositStatus] || depositStatus}`));
+  }
+  // citaMovida lo pone resolveDisplacedAppointments (server/store.mjs) cuando esta cita perdió su
+  // horario original porque otra, con la misma manicurista+hora, se confirmó primero (permitido a
+  // propósito desde la migración 0024) -- fecha/hora ya quedaron actualizadas a la nueva hora, así
+  // que solo hace falta avisar que se movió para que alguien le escriba a la clienta a confirmar.
+  if (record.citaMovida) {
+    rows.push(detail("Cita movida", "Sí -- el horario original lo confirmó otro cliente. Escríbele para confirmar si le sirve esta hora."));
   }
   content.innerHTML = rows.join("") + `<div id="deposit-review-area"></div>`;
   dialog.showModal();

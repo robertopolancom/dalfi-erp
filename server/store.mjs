@@ -1699,6 +1699,7 @@ export class NeonBookingStore {
               to_char(a.starts_at at time zone bs.timezone,'HH24:MI') start_time,
               to_char(a.ends_at at time zone bs.timezone,'HH24:MI') end_time,
               a.status,a.confirmation_status,a.deposit_status,a.deposit_amount,a.notes,a.group_id,
+              a.moved_from,
               coalesce(string_agg(x.service_name_snapshot, ', ' order by x.position),'Cita') services
          from app.appointments a
          left join app.staff s on s.id=a.staff_id
@@ -1753,15 +1754,160 @@ export class NeonBookingStore {
     }
   }
 
-  // Cambio manual de estatus (Confirmada/Atendida/Programada) desde un click en la cita, tanto
-  // desde ReservApp como desde el ERP (ver POST /api/reservapp/agenda/appointments/:id/status).
-  // 'Retrasada' NUNCA se guarda aquí -- es puramente derivada en el frontend a partir de la hora
-  // de inicio, para que nunca quede desactualizada. No permite pisar cancelled/replaced (esos
-  // solo se tocan vía cancelAppointment) ni completed hacia atrás por accidente de doble click.
-  // Pasar a 'confirmed' aquí es la vía de "autorización de administración" (confirma la cita sin
-  // depósito) -- la otra vía es reviewDepositReceipt (aprobar el comprobante). Ambas apuntan al
-  // mismo status, así que ambas pueden chocar con el constraint appointments_no_staff_overlap
-  // (neon/migrations/0024) si otra cita ya ganó ese horario -- se traduce a un 409 legible.
+  // Minutos locales (America/Santo_Domingo, sin horario de verano) de un timestamptz ya leído
+  // como Date de node-postgres -- mismo criterio de "-4h" que ya usa el resto del archivo para
+  // pasar de UTC a fecha/hora de Santo Domingo sin depender de Intl por cada llamada.
+  static localMinutesOf(date) {
+    const shifted = new Date(date.getTime() - 4 * 3600000);
+    return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
+  }
+
+  // Busca, DENTRO de la misma transacción que ya confirmó la cita ganadora, el horario libre más
+  // cercano a `aroundMinute` ese mismo día para `staffId` con exactamente `durationMinutes` --
+  // mismo criterio de "libre" que staffBusyIntervals (solo 'confirmed'/'completed' bloquean, ver
+  // migración 0024) y misma alineación de intervalo/aviso mínimo que availability(). Revisa
+  // alternando adelante/atrás desde `aroundMinute` (el más cercano en cualquier dirección gana) y
+  // se detiene cuando ambas direcciones se agotan. `alreadyReassigned` evita que dos citas
+  // desplazadas en la misma pasada de resolveDisplacedAppointments choquen entre sí. Devuelve
+  // {start,end} (objetos Date) o null si nada cupo ese día.
+  async findNearestFreeSlotSameDay(client, { staffId, date, durationMinutes, aroundMinute, excludeAppointmentId, alreadyReassigned = [] }) {
+    const settingsResult = await client.query("select timezone, settings from app.business_settings where id=true");
+    const timezone = settingsResult.rows[0]?.timezone || "America/Santo_Domingo";
+    const settings = settingsResult.rows[0]?.settings || {};
+    const window = resolveBusinessDayWindow(date, settings);
+    if (!window) return null;
+    const toMinutes = (clock) => { const [h, m] = clock.split(":").map(Number); return h * 60 + m; };
+    const openMin = toMinutes(window.open);
+    const closeMin = toMinutes(window.close);
+    const interval = Math.max(5, Number(settings.defaultSlotIntervalMinutes) || 15);
+    const minNotice = Math.max(0, Number(settings.minimumBookingNoticeMinutes) || 30);
+    const now = Date.now();
+
+    const busyResult = await client.query(
+      `select starts_at, ends_at from app.appointments
+         where staff_id=$1 and id<>$2 and status in ('confirmed','completed')
+           and confirmation_status is distinct from 'EspacioLiberado'
+           and starts_at < (($3::date + interval '1 day')::timestamp at time zone $4)
+           and ends_at > ($3::date::timestamp at time zone $4)`,
+      [staffId, excludeAppointmentId, date, timezone],
+    );
+    const busy = [
+      ...busyResult.rows.map((row) => ({ start: new Date(row.starts_at), end: new Date(row.ends_at) })),
+      ...alreadyReassigned,
+    ];
+
+    const toClock = (minute) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+    const fits = (minute) => {
+      if (minute < openMin || minute >= closeMin) return null;
+      const start = new Date(`${date}T${toClock(minute)}:00-04:00`);
+      const end = new Date(start.getTime() + durationMinutes * 60_000);
+      if (start.getTime() < now + minNotice * 60_000) return null;
+      const overlaps = busy.some((row) => start < row.end && end > row.start);
+      return overlaps ? null : { start, end };
+    };
+
+    const alignedAround = Math.round(aroundMinute / interval) * interval;
+    const span = Math.max(closeMin - openMin, interval);
+    for (let distance = 0; distance <= span; distance += interval) {
+      const forward = alignedAround + distance;
+      if (forward < closeMin) {
+        const hit = fits(forward);
+        if (hit) return hit;
+      }
+      if (distance > 0) {
+        const backward = alignedAround - distance;
+        if (backward >= openMin) {
+          const hit = fits(backward);
+          if (hit) return hit;
+        }
+      }
+      if (alignedAround + distance >= closeMin && alignedAround - distance < openMin) break;
+    }
+    return null;
+  }
+
+  // Cuando una cita pasa a 'confirmed' (depósito aprobado o autorización manual) puede haber
+  // otras citas 'scheduled' del mismo staff que compartían ese horario -- permitido a propósito
+  // desde la migración 0024 (ver appointments_no_staff_overlap). La ganadora se queda con el
+  // horario real; las demás quedan compitiendo por nada, así que se reasignan solas al horario
+  // libre más cercano ESE MISMO DÍA y quedan marcadas con moved_from -- así el personal ve "Cita
+  // movida" en el calendario (GET /api/reservapp/agenda) y sabe que debe escribirle a la clienta a
+  // confirmar si el nuevo horario le sirve, y la propia clienta ve el aviso al entrar a subir su
+  // comprobante (GET /api/reservapp/my-appointments). Si ningún horario libre cupo ese mismo día,
+  // se deja donde estaba -- sigue en conflicto, para que el personal la reprograme a mano en vez
+  // de que el sistema adivine otro día. Se llama DENTRO de la misma transacción que confirmó a la
+  // ganadora, nunca después de hacer commit (evita una ventana donde otra cita pudiera colarse).
+  async resolveDisplacedAppointments(client, { winnerId, staffId, startsAt, endsAt }) {
+    const losers = await client.query(
+      `select id, legacy_id, starts_at, ends_at from app.appointments
+         where staff_id=$1 and id<>$2 and status='scheduled'
+           and starts_at < $4 and ends_at > $3
+         for update`,
+      [staffId, winnerId, startsAt, endsAt],
+    );
+    if (!losers.rows.length) return [];
+
+    const settingsResult = await client.query("select timezone, settings from app.business_settings where id=true");
+    const businessSettings = settingsResult.rows[0]?.settings || {};
+
+    const moved = [];
+    const reservedThisPass = [];
+    for (const loser of losers.rows) {
+      const originalStart = new Date(loser.starts_at);
+      const originalEnd = new Date(loser.ends_at);
+      const date = new Date(originalStart.getTime() - 4 * 3600000).toISOString().slice(0, 10);
+      const durationMinutes = Math.round((originalEnd - originalStart) / 60_000);
+      const aroundMinute = NeonBookingStore.localMinutesOf(originalStart);
+      const slot = await this.findNearestFreeSlotSameDay(client, {
+        staffId, date, durationMinutes, aroundMinute, excludeAppointmentId: loser.id, alreadyReassigned: reservedThisPass,
+      });
+      if (!slot) continue; // sigue en conflicto -- el personal la reprograma a mano
+      reservedThisPass.push(slot);
+      const hoursUntil = businessMinutesBetween(Date.now(), slot.start.getTime(), businessSettings) / 60;
+      const newConfirmationStatus = hoursUntil <= 4 ? "NoRequerida" : "Programada";
+      const movedFrom = {
+        originalStartsAt: originalStart.toISOString(), originalEndsAt: originalEnd.toISOString(),
+        movedAt: new Date().toISOString(), reason: "slot_taken_by_other_confirmed_appointment",
+      };
+      await client.query(
+        `update app.appointments
+            set starts_at=$2, ends_at=$3, confirmation_status=$4, first_reminder_sent_at=null,
+                moved_from=$5::jsonb, updated_at=clock_timestamp()
+          where id=$1`,
+        [loser.id, slot.start.toISOString(), slot.end.toISOString(), newConfirmationStatus, JSON.stringify(movedFrom)],
+      );
+      if (loser.legacy_id) {
+        const newLocalMinutes = NeonBookingStore.localMinutesOf(slot.start);
+        const newHora = `${String(Math.floor(newLocalMinutes / 60)).padStart(2, "0")}:${String(newLocalMinutes % 60).padStart(2, "0")}`;
+        await this.mirrorAppointmentToDocument(client, loser.legacy_id, (doc) => {
+          doc.fecha = date;
+          doc.hora = newHora;
+          doc.estadoConfirmacion = newConfirmationStatus;
+          doc.citaMovida = true;
+          doc.updated_at = new Date().toISOString();
+        });
+      }
+      moved.push({
+        id: loser.id, legacyId: loser.legacy_id,
+        from: { startsAt: originalStart.toISOString(), endsAt: originalEnd.toISOString() },
+        to: { startsAt: slot.start.toISOString(), endsAt: slot.end.toISOString() },
+      });
+    }
+    return moved;
+  }
+
+  // Cambio manual de estatus (Confirmada/Atendida/NoAsistio/Programada) desde un click en la
+  // cita, tanto desde ReservApp como desde el ERP (ver POST
+  // /api/reservapp/agenda/appointments/:id/status). 'Retrasada' NUNCA se guarda aquí -- es
+  // puramente derivada en el frontend a partir de la hora de inicio, para que nunca quede
+  // desactualizada. No permite pisar cancelled/replaced (esos solo se tocan vía
+  // cancelAppointment) ni completed hacia atrás por accidente de doble click. Pasar a 'confirmed'
+  // aquí es la vía de "autorización de administración" (confirma la cita sin depósito) -- la otra
+  // vía es reviewDepositReceipt (aprobar el comprobante). Ambas apuntan al mismo status, así que
+  // ambas pueden chocar con el constraint appointments_no_staff_overlap (neon/migrations/0024) si
+  // otra cita ya ganó ese horario -- se traduce a un 409 legible. 'no_show' (No asistió) es
+  // terminal como 'completed' pero nunca dispara resolveDisplacedAppointments (esa cita ya no
+  // tenía el horario apartado desde que se creó -- solo 'confirmed' lo hace).
   async setAppointmentStatus({ id, status }) {
     const client = await this.pool.connect();
     try {
@@ -1771,17 +1917,23 @@ export class NeonBookingStore {
             set status = $2,
                 updated_at = clock_timestamp()
           where id = $1 and status not in ('cancelled','replaced')
-          returning id, status, legacy_id`,
+          returning id, status, legacy_id, staff_id, starts_at, ends_at`,
         [id, status],
       );
       const row = result.rows[0] || null;
+      let displaced = [];
       if (row?.legacy_id) {
-        const ESTADO_BY_STATUS = { scheduled: "Programada", confirmed: "Confirmada", completed: "Atendida" };
+        const ESTADO_BY_STATUS = { scheduled: "Programada", confirmed: "Confirmada", completed: "Atendida", no_show: "No asistió" };
         const estado = ESTADO_BY_STATUS[status];
         if (estado) await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estado = estado; doc.updated_at = new Date().toISOString(); });
       }
+      if (row && status === "confirmed") {
+        displaced = await this.resolveDisplacedAppointments(client, {
+          winnerId: row.id, staffId: row.staff_id, startsAt: row.starts_at, endsAt: row.ends_at,
+        });
+      }
       await client.query("commit");
-      return row;
+      return row ? { ...row, displaced } : row;
     } catch (error) {
       await client.query("rollback").catch(() => {});
       if (error?.code === "23P01") {
@@ -1806,6 +1958,7 @@ export class NeonBookingStore {
               to_char(a.starts_at at time zone bs.timezone,'HH24:MI') start_time,
               to_char(a.ends_at at time zone bs.timezone,'HH24:MI') end_time,
               a.status, a.confirmation_status, a.deposit_status, a.deposit_amount, a.notes,
+              a.moved_from,
               coalesce(string_agg(x.service_name_snapshot, ', ' order by x.position),'Cita') services
          from app.appointments a
          left join app.staff s on s.id=a.staff_id
@@ -1953,9 +2106,9 @@ export class NeonBookingStore {
       const updated = await client.query(
         approve
           ? `update app.appointments set deposit_status=$2, status='confirmed', updated_at=clock_timestamp()
-              where id=$1 returning id, deposit_status, status, legacy_id`
+              where id=$1 returning id, deposit_status, status, legacy_id, staff_id, starts_at, ends_at`
           : `update app.appointments set deposit_status=$2, updated_at=clock_timestamp()
-              where id=$1 returning id, deposit_status, status, legacy_id`,
+              where id=$1 returning id, deposit_status, status, legacy_id, staff_id, starts_at, ends_at`,
         [appointmentId, newStatus],
       );
       const row = updated.rows[0];
@@ -1967,8 +2120,16 @@ export class NeonBookingStore {
           doc.updated_at = new Date().toISOString();
         });
       }
+      // Aprobar el comprobante es la otra vía (junto a setAppointmentStatus) que puede dejar a
+      // otras citas 'scheduled' compitiendo por un horario que esta acaba de ganar -- ver
+      // resolveDisplacedAppointments más arriba.
+      const displaced = approve
+        ? await this.resolveDisplacedAppointments(client, {
+            winnerId: row.id, staffId: row.staff_id, startsAt: row.starts_at, endsAt: row.ends_at,
+          })
+        : [];
       await client.query("commit");
-      return row;
+      return { ...row, displaced };
     } catch (error) {
       await client.query("rollback").catch(() => {});
       if (error?.code === "23P01") {

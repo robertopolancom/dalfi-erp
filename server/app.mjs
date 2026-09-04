@@ -859,12 +859,23 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     // desde el Panel de colaboradores de ReservApp como desde la matriz del ERP -- por eso el
     // guard de autorización es requireBookingStaff (sesión de personal de ReservApp O identidad
     // del ERP con canManageReservations), no requireReservapp a secas. "Retrasada" nunca es un
-    // valor válido aquí: se calcula solo en el frontend a partir de la hora de inicio.
-    const ALLOWED_MANUAL_STATUSES = new Set(["scheduled", "confirmed", "completed"]);
+    // valor válido aquí: se calcula solo en el frontend a partir de la hora de inicio. 'no_show'
+    // (No asistió) se suma a 'completed' como los dos únicos estatus que puede poner una
+    // manicurista/asistente -- confirmar (o revertir a 'scheduled') decide si un horario queda
+    // apartado sin depósito, así que queda reservado a administración (pedido explícito).
+    const ALLOWED_MANUAL_STATUSES = new Set(["scheduled", "confirmed", "completed", "no_show"]);
+    const ADMIN_ONLY_MANUAL_STATUSES = new Set(["scheduled", "confirmed"]);
     app.post("/api/reservapp/agenda/appointments/:id/status", async (req, res, next) => {
       if (!(await requireBookingStaff(req, res))) return;
       const status = cleanText(req.body?.status, 20);
       if (!ALLOWED_MANUAL_STATUSES.has(status)) return res.status(400).json({ error: "Estatus inválido." });
+      if (ADMIN_ONLY_MANUAL_STATUSES.has(status)) {
+        const session = await reservappSession(req);
+        // Sesión nula aquí == identidad del ERP legado, que requireBookingStaff ya validó con
+        // canManageReservations -- ese permiso ya es de nivel administración, así que pasa.
+        const isAdmin = !session || ["administradora", "superadministrador"].includes(session.account.role);
+        if (!isAdmin) return res.status(403).json({ error: "Solo administración puede confirmar o revertir una cita." });
+      }
       try {
         const updated = await bookingStore.setAppointmentStatus({ id: req.params.id, status });
         if (!updated) return res.status(404).json({ error: "Esa cita no existe o ya está cancelada." });
@@ -886,12 +897,17 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
 
+    // Aprobar/rechazar un comprobante es, en el fondo, la misma decisión de "esta cita gana el
+    // horario o no" que ADMIN_ONLY_MANUAL_STATUSES protege arriba -- así que queda igual de
+    // reservado a administración (manicurista/asistente no revisan comprobantes).
     app.post("/api/reservapp/agenda/appointments/:id/deposit/review", async (req, res, next) => {
       if (!(await requireBookingStaff(req, res))) return;
       const approve = req.body?.approve === true;
       const note = cleanText(req.body?.note, 200);
       try {
         const session = await reservappSession(req);
+        const isAdmin = !session || ["administradora", "superadministrador"].includes(session.account.role);
+        if (!isAdmin) return res.status(403).json({ error: "Solo administración puede revisar comprobantes de depósito." });
         const reviewedBy = session?.account.role ? `${session.account.role}:${session.account.id}` : "erp";
         const updated = await bookingStore.reviewDepositReceipt({ appointmentId: req.params.id, approve, reviewedBy, note: note || null });
         res.json({ ok: true, appointment: updated });

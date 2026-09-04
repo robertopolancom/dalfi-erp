@@ -25,6 +25,11 @@ function fakePool({ appointment, receiptRow, updatedAppointment } = {}) {
       if (sql.includes("update app.appointments set deposit_status")) {
         return { rows: updatedAppointment ? [updatedAppointment] : [] };
       }
+      // resolveDisplacedAppointments (llamada al aprobar) -- sin citas 'scheduled' compitiendo
+      // por el mismo horario en estos fixtures, así que no hay nada que reasignar.
+      if (sql.includes("select id, legacy_id, starts_at, ends_at from app.appointments")) {
+        return { rows: [] };
+      }
       throw new Error(`Consulta no simulada: ${sql}`);
     },
     release() {},
@@ -94,7 +99,7 @@ test("reviewDepositReceipt(): aprobar pasa a Verificado y espeja el documento de
     mirrored.push({ legacyId, doc });
   };
   const result = await store.reviewDepositReceipt({ appointmentId: "apt-1", approve: true, reviewedBy: "administradora:acc-1" });
-  assert.deepEqual(result, updatedAppointment);
+  assert.deepEqual(result, { ...updatedAppointment, displaced: [] });
   const statusUpdate = queries.find((q) => q.sql.includes("update app.appointments set deposit_status"));
   assert.deepEqual(statusUpdate.params, ["apt-1", "Verificado"]);
   const receiptUpdate = queries.find((q) => q.sql.includes("update app.appointment_deposit_receipts"));
