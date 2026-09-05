@@ -1,5 +1,9 @@
 .DS_Store
-node_modules/
+# Sin la barra final: con "node_modules/" git solo ignora el DIRECTORIO, y un enlace
+# simbólico llamado node_modules (que es un archivo para git) se colaba en los commits.
+# Pasó de verdad en b34be11, desde un git worktree que enlazaba al node_modules del
+# checkout principal para poder correr las pruebas.
+node_modules
 .env
 .env.local
 .vercel/
