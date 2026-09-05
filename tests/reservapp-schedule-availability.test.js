@@ -36,13 +36,41 @@ function fakePool({ staff = [], businessSettings = {}, weeklySchedules = [], exc
 
 const STAFF = [{ id: "COL-1", full_name: "Ana Pérez" }, { id: "COL-2", full_name: "Jaimely Peña" }];
 
+// Las fechas de este archivo se calculan relativas a HOY, nunca a mano. availability()
+// (server/store.mjs) descarta todo horario anterior a `now + minNotice`, así que una fecha fija
+// se pudre en cuanto pasa: estas pruebas llevaban rojas desde el 2026-09-01 porque usaban el
+// 2026-08-31 como "lunes". El día de la semana se deriva EXACTAMENTE igual que en store.mjs
+// (mediodía en -04:00) para que no haya forma de que discrepen.
+function nextWeekday(weekday, daysAhead = 7) {
+  const d = new Date();
+  d.setDate(d.getDate() + daysAhead);
+  for (let i = 0; i < 8; i += 1) {
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    if (new Date(`${iso}T12:00:00-04:00`).getDay() === weekday) return iso;
+    d.setDate(d.getDate() + 1);
+  }
+  throw new Error(`No se encontró el día de la semana ${weekday}`);
+}
+
+// Para las excepciones de calendario con etiqueta (Navidad, Nochebuena): la fecha concreta da
+// igual, pero tiene que seguir en el futuro. Devuelve la próxima vez que llega ese 24/25 de
+// diciembre. Ojo: queda a más de 60 días, o sea fuera de maximumAdvanceBookingDays por defecto,
+// así que la prueba que espera horarios sube ese límite a propósito.
+function nextDecember(day) {
+  const now = new Date();
+  const thisYear = new Date(`${now.getFullYear()}-12-${day}T12:00:00-04:00`);
+  const year = thisYear.getTime() > now.getTime() ? now.getFullYear() : now.getFullYear() + 1;
+  return `${year}-12-${day}`;
+}
+
+
 test("availability(): weeklyHours con hora distinta por día tiene prioridad sobre defaultOpeningTime/defaultClosingTime", async () => {
   // Lunes (weekday 1) abre a la 1pm en vez de las 9am de siempre.
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
     businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00", weeklyHours: { "1": { open: "13:00", close: "18:00" } } },
   }));
-  const monday = "2026-08-31"; // lunes
+  const monday = nextWeekday(1);
   const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: monday });
   assert.ok(result.slots.length > 0);
   assert.ok(result.slots.every((slot) => slot.time >= "13:00"), "ningún horario antes de la 1pm configurada para el lunes");
@@ -53,15 +81,16 @@ test("availability(): weeklyHours con null marca el día completo cerrado aunque
     staff: STAFF,
     businessSettings: { weekDays: [0, 1, 2, 3, 4, 5, 6], weeklyHours: { "5": null } }, // viernes cerrado
   }));
-  const friday = "2026-09-04";
+  const friday = nextWeekday(5);
   const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: friday });
   assert.equal(result.closed, true);
   assert.deepEqual(result.slots, []);
 });
 
 test("availability(): una colaboradora sin fila en staff_weekly_schedules sigue el horario general (compatibilidad)", async () => {
-  const store = new NeonBookingStore(fakePool({ staff: STAFF, businessSettings: { maximumAdvanceBookingDays: 400 } }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
+  const store = new NeonBookingStore(fakePool({ staff: STAFF, businessSettings: {} }));
+  const tuesday = nextWeekday(2);
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: tuesday });
   assert.ok(result.slots.length > 0, "sin ninguna fila configurada, debe comportarse exactamente como antes de que existiera la tabla");
 });
 
@@ -72,7 +101,7 @@ test("availability(): colaboradora con horario semanal propio queda libre el dí
     businessSettings: {},
     weeklySchedules: [{ staff_id: "COL-1", weekday: 2, start_time: "09:00:00", end_time: "18:00:00" }],
   }));
-  const monday = "2026-08-31";
+  const monday = nextWeekday(1);
   const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: monday });
   assert.equal(result.closed, true, "opt-in: sin fila para ese día de la semana, no trabaja");
 });
@@ -83,29 +112,31 @@ test("availability(): colaboradora con horario semanal propio respeta su hora de
     businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00" },
     weeklySchedules: [{ staff_id: "COL-1", weekday: 1, start_time: "14:00:00", end_time: "18:00:00" }],
   }));
-  const monday = "2026-08-31";
+  const monday = nextWeekday(1);
   const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: monday });
   assert.ok(result.slots.length > 0);
   assert.ok(result.slots.every((slot) => slot.time >= "14:00"));
 });
 
 test("availability(): una excepción puntual (available:false) deja libre a la colaboradora ese día aunque su horario semanal diga que trabaja", async () => {
+  const tuesday = nextWeekday(2);
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
-    businessSettings: { maximumAdvanceBookingDays: 400 },
-    exceptions: [{ staff_id: "COL-1", exception_date: "2027-06-01", start_time: null, end_time: null, available: false }],
+    businessSettings: {},
+    exceptions: [{ staff_id: "COL-1", exception_date: tuesday, start_time: null, end_time: null, available: false }],
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: tuesday });
   assert.equal(result.closed, true);
 });
 
 test("availability(): una excepción puntual con horas propias (medio día) limita los horarios de esa colaboradora ese día", async () => {
+  const tuesday = nextWeekday(2);
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
-    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400 },
-    exceptions: [{ staff_id: "COL-1", exception_date: "2027-06-01", start_time: "09:00:00", end_time: "12:00:00", available: true }],
+    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00" },
+    exceptions: [{ staff_id: "COL-1", exception_date: tuesday, start_time: "09:00:00", end_time: "12:00:00", available: true }],
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: tuesday });
   assert.ok(result.slots.length > 0);
   assert.ok(result.slots.every((slot) => slot.time < "12:00"));
 });
@@ -116,7 +147,7 @@ test("availability(): una colaboradora sin servicio elegible no se ve afectada p
     businessSettings: {},
     weeklySchedules: [{ staff_id: "COL-2", weekday: 1, start_time: "09:00:00", end_time: "18:00:00" }],
   }));
-  const monday = "2026-08-31";
+  const monday = nextWeekday(1);
   const result = await store.availability({ serviceIds: ["SRV-1"], date: monday }); // sin staffId, las dos elegibles
   const staffIdsInSlots = new Set(result.slots.map((slot) => slot.staffId));
   assert.ok(staffIdsInSlots.has("COL-1"), "COL-1 no tiene horario propio, sigue el horario general");
@@ -124,16 +155,17 @@ test("availability(): una colaboradora sin servicio elegible no se ve afectada p
 });
 
 test("availability(): scheduleExceptions con open/close vacíos cierra el negocio entero esa fecha (mismo formato del editor del ERP legado)", async () => {
+  const navidad = nextDecember("25");
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
-    businessSettings: { scheduleExceptions: [{ date: "2026-12-25", open: null, close: null, label: "Navidad" }] },
+    businessSettings: { scheduleExceptions: [{ date: navidad, open: null, close: null, label: "Navidad" }] },
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-12-25" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: navidad });
   assert.equal(result.closed, true);
 });
 
 test("availability(): una cita con confirmation_status EspacioLiberado no bloquea su horario (el espacio reaparece disponible)", async () => {
-  const monday = "2026-08-31";
+  const monday = nextWeekday(1);
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
     businessSettings: {},
@@ -144,7 +176,7 @@ test("availability(): una cita con confirmation_status EspacioLiberado no bloque
 });
 
 test("availability(): una cita normal (sin EspacioLiberado) sigue bloqueando su horario", async () => {
-  const monday = "2026-08-31";
+  const monday = nextWeekday(1);
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
     businessSettings: {},
@@ -155,14 +187,15 @@ test("availability(): una cita normal (sin EspacioLiberado) sigue bloqueando su 
 });
 
 test("availability(): scheduleExceptions con open/close puntuales cambia el horario del negocio solo esa fecha", async () => {
+  const nochebuena = nextDecember("24");
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
     businessSettings: {
       defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400,
-      scheduleExceptions: [{ date: "2026-12-24", open: "09:00", close: "13:00", label: "Nochebuena, medio día" }],
+      scheduleExceptions: [{ date: nochebuena, open: "09:00", close: "13:00", label: "Nochebuena, medio día" }],
     },
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2026-12-24" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: nochebuena });
   assert.ok(result.slots.length > 0);
   assert.ok(result.slots.every((slot) => slot.time < "13:00"));
 });
@@ -173,7 +206,7 @@ test("availability(): scheduleExceptions con open/close puntuales cambia el hora
 // especial" (weekDays no incluye domingo por defecto) nunca podía abrir. Corregido: con open+close
 // propios, la excepción sí abre un día normalmente cerrado.
 test("availability(): scheduleExceptions con open/close propios abre un domingo aunque weekDays no lo incluya (disponibilidad especial)", async () => {
-  const sunday = "2026-08-30"; // domingo
+  const sunday = nextWeekday(0);
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
     businessSettings: {
@@ -188,7 +221,7 @@ test("availability(): scheduleExceptions con open/close propios abre un domingo 
 });
 
 test("availability(): un domingo normal (sin excepción) sigue cerrado por defecto", async () => {
-  const sunday = "2026-08-30";
+  const sunday = nextWeekday(0);
   const store = new NeonBookingStore(fakePool({
     staff: STAFF,
     businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "18:00", maximumAdvanceBookingDays: 400 },
@@ -205,9 +238,9 @@ test("availability(): un servicio que empieza antes de cerrar se ofrece aunque t
     staff: STAFF,
     // SRV-1 dura 60 min (fakePool, línea 11); ventana de solo 30 min (09:00-09:30) -- antes de
     // este cambio, ningún horario cabía completo y result.slots quedaba vacío.
-    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "09:30", maximumAdvanceBookingDays: 400 },
+    businessSettings: { defaultOpeningTime: "09:00", defaultClosingTime: "09:30" },
   }));
-  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: "2027-06-01" });
+  const result = await store.availability({ serviceIds: ["SRV-1"], staffId: "COL-1", date: nextWeekday(2) });
   assert.ok(result.slots.length > 0, "debe ofrecer horarios aunque el servicio termine después del cierre");
   assert.ok(result.slots.every((slot) => slot.time < "09:30"), "el horario de INICIO debe seguir siendo antes de cerrar");
   assert.ok(result.slots.some((slot) => slot.time === "09:15"), "09:15 empieza antes de cerrar (09:30) aunque el servicio de 60 min termine a las 10:15");

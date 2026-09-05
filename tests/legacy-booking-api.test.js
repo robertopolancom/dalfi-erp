@@ -3,7 +3,11 @@ import { once } from "node:events";
 import test from "node:test";
 import { createApp } from "../server/app.mjs";
 
-const FUTURE_DATE = new Date(Date.now() + 8 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+// Una fecha futura en la que el negocio ABRE. Antes era "hoy + 8 días" a secas y eso caía en
+// domingo una vez por semana (el negocio cierra domingos por defecto), dejando sin horarios a
+// las pruebas que reservan: rojas cada sábado. Ahora comparte la misma lógica que
+// nextOpenWeekday(), declarada más abajo (las declaraciones de función se elevan).
+const FUTURE_DATE = nextOpenWeekday();
 const CHATBOT_SECRET = "test-chatbot-secret";
 
 function baseDoc() {
@@ -79,8 +83,8 @@ test("GET /api/booking/availability calcula slots reales para la colaboradora", 
   });
 });
 
-// Fecha de lunes a sábado, nunca domingo (el negocio cierra domingos por defecto) — a
-// diferencia de FUTURE_DATE arriba, no puede ser flaky.
+// Fecha de lunes a sábado, nunca domingo (el negocio cierra domingos por defecto). La usa
+// también FUTURE_DATE, para que ninguna fecha de este archivo dependa del día en que se corra.
 function nextOpenWeekday(daysAhead = 8) {
   let d = new Date(Date.now() + daysAhead * 24 * 3600 * 1000);
   while (d.getUTCDay() === 0) d = new Date(d.getTime() + 24 * 3600 * 1000);
