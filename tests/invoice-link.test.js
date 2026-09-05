@@ -9,7 +9,7 @@ import {
   verifyInvoiceToken,
 } from "../server/invoice-link.mjs";
 
-const ENV = { INVOICE_LINK_SECRET: "secreto-de-prueba", APP_BASE_URL: "https://sebensuiteconnect.dalfistudio.com" };
+const ENV = { INVOICE_LINK_SECRET: "secreto-de-prueba", APP_BASE_URL: "https://ssc.dalfistudio.com" };
 
 const DOC = {
   facturas: [{
@@ -49,8 +49,8 @@ test("sin secreto configurado no se emiten ni se aceptan enlaces", () => {
 });
 
 test("invoiceUrl: cuelga de APP_BASE_URL sin barra doble", () => {
-  const url = invoiceUrl({ ...ENV, APP_BASE_URL: "https://sebensuiteconnect.dalfistudio.com/" }, "FAC-001");
-  assert.match(url, /^https:\/\/sebensuiteconnect\.dalfistudio\.com\/factura\/[\w-]+\.[\w-]+$/);
+  const url = invoiceUrl({ ...ENV, APP_BASE_URL: "https://ssc.dalfistudio.com/" }, "FAC-001");
+  assert.match(url, /^https:\/\/ssc\.dalfistudio\.com\/factura\/[\w-]+\.[\w-]+$/);
 });
 
 test("buildInvoiceView: arma la factura desde el documento vivo y solo con sus líneas", () => {

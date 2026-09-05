@@ -72,13 +72,13 @@
   });
 })();
 
-// Contenido editable desde el panel "Página web" del ERP (sebensuiteconnect.dalfistudio.com) -- ver
+// Contenido editable desde el panel "Página web" del ERP (ssc.dalfistudio.com) -- ver
 // GET /api/site-content/dalfistudionails en server/app.mjs. El HTML de arriba ya trae el
 // contenido real como valor por defecto, así que si este fetch falla o tarda la página se ve
 // completa igual -- esto solo la actualiza en el sitio si hay una respuesta válida. El contenido
 // viene de la red, así que nunca se usa innerHTML con él: solo textContent/atributos.
 (function () {
-  var CONTENT_API = "https://sebensuiteconnect.dalfistudio.com/api/site-content/dalfistudionails";
+  var CONTENT_API = "https://ssc.dalfistudio.com/api/site-content/dalfistudionails";
 
   function getPath(obj, path) {
     return path.split(".").reduce(function (value, key) {

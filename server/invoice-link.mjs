@@ -59,7 +59,7 @@ export function verifyInvoiceToken(env, token) {
 export function invoiceUrl(env, invoiceId) {
   const token = invoiceToken(env, invoiceId);
   if (!token) return null;
-  const base = String(env.APP_BASE_URL || "https://sebensuiteconnect.dalfistudio.com").replace(/\/$/, "");
+  const base = String(env.APP_BASE_URL || "https://ssc.dalfistudio.com").replace(/\/$/, "");
   return `${base}/factura/${token}`;
 }
 

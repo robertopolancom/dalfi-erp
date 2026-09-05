@@ -154,7 +154,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   });
   app.use((req, res, next) => {
     const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.dalfistudio.com").toLowerCase();
-    const suiteHost = String(env.SEBEN_SUITE_HOST || "sebensuiteconnect.dalfistudio.com").toLowerCase();
+    const suiteHost = String(env.SEBEN_SUITE_HOST || "ssc.dalfistudio.com").toLowerCase();
     const requestHost = String(req.hostname || "").toLowerCase();
     if (requestHost === bookingHost && req.path === "/") return res.redirect(302, "/reservar/");
     if (requestHost === suiteHost) res.set("X-Seben-Application", "Seben Suite Connect");

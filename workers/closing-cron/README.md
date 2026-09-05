@@ -14,7 +14,7 @@
 > **Qué haría falta para revivirlo:** portar la lógica de
 > `functions/api/run-closing-catchup.js` (~22 KB, escrita contra Supabase) al
 > backend Express/Neon, y recién ahí volver a desplegar este Worker con
-> `APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"` y un `CLOSING_CRON_SECRET`
+> `APP_BASE_URL = "https://ssc.dalfistudio.com"` y un `CLOSING_CRON_SECRET`
 > nuevo. Es un proyecto propio, no un cambio de configuración.
 >
 > **Qué NO se pierde:** `ensureProvisionalClosings()` en `outputs/app.js` corre

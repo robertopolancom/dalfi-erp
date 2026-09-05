@@ -31,7 +31,7 @@ services:
       - key: FAST_BOOKING_HOST
         value: reservapp.dalfistudio.com
       - key: SEBEN_SUITE_HOST
-        value: sebensuiteconnect.dalfistudio.com
+        value: ssc.dalfistudio.com
       # Orígenes que pueden LEER GET /api/site-content/:siteKey (el contenido que el
       # personal edita desde el panel "Página web" del ERP). La misma página de Nails se
       # sirve desde la raíz, www y nails a la vez. El cuarto de la lista,

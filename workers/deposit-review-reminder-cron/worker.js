@@ -2,7 +2,7 @@
 //
 // Responsabilidad UNICA: en cada disparo, hacer una llamada HTTP autenticada a
 // POST /api/booking/send-deposit-review-reminders en server/app.mjs (Render, dominio
-// sebensuiteconnect.dalfistudio.com) para que mande un correo recordatorio al personal por cada cita que sigue
+// ssc.dalfistudio.com) para que mande un correo recordatorio al personal por cada cita que sigue
 // con un comprobante de depósito subido sin revisar. Este Worker NUNCA accede a Neon
 // directamente ni decide la ventana de negocio (8am-11pm) ni qué cuenta como "pendiente de
 // revisar": toda esa lógica vive en server/app.mjs (isWithinDepositReminderWindow) y

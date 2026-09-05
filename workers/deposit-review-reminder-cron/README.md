@@ -4,7 +4,7 @@ Worker de Cloudflare (Cron Trigger) que dispara el recordatorio horario por corr
 comprobantes de depósito pendientes de revisar -- mismo patrón que
 `workers/deposit-receipt-purge-cron/`, aplicado a
 `POST /api/booking/send-deposit-review-reminders` en `server/app.mjs` (Render + Neon,
-`sebensuiteconnect.dalfistudio.com`).
+`ssc.dalfistudio.com`).
 
 ## Por qué existe
 
@@ -41,7 +41,7 @@ en la práctica, uno por hora mientras siga pendiente.
 
 - `worker.js`: el Worker (`export default { async scheduled(...) }`).
 - `wrangler.toml`: configuración de Wrangler (variable NO secreta
-  `APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"`; Cron Trigger activo cada hora).
+  `APP_BASE_URL = "https://ssc.dalfistudio.com"`; Cron Trigger activo cada hora).
 - `package.json`: solo declara `"type": "module"` (sin dependencias).
 - `tests/worker.test.js`: pruebas con `fetch` mockeado, sin red real.
 
@@ -83,7 +83,7 @@ activa al desplegar.
 ## 4. Probar manualmente una ejecución
 
 ```bash
-curl -X POST "https://sebensuiteconnect.dalfistudio.com/api/booking/send-deposit-review-reminders" \
+curl -X POST "https://ssc.dalfistudio.com/api/booking/send-deposit-review-reminders" \
   -H "x-cron-secret: <el mismo valor configurado en los pasos 1 y 2>"
 ```
 

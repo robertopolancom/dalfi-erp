@@ -1,7 +1,7 @@
 name: Activate booking reminder cron
 
 # dalfi-erp.pages.dev (Cloudflare Pages + Supabase) fue eliminado -- el motor de recordatorios
-# vive ahora en server/app.mjs (POST /api/booking/send-reminders, Render, sebensuiteconnect.dalfistudio.com).
+# vive ahora en server/app.mjs (POST /api/booking/send-reminders, Render, ssc.dalfistudio.com).
 # Este workflow ya NO despliega ningún proyecto de Pages ni rota el secreto: BOOKING_REMINDER_CRON_SECRET
 # se administra a mano en el dashboard de Render (mismo valor que el secret de GitHub de abajo),
 # igual que cualquier otra variable de entorno de ese servicio. Solo despliega el Worker (Cron
@@ -30,7 +30,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       BOOKING_REMINDER_CRON_SECRET: ${{ secrets.BOOKING_REMINDER_CRON_SECRET }}
-      APP_BASE_URL: https://sebensuiteconnect.dalfistudio.com
+      APP_BASE_URL: https://ssc.dalfistudio.com
       WORKER_NAME: dalfi-erp-booking-reminder-cron
       WRANGLER_VERSION: 4.122.0
 
@@ -64,7 +64,7 @@ jobs:
           printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
             npx --yes wrangler@"$WRANGLER_VERSION" secret put BOOKING_REMINDER_CRON_SECRET               --config workers/booking-reminder-cron/wrangler.toml
 
-      - name: Verify endpoint contract against Render (sebensuiteconnect.dalfistudio.com)
+      - name: Verify endpoint contract against Render (ssc.dalfistudio.com)
         shell: bash
         run: |
           set -euo pipefail

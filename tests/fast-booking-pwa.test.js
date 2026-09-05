@@ -261,11 +261,11 @@ test("el subdominio reservapp abre directamente la PWA", async () => {
   });
 });
 
-test("sebensuiteconnect.dalfistudio.com conserva la portada ERP de Seben Suite Connect", async () => {
+test("ssc.dalfistudio.com conserva la portada ERP de Seben Suite Connect", async () => {
   await withServer(async (base) => {
     const url = new URL(base);
     const response = await new Promise((resolve, reject) => {
-      const request = http.get({ hostname: url.hostname, port: url.port, path: "/", headers: { Host: "sebensuiteconnect.dalfistudio.com" } }, resolve);
+      const request = http.get({ hostname: url.hostname, port: url.port, path: "/", headers: { Host: "ssc.dalfistudio.com" } }, resolve);
       request.on("error", reject);
     });
     assert.notEqual(response.statusCode, 302);

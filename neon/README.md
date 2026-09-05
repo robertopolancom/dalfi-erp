@@ -24,7 +24,7 @@ invisible para el personal que usa `dalfi-erp.pages.dev`, y viceversa.
 
 Mientras esto no esté resuelto (portar los endpoints faltantes a Render),
 NO apuntar el dominio público `reservapp.dalfistudio.com` a este
-servicio — solo `sebensuiteconnect.dalfistudio.com` (sin difusión pública) para pruebas
+servicio — solo `ssc.dalfistudio.com` (sin difusión pública) para pruebas
 controladas.
 
 ## Reglas
