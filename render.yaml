@@ -48,6 +48,10 @@ services:
         value: https://bot.dalfistudio.com
       - key: ERP_WEBHOOK_SECRET
         sync: false
+      # Firma los enlaces públicos de factura (GET /factura/:token). Si falta, el servidor cae al
+      # ERP_WEBHOOK_SECRET; sin ninguno de los dos no se emiten enlaces. Ver server/invoice-link.mjs.
+      - key: INVOICE_LINK_SECRET
+        generateValue: true
       - key: CHATBOT_SECRET
         sync: false
       - key: DEPOSIT_REVIEW_REMINDER_CRON_SECRET

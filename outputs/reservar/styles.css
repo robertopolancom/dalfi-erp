@@ -255,6 +255,10 @@ dialog form{padding:28px}
 .appointment-modify-link{align-self:center;text-decoration:none;text-align:center}
 .appointment-badge.moved{background:#fff7ed;color:#c2410c}
 .appointment-moved-notice{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;border-radius:10px;padding:8px 11px;font-size:.8rem;line-height:1.45;margin:0}
+/* Invitación a reseñar, solo en citas ya atendidas (ver reviewInviteEl en app.js). */
+.appointment-review{display:flex;flex-direction:column;gap:9px;background:#f5f7f2;border:1px solid #dde0d2;border-radius:11px;padding:11px 13px;margin-top:4px}
+.appointment-review-text{margin:0;font-size:.8rem;line-height:1.5;color:#4b5040}
+.appointment-review-btn{align-self:flex-start;text-decoration:none}
 .deposit-upload{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
 .deposit-upload .deposit-upload-message{font-size:.78rem;color:#b91c1c}
 .deposit-upload .bank-accounts{flex-basis:100%}

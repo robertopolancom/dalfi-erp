@@ -3899,6 +3899,36 @@ function invoiceReportHtml(invoiceId) {
   `;
 }
 
+// Envía la factura a la clienta como enlace. WhatsApp: hoy abre wa.me con el mensaje ya escrito
+// para que quien factura le dé enviar desde el WhatsApp del salón -- el bridge no puede iniciar
+// conversación hasta que Meta apruebe una plantilla de utilidad (ver el TEMPORAL en
+// server/app.mjs). Correo: sale solo por Gmail SMTP.
+async function sendInvoiceToClient(channel, invoiceId) {
+  if (!isSupabaseReady()) { alert("Inicia sesión en el ERP para enviar la factura."); return; }
+  // wa.me tiene que abrirse de forma síncrona por el clic, o el navegador bloquea la ventana;
+  // se abre en blanco y se le pone el destino cuando responde el servidor.
+  const popup = channel === "whatsapp" ? window.open("", "_blank") : null;
+  try {
+    const response = await fetch(`/api/factura/${encodeURIComponent(invoiceId)}/enviar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+      body: JSON.stringify({ channel }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    if (channel === "whatsapp") {
+      if (!payload.whatsappUrl) throw new Error("Esa clienta no tiene teléfono registrado.");
+      popup.location = payload.whatsappUrl;
+      return;
+    }
+    if (payload.email?.sent) alert("Factura enviada por correo.");
+    else alert(`No se pudo enviar el correo (${payload.email?.reason || "desconocido"}). El enlace es: ${payload.url}`);
+  } catch (error) {
+    if (popup) popup.close();
+    alert(`No se pudo enviar la factura: ${error.message}`);
+  }
+}
+
 function openInvoiceReport(invoiceId) {
   const popup = window.open("", "_blank");
   if (!popup) return;
@@ -3940,6 +3970,8 @@ function openInvoiceReport(invoiceId) {
         <div class="report-actions">
           <button onclick="window.print()">Imprimir / guardar PDF</button>
           <button onclick="window.opener.downloadInvoiceImage('${escapeHtml(invoiceId)}')">Guardar imagen</button>
+          <button onclick="window.opener.sendInvoiceToClient('whatsapp','${escapeHtml(invoiceId)}')">Enviar por WhatsApp</button>
+          <button onclick="window.opener.sendInvoiceToClient('email','${escapeHtml(invoiceId)}')">Enviar por correo</button>
         </div>
         ${invoiceReportHtml(invoiceId)}
       </body>

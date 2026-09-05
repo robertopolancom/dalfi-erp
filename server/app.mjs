@@ -17,7 +17,8 @@ import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { businessMinutesBetween } from "./store.mjs";
-import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending } from "./email.mjs";
+import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending, sendInvoiceEmail } from "./email.mjs";
+import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
   RESERVAPP_ROLES,
@@ -1857,6 +1858,57 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       } catch (error) { next(error); }
     });
   }
+
+  // Factura pública: sin sesión, sin nada guardado. El token es una firma del facturaID (ver
+  // server/invoice-link.mjs) y la factura se arma leyendo la base viva en el momento del clic --
+  // si se editó, muestra lo nuevo; si se eliminó, deja de funcionar sola.
+  app.get("/factura/:token", async (req, res, next) => {
+    const invoiceId = verifyInvoiceToken(env, req.params.token);
+    // Un token inválido y una factura borrada se responden igual: no confirmar qué IDs existen.
+    res.set("Cache-Control", "no-store");
+    res.set("X-Robots-Tag", "noindex, nofollow");
+    res.type("html");
+    if (!invoiceId) return res.status(404).send(renderInvoiceNotFound());
+    try {
+      const row = await store.read();
+      const view = row?.data ? buildInvoiceView(row.data, invoiceId) : null;
+      if (!view) return res.status(404).send(renderInvoiceNotFound());
+      res.send(renderInvoiceHtml(view));
+    } catch (error) { next(error); }
+  });
+
+  // Enviar la factura a la clienta. Devuelve siempre el enlace y un wa.me con el mensaje ya
+  // escrito -- ese wa.me es hoy la vía real de WhatsApp: el bridge no puede iniciar conversación
+  // hasta que Meta apruebe una plantilla de utilidad (ver el TEMPORAL de más arriba), así que
+  // quien factura le da enviar desde el WhatsApp del salón. Con channel:"email" además lo manda
+  // por correo, que sí sale solo.
+  app.post("/api/factura/:id/enviar", authenticate, async (req, res, next) => {
+    const invoiceId = String(req.params.id || "").trim();
+    if (!/^[\w-]{1,80}$/.test(invoiceId)) return res.status(400).json({ error: "Factura inválida." });
+    const channel = String(req.body?.channel || "link");
+    if (!["link", "email", "whatsapp"].includes(channel)) return res.status(400).json({ error: "Canal inválido." });
+    try {
+      const row = await store.read();
+      const view = row?.data ? buildInvoiceView(row.data, invoiceId) : null;
+      if (!view) return res.status(404).json({ error: "Esa factura no existe." });
+      const url = invoiceUrl(env, invoiceId);
+      if (!url) return res.status(503).json({ error: "Falta configurar INVOICE_LINK_SECRET para emitir enlaces." });
+
+      const text = `Hola ${view.clienteNombre}, aquí está tu factura de Dalfi Studio Nails: ${url}`;
+      const phone = String(req.body?.phone || view.clienteTelefono || "").replace(/\D/g, "");
+      // Dominicana sin prefijo: se le antepone el 1 para que wa.me lo acepte.
+      const waPhone = phone.length === 10 ? `1${phone}` : phone;
+      const whatsappUrl = waPhone ? `https://wa.me/${waPhone}?text=${encodeURIComponent(text)}` : null;
+
+      let email = { sent: false, reason: "not_requested" };
+      if (channel === "email") {
+        const to = String(req.body?.email || view.clienteEmail || "").trim();
+        if (!to) return res.status(400).json({ error: "Esa clienta no tiene correo registrado." });
+        email = await sendInvoiceEmail(env, { to, clientName: view.clienteNombre, invoiceId, url, total: view.total });
+      }
+      res.json({ ok: true, url, whatsappUrl, email });
+    } catch (error) { next(error); }
+  });
 
   app.get("/health", async (_req, res) => {
     try {

@@ -960,7 +960,35 @@ function renderAppointmentCard(apt) {
   if (DEPOSIT_UPLOADABLE_STATES.has(depositStatus)) {
     card.append(depositUploadControl(apt.id));
   }
+  // Cita ya atendida: se le pide la reseña aquí mismo, en su propia tarjeta. No se manda ningún
+  // mensaje -- el enlace vive en ReservApp y aparece solo cuando el personal marca "Atendida"
+  // (status 'completed', ver setAppointmentStatus en server/store.mjs). Pedido de Roberto
+  // 2026-09-04: "que quede el mensaje en reservapp en un link del cliente cuando sea atendido".
+  if (apt.status === "completed") card.append(reviewInviteEl());
   return card;
+}
+
+// !12e1 abre directamente el cuadro de "escribir reseña" del listado de Google, sin pasar por la
+// ficha. El id es el ftid del negocio en Google Maps; no hace falta clave de API.
+const GOOGLE_REVIEW_URL =
+  "https://www.google.com/maps/place//data=!4m3!3m2!1s0x8ea54f001fe84fb3:0x87f47f6d24a641bd!12e1";
+
+function reviewInviteEl() {
+  const box = document.createElement("div");
+  box.className = "appointment-review";
+  const text = document.createElement("p");
+  text.className = "appointment-review-text";
+  text.textContent = t(
+    "¿Cómo te fue? Cuéntalo en Google — a otra persona de Baní le ayuda a decidirse, y a nosotras nos alegra el día.",
+    "How did it go? Tell us on Google — it helps someone else in Baní decide, and it makes our day.",
+  );
+  const link = Object.assign(document.createElement("a"), {
+    className: "primary compact appointment-review-btn",
+    href: GOOGLE_REVIEW_URL, target: "_blank", rel: "noopener",
+    textContent: t("Dejar mi reseña", "Leave a review"),
+  });
+  box.append(text, link);
+  return box;
 }
 
 const DEPOSIT_UPLOADABLE_STATES = new Set(["Pendiente", "Rechazado"]);

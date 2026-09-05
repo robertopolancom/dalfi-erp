@@ -28,14 +28,16 @@ export function resetTransporterCache() {
   cachedKey = null;
 }
 
-export async function sendBusinessEmail(env, { subject, html, text }, createTransportImpl = nodemailer.createTransport) {
+// `to` opcional: sin él sigue siendo el aviso interno de siempre (la cuenta se escribe a sí
+// misma). Con `to` se le manda a una clienta -- hoy solo lo usa el envío de facturas.
+export async function sendBusinessEmail(env, { subject, html, text, to = null }, createTransportImpl = nodemailer.createTransport) {
   const transporter = getTransporter(env, createTransportImpl);
   if (!transporter) {
     console.warn("email: GMAIL_USER/GMAIL_APP_PASSWORD no configurados -- correo no enviado:", subject);
     return { sent: false, reason: "not_configured" };
   }
   try {
-    await transporter.sendMail({ from: env.GMAIL_USER, to: env.GMAIL_USER, subject, text, html });
+    await transporter.sendMail({ from: env.GMAIL_USER, to: to || env.GMAIL_USER, replyTo: env.GMAIL_USER, subject, text, html });
     return { sent: true };
   } catch (error) {
     console.error("email: fallo enviando correo:", subject, error.message);
@@ -79,5 +81,21 @@ export async function notifyDepositReviewPending(env, appointment, createTranspo
     subject: `Recordatorio: comprobante pendiente de revisar -- ${appointment.clientName || "Cliente"}`,
     text: `${line}\n\nSigue sin revisarse el comprobante de depósito. El horario no queda apartado hasta que lo confirmes o lo rechaces desde SSC.`,
     html: `<p>${line}</p><p>Sigue sin revisarse el comprobante de depósito. El horario no queda apartado hasta que lo confirmes o lo rechaces desde SSC.</p>`,
+  }, createTransportImpl);
+}
+
+// Factura para la clienta. El correo NO lleva la factura adjunta: lleva el enlace, que arma la
+// factura desde los datos vivos del ERP en el momento en que se abre (ver server/invoice-link.mjs).
+// Así no queda ningún archivo guardado y el enlace siempre muestra la versión buena.
+export async function sendInvoiceEmail(env, { to, clientName, invoiceId, url, total }, createTransportImpl = nodemailer.createTransport) {
+  const amount = `RD$ ${(Number(total) || 0).toLocaleString("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const greeting = `Hola ${clientName || ""}`.trim();
+  return sendBusinessEmail(env, {
+    to,
+    subject: `Tu factura ${invoiceId} -- Dalfi Studio Nails`,
+    text: `${greeting},\n\nAquí está tu factura ${invoiceId} por ${amount}:\n${url}\n\nGracias por tu visita.\nDalfi Studio Nails & Academy -- Juan Caballero 38, Baní`,
+    html: `<p>${greeting},</p><p>Aquí está tu factura <strong>${invoiceId}</strong> por <strong>${amount}</strong>:</p>`
+        + `<p><a href="${url}">Ver mi factura</a></p>`
+        + `<p>Gracias por tu visita.<br>Dalfi Studio Nails &amp; Academy -- Juan Caballero 38, Baní</p>`,
   }, createTransportImpl);
 }
