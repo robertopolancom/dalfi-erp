@@ -56,6 +56,7 @@ function applyLanguage(lang) {
   if (!$("client-appointments-card").classList.contains("hidden")) loadMyAppointments(state.myAppointmentsScope || "active");
   if (!$("booking-card").classList.contains("hidden") && state.wizardStep === 3) loadAvailability();
   if (!$("success-card").classList.contains("hidden")) renderBankAccounts($("success-bank-accounts"));
+  if ($("bank-accounts-dialog").open) renderBankAccounts($("dialog-bank-accounts"));
 }
 $("lang-toggle").addEventListener("click", () => applyLanguage(state.language === "en" ? "es" : "en"));
 
@@ -490,15 +491,31 @@ function openAppointmentDetail(item) {
     $("appointment-mark-attended").classList.toggle("hidden", !canMarkOutcome);
     $("appointment-mark-no-show").classList.toggle("hidden", !canMarkOutcome);
   }
+  renderDepositReceiptSection(item, isStaff);
   renderDepositReview(item, isAdmin);
   message($("appointment-cancel-message"));
   $("appointment-detail-dialog").showModal();
 }
 
+// La foto del comprobante, para TODO el personal que puede abrir el detalle (administración,
+// asistente y manicurista) -- pedido de Roberto 2026-09-05. Aprobar/rechazar sigue siendo solo
+// de administración (renderDepositReview, aquí abajo): la manicurista lo ve, no lo decide.
+// Aparece con cualquier deposit_status que implique que ya se subió algo, no solo mientras está
+// en revisión, para que también se pueda consultar después de aprobado o rechazado.
+const DEPOSIT_UPLOADED_STATES = new Set(["ComprobanteRecibido", "PendienteVerificacion", "Verificado", "Rechazado"]);
+function renderDepositReceiptSection(item, isStaff) {
+  const box = $("appointment-deposit-receipt");
+  const body = $("appointment-deposit-receipt-body");
+  const shouldShow = isStaff && DEPOSIT_UPLOADED_STATES.has(item.deposit_status);
+  box.classList.toggle("hidden", !shouldShow);
+  body.replaceChildren();
+  if (shouldShow) body.append(depositReceiptView(item.id, { staff: true }));
+}
+
 // Sección "Confirmar cita": solo administración, y solo si hay un comprobante subido esperando
-// revisión -- no muestra la foto (la revisión real del comprobante pasa fuera de la app, por
-// donde lo haya recibido administración); esto solo deja confirmar/rechazar una vez ya lo
-// revisó. El calendario ya avisa "Comprobante recibido" para que sepa que hay algo que revisar
+// revisión. La foto la pinta renderDepositReceiptSection justo encima (antes no se mostraba en
+// ningún lado y había que revisarla fuera de la app); esto deja confirmar/rechazar una vez ya la
+// vio. El calendario ya avisa "Comprobante recibido" para que sepa que hay algo que revisar
 // antes de entrar aquí (ver layoutOverlappingItems más abajo).
 function renderDepositReview(item, isAdmin) {
   const box = $("appointment-deposit-review");
@@ -960,6 +977,12 @@ function renderAppointmentCard(apt) {
   if (DEPOSIT_UPLOADABLE_STATES.has(depositStatus)) {
     card.append(depositUploadControl(apt.id));
   }
+  // Ya hay un comprobante subido (esperando revisión, aprobado o rechazado): el cliente puede
+  // volver a verlo aquí mismo. En "Rechazado" convive con el botón de arriba -- ve lo que mandó
+  // y puede subir otro sin salir de la tarjeta.
+  if (depositStatus !== "Pendiente") {
+    card.append(depositReceiptView(apt.id));
+  }
   // Cita ya atendida: se le pide la reseña aquí mismo, en su propia tarjeta. No se manda ningún
   // mensaje -- el enlace vive en ReservApp y aparece solo cuando el personal marca "Atendida"
   // (status 'completed', ver setAppointmentStatus en server/store.mjs). Pedido de Roberto
@@ -1033,6 +1056,57 @@ function renderBankAccounts(container) {
     .catch(() => { container.textContent = t("No se pudieron cargar las cuentas. Consulta con el salón.", "Couldn't load the accounts. Check with the salon."); });
 }
 
+// Botón fijo del inicio: "Ver cuentas bancarias para depósito" (pedido de Roberto 2026-09-05,
+// "que en el inicio siempre se vea"). Siempre visible, incluso sin sesión -- pero las cuentas
+// solo se piden con sesión iniciada, porque GET /api/reservapp/bank-accounts es una ruta
+// autenticada (decisión explícita: no exponer números de cuenta, titular y cédula al público).
+// Sin sesión abre el mismo diálogo de acceso que ya usa el resto de la app.
+$("home-bank-accounts").addEventListener("click", () => {
+  if (!state.account) {
+    message($("booking-message"), t(
+      "Entra a tu cuenta para ver las cuentas bancarias del depósito.",
+      "Log in to see the bank accounts for the deposit.",
+    ));
+    return $("identify-dialog").showModal();
+  }
+  renderBankAccounts($("dialog-bank-accounts"));
+  $("bank-accounts-dialog").showModal();
+});
+$("close-bank-accounts").addEventListener("click", () => $("bank-accounts-dialog").close());
+
+// Botón "Cargar comprobante" en la propia pantalla de éxito, debajo de las cuentas -- antes esa
+// pantalla solo remitía a "Mis citas" y había que buscarlo ahí. Pedido de Roberto 2026-09-05:
+// "que los números de cuenta aparezcan ... cuando pida enviar comprobante y que haya el botón de
+// subirlo". Solo para cuentas de cliente: si reservó el personal por ella, el endpoint de subida
+// (isClientRole) lo rechazaría, así que ni se ofrece. Con reserva combinada (varias citas
+// enlazadas por groupId) sale un botón por cita, cada uno con su referencia.
+function renderSuccessDepositUpload(appointments) {
+  const container = $("success-deposit-upload");
+  container.replaceChildren();
+  if (!state.account || !isClientRole(state.account.role)) return;
+  const list = appointments.filter((item) => item?.id);
+  if (!list.length) return;
+  list.forEach((item) => {
+    if (list.length > 1 && item.reference) {
+      const label = document.createElement("p"); label.className = "success-deposit-label";
+      label.textContent = t(`Referencia ${item.reference}`, `Reference ${item.reference}`);
+      container.append(label);
+    }
+    container.append(depositUploadControl(item.id, {
+      showAccounts: false,
+      onUploaded: (wrap) => {
+        wrap.replaceChildren();
+        const done = document.createElement("p"); done.className = "success-deposit-done";
+        done.textContent = t(
+          "¡Listo! Ya recibimos tu comprobante. Te avisamos en cuanto el salón confirme el depósito.",
+          "Done! We got your receipt. We'll let you know as soon as the salon confirms the deposit.",
+        );
+        wrap.append(done);
+      },
+    }));
+  });
+}
+
 // Redimensiona/comprime la foto en un <canvas> antes de mandarla -- una foto de cámara sin tocar
 // puede pesar varios MB, y el body JSON del backend tiene un límite de 8MB (MAX_BODY_BYTES en
 // server/app.mjs); esto la deja típicamente por debajo de 300-500KB.
@@ -1056,11 +1130,17 @@ function compressImageFile(file) {
   });
 }
 
-function depositUploadControl(appointmentId) {
+// showAccounts:false cuando quien llama ya pintó las cuentas justo encima (pantalla de éxito,
+// que tiene su propio #success-bank-accounts) -- así no salen dos veces. onUploaded reemplaza el
+// refresco por defecto de "Mis citas": en la pantalla de éxito no hay lista que recargar, solo
+// hay que confirmar en pantalla que el comprobante ya salió.
+function depositUploadControl(appointmentId, { showAccounts = true, onUploaded = null } = {}) {
   const wrap = document.createElement("div"); wrap.className = "deposit-upload";
-  const accounts = document.createElement("div"); accounts.className = "bank-accounts";
-  renderBankAccounts(accounts);
-  wrap.append(accounts);
+  if (showAccounts) {
+    const accounts = document.createElement("div"); accounts.className = "bank-accounts";
+    renderBankAccounts(accounts);
+    wrap.append(accounts);
+  }
   const input = document.createElement("input");
   input.type = "file"; input.accept = "image/*"; input.capture = "environment"; input.className = "hidden";
   const btn = document.createElement("button");
@@ -1078,7 +1158,8 @@ function depositUploadControl(appointmentId) {
       await api(`/api/reservapp/my-appointments/${appointmentId}/deposit`, {
         method: "POST", body: JSON.stringify({ mimeType, imageBase64 }),
       });
-      await loadMyAppointments(state.myAppointmentsScope || "active");
+      if (onUploaded) await onUploaded(wrap);
+      else await loadMyAppointments(state.myAppointmentsScope || "active");
     } catch (error) {
       msg.textContent = error.message;
       btn.disabled = false; btn.textContent = t("Cargar comprobante", "Upload receipt");
@@ -1089,6 +1170,68 @@ function depositUploadControl(appointmentId) {
 
   wrap.append(input, btn, msg);
   return wrap;
+}
+
+// Ver la foto del comprobante ya subido, dentro de la propia app (pedido de Roberto 2026-09-05:
+// "que quede en vista en la aplicación de reservapp para ese cliente y los administradores y
+// manicurista"). Dos rutas para el mismo dato según quién mira: el cliente solo puede pedir el
+// de sus propias citas (/my-appointments/:id/deposit, acotado por client_id de la sesión) y el
+// personal el de cualquiera (/agenda/appointments/:id/deposit, mismo guard que ya usa el resto
+// de la agenda -- manicurista incluida, solo REVISARLO sigue siendo de administración).
+// No se pinta la imagen de entrada: se pide al tocar el botón, porque son fotos de cientos de KB
+// y una lista de citas cargaría todas de golpe sin que nadie las pida.
+function depositReceiptView(appointmentId, { staff = false } = {}) {
+  const wrap = document.createElement("div"); wrap.className = "deposit-receipt-view";
+  const btn = document.createElement("button");
+  btn.className = "secondary compact deposit-receipt-btn"; btn.type = "button";
+  btn.textContent = t("Ver comprobante", "View receipt");
+  const msg = document.createElement("span"); msg.className = "deposit-receipt-message";
+  const figure = document.createElement("div"); figure.className = "deposit-receipt-image hidden";
+
+  btn.addEventListener("click", async () => {
+    // Segundo clic: se cierra, sin volver a pedir la imagen.
+    if (!figure.classList.contains("hidden")) {
+      figure.classList.add("hidden");
+      btn.textContent = t("Ver comprobante", "View receipt");
+      return;
+    }
+    if (figure.childElementCount) {
+      figure.classList.remove("hidden");
+      btn.textContent = t("Ocultar comprobante", "Hide receipt");
+      return;
+    }
+    btn.disabled = true; msg.textContent = t("Cargando…", "Loading…");
+    try {
+      const path = staff
+        ? `/api/reservapp/agenda/appointments/${appointmentId}/deposit`
+        : `/api/reservapp/my-appointments/${appointmentId}/deposit`;
+      const { receipt } = await api(path);
+      const img = document.createElement("img");
+      img.alt = t("Comprobante de depósito", "Deposit receipt");
+      img.loading = "lazy";
+      img.src = `data:${receipt.mime_type || "image/jpeg"};base64,${receipt.image_data}`;
+      figure.append(img);
+      if (receipt.uploaded_at) {
+        const when = document.createElement("small");
+        when.textContent = t(`Subido el ${formatDateTimeLocal(receipt.uploaded_at)}`, `Uploaded on ${formatDateTimeLocal(receipt.uploaded_at)}`);
+        figure.append(when);
+      }
+      figure.classList.remove("hidden");
+      msg.textContent = "";
+      btn.textContent = t("Ocultar comprobante", "Hide receipt");
+    } catch (error) {
+      msg.textContent = error.message;
+    } finally { btn.disabled = false; }
+  });
+
+  wrap.append(btn, msg, figure);
+  return wrap;
+}
+
+function formatDateTimeLocal(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString(state.language === "en" ? "en-US" : "es-DO", { dateStyle: "medium", timeStyle: "short" });
 }
 
 // Misma tarjeta que renderAppointmentCard, pero para la vista semanal del equipo (agenda() trae
@@ -1289,6 +1432,7 @@ $("quick-setup-form").addEventListener("submit", async (event) => {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = t(`Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`, `Appointment registered, pending confirmation. Reference: ${result.appointment.reference}`);
       renderBankAccounts($("success-bank-accounts"));
+      renderSuccessDepositUpload([result.appointment]);
     } else if (wasPasswordReset) {
       message($("booking-message"), t(`Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, `Password updated. Welcome back, ${result.account.name}.`), true);
     } else if (state.pendingBookingStart) {
@@ -1569,6 +1713,7 @@ $("booking-form").addEventListener("submit", async (event) => {
     }
     $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden"); window.scrollTo({ top: 0, behavior: "smooth" });
     renderBankAccounts($("success-bank-accounts"));
+    renderSuccessDepositUpload(isFallback ? result.appointments : [result.appointment]);
   } catch (error) {
     message($("booking-message"), error.message);
     if (error.body?.conflict) goToStep(3); // el horario se ocupó -- vuelve a elegir de la lista fresca
@@ -1588,6 +1733,7 @@ $("setup-form").addEventListener("submit", async (event) => {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = t(`Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`, `Appointment registered, pending confirmation. Reference: ${result.appointment.reference}`);
       renderBankAccounts($("success-bank-accounts"));
+      renderSuccessDepositUpload([result.appointment]);
     } else if (wasPasswordReset) {
       message($("booking-message"), t(`Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, `Password updated. Welcome back, ${result.account.name}.`), true);
     } else if (state.pendingBookingStart) {

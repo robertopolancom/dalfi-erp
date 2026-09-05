@@ -894,6 +894,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       try {
         const receipt = await bookingStore.getDepositReceipt({ appointmentId: req.params.id });
         if (!receipt) return res.status(404).json({ error: "Todavía no hay un comprobante subido para esta cita." });
+        // Foto ya archivada por el cron de limpieza (5 días después de Atendida/Cancelada) -- la
+        // fila queda con image_data null. 410 en vez de 404 para poder distinguir "nunca subió
+        // nada" de "ya se archivó" en la pantalla.
+        if (!receipt.image_data) return res.status(410).json({ error: "La foto del comprobante ya se archivó. El rastro de la revisión sigue registrado." });
         res.json({ receipt });
       } catch (error) { next(error); }
     });
@@ -944,13 +948,16 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
           appointmentId: req.params.id, clientId: req.reservapp.account.client_id, imageBase64, mimeType,
         });
         res.json({ ok: true, appointment: updated });
-        // Mejor esfuerzo, después de responder -- nunca bloquea la subida del comprobante.
+        // Mejor esfuerzo, después de responder -- nunca bloquea la subida del comprobante. La
+        // foto viaja adjunta (misma que se acaba de guardar, ya está en memoria aquí) para que
+        // el correo a dalfistudionails@gmail.com se baste solo.
         bookingStore.appointmentSummary(req.params.id)
           .then((s) => {
             if (!s) return;
             return notifyDepositReceiptUploaded(env, {
               legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
               staffName: s.staff_name, date: s.date, time: s.time,
+              depositAmount: 500, receiptBase64: imageBase64, receiptMimeType: mimeType,
             });
           })
           .catch(() => {});
@@ -958,6 +965,24 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
         if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
       }
+    });
+
+    // La propia clienta vuelve a ver el comprobante que subió, desde su tarjeta en "Mis citas"
+    // -- mismo dato que ve el personal en GET /agenda/appointments/:id/deposit, pero acotado a
+    // sus propias citas por client_id de la sesión (ver getDepositReceiptForClient en
+    // server/store.mjs). Si el cron de limpieza ya borró la foto (5 días después de Atendida/
+    // Cancelada, ver purgeExpiredDepositReceipts) la fila sigue existiendo con image_data null:
+    // se responde 410 para poder decírselo con claridad en vez de un 404 genérico.
+    app.get("/api/reservapp/my-appointments/:id/deposit", requireReservapp, async (req, res, next) => {
+      if (!isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
+      try {
+        const receipt = await bookingStore.getDepositReceiptForClient({
+          appointmentId: req.params.id, clientId: req.reservapp.account.client_id,
+        });
+        if (!receipt) return res.status(404).json({ error: "Todavía no hay un comprobante subido para esta cita." });
+        if (!receipt.image_data) return res.status(410).json({ error: "La foto del comprobante ya se archivó. El estado del depósito sigue registrado." });
+        res.json({ receipt });
+      } catch (error) { next(error); }
     });
 
     // Cuentas bancarias activas para mostrar junto al botón "Cargar comprobante" -- mismos campos

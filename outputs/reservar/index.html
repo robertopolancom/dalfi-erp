@@ -37,6 +37,7 @@
         <h2 data-en="Book in 3 steps">Reserva en 3 pasos</h2>
         <p class="intro" data-en="Choose your services, day, and time with your preferred manicurist — all in one place.">Elige tus servicios, el día, y el horario con la manicurista que prefieras — todo en un mismo lugar.</p>
         <button class="primary" id="start-booking" type="button" data-en="Book now">Reservar</button>
+        <button class="secondary" id="home-bank-accounts" type="button" data-en="View bank accounts for the deposit">Ver cuentas bancarias para depósito</button>
         <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Prefer personal help? Message us on WhatsApp">¿Prefieres ayuda personalizada? Escríbenos por WhatsApp</a>
       </div>
 
@@ -228,9 +229,10 @@
 
     <section class="card success hidden" id="success-card" aria-live="polite">
       <div class="success-icon">✓</div><p class="kicker" data-en="Appointment registered">Cita registrada</p><h2 data-en="Your time slot isn't reserved yet">Todavía no está apartado tu horario</h2>
-      <p class="deposit-notice" data-en='This time slot is only reserved once the salon confirms your RD$500 deposit -- until then, someone else could take it. Upload your receipt from "My appointments" to secure it as soon as possible.'>Este horario se aparta solo cuando el salón confirme tu depósito de RD$500 -- mientras tanto, alguien más podría tomarlo. Sube tu comprobante desde "Mis citas" para asegurarlo cuanto antes.</p>
+      <p class="deposit-notice" data-en='This time slot is only reserved once the salon confirms your RD$500 deposit -- until then, someone else could take it. Transfer to one of the accounts below and upload your receipt right here to secure it as soon as possible.'>Este horario se aparta solo cuando el salón confirme tu depósito de RD$500 -- mientras tanto, alguien más podría tomarlo. Transfiere a una de las cuentas de abajo y sube tu comprobante aquí mismo para asegurarlo cuanto antes.</p>
       <p id="success-summary"></p><div class="deposit"><span data-en="Deposit to reserve">Depósito para separar</span><strong>RD$500</strong></div>
       <div class="bank-accounts" id="success-bank-accounts"></div>
+      <div class="success-deposit-upload" id="success-deposit-upload"></div>
       <button class="secondary" id="new-booking" type="button" data-en="Book another appointment">Hacer otra reserva</button>
     </section>
 
@@ -314,9 +316,19 @@
     <div class="message" id="verify-code-message"></div><button class="primary" type="submit" data-en="Verify code">Verificar código</button>
   </form></dialog>
 
+  <dialog id="bank-accounts-dialog">
+    <div class="dialog-head"><div><p class="kicker" data-en="Deposit">Depósito</p><h2 data-en="Bank accounts">Cuentas bancarias</h2></div><button class="icon-button" id="close-bank-accounts" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="Transfer the RD$500 deposit to any of these accounts, then upload your receipt from your appointment.">Transfiere el depósito de RD$500 a cualquiera de estas cuentas y luego sube tu comprobante desde tu cita.</p>
+    <div class="bank-accounts" id="dialog-bank-accounts"></div>
+  </dialog>
+
   <dialog id="appointment-detail-dialog">
     <div class="dialog-head"><div><p class="kicker">Detalle de la cita</p><h2 id="appointment-detail-time">--:--</h2></div><button class="icon-button" id="close-appointment-detail" type="button" aria-label="Cerrar">×</button></div>
     <dl class="detail-list" id="appointment-detail-body"></dl>
+    <div class="hidden deposit-receipt" id="appointment-deposit-receipt">
+      <p class="kicker">Comprobante de depósito</p>
+      <div class="deposit-receipt-body" id="appointment-deposit-receipt-body"></div>
+    </div>
     <div class="hidden deposit-review" id="appointment-deposit-review">
       <p class="kicker">Comprobante recibido</p>
       <div class="message" id="appointment-deposit-message"></div>

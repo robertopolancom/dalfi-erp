@@ -27,9 +27,13 @@ test("compressImageFile() redimensiona en canvas antes de convertir a base64 (ev
   assert.match(app, /canvas\.toDataURL\("image\/jpeg", DEPOSIT_JPEG_QUALITY\)/);
 });
 
+// La firma creció con dos opciones (showAccounts/onUploaded) cuando el mismo control se empezó a
+// usar también en la pantalla de éxito -- ver tests/reservapp-deposit-receipt-visible.test.js.
+// Los valores por defecto conservan el comportamiento original de "Mis citas": pinta las cuentas
+// encima y recarga la lista al terminar.
 test("depositUploadControl() sube al endpoint correcto y recarga las citas al terminar", async () => {
   const app = await readApp();
-  assert.match(app, /function depositUploadControl\(appointmentId\)/);
+  assert.match(app, /function depositUploadControl\(appointmentId, \{ showAccounts = true, onUploaded = null \} = \{\}\)/);
   assert.match(app, /api\(`\/api\/reservapp\/my-appointments\/\$\{appointmentId\}\/deposit`, \{\s*method: "POST", body: JSON\.stringify\(\{ mimeType, imageBase64 \}\),/);
   assert.match(app, /await loadMyAppointments\(state\.myAppointmentsScope \|\| "active"\);/);
 });

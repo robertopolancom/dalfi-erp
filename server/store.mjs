@@ -2078,6 +2078,22 @@ export class NeonBookingStore {
     return result.rows[0] || null;
   }
 
+  // Igual que getDepositReceipt, pero para que la propia clienta vuelva a ver el comprobante que
+  // subió (ver GET /api/reservapp/my-appointments/:id/deposit). El client_id sale siempre de la
+  // sesión, nunca del cuerpo de la petición, y el join lo acota a sus propias citas -- una cita
+  // ajena responde igual que una inexistente (null), sin confirmar que existe. No devuelve
+  // reviewed_by: quién revisó es rastro interno del personal, la clienta solo ve su foto.
+  async getDepositReceiptForClient({ appointmentId, clientId }) {
+    const result = await this.pool.query(
+      `select r.appointment_id, r.image_data, r.mime_type, r.uploaded_at, r.reviewed_at, a.deposit_status
+         from app.appointment_deposit_receipts r
+         join app.appointments a on a.id = r.appointment_id
+        where r.appointment_id=$1 and a.client_id=$2`,
+      [appointmentId, clientId],
+    );
+    return result.rows[0] || null;
+  }
+
   // El personal aprueba o rechaza el comprobante ya subido -- mismo espejo hacia
   // app.erp_document que el resto de cambios de estatus (ver setAppointmentStatus/
   // cancelAppointment) para que la matriz del ERP no quede desactualizada. Aprobar el depósito

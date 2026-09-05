@@ -30,14 +30,17 @@ export function resetTransporterCache() {
 
 // `to` opcional: sin él sigue siendo el aviso interno de siempre (la cuenta se escribe a sí
 // misma). Con `to` se le manda a una clienta -- hoy solo lo usa el envío de facturas.
-export async function sendBusinessEmail(env, { subject, html, text, to = null }, createTransportImpl = nodemailer.createTransport) {
+export async function sendBusinessEmail(env, { subject, html, text, to = null, attachments = null }, createTransportImpl = nodemailer.createTransport) {
   const transporter = getTransporter(env, createTransportImpl);
   if (!transporter) {
     console.warn("email: GMAIL_USER/GMAIL_APP_PASSWORD no configurados -- correo no enviado:", subject);
     return { sent: false, reason: "not_configured" };
   }
   try {
-    await transporter.sendMail({ from: env.GMAIL_USER, to: to || env.GMAIL_USER, replyTo: env.GMAIL_USER, subject, text, html });
+    await transporter.sendMail({
+      from: env.GMAIL_USER, to: to || env.GMAIL_USER, replyTo: env.GMAIL_USER, subject, text, html,
+      ...(attachments?.length ? { attachments } : {}),
+    });
     return { sent: true };
   } catch (error) {
     console.error("email: fallo enviando correo:", subject, error.message);
@@ -62,15 +65,34 @@ export async function notifyNewAppointment(env, appointment, createTransportImpl
 }
 
 // La clienta subió su foto del comprobante -- listo para que el personal lo revise y
-// apruebe/rechace en ReservApp.
+// apruebe/rechace en ReservApp. La foto va ADJUNTA (receiptBase64/receiptMimeType, opcionales):
+// pedido de Roberto 2026-09-05, "que se envíe por correo a dalfistudionails@gmail.com ... para
+// que tenga la información a mano" -- así el correo se basta solo, sin tener que abrir ReservApp
+// para ver de qué depósito se trata. Sin foto (llamada vieja) el correo sale igual, solo sin
+// adjunto.
 export async function notifyDepositReceiptUploaded(env, appointment, createTransportImpl = nodemailer.createTransport) {
   const line = aptLine(appointment);
+  const amount = `RD$${Number(appointment.depositAmount) > 0 ? appointment.depositAmount : 500}`;
+  const attachments = appointment.receiptBase64
+    ? [{
+        filename: `comprobante-${appointment.legacyId || "deposito"}.${MIME_EXTENSIONS[appointment.receiptMimeType] || "jpg"}`,
+        content: appointment.receiptBase64,
+        encoding: "base64",
+        contentType: appointment.receiptMimeType || "image/jpeg",
+      }]
+    : null;
+  const attachedNote = attachments
+    ? "El comprobante va adjunto a este correo."
+    : "El comprobante quedó guardado en ReservApp (no se pudo adjuntar la foto a este correo).";
   return sendBusinessEmail(env, {
     subject: `Comprobante de depósito subido -- ${appointment.clientName || "Cliente"}`,
-    text: `${line}\n\nLa clienta ya subió su comprobante de depósito. Revísalo y confirma o rechaza la reserva en ReservApp.`,
-    html: `<p>${line}</p><p>La clienta ya subió su comprobante de depósito. Revísalo y confirma o rechaza la reserva en ReservApp.</p>`,
+    text: `${line}\nDepósito: ${amount}\n\nLa clienta ya subió su comprobante de depósito. ${attachedNote} Revísalo y confirma o rechaza la reserva en ReservApp.`,
+    html: `<p>${line}</p><p>Depósito: <strong>${amount}</strong></p><p>La clienta ya subió su comprobante de depósito. ${attachedNote} Revísalo y confirma o rechaza la reserva en ReservApp.</p>`,
+    attachments,
   }, createTransportImpl);
 }
+
+const MIME_EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
 
 // Recordatorio horario (solo dentro de la ventana de negocio, ver isWithinDepositReminderWindow
 // en server/app.mjs) mientras un comprobante siga subido sin que el personal lo confirme o
