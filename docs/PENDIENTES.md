@@ -72,7 +72,7 @@ tocando los datos.
 curl -s -o /dev/null -w "%{http_code}\n" https://dalfistudionails.sebengroup.com   # ya no debe servir
 curl -s -o /dev/null -w "%{http_code}\n" https://nails.dalfistudio.com             # 200
 curl -s -D- -o /dev/null -H 'Origin: https://nails.dalfistudio.com' \
-  https://sebensuiteconnect.dalfistudio.com/api/site-content/dalfistudionails |
+  https://ssc.dalfistudio.com/api/site-content/dalfistudionails |
   grep -i access-control-allow-origin                                              # debe seguir
 ```
 

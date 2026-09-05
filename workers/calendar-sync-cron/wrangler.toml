@@ -6,9 +6,9 @@ compatibility_date = "2026-07-09"
 
 [vars]
 # Apuntaba a dalfi-erp.pages.dev, un proyecto borrado el 2026-08-24. Si algún día
-# se revive, va https://sebensuiteconnect.dalfistudio.com -- pero antes hay que
+# se revive, va https://ssc.dalfistudio.com -- pero antes hay que
 # escribir /api/calendar/google-pull en server/app.mjs, que hoy no existe.
-APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"
+APP_BASE_URL = "https://ssc.dalfistudio.com"
 
 # Disparaba CADA MINUTO. 1.440 invocaciones fallidas al día durante 11 días.
 [triggers]

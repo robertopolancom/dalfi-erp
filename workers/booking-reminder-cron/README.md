@@ -5,11 +5,11 @@ confirmación de asistencia y la escalación/liberación de horario de
 cualquier cita futura (sin importar canal de origen) que no se confirma a
 tiempo. Es el mismo patrón que `workers/closing-cron/`, aplicado a
 `POST /api/booking/send-reminders` en `server/app.mjs` (Render + Neon,
-`sebensuiteconnect.dalfistudio.com`).
+`ssc.dalfistudio.com`).
 
 Este Worker antes llamaba a `functions/api/booking/send-reminders.js` en el
 proyecto de Cloudflare Pages `dalfi-erp` (Supabase). Ese proyecto se eliminó
-porque `sebensuiteconnect.dalfistudio.com` (Render) es el backend real en uso diario; la
+porque `ssc.dalfistudio.com` (Render) es el backend real en uso diario; la
 lógica de recordatorios se portó a `server/store.mjs`
 (`businessMinutesBetween`/`resolveBusinessDayWindow`) y `server/app.mjs`. La
 única diferencia operativa: `BOOKING_REMINDER_CRON_SECRET` ahora se
@@ -54,7 +54,7 @@ cerrado:
 
 - `worker.js`: el Worker (`export default { async scheduled(...) }`).
 - `wrangler.toml`: configuración de Wrangler (variable NO secreta
-  `APP_BASE_URL = "https://sebensuiteconnect.dalfistudio.com"`; Cron Trigger activo cada hora).
+  `APP_BASE_URL = "https://ssc.dalfistudio.com"`; Cron Trigger activo cada hora).
 - `package.json`: solo declara `"type": "module"` (sin dependencias).
 - `tests/worker.test.js`: pruebas con `fetch` mockeado, sin red real.
 
@@ -99,7 +99,7 @@ desplegar.
 ## 4. Probar manualmente una ejecución
 
 ```bash
-curl -X POST "https://sebensuiteconnect.dalfistudio.com/api/booking/send-reminders" \
+curl -X POST "https://ssc.dalfistudio.com/api/booking/send-reminders" \
   -H "x-cron-secret: <el mismo valor configurado en los pasos 1 y 2>"
 ```
 
