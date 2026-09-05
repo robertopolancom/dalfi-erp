@@ -44,9 +44,11 @@ test("el refresco remoto conserva el codigo HTTP en el estado visible sin expone
   assert.match(appJs, /match\(\/HTTP\\s\+\(\\d\{3\}\)\/\)/);
 });
 
-test("el login tiene timeout y no queda indefinidamente en Conectando Supabase", () => {
+test("el login tiene timeout y no queda indefinidamente en Conectando a base de datos", () => {
   assert.match(appJs, /withSupabaseTimeout\(supabaseClient\.auth\.signInWithPassword/);
-  assert.match(appJs, /Supabase no respondió en 15 segundos/);
+  // El texto es el que ve el usuario; se renombró Supabase -> base de datos en toda la interfaz
+  // (el proveedor real es Neon desde hace tiempo). Los identificadores internos no cambiaron.
+  assert.match(appJs, /La base de datos no respondió en 15 segundos/);
   assert.match(appJs, /window\.setTimeout/);
 });
 

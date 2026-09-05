@@ -260,7 +260,7 @@ async function loadDatabase() {
         }
       }
     } catch (error) {
-      console.warn("No se pudo cargar Supabase. Se usa respaldo local.", error);
+      console.warn("No se pudo cargar el cliente de la base de datos. Se usa respaldo local.", error);
     }
   }
 
@@ -11545,7 +11545,7 @@ function wireAuth() {
     event.preventDefault();
     initSupabaseClient();
     if (!supabaseClient) {
-      updateSyncStatus("Falta configuración central de Supabase", "error");
+      updateSyncStatus("Falta configuración central de la base de datos", "error");
       return;
     }
     const mode = event.currentTarget.dataset.mode || (isPasswordResetRequired() ? "forced" : "own");
@@ -11605,17 +11605,17 @@ function wireAuth() {
     event.preventDefault();
     initSupabaseClient();
     if (!supabaseClient) {
-      updateSyncStatus("Falta configuración central de Supabase", "error");
+      updateSyncStatus("Falta configuración central de la base de datos", "error");
       return;
     }
     const email = byId("auth-email").value.trim();
     const password = byId("auth-password").value;
-    updateSyncStatus("Conectando Supabase...", "online");
+    updateSyncStatus("Conectando a base de datos...", "online");
     let signInResult;
     try {
       signInResult = await withSupabaseTimeout(supabaseClient.auth.signInWithPassword({ email, password }));
     } catch (signInError) {
-      updateSyncStatus(signInError?.message === "SUPABASE_TIMEOUT" ? "Supabase no respondió en 15 segundos" : "No se pudo conectar con Supabase", "error");
+      updateSyncStatus(signInError?.message === "SUPABASE_TIMEOUT" ? "La base de datos no respondió en 15 segundos" : "No se pudo conectar con la base de datos", "error");
       return;
     }
     const { data, error } = signInResult;
