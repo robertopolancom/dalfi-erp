@@ -58,6 +58,17 @@ services:
         sync: false
       # Avisos por correo al personal (nueva reserva, comprobante subido, recordatorio
       # horario) -- Gmail SMTP con contraseña de aplicación, ver server/email.mjs.
+      # Transporte de los avisos por correo. Render bloquea la salida SMTP (comprobado el
+      # 2026-09-06: 587 y 465, los dos con Connection timeout desde el contenedor, ya con la IPv4
+      # correcta), así que Gmail no sirve desde aquí y se manda por la API HTTP de Resend.
+      # RESEND_FROM tiene que ser un remitente de un dominio VERIFICADO en Resend
+      # ("Dalfi Studio Nails <info@dalfistudio.com>"); si no, Resend rechaza el envío.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
+      # GMAIL_* se quedan para correr fuera de Render (local, u otro alojamiento): si hay
+      # RESEND_API_KEY, gana Resend y estas ni se miran.
       - key: GMAIL_USER
         sync: false
       - key: GMAIL_APP_PASSWORD

@@ -198,3 +198,78 @@ test("las direcciones se recuerdan entre envíos, no se resuelve una vez por cor
   assert.equal(calls.length, 2);
   assert.equal(resolves, 1);
 });
+
+// --- Resend: el transporte que sí sale de Render -------------------------------------------
+// Render bloquea la salida SMTP (587 y 465, los dos con Connection timeout, comprobado el
+// 2026-09-06 con reservas reales). Estas pruebas fijan que cuando hay RESEND_API_KEY el correo
+// va por HTTPS y NUNCA se abre un socket SMTP.
+const RESEND_ENV = { ...ENV, RESEND_API_KEY: "re_clave_falsa", RESEND_FROM: "Dalfi Studio <avisos@dalfistudio.com>" };
+
+function fakeFetch(calls, { ok = true, status = 200, body = "" } = {}) {
+  return async (url, init) => {
+    calls.push({ url, init, payload: JSON.parse(init.body) });
+    return { ok, status, text: async () => body };
+  };
+}
+
+test("con RESEND_API_KEY el correo sale por HTTPS y no se abre ningún socket SMTP", async () => {
+  const smtp = [];
+  const fetches = [];
+  const r = await sendBusinessEmail(
+    RESEND_ENV, { subject: "Asunto", text: "Texto", html: "<p>Texto</p>" },
+    fakeCreateTransport(smtp), fakeResolve4, fakeFetch(fetches),
+  );
+  assert.deepEqual(r, { sent: true, via: "resend" });
+  assert.equal(smtp.length, 0, "ni un intento por SMTP: desde Render no sale");
+  assert.equal(fetches.length, 1);
+  assert.equal(fetches[0].url, "https://api.resend.com/emails");
+  assert.match(fetches[0].init.headers.Authorization, /^Bearer re_clave_falsa$/);
+  assert.equal(fetches[0].payload.from, RESEND_ENV.RESEND_FROM);
+  assert.deepEqual(fetches[0].payload.to, [ENV.GMAIL_USER], "sin `to` sigue siendo el aviso interno");
+  assert.equal(fetches[0].payload.subject, "Asunto");
+});
+
+test("sin RESEND_API_KEY se sigue usando SMTP (local, u otro alojamiento)", async () => {
+  const smtp = [];
+  const fetches = [];
+  const r = await sendBusinessEmail(ENV, { subject: "x", text: "y", html: "<p>y</p>" },
+    fakeCreateTransport(smtp), fakeResolve4, fakeFetch(fetches));
+  assert.equal(r.sent, true);
+  assert.equal(fetches.length, 0);
+  assert.equal(smtp.length, 1);
+});
+
+test("con clave pero sin RESEND_FROM no se inventa un remitente", async () => {
+  // Resend rechaza cualquier `from` de un dominio no verificado; mandar uno a ojo sería garantizar
+  // el rechazo y, peor, ensuciar la reputación del dominio a base de intentos fallidos.
+  const fetches = [];
+  const r = await sendBusinessEmail({ ...RESEND_ENV, RESEND_FROM: "" }, { subject: "x", text: "y", html: "<p>y</p>" },
+    fakeCreateTransport([]), fakeResolve4, fakeFetch(fetches));
+  assert.equal(r.sent, false);
+  assert.equal(r.reason, "resend_from_missing");
+  assert.equal(fetches.length, 0);
+});
+
+test("un rechazo de Resend deja escrito el motivo, no solo que falló", async () => {
+  const fetches = [];
+  const r = await sendBusinessEmail(RESEND_ENV, { subject: "x", text: "y", html: "<p>y</p>" },
+    fakeCreateTransport([]), fakeResolve4,
+    fakeFetch(fetches, { ok: false, status: 403, body: '{"message":"The dalfistudio.com domain is not verified"}' }));
+  assert.equal(r.sent, false);
+  assert.equal(r.reason, "resend_rejected");
+  assert.match(r.error, /403/);
+  assert.match(r.error, /not verified/, "el motivo de Resend tiene que llegar al operador");
+});
+
+test("el comprobante de depósito viaja adjunto también por Resend", async () => {
+  const fetches = [];
+  await notifyDepositReceiptUploaded(
+    RESEND_ENV,
+    { ...APT, depositAmount: 500, receiptBase64: "BASE64DATA", receiptMimeType: "image/png" },
+    fakeCreateTransport([]), fakeResolve4, fakeFetch(fetches),
+  );
+  const adj = fetches[0].payload.attachments;
+  assert.equal(adj.length, 1);
+  assert.equal(adj[0].filename, "comprobante-RES-1.png");
+  assert.equal(adj[0].content, "BASE64DATA");
+});

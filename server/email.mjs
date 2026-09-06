@@ -71,6 +71,51 @@ const RETRYABLE_CODES = new Set([
   "ECONNECTION", "ETIMEDOUT", "ESOCKET", "ECONNRESET", "ENETUNREACH", "EHOSTUNREACH", "EDNS",
 ]);
 
+// --- Resend: el transporte que de verdad sale de Render ------------------------------------
+// Render bloquea la salida SMTP. Comprobado el 2026-09-06 con dos reservas reales: 587 y 465, los
+// dos con "Connection timeout" tras 15 segundos, y ya con la IPv4 correcta. No es Gmail, no son
+// las credenciales, no es IPv6 (eso se arregló antes y no bastó): es política del proveedor.
+//
+// Resend manda por HTTPS, así que el bloqueo deja de importar. El camino SMTP de más abajo se
+// queda para correr fuera de Render (local, o si algún día se muda el alojamiento); si hay
+// RESEND_API_KEY, gana Resend.
+const RESEND_ENDPOINT = "https://api.resend.com/emails";
+
+async function sendViaResend(env, { subject, html, text, to, replyTo, attachments }, fetchImpl) {
+  const from = String(env.RESEND_FROM || "").trim();
+  if (!from) {
+    console.error("email: RESEND_API_KEY está puesta pero falta RESEND_FROM -- no se envió:", subject);
+    return { sent: false, reason: "resend_from_missing" };
+  }
+  let response;
+  try {
+    response = await fetchImpl(RESEND_ENDPOINT, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.RESEND_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        from, to: [to], reply_to: replyTo, subject, html, text,
+        // Resend espera el contenido en base64, igual que ya lo tenemos guardado para los
+        // comprobantes de depósito -- no hay que convertir nada.
+        ...(attachments?.length
+          ? { attachments: attachments.map((a) => ({ filename: a.filename, content: a.content })) }
+          : {}),
+      }),
+    });
+  } catch (error) {
+    console.error("email: no se pudo llamar a Resend --", error.message);
+    return { sent: false, reason: "resend_unreachable", error: error.message };
+  }
+  if (!response.ok) {
+    // El cuerpo de Resend dice POR QUÉ (dominio sin verificar, remitente ajeno, clave mala). Sin
+    // esto volveríamos al punto de partida: saber que falla y no saber de qué.
+    const detail = await response.text().catch(() => "");
+    console.error(`email: Resend rechazó el envío (${response.status}):`, subject, detail.slice(0, 300));
+    return { sent: false, reason: "resend_rejected", error: `${response.status} ${detail.slice(0, 200)}` };
+  }
+  console.log("email: enviado por Resend --", subject);
+  return { sent: true, via: "resend" };
+}
+
 // `to` opcional: sin él sigue siendo el aviso interno de siempre (la cuenta se escribe a sí
 // misma). Con `to` se le manda a una clienta -- hoy solo lo usa el envío de facturas.
 // createTransportImpl/resolve4Impl inyectables (las pruebas usan dobles en memoria, nunca SMTP ni
@@ -80,11 +125,20 @@ export async function sendBusinessEmail(
   { subject, html, text, to = null, attachments = null },
   createTransportImpl = nodemailer.createTransport,
   resolve4Impl = dnsPromises.resolve4,
+  fetchImpl = globalThis.fetch,
 ) {
   const user = env.GMAIL_USER;
   const pass = env.GMAIL_APP_PASSWORD;
+  const destino = to || user;
+  if (env.RESEND_API_KEY) {
+    if (!destino) {
+      console.error("email: no hay destinatario (falta `to` y GMAIL_USER) -- no se envió:", subject);
+      return { sent: false, reason: "no_recipient" };
+    }
+    return sendViaResend(env, { subject, html, text, to: destino, replyTo: user || destino, attachments }, fetchImpl);
+  }
   if (!user || !pass) {
-    console.warn("email: GMAIL_USER/GMAIL_APP_PASSWORD no configurados -- correo no enviado:", subject);
+    console.warn("email: sin RESEND_API_KEY ni GMAIL_USER/GMAIL_APP_PASSWORD -- correo no enviado:", subject);
     return { sent: false, reason: "not_configured" };
   }
 
@@ -141,13 +195,13 @@ function aptLine({ legacyId, clientName, serviceName, staffName, date, time }) {
 // Cada cita nueva, sin importar el canal por el que se creó -- todavía no aparta el horario
 // (ver neon/migrations/0024), así que esto es un aviso para que el personal la tenga en la mira,
 // no una confirmación de nada.
-export async function notifyNewAppointment(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4) {
+export async function notifyNewAppointment(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
   const line = aptLine(appointment);
   return sendBusinessEmail(env, {
     subject: `Nueva reserva por revisar -- ${appointment.clientName || "Cliente"}`,
     text: `${line}\n\nTodavía no está confirmada: falta que se confirme el depósito de RD$500. Al revisarla, confírmala en ReservApp.`,
     html: `<p>${line}</p><p>Todavía no está confirmada: falta que se confirme el depósito de RD$500. Al revisarla, confírmala en ReservApp.</p>`,
-  }, createTransportImpl, resolve4Impl);
+  }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
 // La clienta subió su foto del comprobante -- listo para que el personal lo revise y
@@ -156,7 +210,7 @@ export async function notifyNewAppointment(env, appointment, createTransportImpl
 // que tenga la información a mano" -- así el correo se basta solo, sin tener que abrir ReservApp
 // para ver de qué depósito se trata. Sin foto (llamada vieja) el correo sale igual, solo sin
 // adjunto.
-export async function notifyDepositReceiptUploaded(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4) {
+export async function notifyDepositReceiptUploaded(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
   const line = aptLine(appointment);
   const amount = `RD$${Number(appointment.depositAmount) > 0 ? appointment.depositAmount : 500}`;
   const attachments = appointment.receiptBase64
@@ -175,7 +229,7 @@ export async function notifyDepositReceiptUploaded(env, appointment, createTrans
     text: `${line}\nDepósito: ${amount}\n\nLa clienta ya subió su comprobante de depósito. ${attachedNote} Revísalo y confirma o rechaza la reserva en ReservApp.`,
     html: `<p>${line}</p><p>Depósito: <strong>${amount}</strong></p><p>La clienta ya subió su comprobante de depósito. ${attachedNote} Revísalo y confirma o rechaza la reserva en ReservApp.</p>`,
     attachments,
-  }, createTransportImpl, resolve4Impl);
+  }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
 const MIME_EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
@@ -183,7 +237,7 @@ const MIME_EXTENSIONS = { "image/jpeg": "jpg", "image/png": "png", "image/webp":
 // Una cita que estaba en la agenda deja de estarlo. Se avisa aunque la cancelación la haya hecho
 // el propio personal: quien cancela desde el mostrador no siempre es quien tenía el turno
 // apartado, y el correo deja el rastro con la hora que queda libre. `reason` es opcional.
-export async function notifyAppointmentCancelled(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4) {
+export async function notifyAppointmentCancelled(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
   const line = aptLine(appointment);
   const reason = appointment.reason ? `\nMotivo: ${appointment.reason}` : "";
   const reasonHtml = appointment.reason ? `<p>Motivo: ${appointment.reason}</p>` : "";
@@ -191,37 +245,37 @@ export async function notifyAppointmentCancelled(env, appointment, createTranspo
     subject: `Cita cancelada -- ${appointment.clientName || "Cliente"}`,
     text: `${line}${reason}\n\nEse horario vuelve a quedar libre en la agenda.`,
     html: `<p>${line}</p>${reasonHtml}<p>Ese horario vuelve a quedar libre en la agenda.</p>`,
-  }, createTransportImpl, resolve4Impl);
+  }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
 // La clienta respondió que sí viene (el "1" del recordatorio por WhatsApp, o el botón de
 // confirmar en ReservApp). Es el único cambio de estatus que NO hace el personal, así que es el
 // que de verdad hay que contarle a alguien.
-export async function notifyAppointmentConfirmedByClient(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4) {
+export async function notifyAppointmentConfirmedByClient(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
   const line = aptLine(appointment);
   return sendBusinessEmail(env, {
     subject: `La clienta confirmó su hora -- ${appointment.clientName || "Cliente"}`,
     text: `${line}\n\nConfirmó que asistirá. Si todavía falta el depósito, el horario sigue sin apartarse.`,
     html: `<p>${line}</p><p>Confirmó que asistirá. Si todavía falta el depósito, el horario sigue sin apartarse.</p>`,
-  }, createTransportImpl, resolve4Impl);
+  }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
 // Recordatorio horario (solo dentro de la ventana de negocio, ver isWithinDepositReminderWindow
 // en server/app.mjs) mientras un comprobante siga subido sin que el personal lo confirme o
 // rechace.
-export async function notifyDepositReviewPending(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4) {
+export async function notifyDepositReviewPending(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
   const line = aptLine(appointment);
   return sendBusinessEmail(env, {
     subject: `Recordatorio: comprobante pendiente de revisar -- ${appointment.clientName || "Cliente"}`,
     text: `${line}\n\nSigue sin revisarse el comprobante de depósito. El horario no queda apartado hasta que lo confirmes o lo rechaces desde SSC.`,
     html: `<p>${line}</p><p>Sigue sin revisarse el comprobante de depósito. El horario no queda apartado hasta que lo confirmes o lo rechaces desde SSC.</p>`,
-  }, createTransportImpl, resolve4Impl);
+  }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
 // Factura para la clienta. El correo NO lleva la factura adjunta: lleva el enlace, que arma la
 // factura desde los datos vivos del ERP en el momento en que se abre (ver server/invoice-link.mjs).
 // Así no queda ningún archivo guardado y el enlace siempre muestra la versión buena.
-export async function sendInvoiceEmail(env, { to, clientName, invoiceId, url, total }, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4) {
+export async function sendInvoiceEmail(env, { to, clientName, invoiceId, url, total }, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
   const amount = `RD$ ${(Number(total) || 0).toLocaleString("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const greeting = `Hola ${clientName || ""}`.trim();
   return sendBusinessEmail(env, {
@@ -231,5 +285,5 @@ export async function sendInvoiceEmail(env, { to, clientName, invoiceId, url, to
     html: `<p>${greeting},</p><p>Aquí está tu factura <strong>${invoiceId}</strong> por <strong>${amount}</strong>:</p>`
         + `<p><a href="${url}">Ver mi factura</a></p>`
         + `<p>Gracias por tu visita.<br>Dalfi Studio Nails &amp; Academy -- Juan Caballero 38, Baní</p>`,
-  }, createTransportImpl, resolve4Impl);
+  }, createTransportImpl, resolve4Impl, fetchImpl);
 }
