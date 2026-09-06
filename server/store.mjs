@@ -977,7 +977,7 @@ export class NeonBookingStore {
         row.updated_at = new Date().toISOString();
       });
       await client.query("commit");
-      return { confirmed: true };
+      return { confirmed: true, id: apt.id };
     } catch (error) {
       await client.query("rollback").catch(() => {});
       throw error;

@@ -17,7 +17,8 @@ import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { businessMinutesBetween } from "./store.mjs";
-import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending, sendInvoiceEmail } from "./email.mjs";
+import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
+         notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, sendInvoiceEmail } from "./email.mjs";
 import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
@@ -856,6 +857,18 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const cancelled = await bookingStore.cancelAppointment({ id: req.params.id, reason });
         if (!cancelled) return res.status(404).json({ error: "Esa cita no existe o ya estaba cancelada." });
         res.json({ ok: true, appointment: cancelled });
+        // El resumen se pide DESPUÉS de responder, igual que el resto de avisos: la cancelación
+        // ya está hecha y confirmada, el correo es un extra que no debe retrasarla.
+        emailBestEffort(
+          bookingStore.appointmentSummary(req.params.id).then((s) => {
+            if (!s) return null;
+            return notifyAppointmentCancelled(env, {
+              legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
+              staffName: s.staff_name, date: s.date, time: s.time, reason: reason || null,
+            });
+          }),
+          "cita cancelada",
+        );
       } catch (error) { next(error); }
     });
 
@@ -954,16 +967,17 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // Mejor esfuerzo, después de responder -- nunca bloquea la subida del comprobante. La
         // foto viaja adjunta (misma que se acaba de guardar, ya está en memoria aquí) para que
         // el correo a dalfistudionails@gmail.com se baste solo.
-        bookingStore.appointmentSummary(req.params.id)
-          .then((s) => {
-            if (!s) return;
+        emailBestEffort(
+          bookingStore.appointmentSummary(req.params.id).then((s) => {
+            if (!s) return null;
             return notifyDepositReceiptUploaded(env, {
               legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
               staffName: s.staff_name, date: s.date, time: s.time,
               depositAmount: 500, receiptBase64: imageBase64, receiptMimeType: mimeType,
             });
-          })
-          .catch(() => {});
+          }),
+          "comprobante de depósito subido",
+        );
       } catch (error) {
         if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
@@ -1611,6 +1625,20 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
           });
         }
         res.json({ success: true, confirmed: true });
+        // Único cambio de estatus que NO hace el personal (llega por el "1" del recordatorio de
+        // WhatsApp o por el botón de ReservApp), así que es el que hay que contar.
+        if (result.id) {
+          emailBestEffort(
+            bookingStore.appointmentSummary(result.id).then((s) => {
+              if (!s) return null;
+              return notifyAppointmentConfirmedByClient(env, {
+                legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
+                staffName: s.staff_name, date: s.date, time: s.time,
+              });
+            }),
+            "confirmación de la clienta",
+          );
+        }
       } catch (error) { next(error); }
     });
 
@@ -1849,10 +1877,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
             if (!appt.idempotent) calendarSync = await syncChangedAppointmentsToGoogleCalendar(env, appt.previousDocument, appt.document, { fetchImpl });
             if (!appt.idempotent && appt.legacyPayload) {
               const p = appt.legacyPayload;
-              notifyNewAppointment(env, {
+              emailBestEffort(notifyNewAppointment(env, {
                 legacyId: p.reservaID, clientName: p.clienteNombre, serviceName: p.servicio,
                 staffName: p.colaboradorNombre, date: p.fecha, time: p.hora,
-              }).catch(() => {});
+              }), "nueva reserva");
             }
           }
           return res.status(201).json({
@@ -1874,10 +1902,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // sendBusinessEmail en server/email.mjs).
         if (!result.idempotent && result.legacyPayload) {
           const p = result.legacyPayload;
-          notifyNewAppointment(env, {
+          emailBestEffort(notifyNewAppointment(env, {
             legacyId: p.reservaID, clientName: p.clienteNombre, serviceName: p.servicio,
             staffName: p.colaboradorNombre, date: p.fecha, time: p.hora,
-          }).catch(() => {});
+          }), "nueva reserva");
         }
         res.status(result.idempotent ? 200 : 201).json({
           appointment: { id: result.appointment.id, reference: result.appointment.legacy_id },
@@ -1890,6 +1918,22 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   // Factura pública: sin sesión, sin nada guardado. El token es una firma del facturaID (ver
   // server/invoice-link.mjs) y la factura se arma leyendo la base viva en el momento del clic --
   // si se editó, muestra lo nuevo; si se eliminó, deja de funcionar sola.
+
+  // Los avisos por correo salen DESPUÉS de haberle respondido a quien pidió: si fallan no pueden
+  // tumbar la reserva ni el comprobante que los disparó. Pero tampoco pueden desaparecer en
+  // silencio: entre el 2 y el 5 de septiembre de 2026 ni un solo aviso llegó a
+  // dalfistudionails@gmail.com y el único rastro fue un console.error dentro de email.mjs,
+  // porque aquí había un `.catch(() => {})` que se comía el resultado. Ahora se registran los dos
+  // finales posibles -- la excepción y el {sent:false} -- con el nombre del aviso.
+  function emailBestEffort(promise, what) {
+    return Promise.resolve(promise)
+      .then((result) => {
+        if (result && result.sent === false) console.error(`email: ${what} no se envió --`, result.reason, result.error || "");
+        return result;
+      })
+      .catch((error) => console.error(`email: ${what} falló --`, error?.message || error));
+  }
+
   app.get("/factura/:token", async (req, res, next) => {
     const invoiceId = verifyInvoiceToken(env, req.params.token);
     // Un token inválido y una factura borrada se responden igual: no confirmar qué IDs existen.

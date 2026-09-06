@@ -41,7 +41,7 @@ test("confirmAppointmentAttendance(): camino feliz, solo confirma asistencia (nu
     mirrored.push({ legacyId, doc });
   };
   const result = await store.confirmAppointmentAttendance({ legacyId: "RES-1" });
-  assert.deepEqual(result, { confirmed: true });
+  assert.deepEqual(result, { confirmed: true, id: "apt-1" });
   const updateQuery = queries.find((q) => q.sql.includes("confirmation_status='HoraConfirmada'"));
   assert.deepEqual(updateQuery.params, ["apt-1"]);
   assert.equal(mirrored[0].doc.estadoConfirmacion, "HoraConfirmada");
@@ -54,7 +54,7 @@ test("confirmAppointmentAttendance(): funciona igual sin importar el status actu
     const store = new NeonBookingStore(pool);
     store.mirrorAppointmentToDocument = async () => {};
     const result = await store.confirmAppointmentAttendance({ legacyId: "RES-1" });
-    assert.deepEqual(result, { confirmed: true });
+    assert.deepEqual(result, { confirmed: true, id: "apt-1" });
     const updateQuery = queries.find((q) => q.sql.includes("confirmation_status='HoraConfirmada'"));
     assert.deepEqual(updateQuery.params, ["apt-1"]);
   }

@@ -12,7 +12,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { NeonBookingStore } from "../server/store.mjs";
-import { notifyDepositReceiptUploaded, resetTransporterCache } from "../server/email.mjs";
+import { notifyDepositReceiptUploaded, resetEmailCaches } from "../server/email.mjs";
 
 const readApp = () => readFile(new URL("../outputs/reservar/app.js", import.meta.url), "utf8");
 const readHtml = () => readFile(new URL("../outputs/reservar/index.html", import.meta.url), "utf8");
@@ -68,14 +68,14 @@ function fakeCreateTransport(calls) {
   return () => ({ async sendMail(msg) { calls.push(msg); return { messageId: "fake" }; } });
 }
 
-test.beforeEach(() => resetTransporterCache());
+test.beforeEach(() => resetEmailCaches());
 
 test("notifyDepositReceiptUploaded(): adjunta la foto y la manda a la cuenta del salón", async () => {
   const calls = [];
   await notifyDepositReceiptUploaded(
     ENV,
     { ...APT, depositAmount: 500, receiptBase64: "BASE64DATA", receiptMimeType: "image/png" },
-    fakeCreateTransport(calls),
+    fakeCreateTransport(calls), async () => ["142.250.115.109"],
   );
   assert.equal(calls.length, 1);
   assert.equal(calls[0].to, "dalfistudionails@gmail.com");
@@ -90,7 +90,7 @@ test("notifyDepositReceiptUploaded(): adjunta la foto y la manda a la cuenta del
 
 test("notifyDepositReceiptUploaded(): sin foto sigue mandando el aviso, sin adjunto y diciéndolo", async () => {
   const calls = [];
-  await notifyDepositReceiptUploaded(ENV, APT, fakeCreateTransport(calls));
+  await notifyDepositReceiptUploaded(ENV, APT, fakeCreateTransport(calls), async () => ["142.250.115.109"]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].attachments, undefined);
   assert.match(calls[0].text, /no se pudo adjuntar la foto/);
