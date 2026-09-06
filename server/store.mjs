@@ -1,4 +1,5 @@
 import { isClientRole } from "./reservapp-auth.mjs";
+import { normalizePhone } from "./phone.mjs";
 
 export class NeonDocumentStore {
   constructor(pool) {
@@ -2255,12 +2256,11 @@ export class NeonChatStore {
   }
 
   // El teléfono es la identidad de la conversación, así que tiene que normalizarse igual
-  // aquí y en el bridge o el mismo número abriría dos hilos. Se queda con los dígitos y,
-  // si viene sin el 1 de país (10 dígitos, formato local dominicano), se lo antepone.
+  // aquí, en el resto del ERP y en el bridge, o el mismo número abriría dos hilos. La regla
+  // vive en phone.mjs. Aquí devuelve null en vez de cadena vacía porque ingest() lo usa como
+  // "no hay con quién asociar este mensaje" y aborta.
   static normalizePhone(phone) {
-    const digits = String(phone || "").replace(/\D/g, "");
-    if (!digits) return null;
-    return digits.length === 10 ? `1${digits}` : digits;
+    return normalizePhone(phone) || null;
   }
 
   // Un mensaje entrante o saliente. Idempotente por waMessageId: Meta reintenta la entrega

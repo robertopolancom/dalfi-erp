@@ -26,10 +26,9 @@ export const RESERVAPP_ROLES = Object.freeze([
   "superadministrador",
 ]);
 
-export function normalizePhone(value) {
-  const digits = String(value || "").replace(/[^0-9]/g, "");
-  return digits.length === 10 ? `1${digits}` : digits;
-}
+// Se reexporta para no romper a quien ya importa normalizePhone desde aqui (app.mjs).
+// La regla vive en phone.mjs; ver alli por que el "+" y el "00" mandan sobre la longitud.
+export { normalizePhone } from "./phone.mjs";
 
 export function secureToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString("base64url");

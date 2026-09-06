@@ -6,6 +6,7 @@
 // Supabase REST). server/app.mjs ya mantiene app.erp_document sincronizado con las tablas
 // normalizadas al crear citas/clientes desde ReservApp, así que este documento es la misma
 // fuente que ve el personal.
+import { normalizePhone } from "./phone.mjs";
 import { insertAuditLog } from "../functions/api/_lib/audit.js";
 import { syncAppointmentToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import {
@@ -23,10 +24,8 @@ import {
 const SYSTEM_IDENTITY = { userId: "booking_api", email: "system@seben", role: "system" };
 const SYSTEM_IDENTITY_AUDIT = { userId: SYSTEM_IDENTITY.userId, userEmail: SYSTEM_IDENTITY.email, userRole: SYSTEM_IDENTITY.role };
 
-function normalizePhoneDigits(value) {
-  const digits = String(value || "").replace(/\D/g, "");
-  return digits.length === 10 ? `1${digits}` : digits;
-}
+// Alias historico: el nombre se queda por los usos de abajo, la regla es la compartida.
+const normalizePhoneDigits = normalizePhone;
 
 function matchesPhone(client, phone) {
   const target = normalizePhoneDigits(phone);
