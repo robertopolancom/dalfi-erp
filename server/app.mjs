@@ -132,7 +132,7 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
   // origen (Cloudflare Worker aparte, no este servidor) -- a diferencia del resto del ERP, sí
   // necesita CORS para que el navegador deje leer la respuesta. Es contenido público de solo
   // lectura, sin cookies/Authorization, así que no lleva Allow-Credentials.
-  app.use("/api/site-content", (req, res, next) => {
+  const siteCorsMiddleware = (req, res, next) => {
     // La misma página de Nails se sirve desde varios hostnames a la vez (raíz, www y
     // nails), así que esto acepta una LISTA separada por comas y devuelve el origen que
     // coincidió -- nunca "*", porque entonces cualquier sitio podría leer la respuesta.
@@ -151,7 +151,10 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
     }
     if (req.method === "OPTIONS") return res.status(204).end();
     next();
-  });
+  };
+  app.use("/api/site-content", siteCorsMiddleware);
+  // Las fotos de la landing salen por aquí, así que necesitan el mismo permiso de origen.
+  app.use("/api/site-media", siteCorsMiddleware);
   app.use((req, res, next) => {
     const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.dalfistudio.com").toLowerCase();
     const suiteHost = String(env.SEBEN_SUITE_HOST || "ssc.dalfistudio.com").toLowerCase();
@@ -2026,6 +2029,73 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       const row = await bookingStore.getSiteContent(req.params.siteKey);
       if (!row) return res.status(404).json({ error: "Sitio no encontrado." });
       res.json(row);
+    } catch (error) { next(error); }
+  });
+
+  // --- Imágenes de las páginas públicas (app.site_media, migración 0025) --------------------
+  // Sube y sirve las fotos que el personal pone desde el panel "Página web" del ERP, para que
+  // cambiar una imagen deje de exigir tocar el repositorio y desplegar.
+
+  const SITE_MEDIA_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+  // El body del servidor admite 8MB (MAX_BODY_BYTES); el panel ya redimensiona antes de mandar,
+  // así que 3MB es holgado para una foto de web y a la vez corta un envío disparatado.
+  const SITE_MEDIA_MAX_BYTES = 3 * 1024 * 1024;
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  // Pública y sin sesión: la sirve la landing. El contenido de una fila nunca cambia (reemplazar
+  // una foto es subir otra), así que se puede cachear para siempre y ahorrarle el viaje a la
+  // clienta en cada visita.
+  app.get("/api/site-media/:id", async (req, res, next) => {
+    if (!UUID_RE.test(String(req.params.id || ""))) return res.status(404).json({ error: "Imagen no encontrada." });
+    try {
+      const row = await bookingStore.getSiteMedia(req.params.id);
+      if (!row) return res.status(404).json({ error: "Imagen no encontrada." });
+      res.set("Content-Type", row.mime_type);
+      res.set("Cache-Control", "public, max-age=31536000, immutable");
+      res.send(Buffer.from(row.image_data, "base64"));
+    } catch (error) { next(error); }
+  });
+
+  app.get("/api/site-media/:siteKey/list", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageConfiguration", "ver las imágenes del sitio");
+      if (auth.error) return relayAuthError(res, auth.error);
+      if (!KNOWN_SITE_CONTENT_KEYS.has(req.params.siteKey)) return res.status(404).json({ error: "Sitio no encontrado." });
+      res.json({ media: await bookingStore.listSiteMedia(req.params.siteKey) });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/site-media/:siteKey", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageConfiguration", "subir imágenes del sitio");
+      if (auth.error) return relayAuthError(res, auth.error);
+      if (!KNOWN_SITE_CONTENT_KEYS.has(req.params.siteKey)) return res.status(404).json({ error: "Sitio no encontrado." });
+
+      const mimeType = String(req.body?.mimeType || "");
+      const imageBase64 = String(req.body?.imageBase64 || "");
+      if (!SITE_MEDIA_MIME_TYPES.has(mimeType)) return res.status(400).json({ error: "Formato no admitido. Usa JPG, PNG o WebP." });
+      if (!imageBase64) return res.status(400).json({ error: "Falta la imagen." });
+      // Se mide el tamaño REAL en bytes, no el largo del base64 (que infla un 33%).
+      const byteSize = Math.floor((imageBase64.length * 3) / 4);
+      if (byteSize > SITE_MEDIA_MAX_BYTES) {
+        return res.status(413).json({ error: `La imagen pesa ${(byteSize / 1024 / 1024).toFixed(1)}MB y el máximo son 3MB.` });
+      }
+      const saved = await bookingStore.insertSiteMedia({
+        siteKey: req.params.siteKey, imageData: imageBase64, mimeType, byteSize,
+        altText: cleanText(req.body?.altText, 160), createdBy: auth.identity.email,
+      });
+      res.status(201).json({ media: saved });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/site-media/:siteKey/:id", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageConfiguration", "borrar imágenes del sitio");
+      if (auth.error) return relayAuthError(res, auth.error);
+      if (!UUID_RE.test(String(req.params.id || ""))) return res.status(404).json({ error: "Imagen no encontrada." });
+      const deleted = await bookingStore.deleteSiteMedia({ id: req.params.id, siteKey: req.params.siteKey });
+      if (!deleted) return res.status(404).json({ error: "Imagen no encontrada." });
+      res.json({ ok: true });
     } catch (error) { next(error); }
   });
 

@@ -3386,13 +3386,33 @@
                 Texto de introducción de la galería
                 <textarea id="sc-gallery-intro" rows="2" maxlength="300"></textarea>
               </label>
-              <div id="sc-gallery-list" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;"></div>
-              <button class="secondary-btn compact" type="button" id="sc-gallery-add-btn" style="margin-bottom:24px;">Agregar espacio de galería</button>
-              <p class="panel-note" style="margin: -16px 0 24px;">
-                La galería todavía no admite subir fotos reales desde aquí — cada espacio es un
-                nombre/etiqueta (o "Foto próximamente" si no hay imagen). Subir fotos reales es una
-                mejora aparte, pendiente.
+              <div id="sc-photos-list" style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;"></div>
+              <label class="secondary-btn compact" style="display:inline-block; cursor:pointer; margin-bottom:8px;">
+                Agregar foto a la galería
+                <input type="file" id="sc-photos-add" accept="image/jpeg,image/png,image/webp" style="display:none;" />
+              </label>
+              <p class="panel-note" style="margin: 0 0 24px;">
+                Las fotos se publican en el orden de esta lista. El pie de foto es opcional.
+                "Ancho" hace que la foto ocupe el doble en la retícula, para las apaisadas.
+                Se redimensionan solas antes de subirse, así que puedes usar la foto tal cual sale
+                del teléfono.
               </p>
+
+              <h4 style="margin: 0 0 8px;">Imágenes de las secciones</h4>
+              <p class="panel-note" style="margin: 0 0 12px;">
+                Una foto por sección. Si no cambias ninguna, se quedan las que trae la página.
+              </p>
+              <div id="sc-section-images" style="display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px; margin-bottom:24px;"></div>
+
+              <details style="margin-bottom:24px;">
+                <summary style="cursor:pointer; font-weight:600;">Paleta de colores (avanzado)</summary>
+                <p class="panel-note" style="margin:8px 0 12px;">
+                  Muestras de color con nombre, del diseño anterior a las fotos. Hoy la página
+                  publica las fotos de arriba, no esto — se conserva por si se quiere recuperar.
+                </p>
+                <div id="sc-gallery-list" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;"></div>
+                <button class="secondary-btn compact" type="button" id="sc-gallery-add-btn">Agregar espacio de galería</button>
+              </details>
 
               <h4 style="margin: 0 0 8px;">Contacto</h4>
               <div class="form-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom:24px;">

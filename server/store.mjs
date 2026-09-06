@@ -2186,6 +2186,48 @@ export class NeonBookingStore {
     return result.rows[0] || null;
   }
 
+  // --- Imágenes de las páginas públicas (app.site_media, migración 0025) -------------------
+  // El contenido de una fila nunca se modifica: reemplazar una foto es subir otra y apuntar al id
+  // nuevo. Eso es lo que permite que la ruta pública cachee de forma inmutable.
+
+  async insertSiteMedia({ siteKey, imageData, mimeType, byteSize, altText, createdBy }) {
+    const result = await this.pool.query(
+      `insert into app.site_media (site_key, image_data, mime_type, byte_size, alt_text, created_by)
+       values ($1,$2,$3,$4,$5,$6)
+       returning id, site_key, mime_type, byte_size, alt_text, created_at`,
+      [siteKey, imageData, mimeType, byteSize, altText || "", createdBy || null],
+    );
+    return result.rows[0];
+  }
+
+  // Devuelve la imagen entera -- solo lo llama la ruta pública que la sirve.
+  async getSiteMedia(id) {
+    const result = await this.pool.query(
+      `select id, site_key, image_data, mime_type, byte_size, alt_text from app.site_media where id=$1`,
+      [id],
+    );
+    return result.rows[0] || null;
+  }
+
+  // Para el panel: la lista NUNCA trae image_data. Con 20 fotos de 300KB eso serían 6MB de JSON
+  // en cada apertura del panel, y lo único que necesita es el id para armar la miniatura.
+  async listSiteMedia(siteKey, { limit = 200 } = {}) {
+    const result = await this.pool.query(
+      `select id, mime_type, byte_size, alt_text, created_at, created_by
+         from app.site_media where site_key=$1 order by created_at desc limit $2`,
+      [siteKey, limit],
+    );
+    return result.rows;
+  }
+
+  async deleteSiteMedia({ id, siteKey }) {
+    const result = await this.pool.query(
+      `delete from app.site_media where id=$1 and site_key=$2 returning id`,
+      [id, siteKey],
+    );
+    return result.rows[0] || null;
+  }
+
   async saveSiteContent(siteKey, content, updatedBy) {
     const result = await this.pool.query(
       `insert into app.site_content (site_key, content, updated_at, updated_by)

@@ -97,6 +97,28 @@
     });
   }
 
+  // Imágenes subidas desde el panel del ERP. El HTML ya trae una foto por defecto en cada
+  // <img data-cms-img="...">; esto solo la sustituye si el contenido guardado trae un id. Así, si
+  // el fetch falla o nadie ha subido nada, la página se ve completa igual -- mismo criterio que
+  // el texto. El id es un uuid y su contenido nunca cambia, por eso la ruta cachea para siempre.
+  function mediaUrl(id) {
+    return `${CONTENT_API.replace(/\/api\/site-content\/.*$/, "")}/api/site-media/${id}`;
+  }
+
+  function applyImages(content) {
+    document.querySelectorAll("[data-cms-img]").forEach(function (el) {
+      var value = getPath(content, el.dataset.cmsImg);
+      if (!value) return;
+      // Admite tanto "id" suelto como { mediaId, alt } -- el panel guarda lo segundo cuando hay
+      // texto alternativo, y lo primero basta para las secciones que no lo piden.
+      var id = typeof value === "string" ? value : value.mediaId;
+      if (!id) return;
+      el.src = mediaUrl(id);
+      el.removeAttribute("srcset");
+      if (typeof value === "object" && value.alt) el.alt = value.alt;
+    });
+  }
+
   function applyWhatsappLinks(content) {
     var whatsapp = content.contact && content.contact.whatsapp;
     if (!whatsapp) return;
@@ -189,6 +211,32 @@
     return swatch;
   }
 
+  // Galería. Si el contenido guardado trae fotos, la retícula se reconstruye desde ellas; si no
+  // trae ninguna, NO se toca y se quedan las del HTML. Nunca se deja la galería vacía por el
+  // hecho de que alguien todavía no haya subido nada desde el ERP.
+  function applyGalleryPhotos(content) {
+    var grid = document.querySelector(".photo-grid");
+    var photos = content.gallery && Array.isArray(content.gallery.photos) ? content.gallery.photos : [];
+    if (!grid || !photos.length) return;
+    grid.innerHTML = "";
+    photos.forEach(function (photo) {
+      if (!photo || !photo.mediaId) return;
+      var figure = document.createElement("figure");
+      figure.className = photo.wide ? "photo wide" : "photo";
+      var img = document.createElement("img");
+      img.src = mediaUrl(photo.mediaId);
+      img.loading = "lazy";
+      img.alt = photo.alt || photo.caption || "Foto de Dalfi Studio Nails";
+      figure.appendChild(img);
+      if (photo.caption) {
+        var caption = document.createElement("figcaption");
+        caption.textContent = photo.caption;
+        figure.appendChild(caption);
+      }
+      grid.appendChild(figure);
+    });
+  }
+
   function applyLists(content) {
     var servicesContainer = document.querySelector('[data-cms-list="services"]');
     if (servicesContainer && Array.isArray(content.services)) {
@@ -216,6 +264,8 @@
   function applySiteContent(content) {
     if (content.contact) content.contact.instagramHandleDisplay = "@" + (content.contact.instagramHandle || "");
     applyTextNodes(content);
+    applyImages(content);
+    applyGalleryPhotos(content);
     applyWhatsappLinks(content);
     applyInstagramLinks(content);
     applyLists(content);

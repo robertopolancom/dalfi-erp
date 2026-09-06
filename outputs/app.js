@@ -5073,6 +5073,191 @@ function renderSiteContentServicesList() {
     || `<p class="panel-note">Sin servicios agregados.</p>`;
 }
 
+// --- Fotos de la página pública (app.site_media, migración 0025) ---------------------------
+// Hasta ahora las fotos de dalfistudio.com eran archivos del repositorio: cambiar una exigía
+// tocar código y desplegar, justo lo que este panel evita para los textos. Ahora se suben aquí.
+
+// Las secciones que tienen UNA foto. La clave es la ruta dentro del JSON de contenido, la misma
+// que la landing lee en su atributo data-cms-img.
+const SITE_IMAGE_SLOTS = [
+  { key: "hero", label: "Portada — foto principal" },
+  { key: "heroInset", label: "Portada — foto pequeña encima" },
+  { key: "about", label: "Quiénes somos" },
+  { key: "services", label: "Servicios — banner" },
+  { key: "contact", label: "Ubicación" },
+];
+
+// Se redimensiona en el navegador antes de subir: una foto de teléfono pesa varios MB y el
+// servidor corta en 3MB. Mismo patrón que el comprobante de depósito en ReservApp.
+const SITE_IMAGE_MAX_DIMENSION = 1600;
+const SITE_IMAGE_JPEG_QUALITY = 0.82;
+
+let pendingSitePhotos = [];   // galería: [{ mediaId, caption, alt, wide }]
+let pendingSiteImages = {};   // secciones: { "hero.image": mediaId, ... }
+
+function siteMediaUrl(id) {
+  return `/api/site-media/${id}`;
+}
+
+function compressSiteImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      const scale = Math.min(1, SITE_IMAGE_MAX_DIMENSION / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve({ mimeType: "image/jpeg", imageBase64: canvas.toDataURL("image/jpeg", SITE_IMAGE_JPEG_QUALITY).split(",")[1] });
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error("No se pudo leer la imagen.")); };
+    img.src = objectUrl;
+  });
+}
+
+// Sube y devuelve el id. La foto queda guardada aunque después no se pulse "Guardar cambios" --
+// lo que "Guardar" persiste es a qué sección se asigna, no la imagen en sí.
+async function uploadSiteImage(file, altText) {
+  const { mimeType, imageBase64 } = await compressSiteImage(file);
+  const response = await fetch(`/api/site-media/${SITE_CONTENT_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+    body: JSON.stringify({ mimeType, imageBase64, altText: altText || "" }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+  return payload.media.id;
+}
+
+function renderSitePhotosList() {
+  const container = byId("sc-photos-list");
+  if (!container) return;
+  if (!pendingSitePhotos.length) {
+    container.innerHTML = `<p class="panel-note">Sin fotos todavía. La página muestra las que trae por defecto.</p>`;
+    return;
+  }
+  container.innerHTML = pendingSitePhotos.map((photo, index) => `
+    <div class="panel" style="padding:10px; display:grid; grid-template-columns:88px 1fr auto; gap:12px; align-items:center;">
+      <img src="${siteMediaUrl(photo.mediaId)}" alt="" style="width:88px; height:88px; object-fit:cover; border-radius:8px;" />
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <label style="margin:0;">Pie de foto <input class="sc-photo-caption" data-index="${index}" value="${escapeHtml(photo.caption || "")}" maxlength="80" /></label>
+        <label style="margin:0;">Texto alternativo (accesibilidad) <input class="sc-photo-alt" data-index="${index}" value="${escapeHtml(photo.alt || "")}" maxlength="160" /></label>
+        <label style="margin:0; display:flex; align-items:center; gap:6px;">
+          <input type="checkbox" class="sc-photo-wide" data-index="${index}" ${photo.wide ? "checked" : ""} /> Ancho (ocupa el doble)
+        </label>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:4px;">
+        <button class="secondary-btn compact sc-photo-up" data-index="${index}" type="button" ${index === 0 ? "disabled" : ""}>↑</button>
+        <button class="secondary-btn compact sc-photo-down" data-index="${index}" type="button" ${index === pendingSitePhotos.length - 1 ? "disabled" : ""}>↓</button>
+        <button class="secondary-btn compact sc-photo-remove" data-index="${index}" type="button">Quitar</button>
+      </div>
+    </div>`).join("");
+}
+
+function renderSiteSectionImages() {
+  const container = byId("sc-section-images");
+  if (!container) return;
+  container.innerHTML = SITE_IMAGE_SLOTS.map((slot) => {
+    const id = pendingSiteImages[slot.key];
+    const preview = id
+      ? `<img src="${siteMediaUrl(id)}" alt="" style="width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:8px;" />`
+      : `<div style="width:100%; aspect-ratio:4/3; border:1.5px dashed var(--line,#d8d3c8); border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:.78rem; color:#726c60; text-align:center; padding:8px;">Sin cambiar<br>(usa la de la página)</div>`;
+    return `
+      <div class="panel" style="padding:10px; display:flex; flex-direction:column; gap:8px;">
+        <strong style="font-size:.82rem;">${escapeHtml(slot.label)}</strong>
+        ${preview}
+        <label class="secondary-btn compact" style="display:block; text-align:center; cursor:pointer;">
+          ${id ? "Cambiar" : "Subir"}
+          <input type="file" class="sc-section-image-input" data-key="${slot.key}" accept="image/jpeg,image/png,image/webp" style="display:none;" />
+        </label>
+        ${id ? `<button class="secondary-btn compact sc-section-image-clear" data-key="${slot.key}" type="button">Volver a la de por defecto</button>` : ""}
+      </div>`;
+  }).join("");
+}
+
+function readSitePhotosFromDom() {
+  return pendingSitePhotos.map((photo, index) => ({
+    mediaId: photo.mediaId,
+    caption: document.querySelector(`.sc-photo-caption[data-index="${index}"]`)?.value?.trim() || "",
+    alt: document.querySelector(`.sc-photo-alt[data-index="${index}"]`)?.value?.trim() || "",
+    wide: Boolean(document.querySelector(`.sc-photo-wide[data-index="${index}"]`)?.checked),
+  }));
+}
+
+// Guarda lo escrito en los campos antes de repintar, o se pierde al reordenar/quitar.
+function syncSitePhotosFromDom() {
+  if (document.querySelector(".sc-photo-caption")) pendingSitePhotos = readSitePhotosFromDom();
+}
+
+function wireSitePhotoControls() {
+  const list = byId("sc-photos-list");
+  if (list && !list.dataset.wired) {
+    list.dataset.wired = "1";
+    list.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const index = Number(button.dataset.index);
+      if (Number.isNaN(index)) return;
+      syncSitePhotosFromDom();
+      if (button.classList.contains("sc-photo-remove")) pendingSitePhotos.splice(index, 1);
+      else if (button.classList.contains("sc-photo-up") && index > 0) {
+        [pendingSitePhotos[index - 1], pendingSitePhotos[index]] = [pendingSitePhotos[index], pendingSitePhotos[index - 1]];
+      } else if (button.classList.contains("sc-photo-down") && index < pendingSitePhotos.length - 1) {
+        [pendingSitePhotos[index + 1], pendingSitePhotos[index]] = [pendingSitePhotos[index], pendingSitePhotos[index + 1]];
+      } else return;
+      renderSitePhotosList();
+    });
+  }
+
+  const add = byId("sc-photos-add");
+  if (add && !add.dataset.wired) {
+    add.dataset.wired = "1";
+    add.addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const message = byId("site-content-message");
+      if (message) { message.textContent = "Subiendo foto…"; message.className = "form-message"; }
+      try {
+        syncSitePhotosFromDom();
+        const mediaId = await uploadSiteImage(file);
+        pendingSitePhotos.push({ mediaId, caption: "", alt: "", wide: false });
+        renderSitePhotosList();
+        if (message) { message.textContent = "Foto subida. Pulsa \"Guardar cambios\" para publicarla.", message.className = "form-message success"; }
+      } catch (error) {
+        if (message) { message.textContent = `No se pudo subir: ${error.message}`; message.className = "form-message error"; }
+      } finally { event.target.value = ""; }
+    });
+  }
+
+  const sections = byId("sc-section-images");
+  if (sections && !sections.dataset.wired) {
+    sections.dataset.wired = "1";
+    sections.addEventListener("change", async (event) => {
+      const input = event.target.closest(".sc-section-image-input");
+      if (!input) return;
+      const file = input.files?.[0];
+      if (!file) return;
+      const message = byId("site-content-message");
+      if (message) { message.textContent = "Subiendo imagen…"; message.className = "form-message"; }
+      try {
+        pendingSiteImages[input.dataset.key] = await uploadSiteImage(file);
+        renderSiteSectionImages();
+        if (message) { message.textContent = "Imagen subida. Pulsa \"Guardar cambios\" para publicarla."; message.className = "form-message success"; }
+      } catch (error) {
+        if (message) { message.textContent = `No se pudo subir: ${error.message}`; message.className = "form-message error"; }
+      } finally { input.value = ""; }
+    });
+    sections.addEventListener("click", (event) => {
+      const button = event.target.closest(".sc-section-image-clear");
+      if (!button) return;
+      delete pendingSiteImages[button.dataset.key];
+      renderSiteSectionImages();
+    });
+  }
+}
+
 function renderSiteContentGalleryList() {
   const container = byId("sc-gallery-list");
   if (!container) return;
@@ -5114,6 +5299,22 @@ async function renderSiteContentForm() {
     if (byId(`sc-hero-meta-${index}-label`)) byId(`sc-hero-meta-${index}-label`).value = item.label || "";
   });
 
+  pendingSitePhotos = Array.isArray(content.gallery?.photos)
+    ? content.gallery.photos.filter((photo) => photo && photo.mediaId).map((photo) => ({
+        mediaId: photo.mediaId, caption: photo.caption || "", alt: photo.alt || "", wide: Boolean(photo.wide),
+      }))
+    : [];
+  // Las imágenes de sección viven repartidas por el JSON (hero.image, about.image...), así que se
+  // recogen recorriendo las rutas declaradas en SITE_IMAGE_SLOTS.
+  pendingSiteImages = {};
+  SITE_IMAGE_SLOTS.forEach((slot) => {
+    const value = content.images?.[slot.key];
+    const id = typeof value === "string" ? value : value?.mediaId;
+    if (id) pendingSiteImages[slot.key] = id;
+  });
+  renderSitePhotosList();
+  renderSiteSectionImages();
+  wireSitePhotoControls();
   if (byId("sc-about-p1")) byId("sc-about-p1").value = content.about?.paragraphs?.[0] || "";
   if (byId("sc-about-p2")) byId("sc-about-p2").value = content.about?.paragraphs?.[1] || "";
   if (byId("sc-about-p3")) byId("sc-about-p3").value = content.about?.paragraphs?.[2] || "";
@@ -5186,7 +5387,10 @@ async function saveSiteContent(event) {
     services: readSiteContentServicesFromDom(),
     gallery: {
       intro: byId("sc-gallery-intro")?.value?.trim() || "",
+      // Las muestras de color se conservan (el bloque avanzado del panel las sigue editando),
+      // pero lo que la página publica hoy es `photos`.
       items: readSiteContentGalleryFromDom(),
+      photos: readSitePhotosFromDom(),
     },
     contact: {
       addressLine1: byId("sc-contact-address1")?.value?.trim() || "",
@@ -5199,6 +5403,13 @@ async function saveSiteContent(event) {
       mapText: byId("sc-contact-map-text")?.value?.trim() || "",
     },
   };
+
+  // Todas las imágenes de sección van bajo `images`, nunca dentro de su sección: `services` es un
+  // array y escribirle una propiedad lo rompería.
+  content.images = {};
+  SITE_IMAGE_SLOTS.forEach((slot) => {
+    if (pendingSiteImages[slot.key]) content.images[slot.key] = pendingSiteImages[slot.key];
+  });
 
   try {
     const response = await fetch(`/api/site-content/${SITE_CONTENT_KEY}`, {

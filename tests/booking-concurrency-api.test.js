@@ -6,7 +6,15 @@ import { onRequestPost as confirmPost } from "../functions/api/booking/confirm.j
 // Fecha futura relativa a "ahora" — confirm.js valida fechas pasadas/anticipación
 // máxima contra el reloj real, así que las citas de prueba no pueden quedar fijas
 // en el pasado a medida que corre el tiempo.
-const FUTURE_DATE = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+// Fecha futura en la que el negocio ABRE. Antes era "hoy + 7 días" a secas y eso caía en domingo
+// una vez por semana (el negocio cierra domingos por defecto), dejando estas pruebas sin horarios
+// que reservar: rojas cada sábado. Mismo defecto que ya se corrigió en legacy-booking-api.test.js
+// y reservapp-schedule-availability.test.js -- este archivo se quedó fuera de aquella pasada.
+const FUTURE_DATE = (() => {
+  let d = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+  while (d.getUTCDay() === 0) d = new Date(d.getTime() + 24 * 3600 * 1000);
+  return d.toISOString().slice(0, 10);
+})();
 
 function createMockEnv(initialDoc) {
   let doc = JSON.parse(JSON.stringify(initialDoc));
