@@ -867,13 +867,17 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!(await requireBookingStaff(req, res))) return;
       const reason = cleanText(req.body?.reason, 200);
       try {
-        const cancelled = await bookingStore.cancelAppointment({ id: req.params.id, reason });
+        // Acepta el uuid de Postgres o el reservaID del ERP (ver resolveAppointmentId): el mapeo
+        // que guarda el ERP se perdía siempre, así que no puede ser un requisito.
+        const appointmentId = await bookingStore.resolveAppointmentId(req.params.id);
+        if (!appointmentId) return res.status(404).json({ error: "Esa cita no existe." });
+        const cancelled = await bookingStore.cancelAppointment({ id: appointmentId, reason });
         if (!cancelled) return res.status(404).json({ error: "Esa cita no existe o ya estaba cancelada." });
         res.json({ ok: true, appointment: cancelled });
         // El resumen se pide DESPUÉS de responder, igual que el resto de avisos: la cancelación
         // ya está hecha y confirmada, el correo es un extra que no debe retrasarla.
         emailBestEffort(
-          bookingStore.appointmentSummary(req.params.id).then((s) => {
+          bookingStore.appointmentSummary(appointmentId).then((s) => {
             if (!s) return null;
             return notifyAppointmentCancelled(env, {
               legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
@@ -907,7 +911,9 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         if (!isAdmin) return res.status(403).json({ error: "Solo administración puede confirmar o revertir una cita." });
       }
       try {
-        const updated = await bookingStore.setAppointmentStatus({ id: req.params.id, status });
+        const appointmentId = await bookingStore.resolveAppointmentId(req.params.id);
+        if (!appointmentId) return res.status(404).json({ error: "Esa cita no existe." });
+        const updated = await bookingStore.setAppointmentStatus({ id: appointmentId, status });
         if (!updated) return res.status(404).json({ error: "Esa cita no existe o ya está cancelada." });
         res.json({ ok: true, appointment: updated });
       } catch (error) {

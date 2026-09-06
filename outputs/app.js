@@ -140,6 +140,13 @@ let supabaseClient = null;
 let supabaseSession = null;
 let remoteSaveTimer = null;
 let remoteSaveInFlight = false;
+// Hay un cambio en memoria que todavía no llegó al servidor. Sin esto, cualquier cambio hecho
+// mientras ya había un guardado en vuelo (o mientras el poll estaba cargando) se descartaba en
+// silencio: el que pedía guardar hacía `return` y nadie reprogramaba nada. Se notó porque
+// NINGUNA de las 41 reservas tenía guardado su postgresAppointmentId -- el id llega del POST a
+// Postgres justo cuando el guardado que disparó el mismo formulario sigue en vuelo, así que lo
+// perdía siempre (2026-09-06).
+let remoteSavePending = false;
 let remoteRefreshTimer = null;
 let isLoadingRemote = false;
 let remoteConflictDetected = false;
@@ -383,13 +390,18 @@ async function syncReservationToPostgres({ isNew, reservationId, previousEstado 
         localStorage.setItem(dbStorageKey, JSON.stringify(database));
         scheduleRemoteSave();
       }
-    } else if (dbRow.postgresAppointmentId && dbRow.estado !== previousEstado) {
+    } else if (dbRow.estado !== previousEstado) {
       const isCancel = dbRow.estado === "Cancelada";
       const pgStatus = ESTADO_TO_PG_STATUS[dbRow.estado];
       if (!isCancel && !pgStatus) return; // "Retrasada" no existe como valor guardado -- nunca llega aquí
+      // El uuid de Postgres si lo tenemos; si no, el propio reservaID, que el servidor sabe
+      // resolver (ver resolveAppointmentId en server/store.mjs). Antes esta rama exigía
+      // postgresAppointmentId y NINGUNA de las 41 reservas lo tenía, así que cancelar o cambiar
+      // estatus desde el ERP no llegaba nunca a Postgres.
+      const target = dbRow.postgresAppointmentId || reservationId;
       const path = isCancel
-        ? `/api/reservapp/agenda/appointments/${dbRow.postgresAppointmentId}/cancel`
-        : `/api/reservapp/agenda/appointments/${dbRow.postgresAppointmentId}/status`;
+        ? `/api/reservapp/agenda/appointments/${target}/cancel`
+        : `/api/reservapp/agenda/appointments/${target}/status`;
       const body = isCancel ? { reason: "Cancelada desde el ERP" } : { status: pgStatus };
       const response = await fetch(path, { method: "POST", headers: bookingAuthHeaders(), body: JSON.stringify(body) });
       if (!response.ok) console.warn(`[postgres-sync] No se pudo reflejar el estatus de ${reservationId} en Postgres:`, await response.text().catch(() => response.status));
@@ -541,7 +553,11 @@ function isUserEditingForm() {
 }
 
 async function refreshRemoteDatabase({ force = false } = {}) {
-  if (!isSupabaseReady() || !database || remoteSaveInFlight || isLoadingRemote) return false;
+  // remoteSavePending: hay cambios locales que todavía no llegaron al servidor. Este refresco hace
+  // `database = nextDatabase`, un reemplazo COMPLETO, así que traer el documento ahora los borra
+  // sin dejar rastro -- y corre solo cada 30 segundos. Era la tercera vía por la que se perdía el
+  // postgresAppointmentId. Se sale sin más: ya refrescará el poll siguiente, con el guardado hecho.
+  if (!isSupabaseReady() || !database || remoteSaveInFlight || isLoadingRemote || remoteSavePending) return false;
   if (!force && isUserEditingForm()) return false;
   try {
     if (!force && lastKnownRemoteUpdatedAt) {
@@ -575,6 +591,12 @@ async function refreshRemoteDatabase({ force = false } = {}) {
     return false;
   } finally {
     isLoadingRemote = false;
+    // Si alguien pidió guardar mientras esto cargaba, scheduleRemoteSave() lo dejó anotado en vez
+    // de perderlo. Ahora que el documento ya está, sale.
+    if (remoteSavePending) {
+      remoteSavePending = false;
+      scheduleRemoteSave();
+    }
   }
 }
 
@@ -613,13 +635,27 @@ function stopRemoteRefreshLoop() {
 }
 
 function scheduleRemoteSave() {
-  if (!isSupabaseReady() || isLoadingRemote || !database || remoteConflictDetected) return;
+  // En conflicto NO se reintenta a propósito: otra sesión guardó primero y reintentar sería
+  // pisarle los datos. Ahí el usuario tiene que recargar (ver saveRemoteDatabase).
+  if (!isSupabaseReady() || !database || remoteConflictDetected) return;
+  if (isLoadingRemote) {
+    // El poll está trayendo el documento; guardar ahora escribiría encima de lo que viene. Se
+    // recuerda y lo dispara refreshRemoteDatabase() al terminar.
+    remoteSavePending = true;
+    return;
+  }
   window.clearTimeout(remoteSaveTimer);
   remoteSaveTimer = window.setTimeout(saveRemoteDatabase, 700);
 }
 
 async function saveRemoteDatabase() {
-  if (!isSupabaseReady() || !database || remoteSaveInFlight) return;
+  if (!isSupabaseReady() || !database) return;
+  if (remoteSaveInFlight) {
+    // Lo que se quería guardar no cabe en el PUT que ya salió: se encola para el siguiente.
+    remoteSavePending = true;
+    return;
+  }
+  remoteSavePending = false;
   remoteSaveInFlight = true;
   updateSyncStatus("Guardando en base de datos...", "online");
   try {
@@ -658,6 +694,12 @@ async function saveRemoteDatabase() {
     return false;
   } finally {
     remoteSaveInFlight = false;
+    // Lo que llegó mientras este PUT estaba en vuelo sale ahora. scheduleRemoteSave() ya no hace
+    // nada si hubo conflicto, así que esto no puede pisar a otra sesión.
+    if (remoteSavePending) {
+      remoteSavePending = false;
+      scheduleRemoteSave();
+    }
   }
 }
 

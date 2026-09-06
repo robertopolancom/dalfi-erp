@@ -1979,6 +1979,23 @@ export class NeonBookingStore {
 
   // Resumen liviano de una cita para los avisos por correo al personal (nueva reserva,
   // comprobante subido, recordatorio pendiente de revisar) -- server/email.mjs.
+  // El ERP guarda el uuid de Postgres en cada reserva (postgresAppointmentId), pero ese mapeo se
+  // perdía siempre: el id llega del POST justo cuando el guardado del documento ya iba en vuelo, y
+  // el guardado siguiente se descartaba en silencio (arreglado en outputs/app.js, 2026-09-06). Con
+  // 0 de 41 reservas mapeadas, cancelar o cambiar estatus desde el ERP no sincronizaba nunca.
+  //
+  // Arreglar la persistencia no basta: las reservas viejas seguirían sin mapeo para siempre. Así
+  // que estas rutas aceptan también el reservaID del ERP, que el ERP SIEMPRE tiene. El mapeo pasa
+  // a ser un atajo, no un requisito, y una cita se puede señalar por cualquiera de sus dos
+  // identidades.
+  async resolveAppointmentId(idOrLegacyId) {
+    const value = String(idOrLegacyId || "").trim();
+    if (!value) return null;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return value;
+    const result = await this.pool.query("select id from app.appointments where legacy_id=$1", [value]);
+    return result.rows[0]?.id || null;
+  }
+
   async appointmentSummary(id) {
     const result = await this.pool.query(
       `select a.legacy_id, c.full_name client_name, s.full_name staff_name,
