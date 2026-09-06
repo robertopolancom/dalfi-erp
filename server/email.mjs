@@ -81,6 +81,13 @@ const RETRYABLE_CODES = new Set([
 // RESEND_API_KEY, gana Resend.
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
+// "Dalfi Studio Nails <info@dalfistudio.com>" -> "info@dalfistudio.com". Con un remitente sin
+// nombre ("info@dalfistudio.com" a secas) devuelve la cadena tal cual.
+function addressOf(from) {
+  const match = /<([^>]+)>/.exec(from);
+  return (match ? match[1] : from).trim();
+}
+
 async function sendViaResend(env, { subject, html, text, to, replyTo, attachments }, fetchImpl) {
   const from = String(env.RESEND_FROM || "").trim();
   if (!from) {
@@ -130,12 +137,21 @@ export async function sendBusinessEmail(
   const user = env.GMAIL_USER;
   const pass = env.GMAIL_APP_PASSWORD;
   const destino = to || user;
+  // Responder a un aviso tiene que llegar al mismo buzón que aparece como remitente. Antes el
+  // Reply-To era GMAIL_USER, así que una clienta que respondiera a su factura le escribía a
+  // dalfistudionails@gmail.com aunque viera info@dalfistudio.com -- justo la dirección que Roberto
+  // está retirando de cara al público (pedido del 2026-09-06). Se deriva del propio RESEND_FROM en
+  // vez de meter otra variable, para que no puedan quedar desalineados; Cloudflare Email Routing
+  // reenvía info@ al buzón del salón. RESEND_REPLY_TO existe por si algún día conviene separarlos.
+  const replyTo = String(env.RESEND_REPLY_TO || "").trim()
+    || (env.RESEND_FROM ? addressOf(env.RESEND_FROM) : "")
+    || user;
   if (env.RESEND_API_KEY) {
     if (!destino) {
       console.error("email: no hay destinatario (falta `to` y GMAIL_USER) -- no se envió:", subject);
       return { sent: false, reason: "no_recipient" };
     }
-    return sendViaResend(env, { subject, html, text, to: destino, replyTo: user || destino, attachments }, fetchImpl);
+    return sendViaResend(env, { subject, html, text, to: destino, replyTo, attachments }, fetchImpl);
   }
   if (!user || !pass) {
     console.warn("email: sin RESEND_API_KEY ni GMAIL_USER/GMAIL_APP_PASSWORD -- correo no enviado:", subject);
@@ -151,7 +167,7 @@ export async function sendBusinessEmail(
   }
 
   const message = {
-    from: user, to: to || user, replyTo: user, subject, text, html,
+    from: user, to: destino, replyTo, subject, text, html,
     ...(attachments?.length ? { attachments } : {}),
   };
 

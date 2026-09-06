@@ -203,7 +203,7 @@ test("las direcciones se recuerdan entre envíos, no se resuelve una vez por cor
 // Render bloquea la salida SMTP (587 y 465, los dos con Connection timeout, comprobado el
 // 2026-09-06 con reservas reales). Estas pruebas fijan que cuando hay RESEND_API_KEY el correo
 // va por HTTPS y NUNCA se abre un socket SMTP.
-const RESEND_ENV = { ...ENV, RESEND_API_KEY: "re_clave_falsa", RESEND_FROM: "Dalfi Studio <avisos@dalfistudio.com>" };
+const RESEND_ENV = { ...ENV, RESEND_API_KEY: "re_clave_falsa", RESEND_FROM: "Dalfi Studio Nails <info@dalfistudio.com>" };  // el valor real en Render
 
 function fakeFetch(calls, { ok = true, status = 200, body = "" } = {}) {
   return async (url, init) => {
@@ -272,4 +272,33 @@ test("el comprobante de depósito viaja adjunto también por Resend", async () =
   assert.equal(adj.length, 1);
   assert.equal(adj[0].filename, "comprobante-RES-1.png");
   assert.equal(adj[0].content, "BASE64DATA");
+});
+
+test("responder a un aviso llega a la misma dirección que lo envió", async () => {
+  // Antes el Reply-To era GMAIL_USER: una clienta que respondiera a su factura le escribía a una
+  // dirección distinta de la que veía como remitente, y justo la que se está retirando de cara al
+  // público. Roberto lo pidió explícito el 2026-09-06: todo sale desde info@dalfistudio.com.
+  const fetches = [];
+  await sendBusinessEmail(RESEND_ENV, { subject: "x", text: "y", html: "<p>y</p>" },
+    fakeCreateTransport([]), fakeResolve4, fakeFetch(fetches));
+  assert.equal(fetches[0].payload.reply_to, "info@dalfistudio.com", "sin el nombre, solo la dirección");
+  // El `to` sí es el buzón de Gmail y debe serlo: es donde el salón lee sus avisos internos, sin
+  // pasar por el reenvío de Cloudflare. Lo que no puede asomar es en el From ni en el Reply-To,
+  // que son lo único que ve quien recibe.
+  assert.ok(!fetches[0].payload.from.includes("gmail.com"));
+  assert.ok(!fetches[0].payload.reply_to.includes("gmail.com"));
+});
+
+test("un remitente sin nombre también funciona", async () => {
+  const fetches = [];
+  await sendBusinessEmail({ ...RESEND_ENV, RESEND_FROM: "info@dalfistudio.com" },
+    { subject: "x", text: "y", html: "<p>y</p>" }, fakeCreateTransport([]), fakeResolve4, fakeFetch(fetches));
+  assert.equal(fetches[0].payload.reply_to, "info@dalfistudio.com");
+});
+
+test("RESEND_REPLY_TO manda si se configura", async () => {
+  const fetches = [];
+  await sendBusinessEmail({ ...RESEND_ENV, RESEND_REPLY_TO: "reservas@dalfistudio.com" },
+    { subject: "x", text: "y", html: "<p>y</p>" }, fakeCreateTransport([]), fakeResolve4, fakeFetch(fetches));
+  assert.equal(fetches[0].payload.reply_to, "reservas@dalfistudio.com");
 });
