@@ -68,7 +68,7 @@ function webRequest(req) {
   return new Request(`${req.protocol}://${req.get("host")}${req.originalUrl}`, { headers });
 }
 
-export function createApp({ store, bookingStore, env = process.env, staticDir, fetchImpl = globalThis.fetch } = {}) {
+export function createApp({ store, bookingStore, chatStore, env = process.env, staticDir, fetchImpl = globalThis.fetch } = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -1944,6 +1944,93 @@ export function createApp({ store, bookingStore, env = process.env, staticDir, f
       res.status(row ? 200 : 503).json({ ok: Boolean(row), database: row ? "ready" : "missing" });
     } catch {
       res.status(503).json({ ok: false, database: "unavailable" });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Bandeja de mensajes de WhatsApp (ver neon/migrations/0026 y NeonChatStore).
+  // Sustituye a Chatwoot: el bridge empuja aquí cada mensaje y el personal lo lee y
+  // responde desde el propio ERP, junto a la ficha de la clienta.
+  // -------------------------------------------------------------------------
+
+  // El bridge empuja cada mensaje, entrante o saliente. Mismo secreto por cabecera que el
+  // resto de lo que llama el chatbot (x-chatbot-secret / env CHATBOT_SECRET) -- no lleva
+  // sesión de personal porque quien llama es una máquina, no una persona.
+  app.post("/api/chat/ingest", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const expectedSecret = env.CHATBOT_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
+      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) {
+        return res.status(401).json({ error: "Secreto de chatbot inválido." });
+      }
+      const body = req.body || {};
+      if (!body.phone) return res.status(400).json({ error: "Falta el teléfono." });
+      if (!["in", "out"].includes(body.direction)) {
+        return res.status(400).json({ error: "direction debe ser 'in' o 'out'." });
+      }
+      if (!["cliente", "bot", "staff", "sistema"].includes(body.senderType)) {
+        return res.status(400).json({ error: "senderType inválido." });
+      }
+      const result = await chatStore.ingest({
+        phone: body.phone,
+        waProfileName: body.waProfileName || null,
+        direction: body.direction,
+        senderType: body.senderType,
+        body: typeof body.body === "string" ? body.body.slice(0, 8000) : null,
+        messageType: body.messageType || "text",
+        mediaUrl: body.mediaUrl || null,
+        waMessageId: body.waMessageId || null,
+        botState: body.botState || null,
+        // null (no false) cuando no viene, para que un mensaje suelto no apague por accidente
+        // una transferencia a humano que ya estaba pedida. Ver el coalesce del upsert.
+        needsHuman: typeof body.needsHuman === "boolean" ? body.needsHuman : null,
+        handoffReason: body.handoffReason || null,
+      });
+      // 200 incluso si era duplicado: Meta reintenta el webhook si no recibe 200, y
+      // devolverle un error por algo que ya guardamos provocaría más reintentos, no menos.
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // La lista de la bandeja. Permiso de reservas: es trabajo de recepción, la misma gente
+  // que ya gestiona citas es la que responde WhatsApp.
+  app.get("/api/chat/conversations", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver la bandeja de mensajes");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const limit = Math.min(Number(req.query.limit) || 50, 200);
+      res.json({ conversations: await chatStore.conversations({ limit }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/chat/conversations/:id", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver la bandeja de mensajes");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const thread = await chatStore.thread({ conversationId: req.params.id });
+      if (!thread) return res.status(404).json({ error: "Conversación no encontrada." });
+      res.json(thread);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/chat/conversations/:id/read", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver la bandeja de mensajes");
+      if (auth.error) return relayAuthError(res, auth.error);
+      await chatStore.markRead({ conversationId: req.params.id });
+      res.status(204).end();
+    } catch (error) {
+      next(error);
     }
   });
 

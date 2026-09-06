@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { createApp } from "./app.mjs";
-import { NeonBookingStore, NeonDocumentStore } from "./store.mjs";
+import { NeonBookingStore, NeonChatStore, NeonDocumentStore } from "./store.mjs";
 
 if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL es obligatoria.");
 for (const name of ["SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_ROLE_KEY"]) {
@@ -22,6 +22,7 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const app = createApp({
   store: new NeonDocumentStore(pool),
   bookingStore: new NeonBookingStore(pool),
+  chatStore: new NeonChatStore(pool),
   staticDir: path.resolve(currentDir, "../outputs"),
 });
 const port = Number(process.env.PORT || 3000);

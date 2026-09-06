@@ -2240,3 +2240,224 @@ export class NeonBookingStore {
     return result.rows[0];
   }
 }
+
+// ---------------------------------------------------------------------------
+// Bandeja de mensajes de WhatsApp dentro del ERP (ver neon/migrations/0026).
+//
+// Sustituye a Chatwoot, que solo aportaba la pantalla: el bridge ya sabía cuándo hacía
+// falta un humano, pero el texto de los mensajes vivía únicamente allí. Aquí vive en Neon,
+// junto a app.clients y app.appointments, para que la conversación se pueda ver al lado de
+// la ficha de la clienta y de sus citas -- algo que Chatwoot no podía hacer.
+// ---------------------------------------------------------------------------
+export class NeonChatStore {
+  constructor(pool) {
+    this.pool = pool;
+  }
+
+  // El teléfono es la identidad de la conversación, así que tiene que normalizarse igual
+  // aquí y en el bridge o el mismo número abriría dos hilos. Se queda con los dígitos y,
+  // si viene sin el 1 de país (10 dígitos, formato local dominicano), se lo antepone.
+  static normalizePhone(phone) {
+    const digits = String(phone || "").replace(/\D/g, "");
+    if (!digits) return null;
+    return digits.length === 10 ? `1${digits}` : digits;
+  }
+
+  // Un mensaje entrante o saliente. Idempotente por waMessageId: Meta reintenta la entrega
+  // del webhook si no recibe 200 a tiempo, así que sin esto el mismo mensaje de la clienta
+  // entraría dos veces en el historial cada vez que el bridge tarde en responder.
+  async ingest({
+    phone,
+    waProfileName = null,
+    direction,
+    senderType,
+    body = null,
+    messageType = "text",
+    mediaUrl = null,
+    waMessageId = null,
+    senderStaffId = null,
+    botState = null,
+    needsHuman = null,
+    handoffReason = null,
+  }) {
+    const phoneNormalized = NeonChatStore.normalizePhone(phone);
+    if (!phoneNormalized) throw new Error("Falta el teléfono de la conversación.");
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+
+      // Se busca la clienta por teléfono en cada mensaje, no solo al crear: mucha gente
+      // escribe antes de existir como clienta, y cuando se le da de alta después queremos
+      // que su historial anterior quede enlazado sin tener que migrarlo a mano.
+      const clientRow = await client.query(
+        `select client_id from app.client_phones where phone_normalized = $1 limit 1`,
+        [phoneNormalized],
+      );
+      const clientId = clientRow.rows[0]?.client_id || null;
+
+      const preview = String(body || "").slice(0, 140) || null;
+      const conversation = await client.query(
+        `insert into app.chat_conversations
+           (phone_normalized, client_id, wa_profile_name, bot_state, needs_human,
+            handoff_reason, handoff_requested_at, last_message_at, last_message_preview)
+         values ($1, $2, $3, $4, coalesce($5, false), $6,
+                 case when $5 is true then now() else null end, now(), $7)
+         on conflict (phone_normalized) do update set
+           -- coalesce en cascada: lo que no venga en este mensaje no debe borrar lo que ya
+           -- se sabía. Un mensaje suelto sin nombre de perfil no puede dejar la conversación
+           -- anónima si antes sí lo teníamos.
+           client_id = coalesce(app.chat_conversations.client_id, excluded.client_id),
+           wa_profile_name = coalesce(excluded.wa_profile_name, app.chat_conversations.wa_profile_name),
+           bot_state = coalesce(excluded.bot_state, app.chat_conversations.bot_state),
+           needs_human = coalesce($5, app.chat_conversations.needs_human),
+           handoff_reason = coalesce($6, app.chat_conversations.handoff_reason),
+           handoff_requested_at = case
+             when $5 is true and app.chat_conversations.needs_human is false then now()
+             else app.chat_conversations.handoff_requested_at end,
+           last_message_at = now(),
+           last_message_preview = coalesce($7, app.chat_conversations.last_message_preview),
+           updated_at = now()
+         returning id`,
+        [phoneNormalized, clientId, waProfileName, botState, needsHuman, handoffReason, preview],
+      );
+      const conversationId = conversation.rows[0].id;
+
+      // on conflict do nothing + returning: si el wamid ya estaba, no devuelve fila y se
+      // sale sin duplicar. El upsert de arriba ya corrió, pero es idempotente también.
+      const message = await client.query(
+        `insert into app.chat_messages
+           (conversation_id, direction, sender_type, sender_staff_id, body,
+            message_type, media_url, wa_message_id, delivery_status)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         on conflict (wa_message_id) do nothing
+         returning id, created_at`,
+        [
+          conversationId,
+          direction,
+          senderType,
+          senderStaffId,
+          body,
+          messageType,
+          mediaUrl,
+          waMessageId,
+          direction === "in" ? "received" : "sent",
+        ],
+      );
+
+      await client.query("commit");
+      return {
+        conversationId,
+        messageId: message.rows[0]?.id || null,
+        duplicate: message.rows.length === 0,
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // La lista de la bandeja. Ordena por lo que espera a una persona y luego por reciente,
+  // que es exactamente el orden en que hay que atenderlas.
+  async conversations({ limit = 50 } = {}) {
+    const result = await this.pool.query(
+      `select c.id, c.phone_normalized, c.client_id, c.wa_profile_name, c.bot_state,
+              c.needs_human, c.handoff_reason, c.handoff_requested_at, c.assigned_staff_id,
+              c.last_message_at, c.last_message_preview, c.staff_last_read_at,
+              cl.full_name as client_name,
+              st.full_name as assigned_staff_name,
+              (select count(*) from app.chat_messages m
+                where m.conversation_id = c.id
+                  and m.direction = 'in'
+                  and (c.staff_last_read_at is null or m.created_at > c.staff_last_read_at)
+              ) as unread
+         from app.chat_conversations c
+         left join app.clients cl on cl.id = c.client_id
+         left join app.staff st on st.id = c.assigned_staff_id
+        order by c.needs_human desc, c.last_message_at desc nulls last
+        limit $1`,
+      [limit],
+    );
+    return result.rows.map((row) => ({
+      id: row.id,
+      phone: row.phone_normalized,
+      clientId: row.client_id,
+      // El nombre de la ficha manda sobre el del perfil de WhatsApp: el de WhatsApp lo
+      // elige la persona y puede ser un apodo o un emoji.
+      name: row.client_name || row.wa_profile_name || row.phone_normalized,
+      isClient: Boolean(row.client_id),
+      botState: row.bot_state,
+      needsHuman: row.needs_human,
+      handoffReason: row.handoff_reason,
+      handoffRequestedAt: row.handoff_requested_at,
+      assignedStaffId: row.assigned_staff_id,
+      assignedStaffName: row.assigned_staff_name,
+      lastMessageAt: row.last_message_at,
+      preview: row.last_message_preview,
+      unread: Number(row.unread) || 0,
+    }));
+  }
+
+  // El hilo. limit alto por defecto porque una conversación de WhatsApp de meses sigue
+  // siendo pequeña comparada con lo que cuesta paginar una que casi nunca lo necesita.
+  async thread({ conversationId, limit = 200 } = {}) {
+    const [conversation, messages] = await Promise.all([
+      this.pool.query(
+        `select c.id, c.phone_normalized, c.client_id, c.wa_profile_name, c.bot_state,
+                c.needs_human, c.handoff_reason, c.assigned_staff_id,
+                cl.full_name as client_name
+           from app.chat_conversations c
+           left join app.clients cl on cl.id = c.client_id
+          where c.id = $1`,
+        [conversationId],
+      ),
+      this.pool.query(
+        `select m.id, m.direction, m.sender_type, m.body, m.message_type, m.media_url,
+                m.delivery_status, m.delivery_error, m.created_at,
+                st.full_name as staff_name
+           from app.chat_messages m
+           left join app.staff st on st.id = m.sender_staff_id
+          where m.conversation_id = $1
+          order by m.created_at
+          limit $2`,
+        [conversationId, limit],
+      ),
+    ]);
+    const row = conversation.rows[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      phone: row.phone_normalized,
+      clientId: row.client_id,
+      name: row.client_name || row.wa_profile_name || row.phone_normalized,
+      isClient: Boolean(row.client_id),
+      botState: row.bot_state,
+      needsHuman: row.needs_human,
+      handoffReason: row.handoff_reason,
+      assignedStaffId: row.assigned_staff_id,
+      messages: messages.rows.map((message) => ({
+        id: message.id,
+        direction: message.direction,
+        senderType: message.sender_type,
+        staffName: message.staff_name || null,
+        body: message.body,
+        messageType: message.message_type,
+        mediaUrl: message.media_url,
+        deliveryStatus: message.delivery_status,
+        deliveryError: message.delivery_error,
+        createdAt: message.created_at,
+      })),
+    };
+  }
+
+  // Marcar leído al abrir el hilo. Se guarda una marca de tiempo en vez de un contador
+  // para que el no leído se recalcule solo si llegan mensajes nuevos mientras está abierto.
+  async markRead({ conversationId }) {
+    await this.pool.query(
+      `update app.chat_conversations set staff_last_read_at = now(), updated_at = now() where id = $1`,
+      [conversationId],
+    );
+  }
+}
