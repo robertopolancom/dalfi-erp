@@ -45,7 +45,7 @@ test("sendBusinessEmail(): sin GMAIL_USER/GMAIL_APP_PASSWORD, no manda nada y re
 test("sendBusinessEmail(): con credenciales, manda el correo desde/hacia GMAIL_USER", async () => {
   const calls = [];
   const result = await sendBusinessEmail(ENV, { subject: "Asunto", text: "Texto", html: "<p>Texto</p>" }, fakeCreateTransport(calls), fakeResolve4);
-  assert.deepEqual(result, { sent: true });
+  assert.deepEqual(result, { sent: true, port: 587 });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].from, ENV.GMAIL_USER);
   assert.equal(calls[0].to, ENV.GMAIL_USER);
@@ -117,12 +117,30 @@ test("notifyAppointmentConfirmedByClient(): deja claro que el depósito sigue ma
 test("la conexión se abre contra una IPv4 resuelta, nunca contra el hostname", async () => {
   const calls = [];
   const options = [];
-  await sendBusinessEmail(ENV, { subject: "x", text: "y", html: "<p>y</p>" }, fakeCreateTransport(calls, { options }), fakeResolve4);
+  const r = await sendBusinessEmail(ENV, { subject: "x", text: "y", html: "<p>y</p>" }, fakeCreateTransport(calls, { options }), fakeResolve4);
+  assert.deepEqual(r, { sent: true, port: 587 });
   assert.equal(options.length, 1);
   assert.equal(options[0].host, IPV4[0], "el host tiene que ser la IP ya resuelta");
-  assert.equal(options[0].port, 465);
-  assert.equal(options[0].secure, true);
   assert.ok(!options[0].service, "`service: gmail` es justo lo que devolvía la resolución al azar");
+});
+
+test("se intenta primero 587 con STARTTLS, y sólo si falla el 465", async () => {
+  // El 465 se queda colgado desde Render (Connection timeout, 2026-09-06), así que el orden
+  // importa: el primer intento tiene que ser el puerto que sí suele estar abierto.
+  const options = [];
+  const createTransport = (opts) => {
+    options.push(opts);
+    return { async sendMail() {
+      if (opts.port === 587) { const e = new Error("Connection timeout"); e.code = "ETIMEDOUT"; throw e; }
+      return { messageId: "fake" };
+    } };
+  };
+  const r = await sendBusinessEmail(ENV, { subject: "x", text: "y", html: "<p>y</p>" }, createTransport, fakeResolve4);
+  assert.deepEqual(r, { sent: true, port: 465 });
+  assert.deepEqual(options.map((o) => o.port), [587, 587, 465], "las dos IPs del 587, luego el 465");
+  assert.equal(options[0].secure, false, "587 va con STARTTLS");
+  assert.equal(options[0].requireTLS, true, "sin requireTLS podría acabar mandando en claro");
+  assert.equal(options[2].secure, true, "465 va con TLS implícito");
 });
 
 test("se conserva el servername para que TLS siga validando smtp.gmail.com", async () => {
@@ -132,46 +150,35 @@ test("se conserva el servername para que TLS siga validando smtp.gmail.com", asy
   // El certificado es de smtp.gmail.com, no de la IP: sin esto el handshake fallaría, y bajar
   // rejectUnauthorized para taparlo sería cambiar un correo perdido por una conexión sin validar.
   assert.equal(options[0].tls.servername, "smtp.gmail.com");
+  assert.ok(!("rejectUnauthorized" in options[0].tls), "nunca se desactiva la validación del certificado");
 });
 
 test("si una dirección no responde, se prueba la siguiente", async () => {
   const options = [];
   const createTransport = (opts) => {
     options.push(opts);
-    return {
-      async sendMail() {
-        if (opts.host === IPV4[0]) {
-          const error = new Error("connect ETIMEDOUT");
-          error.code = "ETIMEDOUT";
-          throw error;
-        }
-        return { messageId: "fake" };
-      },
-    };
+    return { async sendMail() {
+      if (opts.host === IPV4[0]) { const e = new Error("connect ETIMEDOUT"); e.code = "ETIMEDOUT"; throw e; }
+      return { messageId: "fake" };
+    } };
   };
   const result = await sendBusinessEmail(ENV, { subject: "x", text: "y", html: "<p>y</p>" }, createTransport, fakeResolve4);
-  assert.deepEqual(result, { sent: true });
+  assert.equal(result.sent, true);
   assert.deepEqual(options.map((o) => o.host), IPV4, "probó las dos, en orden");
 });
 
-test("una contraseña rechazada NO se reintenta contra las demás direcciones", async () => {
-  // Cuatro autenticaciones fallidas seguidas es lo que hace que Google bloquee la cuenta: si el
-  // problema es la credencial, cambiar de IP no lo arregla.
+test("una contraseña rechazada NO se reintenta contra otro puerto ni otra dirección", async () => {
+  // Varias autenticaciones fallidas seguidas es lo que hace que Google bloquee la cuenta: si el
+  // problema es la credencial, cambiar de puerto o de IP no lo arregla.
   const options = [];
   const createTransport = (opts) => {
     options.push(opts);
-    return {
-      async sendMail() {
-        const error = new Error("Invalid login");
-        error.code = "EAUTH";
-        throw error;
-      },
-    };
+    return { async sendMail() { const e = new Error("Invalid login"); e.code = "EAUTH"; throw e; } };
   };
   const result = await sendBusinessEmail(ENV, { subject: "x", text: "y", html: "<p>y</p>" }, createTransport, fakeResolve4);
   assert.equal(result.sent, false);
   assert.equal(result.reason, "send_failed");
-  assert.equal(options.length, 1, "una sola dirección, un solo intento de autenticación");
+  assert.equal(options.length, 1, "un solo intento de autenticación");
 });
 
 test("si el DNS no devuelve ninguna IPv4, se dice por qué en vez de fallar en silencio", async () => {

@@ -23,7 +23,22 @@ import { promises as dnsPromises } from "node:dns";
 // smtp.gmail.com y no para la IP, por eso va `tls.servername`: el handshake sigue validando el
 // nombre real, no se debilita nada.
 const SMTP_HOST = "smtp.gmail.com";
-const SMTP_PORT = 465;
+
+// --- Y por qué se prueban dos puertos ----------------------------------------------------
+// Arreglado lo de IPv6, el primer envío real (2026-09-06 17:25) siguió fallando, pero ya con la
+// IPv4 correcta y con otro error: "fallo enviando por 173.194.202.109 ... Connection timeout".
+// El 465 no sale de Render: no lo rechazan, se queda colgado hasta el timeout.
+//
+// Recorrer direcciones no ayudaba, porque dns.resolve4("smtp.gmail.com") devuelve UNA sola IPv4 y
+// el bucle daba una vuelta. Lo que hay que variar es el puerto. Gmail acepta 587 con STARTTLS y
+// 465 con TLS implícito; se prueba 587 primero, que es el que suelen dejar abierto los
+// proveedores que filtran salida SMTP.
+const SMTP_ENDPOINTS = [
+  // requireTLS: sin esto, si el servidor no ofreciera STARTTLS nodemailer seguiría en claro, y
+  // ahí viajarían la contraseña de aplicación y el correo entero.
+  { port: 587, secure: false, requireTLS: true },
+  { port: 465, secure: true },
+];
 // Las IPs de Gmail rotan; se recuerdan cinco minutos (el mismo TTL que usa nodemailer para su
 // propia caché) y se vuelven a pedir. Al volumen de este salón -- unos pocos correos al día --
 // resolver de nuevo no cuesta nada.
@@ -87,27 +102,33 @@ export async function sendBusinessEmail(
   };
 
   let lastError = null;
-  for (const address of addresses) {
-    const transporter = createTransportImpl({
-      host: address,
-      port: SMTP_PORT,
-      secure: true,
-      tls: { servername: SMTP_HOST },
-      auth: { user, pass },
-      // Por debajo del defecto de nodemailer (2 minutos): estos envíos salen DESPUÉS de haberle
-      // respondido a la clienta, y la instancia de Render es del plan gratis -- colgarse dos
-      // minutos por dirección es tiempo en el que el contenedor puede irse a dormir con el
-      // correo a medias.
-      connectionTimeout: 15_000,
-      greetingTimeout: 15_000,
-    });
-    try {
-      await transporter.sendMail(message);
-      return { sent: true };
-    } catch (error) {
-      lastError = error;
-      console.error(`email: fallo enviando por ${address}:`, subject, error.message);
-      if (!RETRYABLE_CODES.has(error.code)) break;
+  for (const endpoint of SMTP_ENDPOINTS) {
+    for (const address of addresses) {
+      const transporter = createTransportImpl({
+        host: address,
+        ...endpoint,
+        tls: { servername: SMTP_HOST },
+        auth: { user, pass },
+        // Por debajo del defecto de nodemailer (2 minutos): estos envíos salen DESPUÉS de haberle
+        // respondido a la clienta, y la instancia de Render es del plan gratis -- colgarse dos
+        // minutos por intento es tiempo en el que el contenedor puede irse a dormir con el correo
+        // a medias. Con dos puertos, el peor caso completo queda por debajo del minuto.
+        connectionTimeout: 15_000,
+        greetingTimeout: 15_000,
+      });
+      try {
+        await transporter.sendMail(message);
+        // Rastro también cuando SÍ sale. Durante días el único síntoma fue el silencio, y "no hay
+        // error en el log" no es lo mismo que "el correo llegó". Además deja escrito qué puerto
+        // funciona desde este proveedor, que es el dato que costó encontrar.
+        console.log(`email: enviado por ${address}:${endpoint.port} --`, subject);
+        return { sent: true, port: endpoint.port };
+      } catch (error) {
+        lastError = error;
+        console.error(`email: fallo enviando por ${address}:${endpoint.port}:`, subject, error.message);
+        // Un fallo que no es de red (contraseña, destinatario) da igual por dónde se intente.
+        if (!RETRYABLE_CODES.has(error.code)) return { sent: false, reason: "send_failed", error: error.message };
+      }
     }
   }
   return { sent: false, reason: "send_failed", error: lastError?.message };
