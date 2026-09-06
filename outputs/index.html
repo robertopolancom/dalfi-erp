@@ -3737,7 +3737,16 @@
     <script src="supabase-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
-    <script src="lib/booking-engine.js?v=20260806-booking-engine"></script>
+    <!-- type="module" es obligatorio: este archivo usa `export` (lo importan 10 pruebas de
+         tests/ como ESM) y además publica globalThis.DalfiBookingEngine para el navegador. Como
+         script clásico el parseo revienta entero con "SyntaxError: Unexpected token 'export'",
+         la asignación al global nunca corre, y las cinco funciones del ERP que dependen de él
+         están detrás de un `typeof DalfiBookingEngine !== "undefined"`: fallaban en silencio.
+         Se notaba en que "Nueva reserva" no encontraba NUNCA una manicurista libre (decía "No
+         hay manicuristas disponibles a esa hora" aunque el servidor sí tuviera cupo) y en que la
+         Matriz Consolidada Diaria no pintaba. Los módulos se difieren, pero init() en app.js es
+         async y arranca con `await loadDatabase()`, así que el motor ya está listo. -->
+    <script type="module" src="lib/booking-engine.js?v=20260906-booking-engine-module"></script>
     <script src="app.js?v=20260804-void-invoice-clear-messages"></script>
   </body>
 </html>
