@@ -130,6 +130,14 @@
     });
   }
 
+  function applyEmailLinks(content) {
+    var email = content.contact && content.contact.email;
+    if (!email) return;
+    document.querySelectorAll(".js-cms-email-link").forEach(function (el) {
+      el.href = "mailto:" + email;
+    });
+  }
+
   function applyInstagramLinks(content) {
     var handle = content.contact && content.contact.instagramHandle;
     if (!handle) return;
@@ -267,6 +275,7 @@
     applyImages(content);
     applyGalleryPhotos(content);
     applyWhatsappLinks(content);
+    applyEmailLinks(content);
     applyInstagramLinks(content);
     applyLists(content);
     applyPromo(content);
