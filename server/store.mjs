@@ -1991,7 +1991,14 @@ export class NeonBookingStore {
          left join app.appointment_services x on x.appointment_id=a.id
          cross join app.business_settings bs
         where a.id=$1
-        group by a.legacy_id, c.full_name, s.full_name, bs.timezone`,
+        -- a.id (la clave primaria) va primero para que Postgres reconozca la dependencia
+        -- funcional del resto de columnas de a. a.starts_at además va explícito: se usa dos veces
+        -- en el select vía to_char y, agrupando solo por a.legacy_id (que NO es la clave), la
+        -- consulta reventaba SIEMPRE con 'column "a.starts_at" must appear in the GROUP BY
+        -- clause'. Se llevaba por delante los tres avisos que dependen de este resumen
+        -- -- comprobante de depósito subido, cita cancelada y confirmación de la clienta --
+        -- antes incluso de intentar mandar el correo.
+        group by a.id, a.legacy_id, a.starts_at, c.full_name, s.full_name, bs.timezone`,
       [id],
     );
     return result.rows[0] || null;
