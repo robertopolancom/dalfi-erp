@@ -2250,6 +2250,25 @@ export class NeonBookingStore {
 // junto a app.clients y app.appointments, para que la conversación se pueda ver al lado de
 // la ficha de la clienta y de sus citas -- algo que Chatwoot no podía hacer.
 // ---------------------------------------------------------------------------
+// Quién está atendiendo una conversación ahora mismo. Tres estados, y la diferencia entre los
+// dos primeros es la que importa para trabajar:
+//
+//   "espera"  el bot se apartó y pidió una persona, pero NADIE ha contestado todavía. Es lo
+//             único urgente de la bandeja.
+//   "persona" alguien ya contestó. El bot está pausado y NO va a responder hasta que se le
+//             devuelva el turno a mano. Sin este estado a la vista, quien mira la lista no
+//             puede saber si el cliente se quedará esperando.
+//   "bot"     el bot está atendiendo con normalidad.
+//
+// Se deriva de lo que ya hay en la tabla en vez de guardar una columna nueva: assigned_staff_id
+// se rellena al responder y se vacía al devolver la conversación al bot, así que ya es
+// exactamente "hay una persona al mando".
+export function estadoDeConversacion({ needs_human: necesitaHumano, assigned_staff_id: asignada }) {
+  if (asignada) return "persona";
+  if (necesitaHumano) return "espera";
+  return "bot";
+}
+
 export class NeonChatStore {
   constructor(pool) {
     this.pool = pool;
@@ -2376,7 +2395,11 @@ export class NeonChatStore {
          from app.chat_conversations c
          left join app.clients cl on cl.id = c.client_id
          left join app.staff st on st.id = c.assigned_staff_id
-        order by c.needs_human desc, c.last_message_at desc nulls last
+        -- Fuera del bot = arriba, este esperando o ya en manos de alguien. Antes solo
+        -- miraba needs_human, asi que una conversacion que alguien tomo por iniciativa
+        -- propia (sin que el bot la transfiriera) se perdia entre las automaticas.
+        order by (c.needs_human or c.assigned_staff_id is not null) desc,
+                 c.last_message_at desc nulls last
         limit $1`,
       [limit],
     );
@@ -2397,6 +2420,7 @@ export class NeonChatStore {
       lastMessageAt: row.last_message_at,
       preview: row.last_message_preview,
       unread: Number(row.unread) || 0,
+      estado: estadoDeConversacion(row),
     }));
   }
 
@@ -2407,9 +2431,11 @@ export class NeonChatStore {
       this.pool.query(
         `select c.id, c.phone_normalized, c.client_id, c.wa_profile_name, c.bot_state,
                 c.needs_human, c.handoff_reason, c.assigned_staff_id,
-                cl.full_name as client_name
+                cl.full_name as client_name,
+                st.full_name as assigned_staff_name
            from app.chat_conversations c
            left join app.clients cl on cl.id = c.client_id
+           left join app.staff st on st.id = c.assigned_staff_id
           where c.id = $1`,
         [conversationId],
       ),
@@ -2437,6 +2463,8 @@ export class NeonChatStore {
       needsHuman: row.needs_human,
       handoffReason: row.handoff_reason,
       assignedStaffId: row.assigned_staff_id,
+      assignedStaffName: row.assigned_staff_name,
+      estado: estadoDeConversacion(row),
       messages: messages.rows.map((message) => ({
         id: message.id,
         direction: message.direction,

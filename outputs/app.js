@@ -11665,6 +11665,19 @@ function bandejaCuando(iso) {
 // Los controles fijos de la bandeja (buscador, cerrar, responder, devolver al bot) viven en
 // el HTML estatico, asi que se enganchan una sola vez. Las filas de la tabla no: esas se
 // vuelven a pintar en cada carga y se enganchan alli abajo.
+// Como se ve cada estado. El texto dice lo que PASA, no como se llama internamente: a quien
+// mira la bandeja no le sirve "TRANSFERENCIA_SOLICITADA", le sirve saber si el cliente se va a
+// quedar esperando porque el bot esta callado.
+const BANDEJA_ESTADOS = {
+  espera: { texto: "Espera a una persona", clase: "estado-espera" },
+  persona: { texto: "Con una persona", clase: "estado-persona" },
+  bot: { texto: "Con el bot", clase: "estado-bot" },
+};
+
+function bandejaEstado(conversacion) {
+  return BANDEJA_ESTADOS[conversacion?.estado] || BANDEJA_ESTADOS.bot;
+}
+
 let bandejaEnganchada = false;
 
 function engancharBandeja() {
@@ -11708,14 +11721,16 @@ async function renderBandeja() {
   // cuerpo del mensaje los controla quien escribe, no nosotros.
   target.innerHTML = visibles
     .map((c) => `
-      <tr class="${c.needsHuman ? "row-alert" : ""}" data-conversation="${escapeHtml(c.id)}">
+      <tr class="${c.estado === "espera" ? "row-alert" : ""}" data-conversation="${escapeHtml(c.id)}">
         <td>
           <strong>${escapeHtml(c.name)}</strong>
           ${c.isClient ? "" : '<small class="muted"> · sin ficha</small>'}
           ${c.unread ? `<span class="badge">${c.unread}</span>` : ""}
         </td>
         <td>${escapeHtml(c.preview || "")}</td>
-        <td>${c.needsHuman ? "<strong>Espera a una persona</strong>" : escapeHtml(c.botState || "Atendiendo el bot")}</td>
+        <td><span class="estado-pin ${bandejaEstado(c).clase}">${escapeHtml(bandejaEstado(c).texto)}</span>${
+          c.estado === "persona" && c.assignedStaffName ? `<small class="muted"> ${escapeHtml(c.assignedStaffName)}</small>` : ""
+        }</td>
         <td>${escapeHtml(bandejaCuando(c.lastMessageAt))}</td>
       </tr>`)
     .join("");
@@ -11734,7 +11749,20 @@ async function abrirConversacion(conversationId) {
     const response = await fetch(functionEndpoint(`chat/conversations/${conversationId}`), { headers: bookingAuthHeaders() });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "No se pudo abrir la conversación.");
     const hilo = await response.json();
-    byId("bandeja-thread-title").textContent = `${hilo.name}${hilo.isClient ? "" : " · sin ficha"}`;
+    const estado = bandejaEstado(hilo);
+    byId("bandeja-thread-title").innerHTML =
+      `${escapeHtml(hilo.name)}${hilo.isClient ? "" : ' <small class="muted">· sin ficha</small>'}` +
+      ` <span class="estado-pin ${estado.clase}">${escapeHtml(estado.texto)}</span>` +
+      (hilo.estado === "persona" && hilo.assignedStaffName ? ` <small class="muted">${escapeHtml(hilo.assignedStaffName)}</small>` : "");
+    // El boton solo tiene sentido si el bot esta apartado. Deshabilitarlo cuando ya esta
+    // atendiendo evita la pregunta "¿le di y no paso nada?".
+    const alBot = byId("bandeja-al-bot");
+    if (alBot) {
+      alBot.disabled = hilo.estado === "bot";
+      alBot.title = hilo.estado === "bot"
+        ? "El bot ya esta atendiendo esta conversacion"
+        : "El bot vuelve a atender esta conversacion";
+    }
     contenedor.innerHTML = hilo.messages
       .map((m) => {
         const quien = m.senderType === "cliente" ? hilo.name
