@@ -2034,6 +2034,109 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     }
   });
 
+  // Responder desde la bandeja. Es el reemplazo de contestar desde Chatwoot, y por eso el
+  // orden de aquí importa: primero se INTENTA enviar y solo después se guarda, con el
+  // resultado real. Guardar antes y enviar después dejaría el hilo diciendo que se contestó
+  // cuando WhatsApp lo rechazó -- alguien creería que ya atendió a un cliente que sigue
+  // esperando.
+  app.post("/api/chat/conversations/:id/reply", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "responder mensajes");
+      if (auth.error) return relayAuthError(res, auth.error);
+
+      const texto = cleanText(req.body?.body, 4000);
+      if (!texto) return res.status(400).json({ error: "Escribe un mensaje." });
+
+      const phone = await chatStore.phoneOf(req.params.id);
+      if (!phone) return res.status(404).json({ error: "Conversación no encontrada." });
+
+      const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+      if (!bridgeSecret) return res.status(503).json({ error: "El puente de WhatsApp no está configurado." });
+      const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
+
+      const staffId = await chatStore.staffIdByEmail(auth.identity?.email);
+
+      let resultado = null;
+      let fallo = null;
+      try {
+        const response = await fetchImpl(`${bridgeBase}/webhook/erp-chat-reply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+          body: JSON.stringify({ recipientPhone: phone, text: texto, staffId: staffId || auth.identity?.email || "erp" }),
+        });
+        resultado = await response.json().catch(() => ({}));
+        if (!response.ok) fallo = `El puente respondió ${response.status}.`;
+      } catch (error) {
+        fallo = error.message;
+      }
+
+      const entregado = !fallo && resultado?.status === "OK";
+      // El mensaje se guarda SIEMPRE, salga o no. Un intento fallido que desaparece del hilo
+      // es peor que uno visible marcado como fallido: sin rastro, nadie sabe que hay un
+      // cliente sin respuesta.
+      await chatStore.recordStaffReply({
+        conversationId: req.params.id,
+        staffId,
+        body: texto,
+        waMessageId: resultado?.waMessageId || null,
+        deliveryStatus: entregado ? "sent" : "failed",
+        deliveryError: entregado ? null : (fallo || resultado?.mensaje || resultado?.error || resultado?.status || "No se pudo entregar."),
+      });
+
+      if (entregado) {
+        return res.json({ ok: true, viaPlantilla: Boolean(resultado?.viaPlantilla) });
+      }
+      // 200 y no 5xx: el mensaje SÍ quedó registrado en el hilo. Lo que falló es la entrega, y
+      // eso es justamente lo que hay que contarle a quien escribió.
+      return res.status(200).json({
+        ok: false,
+        error: resultado?.mensaje || fallo || "No se pudo entregar el mensaje por WhatsApp.",
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Devolver la conversación al bot. Sin este botón la bandeja sería una trampa: responder
+  // pausa el bot, así que una conversación atendida a mano se quedaría pausada para siempre.
+  app.post("/api/chat/conversations/:id/return-to-bot", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "devolver la conversación al bot");
+      if (auth.error) return relayAuthError(res, auth.error);
+
+      const phone = await chatStore.phoneOf(req.params.id);
+      if (!phone) return res.status(404).json({ error: "Conversación no encontrada." });
+
+      const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+      const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
+      let avisoDelPuente = null;
+      if (bridgeSecret) {
+        try {
+          const response = await fetchImpl(`${bridgeBase}/webhook/erp-chat-control`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+            body: JSON.stringify({ recipientPhone: phone, command: "RETURN_TO_BOT", staffId: auth.identity?.email || "erp" }),
+          });
+          if (!response.ok) avisoDelPuente = `El puente respondió ${response.status}.`;
+        } catch (error) {
+          avisoDelPuente = error.message;
+        }
+      } else {
+        avisoDelPuente = "El puente de WhatsApp no está configurado.";
+      }
+
+      // La bandeja se actualiza aunque el puente falle: para el equipo la conversación deja de
+      // estar en espera igualmente. El aviso se devuelve para que se sepa que el bot puede
+      // seguir pausado del otro lado.
+      await chatStore.returnToBot({ conversationId: req.params.id });
+      res.json({ ok: !avisoDelPuente, aviso: avisoDelPuente });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/me", authenticate, (req, res) => {
     const { userId, email, role, isActive, permissions } = req.erpIdentity;
     res.json({ userId, email, role, isActive, permissions });

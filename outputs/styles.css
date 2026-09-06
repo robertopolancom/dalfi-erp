@@ -1420,3 +1420,12 @@ th {
   background: rgba(127, 127, 127, .12); white-space: pre-wrap; word-break: break-word;
 }
 .chat-msg.chat-out .chat-body { background: rgba(60, 150, 110, .16); }
+
+/* Bandeja: caja de respuesta */
+.bandeja-responder{display:flex;flex-direction:column;gap:.5rem;margin-top:.75rem;border-top:1px solid var(--border,#ddd);padding-top:.75rem}
+.bandeja-responder textarea{width:100%;resize:vertical;font:inherit;padding:.5rem;border-radius:6px;border:1px solid var(--border,#ccc)}
+.bandeja-acciones{display:flex;gap:.5rem;flex-wrap:wrap}
+.bandeja-aviso{margin:0;font-size:.85rem;min-height:1.1em;color:var(--muted,#666)}
+/* Rojo y no gris: un mensaje que NO salio tiene que distinguirse de un "Enviado" de un
+   vistazo, porque del otro lado hay alguien esperando respuesta. */
+.bandeja-aviso-alerta{color:#b00020;font-weight:600}

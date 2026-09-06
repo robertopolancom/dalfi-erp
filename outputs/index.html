@@ -644,6 +644,17 @@
               <button class="ghost" id="bandeja-close" type="button">Cerrar</button>
             </div>
             <div id="bandeja-thread"></div>
+            <!-- Responder desde aqui sustituye a contestar desde Chatwoot. El aviso de al
+                 lado no es decorativo: WhatsApp solo deja escribir texto libre dentro de las
+                 24h siguientes al ultimo mensaje del cliente, y si no sale hay que decirlo. -->
+            <form class="bandeja-responder" id="bandeja-form">
+              <textarea id="bandeja-texto" rows="2" maxlength="4000" placeholder="Escribe tu respuesta..." required></textarea>
+              <div class="bandeja-acciones">
+                <button class="primary" id="bandeja-enviar" type="submit">Enviar</button>
+                <button class="ghost" id="bandeja-al-bot" type="button" title="El bot vuelve a atender esta conversacion">Devolver al bot</button>
+              </div>
+              <p class="bandeja-aviso" id="bandeja-envio"></p>
+            </form>
           </section>
         </section>
         <section id="reservations" class="view">

@@ -2454,6 +2454,81 @@ export class NeonChatStore {
 
   // Marcar leído al abrir el hilo. Se guarda una marca de tiempo en vez de un contador
   // para que el no leído se recalcule solo si llegan mensajes nuevos mientras está abierto.
+  // La sesión del ERP se identifica por correo (Supabase), pero el historial referencia
+  // app.staff. Se traduce aquí para poder decir QUIÉN contestó; si no hay ficha con ese
+  // correo devuelve null y el mensaje queda como "del equipo" sin nombre, que es preferible
+  // a romper la clave foránea o, peor, a atribuírselo a otra persona.
+  async staffIdByEmail(email) {
+    if (!email) return null;
+    const r = await this.pool.query(
+      "select id from app.staff where lower(email) = lower($1) and status = 'active' limit 1",
+      [String(email)],
+    );
+    return r.rows[0]?.id || null;
+  }
+
+  // El teléfono de una conversación. Se necesita suelto porque el bridge identifica a la
+  // persona por su número, no por el id de la conversación en el ERP.
+  async phoneOf(conversationId) {
+    const r = await this.pool.query(
+      "select phone_normalized from app.chat_conversations where id = $1",
+      [conversationId],
+    );
+    return r.rows[0]?.phone_normalized || null;
+  }
+
+  // Deja constancia de lo que escribió una persona del equipo. Se llama DESPUÉS de intentar
+  // el envío, con el resultado real: una respuesta que no salió tiene que verse en el hilo
+  // como no salida, no desaparecer. Por eso deliveryStatus y deliveryError son obligatorios
+  // de pensar aquí y no un detalle.
+  async recordStaffReply({ conversationId, staffId = null, body, waMessageId = null, deliveryStatus = "pending", deliveryError = null }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const inserted = await client.query(
+        `insert into app.chat_messages
+           (conversation_id, direction, sender_type, sender_staff_id, body, message_type,
+            wa_message_id, delivery_status, delivery_error)
+         values ($1, 'out', 'staff', $2, $3, 'text', $4, $5, $6)
+         returning id, created_at`,
+        [conversationId, staffId, body, waMessageId, deliveryStatus, deliveryError],
+      );
+      // Se marca quién la tomó, pero NO se apaga needs_human: que alguien haya contestado no
+      // significa que el asunto esté cerrado. Para eso está devolver la conversación al bot,
+      // que es un acto explícito.
+      await client.query(
+        `update app.chat_conversations
+            set assigned_staff_id = coalesce($2, assigned_staff_id),
+                last_message_at = now(),
+                last_message_preview = $3,
+                staff_last_read_at = now(),
+                updated_at = now()
+          where id = $1`,
+        [conversationId, staffId, String(body || "").slice(0, 140) || null],
+      );
+      await client.query("commit");
+      return inserted.rows[0];
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Se devolvió la conversación al bot: deja de esperar a una persona y se suelta la
+  // asignación. Es el único sitio donde needs_human vuelve a false, y a propósito: tiene que
+  // ser una decisión de alguien, nunca un efecto secundario de haber contestado.
+  async returnToBot({ conversationId }) {
+    await this.pool.query(
+      `update app.chat_conversations
+          set needs_human = false, handoff_reason = null, handoff_requested_at = null,
+              assigned_staff_id = null, updated_at = now()
+        where id = $1`,
+      [conversationId],
+    );
+  }
+
   async markRead({ conversationId }) {
     await this.pool.query(
       `update app.chat_conversations set staff_last_read_at = now(), updated_at = now() where id = $1`,

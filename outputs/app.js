@@ -11662,9 +11662,27 @@ function bandejaCuando(iso) {
   return new Date(iso).toLocaleDateString("es-DO", { day: "2-digit", month: "short" });
 }
 
+// Los controles fijos de la bandeja (buscador, cerrar, responder, devolver al bot) viven en
+// el HTML estatico, asi que se enganchan una sola vez. Las filas de la tabla no: esas se
+// vuelven a pintar en cada carga y se enganchan alli abajo.
+let bandejaEnganchada = false;
+
+function engancharBandeja() {
+  if (bandejaEnganchada) return;
+  bandejaEnganchada = true;
+  byId("bandeja-search")?.addEventListener("input", () => renderBandeja());
+  byId("bandeja-form")?.addEventListener("submit", enviarRespuestaBandeja);
+  byId("bandeja-al-bot")?.addEventListener("click", devolverConversacionAlBot);
+  byId("bandeja-close")?.addEventListener("click", () => {
+    byId("bandeja-thread-panel")?.classList.add("hidden");
+    bandejaConversacionAbierta = null;
+  });
+}
+
 async function renderBandeja() {
   const target = byId("bandeja-list");
   if (!target) return;
+  engancharBandeja();
   try {
     const response = await fetch(functionEndpoint("chat/conversations"), { headers: bookingAuthHeaders() });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "No se pudo cargar la bandeja.");
@@ -11706,6 +11724,8 @@ async function renderBandeja() {
   });
 }
 
+let bandejaConversacionAbierta = null;
+
 async function abrirConversacion(conversationId) {
   const panel = byId("bandeja-thread-panel");
   const contenedor = byId("bandeja-thread");
@@ -11730,6 +11750,15 @@ async function abrirConversacion(conversationId) {
           </div>`;
       })
       .join("");
+    if (bandejaConversacionAbierta !== conversationId) {
+      // Cambiar de hilo limpia la caja y el aviso: arrastrar un borrador o un "Enviado" de
+      // otra conversacion es la forma mas facil de mandarle a alguien lo que no era.
+      const caja = byId("bandeja-texto");
+      if (caja) caja.value = "";
+      const aviso = byId("bandeja-envio");
+      if (aviso) { aviso.textContent = ""; aviso.className = "bandeja-aviso"; }
+    }
+    bandejaConversacionAbierta = conversationId;
     panel.classList.remove("hidden");
     // Marcar leído solo DESPUÉS de pintarlo: si la carga falla, el no leído se queda, que
     // es lo correcto -- nadie lo ha leído todavía.
@@ -11739,6 +11768,69 @@ async function abrirConversacion(conversationId) {
   } catch (error) {
     console.error("[bandeja] no se pudo abrir la conversación:", error);
     byId("bandeja-message").textContent = error.message;
+  }
+}
+
+// Responder y devolver al bot. Los dos avisan en pantalla del resultado REAL en vez de
+// asumir que salio: el servidor devuelve ok:false con 200 cuando el mensaje quedo guardado
+// en el hilo pero WhatsApp no lo entrego (tipicamente por la ventana de 24 horas), y ese
+// caso hay que mostrarlo o alguien creera que ya atendio a un cliente que sigue esperando.
+async function enviarRespuestaBandeja(event) {
+  event.preventDefault();
+  const texto = byId("bandeja-texto")?.value?.trim();
+  const aviso = byId("bandeja-envio");
+  const boton = byId("bandeja-enviar");
+  if (!texto || !bandejaConversacionAbierta) return;
+  if (aviso) { aviso.textContent = "Enviando..."; aviso.className = "bandeja-aviso"; }
+  if (boton) boton.disabled = true;
+  try {
+    const response = await fetch(functionEndpoint(`chat/conversations/${bandejaConversacionAbierta}/reply`), {
+      method: "POST",
+      headers: { ...bookingAuthHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ body: texto }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "No se pudo enviar.");
+    if (data.ok) {
+      byId("bandeja-texto").value = "";
+      if (aviso) {
+        aviso.textContent = data.viaPlantilla
+          ? "Enviado, pero como pasaron mas de 24 horas salio la plantilla de seguimiento y no tu texto."
+          : "Enviado.";
+        aviso.className = data.viaPlantilla ? "bandeja-aviso bandeja-aviso-alerta" : "bandeja-aviso";
+      }
+    } else if (aviso) {
+      // Se queda el texto en la caja a proposito: el mensaje no salio y quien lo escribio
+      // querra reintentarlo o copiarlo, no volver a redactarlo.
+      aviso.textContent = data.error || "No se pudo entregar por WhatsApp.";
+      aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+    }
+    await abrirConversacion(bandejaConversacionAbierta);
+  } catch (error) {
+    console.error("[bandeja] no se pudo enviar la respuesta:", error);
+    if (aviso) { aviso.textContent = error.message; aviso.className = "bandeja-aviso bandeja-aviso-alerta"; }
+  } finally {
+    if (boton) boton.disabled = false;
+  }
+}
+
+async function devolverConversacionAlBot() {
+  const aviso = byId("bandeja-envio");
+  if (!bandejaConversacionAbierta) return;
+  try {
+    const response = await fetch(functionEndpoint(`chat/conversations/${bandejaConversacionAbierta}/return-to-bot`), {
+      method: "POST", headers: bookingAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "No se pudo devolver al bot.");
+    if (aviso) {
+      aviso.textContent = data.aviso ? `Marcada como atendida, pero ${data.aviso}` : "El bot vuelve a atender esta conversacion.";
+      aviso.className = data.aviso ? "bandeja-aviso bandeja-aviso-alerta" : "bandeja-aviso";
+    }
+    await renderBandeja();
+  } catch (error) {
+    console.error("[bandeja] no se pudo devolver al bot:", error);
+    if (aviso) { aviso.textContent = error.message; aviso.className = "bandeja-aviso bandeja-aviso-alerta"; }
   }
 }
 
