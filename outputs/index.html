@@ -27,6 +27,7 @@
           <button class="nav-item" data-view="receivables" type="button">Cuentas por cobrar</button>
           <button class="nav-item" data-view="pending-transfers" type="button">Transferencias pendientes</button>
           <button class="nav-item" data-view="reservations" type="button">Citas</button>
+          <button class="nav-item" data-view="bandeja" type="button">Mensajes</button>
           <button class="nav-item" data-view="payroll" type="button">Nómina</button>
           <button class="nav-item" data-view="cash" type="button">Cierres de caja</button>
           <button class="nav-item" data-view="card-reconciliation" type="button">Conciliación tarjetas</button>
@@ -613,6 +614,38 @@
           </section>
         </section>
 
+        <section id="bandeja" class="view">
+          <section class="panel">
+            <div class="panel-head">
+              <h3>Mensajes de WhatsApp</h3>
+              <input class="inline-search" id="bandeja-search" placeholder="Buscar por nombre o teléfono" />
+            </div>
+            <!-- Las conversaciones que esperan a una persona salen primero: es el orden en
+                 que hay que atenderlas, no el cronológico. Lo decide el servidor
+                 (NeonChatStore.conversations), no el navegador. -->
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Contacto</th>
+                    <th>Último mensaje</th>
+                    <th>Estado</th>
+                    <th>Cuándo</th>
+                  </tr>
+                </thead>
+                <tbody id="bandeja-list"></tbody>
+              </table>
+            </div>
+            <div class="message" id="bandeja-message" role="status"></div>
+          </section>
+          <section class="panel hidden" id="bandeja-thread-panel">
+            <div class="panel-head">
+              <h3 id="bandeja-thread-title">Conversación</h3>
+              <button class="ghost" id="bandeja-close" type="button">Cerrar</button>
+            </div>
+            <div id="bandeja-thread"></div>
+          </section>
+        </section>
         <section id="reservations" class="view">
           <div class="booking-tabs">
             <button class="booking-tab-btn active" id="booking-tab-agenda" type="button">Agenda y Reservas</button>

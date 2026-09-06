@@ -1397,3 +1397,26 @@ th {
     justify-content: flex-start;
   }
 }
+
+/* Bandeja de mensajes de WhatsApp (ver renderBandeja en app.js).
+   Deliberadamente sobria: es una herramienta de recepción que se mira muchas veces al día,
+   no una pantalla de lucimiento. Lo único que grita es lo que espera a una persona. */
+#bandeja-list tr[data-conversation] { cursor: pointer; }
+#bandeja-list tr.row-alert td { background: rgba(200, 60, 60, .07); }
+#bandeja-list .badge {
+  display: inline-block; margin-left: .4rem; padding: 0 .4rem;
+  border-radius: 999px; background: #c83c3c; color: #fff;
+  font-size: .72rem; font-weight: 600;
+}
+#bandeja-thread { max-height: 55vh; overflow-y: auto; padding: .25rem; }
+.chat-msg { margin: .5rem 0; max-width: 78%; }
+/* Entrante a la izquierda, saliente a la derecha: la misma convención que WhatsApp, para
+   que el personal no tenga que aprender una lectura distinta de la que ya conoce. */
+.chat-msg.chat-in { margin-right: auto; }
+.chat-msg.chat-out { margin-left: auto; text-align: right; }
+.chat-meta { font-size: .72rem; opacity: .6; margin-bottom: .15rem; }
+.chat-body {
+  display: inline-block; padding: .45rem .7rem; border-radius: .6rem;
+  background: rgba(127, 127, 127, .12); white-space: pre-wrap; word-break: break-word;
+}
+.chat-msg.chat-out .chat-body { background: rgba(60, 150, 110, .16); }

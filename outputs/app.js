@@ -11642,6 +11642,106 @@ function attachSearchableLookups() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Bandeja de mensajes de WhatsApp. Sustituye a Chatwoot dentro del propio ERP, para que la
+// conversación se lea junto a la ficha y las citas de la persona -- algo que Chatwoot, al
+// vivir aparte y con su propia base, nunca pudo hacer.
+// Datos: /api/chat/* (ver server/app.mjs y NeonChatStore en server/store.mjs).
+// ---------------------------------------------------------------------------
+let bandejaConversations = [];
+
+// Cuándo pasó algo, en lenguaje de recepción. "hace 3 min" dice más que una hora exacta
+// cuando lo que importa es si alguien está esperando respuesta ahora mismo.
+function bandejaCuando(iso) {
+  if (!iso) return "";
+  const minutos = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (minutos < 1) return "ahora";
+  if (minutos < 60) return `hace ${minutos} min`;
+  const horas = Math.round(minutos / 60);
+  if (horas < 24) return `hace ${horas} h`;
+  return new Date(iso).toLocaleDateString("es-DO", { day: "2-digit", month: "short" });
+}
+
+async function renderBandeja() {
+  const target = byId("bandeja-list");
+  if (!target) return;
+  try {
+    const response = await fetch(functionEndpoint("chat/conversations"), { headers: bookingAuthHeaders() });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "No se pudo cargar la bandeja.");
+    bandejaConversations = (await response.json()).conversations || [];
+    byId("bandeja-message").textContent = "";
+  } catch (error) {
+    // El error real a consola: este bloque toca red Y DOM, así que un fallo aquí puede no
+    // ser del backend. Mismo criterio que loadCatalog() en ReservApp, por la misma razón.
+    console.error("[bandeja] no se pudo cargar:", error);
+    byId("bandeja-message").textContent = error.message;
+    return;
+  }
+
+  const filtro = String(byId("bandeja-search")?.value || "").trim().toLowerCase();
+  const visibles = filtro
+    ? bandejaConversations.filter((c) => `${c.name} ${c.phone}`.toLowerCase().includes(filtro))
+    : bandejaConversations;
+  if (!visibles.length) {
+    return renderEmpty(target, 4, filtro ? "Sin coincidencias." : "Todavía no hay mensajes.");
+  }
+
+  // escapeHtml en todo lo que escribió la persona: el nombre de perfil de WhatsApp y el
+  // cuerpo del mensaje los controla quien escribe, no nosotros.
+  target.innerHTML = visibles
+    .map((c) => `
+      <tr class="${c.needsHuman ? "row-alert" : ""}" data-conversation="${escapeHtml(c.id)}">
+        <td>
+          <strong>${escapeHtml(c.name)}</strong>
+          ${c.isClient ? "" : '<small class="muted"> · sin ficha</small>'}
+          ${c.unread ? `<span class="badge">${c.unread}</span>` : ""}
+        </td>
+        <td>${escapeHtml(c.preview || "")}</td>
+        <td>${c.needsHuman ? "<strong>Espera a una persona</strong>" : escapeHtml(c.botState || "Atendiendo el bot")}</td>
+        <td>${escapeHtml(bandejaCuando(c.lastMessageAt))}</td>
+      </tr>`)
+    .join("");
+  target.querySelectorAll("tr[data-conversation]").forEach((fila) => {
+    fila.addEventListener("click", () => abrirConversacion(fila.dataset.conversation));
+  });
+}
+
+async function abrirConversacion(conversationId) {
+  const panel = byId("bandeja-thread-panel");
+  const contenedor = byId("bandeja-thread");
+  if (!panel || !contenedor) return;
+  try {
+    const response = await fetch(functionEndpoint(`chat/conversations/${conversationId}`), { headers: bookingAuthHeaders() });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "No se pudo abrir la conversación.");
+    const hilo = await response.json();
+    byId("bandeja-thread-title").textContent = `${hilo.name}${hilo.isClient ? "" : " · sin ficha"}`;
+    contenedor.innerHTML = hilo.messages
+      .map((m) => {
+        const quien = m.senderType === "cliente" ? hilo.name
+          : m.senderType === "staff" ? (m.staffName || "Personal")
+          : m.senderType === "bot" ? "Bot" : "Sistema";
+        // Los tipos que todavía no se renderizan (foto, audio) se muestran como etiqueta en
+        // vez de omitirse: saber que llegó algo importa más que poder verlo aún.
+        const cuerpo = m.body ? escapeHtml(m.body) : `<em>[${escapeHtml(m.messageType)}]</em>`;
+        return `
+          <div class="chat-msg chat-${escapeHtml(m.direction)}">
+            <div class="chat-meta">${escapeHtml(quien)} · ${escapeHtml(bandejaCuando(m.createdAt))}</div>
+            <div class="chat-body">${cuerpo}</div>
+          </div>`;
+      })
+      .join("");
+    panel.classList.remove("hidden");
+    // Marcar leído solo DESPUÉS de pintarlo: si la carga falla, el no leído se queda, que
+    // es lo correcto -- nadie lo ha leído todavía.
+    fetch(functionEndpoint(`chat/conversations/${conversationId}/read`), { method: "POST", headers: bookingAuthHeaders() })
+      .then(() => renderBandeja())
+      .catch((error) => console.error("[bandeja] no se pudo marcar leído:", error));
+  } catch (error) {
+    console.error("[bandeja] no se pudo abrir la conversación:", error);
+    byId("bandeja-message").textContent = error.message;
+  }
+}
+
 // Extraida de wireNavigation() para poder cambiar de vista programaticamente
 // (por ejemplo, el boton "Agregar egreso" del cierre) sin duplicar la logica
 // de activar/desactivar nav-item y view. Cambiar de vista NUNCA destruye el
@@ -11664,6 +11764,7 @@ function switchToView(viewId) {
   if (viewId === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
   if (viewId === "retail-sales") safeRender("ventas directas", renderRetailSales);
   if (viewId === "site-content") safeRender("página web", renderSiteContentForm);
+  if (viewId === "bandeja") safeRender("mensajes", renderBandeja);
   return true;
 }
 
