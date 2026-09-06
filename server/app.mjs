@@ -849,9 +849,22 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     });
 
     // Cancelar una cita desde la agenda del equipo -- antes solo se podía desde el ERP legado.
-    // Cualquier cuenta de personal (no cliente) puede hacerlo, igual que ya puede ver /agenda.
-    app.post("/api/reservapp/agenda/appointments/:id/cancel", requireReservapp, async (req, res, next) => {
-      if (isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo el personal puede cancelar citas desde aquí." });
+    //
+    // El guard es requireBookingStaff (personal de ReservApp O identidad del ERP con
+    // canManageReservations), el MISMO que /status justo abajo. Antes era requireReservapp, que
+    // solo acepta la cookie de sesión de ReservApp, y el ERP manda un Bearer de Supabase: cancelar
+    // desde el ERP respondía 401 y syncReservationToPostgres() se lo tragaba con un console.warn
+    // (ver outputs/app.js). La cita quedaba "Cancelada" en el documento del ERP y seguía viva en
+    // Postgres, apartando el horario para siempre. La misma función del ERP llama a /cancel y a
+    // /status con las mismas cabeceras, así que pedirles autoridades distintas nunca tuvo sentido
+    // -- y cancelar no es más delicado que marcar Atendida.
+    //
+    // requireBookingStaff ya deja fuera a las cuentas de cliente: su rol no está en la lista de
+    // personal y la identidad del ERP tampoco les resuelve. Volver a comprobarlo aquí sería peor
+    // que redundante -- bloquearía a un administrador del ERP que además tenga abierta su propia
+    // sesión de clienta en ReservApp, que es el caso de Roberto.
+    app.post("/api/reservapp/agenda/appointments/:id/cancel", async (req, res, next) => {
+      if (!(await requireBookingStaff(req, res))) return;
       const reason = cleanText(req.body?.reason, 200);
       try {
         const cancelled = await bookingStore.cancelAppointment({ id: req.params.id, reason });
