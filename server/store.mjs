@@ -2585,20 +2585,55 @@ export class NeonChatStore {
     }
   }
 
-  // Borra el contenido de los adjuntos con más de 3 días, dejando la fila y el registro de que
-  // llegaron. Es lo mismo que hace purgeExpiredDepositReceipts con las fotos de comprobante y
-  // por los mismos dos motivos: no acumular espacio en Neon, y que un enlace público reenviado
-  // deje de servir solo pasado un tiempo corto.
+  // Borra el CONTENIDO de los adjuntos viejos, dejando la fila y el registro de que llegaron.
+  // Mismo criterio que purgeExpiredDepositReceipts con las fotos de comprobante, y por los
+  // mismos dos motivos: no acumular espacio en Neon, y que un enlace público reenviado deje de
+  // servir solo pasado poco tiempo.
   //
-  // Se mide por la fecha del mensaje y no por la de la cita, porque un adjunto de WhatsApp no
-  // tiene por qué venir de una cita: mucha gente manda una foto antes de reservar nada.
+  // La regla la fijó Roberto: si el adjunto tiene una cita detrás, se borra 3 días después de
+  // que esa cita se atienda; si no la tiene, 3 días después de que llegó.
+  //
+  // "La cita detrás" es la primera cita del cliente que empieza DESPUÉS del mensaje: la gente
+  // manda el comprobante o la foto de referencia antes de la cita, no después. Y hay un tercer
+  // caso que importa tanto como los otros dos y no estaba en el enunciado: si esa cita todavía
+  // no se ha atendido, NO se borra nada. Purgar por antigüedad del mensaje se llevaría por
+  // delante el comprobante de una cita futura, que es justo el momento en que hace falta.
   async purgeExpiredChatMedia({ days = 3 } = {}) {
     const result = await this.pool.query(
-      `update app.chat_messages
+      `with referencia as (
+         select m.id,
+                (select a.status
+                   from app.appointments a
+                  where a.client_id = c.client_id
+                    and a.starts_at >= m.created_at
+                  order by a.starts_at
+                  limit 1) as estado_cita,
+                (select a.updated_at
+                   from app.appointments a
+                  where a.client_id = c.client_id
+                    and a.starts_at >= m.created_at
+                  order by a.starts_at
+                  limit 1) as cerrada_en,
+                m.created_at
+           from app.chat_messages m
+           join app.chat_conversations c on c.id = m.conversation_id
+          where m.media_data is not null
+       )
+       update app.chat_messages m
           set media_data = null
-        where media_data is not null
-          and created_at <= now() - ($1 || ' days')::interval
-        returning id`,
+         from referencia r
+        where r.id = m.id
+          and case
+                -- Sin cita posterior: cuenta la edad del mensaje.
+                when r.estado_cita is null
+                  then r.created_at <= now() - ($1 || ' days')::interval
+                -- Con cita ya cerrada: cuentan los días desde que se cerró.
+                when r.estado_cita in ('completed','cancelled')
+                  then r.cerrada_en <= now() - ($1 || ' days')::interval
+                -- Con cita pendiente: no se toca. El adjunto hace falta hasta que se atienda.
+                else false
+              end
+        returning m.id`,
       [String(days)],
     );
     return { purgedCount: result.rowCount };
