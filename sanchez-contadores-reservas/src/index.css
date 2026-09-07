@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  /* Objetivos táctiles cómodos: la app se usa sobre todo desde el móvil. */
+  button, [role='button'] {
+    touch-action: manipulation;
+  }
+}
+
+@layer components {
+  .campo {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base
+           shadow-sm outline-none transition
+           focus:border-marca-500 focus:ring-2 focus:ring-marca-100
+           disabled:bg-slate-100 disabled:text-slate-500;
+  }
+  .etiqueta {
+    @apply mb-1.5 block text-sm font-medium text-slate-700;
+  }
+  .boton {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5
+           text-base font-semibold transition
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .boton-primario {
+    @apply boton bg-marca-600 text-white hover:bg-marca-700 active:bg-marca-700;
+  }
+  .boton-secundario {
+    @apply boton border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+  }
+  .boton-peligro {
+    @apply boton border border-rose-300 bg-white text-rose-700 hover:bg-rose-50;
+  }
+  .tarjeta {
+    @apply rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5;
+  }
+}

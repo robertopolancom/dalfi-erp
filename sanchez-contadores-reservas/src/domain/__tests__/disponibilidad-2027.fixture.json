@@ -1,0 +1,1095 @@
+{
+  "generado_por": "psql -f supabase/tests/exportar_fixture.sql",
+  "ventana": {
+    "inicio": "2027-02-01",
+    "fin": "2027-07-31"
+  },
+  "dias": [
+    {
+      "fecha": "2027-02-01",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-02",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-03",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-04",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-05",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-06",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-07",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-08",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-09",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-10",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-11",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-12",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-13",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-14",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-15",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-16",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-17",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-18",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-19",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-20",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-21",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-22",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-23",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-24",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-25",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-26",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-27",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-02-28",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-01",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-02",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-03",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-04",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-05",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-06",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-07",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-08",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-09",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-10",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-11",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-12",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-13",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-14",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-15",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-16",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-17",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-18",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-19",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-20",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-21",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-22",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-23",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-24",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-25",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-26",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-27",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-28",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-29",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-30",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-03-31",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-01",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-02",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-03",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-04",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-05",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-06",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-07",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-08",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-09",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-10",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-11",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-12",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-13",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-14",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-15",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-16",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-17",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-18",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-19",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-20",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-21",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-22",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-23",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-24",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-25",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-26",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-27",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-28",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-29",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-04-30",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-01",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-02",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-03",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-04",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-05",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-06",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-07",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-08",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-09",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-10",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-11",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-12",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-13",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-14",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-15",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-16",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-17",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-18",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-19",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-20",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-21",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-22",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-23",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-24",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-25",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-26",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-27",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-28",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-29",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-30",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-05-31",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-01",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-02",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-03",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-04",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-05",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-06",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-07",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-08",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-09",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-10",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-11",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-12",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-13",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-14",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-15",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-16",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-17",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-18",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-19",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-20",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-21",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-22",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-23",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-24",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-25",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-26",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-27",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-28",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-29",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-06-30",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-01",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-02",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-03",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-04",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-05",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-06",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-07",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-08",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-09",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-10",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-11",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-12",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-13",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-14",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-15",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-16",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-17",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-18",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-19",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-20",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-21",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-22",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-23",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-24",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-25",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-26",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-27",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-28",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-29",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-30",
+      "laborable": true,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    },
+    {
+      "fecha": "2027-07-31",
+      "laborable": false,
+      "ocupados": 0,
+      "max_simultaneos": 3
+    }
+  ]
+}
