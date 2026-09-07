@@ -44,18 +44,13 @@ export default function PaginaConsulta() {
     setExito(null)
     setReserva(null)
     setModo('ninguno')
-    try {
-      const r = await consultarReserva(codigo.trim())
-      if (!r.ok) setError(r.mensaje)
-      else {
-        setReserva(r.reserva)
-        setPendiente(r.solicitud_pendiente !== null)
-      }
-    } catch {
-      setError('No pudimos consultar la reserva. Intenta de nuevo.')
-    } finally {
-      setBuscando(false)
-    }
+
+    const r = await consultarReserva(codigo.trim())
+    setBuscando(false)
+
+    if (!r.ok) { setError(r.mensaje); return }
+    setReserva(r.datos.reserva)
+    setPendiente(r.datos.solicitud_pendiente !== null)
   }
 
   async function enviarSolicitud() {

@@ -1,0 +1,72 @@
+# Blueprint de Render para el servicio de reservas de Sánchez Contadores.
+#
+# Un solo servicio web sirve la API y el frontend compilado, así que no hay
+# CORS que configurar ni un segundo despliegue que mantener sincronizado.
+#
+# La base de datos es Neon y vive fuera de este blueprint: crea el proyecto en
+# Neon y pega su cadena de conexión en DATABASE_URL (sync: false = se
+# introduce a mano en el dashboard, nunca en Git).
+services:
+  - type: web
+    name: sanchez-contadores-reservas
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: NODE_ENV
+        value: production
+
+      # Cadena de conexión de Neon. Es el secreto más sensible del sistema:
+      # con ella se lee y escribe todo. Usa el endpoint con pooling.
+      - key: DATABASE_URL
+        sync: false
+
+      # Correo saliente por la API HTTP de Resend. NO se usa SMTP: Render
+      # bloquea la salida por los puertos 465 y 587, como ya se comprobó en el
+      # ERP de Dalfi.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: CORREO_REMITENTE
+        sync: false
+      - key: CORREO_CONTADORA
+        sync: false
+
+      # Base de los enlaces que van dentro de los correos.
+      - key: APP_URL
+        sync: false
+
+      # Protege POST /api/cron/recordatorios, que no está detrás de sesión.
+      - key: CRON_SECRET
+        generateValue: true
+
+      - key: PG_POOL_MAX
+        value: 5
+
+  # Recordatorio diario: 3 días laborables antes del inicio de cada reserva.
+  # Se ejecuta a las 13:00 UTC = 9:00 en República Dominicana (UTC-4, sin
+  # horario de verano).
+  - type: cron
+    name: sanchez-contadores-recordatorios
+    runtime: node
+    plan: free
+    schedule: "0 13 * * *"
+    buildCommand: npm ci
+    startCommand: >-
+      node -e "fetch(process.env.APP_URL + '/api/cron/recordatorios', {
+        method: 'POST', headers: { 'x-cron-secret': process.env.CRON_SECRET }
+      }).then(r => r.json()).then(d => { console.log(d); if (!d.ok) process.exit(1) })"
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: APP_URL
+        sync: false
+      # Debe tener EXACTAMENTE el mismo valor que el CRON_SECRET del servicio
+      # web. Cópialo desde allí; `generateValue` genera uno distinto por
+      # servicio y los dos no coincidirían.
+      - key: CRON_SECRET
+        sync: false

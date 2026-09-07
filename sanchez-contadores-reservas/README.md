@@ -21,10 +21,11 @@ calendario que aplica reglas de negocio y un panel para la contadora.
 3. [Instalación](#instalación)
 4. [Variables de entorno](#variables-de-entorno)
 5. [Base de datos y migraciones](#base-de-datos-y-migraciones)
-6. [Pruebas](#pruebas)
-7. [Despliegue](#despliegue)
-8. [Guía de uso para la contadora](#guía-de-uso-para-la-contadora)
-9. [Fuera de alcance](#fuera-de-alcance)
+6. [La API](#la-api)
+7. [Pruebas](#pruebas)
+8. [Despliegue](#despliegue)
+9. [Guía de uso para la contadora](#guía-de-uso-para-la-contadora)
+10. [Fuera de alcance](#fuera-de-alcance)
 
 ---
 
@@ -33,19 +34,25 @@ calendario que aplica reglas de negocio y un panel para la contadora.
 | Capa | Tecnología |
 |---|---|
 | Frontend | React 19 + TypeScript estricto + Vite + Tailwind CSS |
-| Hospedaje | Cloudflare Pages |
-| Base de datos | Supabase (PostgreSQL) |
-| Autenticación | Supabase Auth, solo para la contadora |
-| Lógica de servidor | Funciones SQL/PL-pgSQL + Edge Functions (Deno) |
-| Correo | Resend, detrás de una interfaz `CanalNotificacion` |
+| Servidor | Express 5 sobre Node 22, en TypeScript compilado |
+| Base de datos | Neon (PostgreSQL), vía `pg.Pool` y `DATABASE_URL` |
+| Hospedaje | Render: un servicio web + un cron job |
+| Autenticación | Propia: `scrypt` para la contraseña, tokens de sesión en cookie `HttpOnly` |
+| Correo | Resend por API HTTP, detrás de una interfaz `CanalNotificacion` |
 | Excel | SheetJS (`xlsx`), generado en el navegador |
+
+**Un solo servicio sirve la API y el frontend compilado.** El `dist/` de Vite lo
+entrega el mismo Express que responde `/api`, así que el navegador siempre habla
+con un único origen: no hay CORS que configurar, ni una URL de API en variables
+de entorno del frontend, ni dos despliegues que mantener sincronizados.
 
 ### Dónde vive cada regla
 
 La fuente de verdad es **PostgreSQL**. Las reglas de disponibilidad, cupo
 simultáneo, ventana de trabajo y bloqueos viven en funciones SQL
-(`supabase/migrations/0003` y `0004`) y son lo único que decide si una reserva
-existe.
+(`neon/migrations/0003` y `0004`) y son lo único que decide si una reserva
+existe. El servidor Express valida la entrada y traduce respuestas; no reimplementa
+ninguna regla.
 
 El módulo `src/domain/` es un **espejo en cliente** cuyo único propósito es
 pintar el calendario y dar respuesta inmediata. No duplica el conocimiento de
@@ -54,37 +61,51 @@ resuelto qué días son laborables. Si el usuario tarda y el hueco se llena, el
 servidor rechaza la reserva y la interfaz recarga la disponibilidad.
 
 Las pruebas del espejo corren contra un *fixture* generado por la vista real
-(`supabase/tests/exportar_fixture.sql`), así que cliente y servidor no pueden
+(`neon/tests/exportar_fixture.sql`), así que cliente y servidor no pueden
 divergir en silencio.
 
-### Superficie pública
+### Autorización
 
-El rol `anon` **no toca ninguna tabla**. Solo puede:
+Neon no tiene roles por usuario final, así que **no hay Row Level Security**: la
+base solo acepta la conexión del servicio, y `DATABASE_URL` nunca sale del
+servidor. Los controles están donde sí pueden estar:
 
-- leer tres vistas agregadas (`centros_publicos`, `disponibilidad_publica`,
-  `configuracion_publica`), que nunca revelan qué centro ocupa qué día ni los
-  datos de contacto de otros centros;
-- ejecutar `consultar_reserva(codigo)`;
-- llamar a dos Edge Functions (`crear-reserva`, `solicitar-cambio`), que validan
-  la entrada con zod, aplican *rate limiting* y delegan en las funciones SQL.
+| Control | Dónde |
+|---|---|
+| Autenticación de la contadora | `server/auth.ts` — `scrypt`, comparación en tiempo constante |
+| Sesiones | Cookie `HttpOnly` + `SameSite=Lax`; en la base solo se guarda el SHA-256 del token |
+| Qué puede pedir el público | Las rutas de `server/rutas-publicas.ts` y tres vistas agregadas |
+| Validación de entrada | `zod` en `server/validacion.ts`, antes de tocar la base |
+| Abuso del formulario público | `consumir_rate_limit()` por IP y por tipo de operación |
 
-Toda lectura y escritura administrativa exige sesión autenticada; las políticas
-de RLS admiten sin cambios un segundo administrador de respaldo.
+Las vistas públicas (`centros_publicos`, `disponibilidad_publica`,
+`configuracion_publica`) devuelven conteos agregados: nunca revelan qué centro
+ocupa qué día ni los datos de contacto de otros centros.
 
 ```
 src/
   domain/       lógica pura y probada (fechas, calendario)  ← sin dependencias
-  lib/          cliente de Supabase, tipos, llamadas, exportación a Excel
+  lib/          cliente HTTP, tipos, llamadas, exportación a Excel
   components/   Calendario, SelectorCentro, avisos
   features/
     publico/    reservar · éxito · consulta por código
     admin/      login · calendario · reservas · solicitudes · bloqueos ·
                 centros · ajustes
-supabase/
-  migrations/   esquema, feriados, motor de reglas, vistas y RLS  (0001–0006)
-  functions/    Edge Functions + capa de notificaciones
-  tests/        pruebas SQL, concurrencia y exportador del fixture
+server/
+  index.ts      arranque, pool, apagado limpio
+  app.ts        Express, cabeceras, cron, servido de la SPA
+  db.ts         pool de Neon, helpers de consulta, rate limit
+  auth.ts       scrypt, sesiones
+  validacion.ts esquemas zod
+  rutas-*.ts    rutas públicas y de administración
+  notificaciones/  CanalNotificacion, Resend, plantillas, marcador de WhatsApp
+neon/
+  migrations/   esquema, feriados, motor de reglas y vistas  (0001–0006)
+  tests/        pruebas SQL, concurrencia, API completa y exportador del fixture
   seed/         plantilla para cargar la lista inicial de centros
+  migrar.sh     aplica las migraciones sobre DATABASE_URL
+scripts/
+  crear-admin.ts  alta o cambio de contraseña de un administrador
 ```
 
 ---
@@ -108,11 +129,11 @@ supabase/
 Solo el estado `cancelada` libera el cupo anual de un centro. Una reserva
 `entregada` significa que el trabajo del año ya se hizo, así que tampoco
 habilita una segunda reserva en el mismo año. Está implementado como índice
-único parcial en `supabase/migrations/0001_esquema_base.sql`.
+único parcial en `neon/migrations/0001_esquema_base.sql`.
 
 ### Feriados y Ley 139-97
 
-`supabase/migrations/0002_feriados_seed.sql` precarga los feriados nacionales de
+`neon/migrations/0002_feriados_seed.sql` precarga los feriados nacionales de
 **2026 y 2027** y documenta en comentarios qué se traslada y qué no, citando los
 artículos de la Ley No. 139-97 (G.O. 9957, 25 de junio de 1997):
 
@@ -139,13 +160,21 @@ siempre la tabla, nunca constantes en el código.
 
 ## Instalación
 
-Requisitos: Node 20 o superior y una cuenta de Supabase.
+Requisitos: Node 22 o superior, y un PostgreSQL (Neon en producción, uno local
+para desarrollar).
 
 ```bash
 npm install
-cp .env.example .env.local   # y complétalo
-npm run dev                  # http://localhost:5173
+cp .env.example .env          # y complétalo
+npm run db:migrar             # aplica las migraciones sobre DATABASE_URL
+npm run admin:crear -- contadora@dominio.do "Nombre" "contraseña-larga"
+
+npm run dev:server            # API en :3000
+npm run dev                   # frontend en :5173, con proxy de /api a :3000
 ```
+
+En desarrollo hacen falta las dos: Vite sirve el frontend con recarga en
+caliente y reenvía `/api` al servidor. En producción es un solo proceso.
 
 ### Nota sobre la dependencia `xlsx`
 
@@ -166,29 +195,20 @@ el tarball en un registro interno antes de cambiar la referencia.
 
 Ningún secreto va en el código ni en Git. `.env.example` está sin valores.
 
-### Frontend (Cloudflare Pages)
-
 | Variable | Para qué |
 |---|---|
-| `VITE_SUPABASE_URL` | URL del proyecto de Supabase |
-| `VITE_SUPABASE_ANON_KEY` | Clave `anon`. Es pública por diseño: quien protege los datos es RLS |
-| `VITE_APP_URL` | URL pública del sitio |
-
-La clave `service_role` **nunca** debe aparecer en el frontend.
-
-### Edge Functions (`supabase secrets set`)
-
-| Variable | Para qué |
-|---|---|
+| `DATABASE_URL` | Cadena de Neon. **El secreto más sensible**: con ella se lee y escribe todo |
+| `PG_POOL_MAX` | Conexiones máximas del pool. 5 por defecto |
 | `RESEND_API_KEY` | Clave de API de Resend |
 | `CORREO_REMITENTE` | `Sánchez Contadores <reservas@tu-dominio.do>`, con el dominio verificado en Resend |
 | `CORREO_CONTADORA` | Destino de las copias internas |
 | `APP_URL` | Base de los enlaces de los correos |
-| `CRON_SECRET` | Secreto compartido con el cron de recordatorios |
-| `ORIGENES_PERMITIDOS` | Lista separada por comas de orígenes CORS. Por defecto `*` |
+| `CRON_SECRET` | Protege `POST /api/cron/recordatorios` |
+| `PORT` | Puerto de escucha. Render lo inyecta |
+| `DIR_ESTATICO` | Ruta del `dist/`. Solo para casos raros; por defecto `<raíz>/dist` |
 
-`SUPABASE_URL`, `SUPABASE_ANON_KEY` y `SUPABASE_SERVICE_ROLE_KEY` las inyecta
-Supabase automáticamente en las Edge Functions.
+**El frontend no necesita ninguna variable.** Se sirve desde el mismo origen que
+la API y usa rutas relativas, así que no hay nada que inyectar en el bundle.
 
 ---
 
@@ -199,77 +219,98 @@ una base limpia.
 
 | Archivo | Contenido |
 |---|---|
-| `0001_esquema_base.sql` | Tablas, tipos, restricciones e índices |
+| `0001_esquema_base.sql` | Tablas, tipos, restricciones e índices; administradores y sesiones |
 | `0002_feriados_seed.sql` | Feriados 2026 y 2027 con la documentación de la Ley 139-97 |
 | `0003_motor_dias_laborables.sql` | Días laborables, fecha fin, ventana, cupo, código de reserva |
 | `0004_reglas_reservas.sql` | Validación, creación atómica, solicitudes y resolución |
-| `0005_vistas_publicas_y_rls.sql` | Vistas públicas, consulta por código, RLS y permisos |
+| `0005_vistas_publicas.sql` | Vistas agregadas y consulta por código |
 | `0006_rate_limit_y_recordatorios.sql` | Rate limiting y selección de recordatorios |
 
-Con el CLI de Supabase:
-
 ```bash
-supabase link --project-ref <ref>
-supabase db push
-```
-
-O directamente:
-
-```bash
-for f in supabase/migrations/*.sql; do psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f "$f"; done
+DATABASE_URL="postgresql://..." npm run db:migrar
 ```
 
 Después:
 
-1. Crea la cuenta de la contadora en **Authentication → Users** (email +
-   contraseña). Para el administrador de respaldo basta con crear una segunda
-   cuenta: las políticas de RLS ya la cubren.
-2. Carga los centros desde el panel o adapta
-   `supabase/seed/centros.ejemplo.sql`.
+1. Crea la cuenta de la contadora:
+   ```bash
+   npm run admin:crear -- contadora@dominio.do "Nombre" "contraseña-larga"
+   ```
+   Para el administrador de respaldo basta con volver a ejecutarlo con otro
+   correo. El mismo comando cambia la contraseña de una cuenta existente.
+2. Carga los centros desde el panel o adapta `neon/seed/centros.ejemplo.sql`.
 3. Revisa **Ajustes**: año activo, ventana y máximo simultáneo.
 
-### Edge Functions
+Para probar migraciones sin tocar producción, crea una **rama de Neon** y apunta
+`DATABASE_URL` a ella: es una copia instantánea que se descarta después.
 
-```bash
-supabase functions deploy crear-reserva
-supabase functions deploy solicitar-cambio
-supabase functions deploy resolver-solicitud
-supabase functions deploy enviar-recordatorios
-```
+### Un apunte sobre fechas
 
-`crear-reserva` y `solicitar-cambio` son públicas; `resolver-solicitud` exige el
-JWT de la contadora; `enviar-recordatorios` exige la cabecera `x-cron-secret`.
+`server/db.ts` registra un parser para el tipo `date` de Postgres (OID 1082) que
+devuelve la cadena `YYYY-MM-DD` tal cual. Sin él, `pg` entrega un `Date` de
+JavaScript y `JSON.stringify` lo convierte en un instante UTC, lo que desalinea
+el calendario entero. Todo el dominio trata las fechas como días de calendario,
+nunca como instantes.
 
-### Recordatorios
+---
 
-Programa una llamada diaria (pg_cron, Cron Trigger de Cloudflare o cualquier
-programador):
+## La API
 
-```
-POST https://<proyecto>.supabase.co/functions/v1/enviar-recordatorios
-x-cron-secret: <CRON_SECRET>
-```
+Todo cuelga de `/api`. Las respuestas de error tienen siempre la forma
+`{ ok: false, codigo_error, mensaje }`, con el mensaje ya redactado para
+mostrárselo a la persona.
 
-Envía el aviso a las reservas que empiezan dentro de exactamente 3 días
-laborables y que aún no lo recibieron, según `notificaciones_log`. Es seguro
-llamarla más de una vez al día: no duplica envíos.
+### Público (sin sesión)
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| `GET` | `/api/publico/centros` | Lista para el desplegable. Sin datos de contacto |
+| `GET` | `/api/publico/disponibilidad` | Un registro por día de la temporada, con cupo agregado |
+| `GET` | `/api/publico/configuracion` | Año activo, ventana y máximo simultáneo |
+| `POST` | `/api/publico/reservas` | Crea la reserva. Limitado a 8 intentos por IP cada 10 min |
+| `GET` | `/api/publico/reservas/:codigo` | Consulta por código. 30 intentos por IP cada 10 min |
+| `POST` | `/api/publico/solicitudes` | Cambio o cancelación. 10 intentos por IP cada 10 min |
+
+### Panel (cookie de sesión)
+
+`POST /api/admin/sesion` para entrar, `DELETE` para salir, `GET /api/admin/yo`
+para saber si hay sesión. Después: `reservas`, `solicitudes`, `centros`,
+`bloqueos`, `feriados` y `configuracion`, con sus verbos habituales.
+
+### Cron
+
+`POST /api/cron/recordatorios` con la cabecera `x-cron-secret`. Envía el aviso a
+las reservas que empiezan dentro de exactamente 3 días laborables y que aún no lo
+recibieron, según `notificaciones_log`; de paso purga sesiones caducadas y
+contadores de rate limit. Es seguro llamarlo más de una vez al día: no duplica
+envíos.
 
 ---
 
 ## Pruebas
 
 ```bash
-npm test        # 40 pruebas unitarias (Vitest)
-npm run build   # typecheck estricto + build de producción
+npm test         # 40 pruebas unitarias (Vitest)
+npm run build    # typecheck estricto de los tres proyectos + build
 ```
 
-Pruebas de las reglas de negocio contra un PostgreSQL real:
+Reglas de negocio contra un PostgreSQL real:
 
 ```bash
-PGURL="postgresql://postgres@127.0.0.1:5433/scr" RECREAR=1 STUB=1 npm run db:test
+PGURL="postgresql://postgres@127.0.0.1:5433/scr" RECREAR=1 npm run db:test
 ```
 
-Cubren, entre otros casos límite:
+La API completa contra un servidor y una base reales:
+
+```bash
+DATABASE_URL="postgresql://postgres@127.0.0.1:5433/scr_api" ./neon/tests/api.test.sh
+```
+
+Levanta el servidor compilado, recorre el flujo entero (reservar, consultar,
+solicitar, entrar al panel, resolver, bloquear, cambiar estado, cron, salir) y lo
+apaga. **Usa una base de pruebas: borra reservas, centros y bloqueos al empezar.**
+
+Entre las tres suites se cubren, además de cada regla:
 
 - una reserva que termina en el último día hábil de la ventana (el 31 de julio
   de 2027 cae sábado, así que el último inicio válido con 5 días de duración es
@@ -280,38 +321,39 @@ Cubren, entre otros casos límite:
 - un bloqueo que parte un rango y lo estira sin cambiar su número de días
   laborables;
 - concurrencia real: dos sesiones simultáneas peleando por el último cupo, con
-  exactamente una ganadora y sin sobreventa.
-
-`STUB=1` crea los roles y el esquema `auth` que Supabase ya trae de fábrica.
-`RECREAR=1` borra y recrea la base: **nunca lo uses contra producción**.
+  exactamente una ganadora y sin sobreventa;
+- que el panel responde 401 sin sesión y vuelve a hacerlo tras salir;
+- que un correo inexistente y una contraseña incorrecta dan el **mismo** mensaje,
+  para no delatar qué cuentas existen;
+- que la lista pública de centros no filtra correos ni teléfonos.
 
 ---
 
 ## Despliegue
 
-### Cloudflare Pages
+`render.yaml` es un blueprint con dos servicios: el web y el cron diario.
 
-| Ajuste | Valor |
-|---|---|
-| Build command | `npm run build` |
-| Build output directory | `dist` |
-| Node version | 20 o superior |
+1. **Neon.** Crea el proyecto y copia la cadena del endpoint *con pooling*.
+   Aplica las migraciones y crea la cuenta de la contadora.
+2. **Render.** Conecta el repositorio; el blueprint define build (`npm ci && npm
+   run build`), arranque (`npm start`) y `healthCheckPath: /health`.
+3. **Secretos.** Las variables marcadas `sync: false` se introducen a mano en el
+   dashboard: `DATABASE_URL`, `RESEND_API_KEY`, `CORREO_REMITENTE`,
+   `CORREO_CONTADORA` y `APP_URL`.
+4. **El `CRON_SECRET` debe ser idéntico en los dos servicios.** El blueprint lo
+   genera en el web; cópialo al cron a mano. Si no coinciden, los recordatorios
+   fallan con 401 y no se envía nada.
+5. **Resend.** Verifica el dominio del remitente antes de esperar correos.
 
-Define `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` y `VITE_APP_URL` en las
-variables de entorno del proyecto, para *Production* y *Preview*.
-
-`public/_redirects` ya envía cualquier ruta a `index.html` para que React Router
-funcione al recargar una URL profunda, y `public/_headers` añade las cabeceras
-de seguridad y el cacheo de los *assets*.
-
-Una vez publicado, añade el dominio a `ORIGENES_PERMITIDOS` en los secretos de
-Supabase para cerrar CORS.
+El cron corre a las 13:00 UTC, que son las 9:00 en República Dominicana (UTC-4,
+sin horario de verano).
 
 ---
 
 ## Guía de uso para la contadora
 
-**Entrar.** `https://<tu-dominio>/admin/entrar` con tu correo y contraseña.
+**Entrar.** `https://<tu-dominio>/admin/entrar` con tu correo y contraseña. La
+sesión dura 14 días.
 
 **Calendario.** Vista mensual de la temporada. Cada día muestra los centros que
 lo ocupan y un contador `usados/máximo`; se pone en rojo cuando el día llegó al
@@ -365,7 +407,7 @@ Deliberadamente **no** implementado:
 - la generación del reporte contable en sí;
 - pagos, facturación, cobros y NCF;
 - la integración con WhatsApp: existe solo la interfaz abstracta
-  `CanalNotificacion` y un marcador en
-  `supabase/functions/_shared/notifications/whatsapp.ts`, sin registrar. Añadir
-  el canal no obliga a tocar plantillas ni disparadores de eventos;
+  `CanalNotificacion` y un marcador en `server/notificaciones/whatsapp.ts`, sin
+  registrar. Añadir el canal no obliga a tocar plantillas ni disparadores de
+  eventos;
 - registro o login para los centros educativos.

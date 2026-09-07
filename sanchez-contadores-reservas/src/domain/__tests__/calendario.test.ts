@@ -8,7 +8,7 @@ import {
 import type { FechaISO } from '../fechas'
 
 // El fixture lo produce la vista `disponibilidad_publica` del servidor
-// (supabase/tests/exportar_fixture.sql). Probar el espejo del cliente contra
+// (neon/tests/exportar_fixture.sql). Probar el espejo del cliente contra
 // datos reales del motor SQL es lo que garantiza que ambos coincidan.
 const DIAS = fixture.dias as DiaDisponibilidad[]
 const VENTANA: Ventana = fixture.ventana as Ventana

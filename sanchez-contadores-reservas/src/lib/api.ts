@@ -1,4 +1,4 @@
-import { supabase, invocarFuncion } from './supabase'
+import { borrar, enviar, intentar, modificar, obtener, reemplazar } from './api-cliente'
 import type { DiaDisponibilidad } from '../domain/calendario'
 import type {
   Bloqueo, Centro, CentroPublico, Configuracion, ConfiguracionPublica, Feriado,
@@ -6,35 +6,16 @@ import type {
 } from './tipos'
 import type { FechaISO } from '../domain/fechas'
 
-// --- Lectura pública (anon, vía vistas con RLS resuelto en el servidor) ------
+// --- Público ----------------------------------------------------------------
 
-export async function cargarCentrosPublicos(): Promise<CentroPublico[]> {
-  const { data, error } = await supabase
-    .from('centros_publicos')
-    .select('id, nombre, duracion_dias_laborables')
-  if (error) throw error
-  return data ?? []
-}
+export const cargarCentrosPublicos = () =>
+  obtener<CentroPublico[]>('/publico/centros')
 
-export async function cargarDisponibilidad(): Promise<DiaDisponibilidad[]> {
-  const { data, error } = await supabase
-    .from('disponibilidad_publica')
-    .select('fecha, laborable, ocupados, max_simultaneos')
-    .order('fecha')
-  if (error) throw error
-  return data ?? []
-}
+export const cargarDisponibilidad = () =>
+  obtener<DiaDisponibilidad[]>('/publico/disponibilidad')
 
-export async function cargarConfiguracionPublica(): Promise<ConfiguracionPublica> {
-  const { data, error } = await supabase
-    .from('configuracion_publica')
-    .select('anio_activo, max_simultaneos, ventana_inicio, ventana_fin')
-    .single()
-  if (error) throw error
-  return data
-}
-
-// --- Escritura pública (siempre por Edge Function) --------------------------
+export const cargarConfiguracionPublica = () =>
+  obtener<ConfiguracionPublica>('/publico/configuracion')
 
 export function reservar(entrada: {
   centro_id: string
@@ -42,9 +23,8 @@ export function reservar(entrada: {
   correo_contacto: string
   telefono: string
 }) {
-  return invocarFuncion<{ reserva: ResumenReserva & { correo_contacto: string } }>(
-    'crear-reserva',
-    entrada,
+  return intentar(() =>
+    enviar<{ reserva: ResumenReserva & { correo_contacto: string } }>('/publico/reservas', entrada),
   )
 }
 
@@ -54,162 +34,117 @@ export function solicitarCambio(entrada: {
   nueva_fecha_inicio?: FechaISO
   motivo: string
 }) {
-  return invocarFuncion<{ solicitud_id: string }>('solicitar-cambio', entrada)
+  return intentar(() => enviar<{ solicitud_id: string }>('/publico/solicitudes', entrada))
 }
 
-export async function consultarReserva(codigo: string) {
-  const { data, error } = await supabase.rpc('consultar_reserva', { p_codigo: codigo })
-  if (error) throw error
-  return data as
-    | { ok: true; reserva: ResumenReserva; solicitud_pendiente: unknown | null }
-    | { ok: false; codigo_error: string; mensaje: string }
+export function consultarReserva(codigo: string) {
+  return intentar(() =>
+    obtener<{ reserva: ResumenReserva; solicitud_pendiente: unknown | null }>(
+      `/publico/reservas/${encodeURIComponent(codigo.trim().toUpperCase())}`,
+    ),
+  )
 }
 
-// --- Administración (requiere sesión autenticada) ---------------------------
+// --- Sesión de la contadora --------------------------------------------------
 
-export async function cargarReservas(filtros: {
+export interface Administrador {
+  id: string
+  correo: string
+  nombre: string
+}
+
+export const entrar = (correo: string, clave: string) =>
+  intentar(() => enviar<{ admin: Administrador }>('/admin/sesion', { correo, clave }))
+
+export const salir = () => borrar<{ ok: true }>('/admin/sesion')
+
+/** `null` si no hay sesión. No lanza: se usa para decidir si mostrar el panel. */
+export async function sesionActual(): Promise<Administrador | null> {
+  const r = await intentar(() => obtener<{ admin: Administrador }>('/admin/yo'))
+  return r.ok ? r.datos.admin : null
+}
+
+// --- Administración ----------------------------------------------------------
+
+export function cargarReservas(filtros: {
   estado?: EstadoReserva | 'todos'
   mes?: number | 'todos'
   anio: number
-}): Promise<ReservaConCentro[]> {
-  let q = supabase
-    .from('reservas')
-    .select('*, centros(nombre)')
-    .eq('anio', filtros.anio)
-    .order('fecha_inicio')
-
-  if (filtros.estado && filtros.estado !== 'todos') q = q.eq('estado', filtros.estado)
-
-  if (filtros.mes && filtros.mes !== 'todos') {
-    const mes = String(filtros.mes).padStart(2, '0')
-    const ultimo = new Date(Date.UTC(filtros.anio, filtros.mes, 0)).getUTCDate()
-    q = q
-      .lte('fecha_inicio', `${filtros.anio}-${mes}-${ultimo}`)
-      .gte('fecha_fin', `${filtros.anio}-${mes}-01`)
-  }
-
-  const { data, error } = await q
-  if (error) throw error
-  return (data ?? []) as ReservaConCentro[]
+}) {
+  const parametros = new URLSearchParams({
+    anio: String(filtros.anio),
+    estado: String(filtros.estado ?? 'todos'),
+    mes: String(filtros.mes ?? 'todos'),
+  })
+  return obtener<ReservaConCentro[]>(`/admin/reservas?${parametros}`)
 }
 
-export async function cambiarEstadoReserva(id: string, estado: EstadoReserva) {
-  const { error } = await supabase.from('reservas').update({ estado }).eq('id', id)
-  if (error) throw error
-}
+export const cambiarEstadoReserva = (id: string, estado: EstadoReserva) =>
+  modificar<{ ok: true }>(`/admin/reservas/${id}`, { estado })
 
-export async function cargarCentros(): Promise<Centro[]> {
-  const { data, error } = await supabase.from('centros').select('*').order('nombre')
-  if (error) throw error
-  return (data ?? []) as Centro[]
-}
+export const cargarCentros = () => obtener<Centro[]>('/admin/centros')
 
-export async function guardarCentro(centro: Partial<Centro> & { nombre: string }) {
-  const fila = {
+export function guardarCentro(centro: Partial<Centro> & { nombre: string }) {
+  const cuerpo = {
     nombre: centro.nombre.trim(),
     correo_contacto: centro.correo_contacto?.trim() || null,
     telefono: centro.telefono?.trim() || null,
     duracion_dias_laborables: centro.duracion_dias_laborables ?? 5,
     activo: centro.activo ?? true,
   }
-  const { error } = centro.id
-    ? await supabase.from('centros').update(fila).eq('id', centro.id)
-    : await supabase.from('centros').insert(fila)
-  if (error) throw error
+  return centro.id
+    ? modificar<Centro>(`/admin/centros/${centro.id}`, cuerpo)
+    : enviar<Centro>('/admin/centros', cuerpo)
 }
 
-export async function cargarBloqueos(): Promise<Bloqueo[]> {
-  const { data, error } = await supabase.from('bloqueos').select('*').order('fecha_inicio')
-  if (error) throw error
-  return (data ?? []) as Bloqueo[]
-}
+export const cargarBloqueos = () => obtener<Bloqueo[]>('/admin/bloqueos')
 
-export async function reservasAfectadas(inicio: FechaISO, fin: FechaISO) {
-  const { data, error } = await supabase.rpc('reservas_afectadas_por_rango', {
-    p_inicio: inicio,
-    p_fin: fin,
-  })
-  if (error) throw error
-  return (data ?? []) as {
+export function reservasAfectadas(inicio: FechaISO, fin: FechaISO) {
+  const parametros = new URLSearchParams({ inicio, fin })
+  return obtener<{
     id: string; codigo_reserva: string; centro: string
     fecha_inicio: FechaISO; fecha_fin: FechaISO; estado: EstadoReserva
-  }[]
+  }[]>(`/admin/bloqueos/afectadas?${parametros}`)
 }
 
-export async function guardarBloqueo(bloqueo: {
+export function guardarBloqueo(bloqueo: {
   id?: string; fecha_inicio: FechaISO; fecha_fin: FechaISO
   tipo: TipoBloqueo; descripcion: string | null
 }) {
-  const fila = {
+  const cuerpo = {
     fecha_inicio: bloqueo.fecha_inicio,
     fecha_fin: bloqueo.fecha_fin,
     tipo: bloqueo.tipo,
     descripcion: bloqueo.descripcion,
   }
-  const { error } = bloqueo.id
-    ? await supabase.from('bloqueos').update(fila).eq('id', bloqueo.id)
-    : await supabase.from('bloqueos').insert(fila)
-  if (error) throw error
+  return bloqueo.id
+    ? modificar<Bloqueo>(`/admin/bloqueos/${bloqueo.id}`, cuerpo)
+    : enviar<Bloqueo>('/admin/bloqueos', cuerpo)
 }
 
-export async function eliminarBloqueo(id: string) {
-  const { error } = await supabase.from('bloqueos').delete().eq('id', id)
-  if (error) throw error
-}
+export const eliminarBloqueo = (id: string) => borrar<{ ok: true }>(`/admin/bloqueos/${id}`)
 
-export async function cargarSolicitudes(estado: 'pendiente' | 'todas' = 'pendiente') {
-  let q = supabase
-    .from('solicitudes_cambio')
-    .select('*, reservas(codigo_reserva, fecha_inicio, fecha_fin, estado, correo_contacto, centros(nombre))')
-    .order('creado_en', { ascending: false })
-  if (estado !== 'todas') q = q.eq('estado', estado)
-  const { data, error } = await q
-  if (error) throw error
-  return (data ?? []) as SolicitudConReserva[]
-}
+export const cargarSolicitudes = (estado: 'pendiente' | 'todas' = 'pendiente') =>
+  obtener<SolicitudConReserva[]>(`/admin/solicitudes?estado=${estado}`)
 
-/**
- * Se resuelve a través de la Edge Function y no por RPC directa, para que el
- * correo al centro salga en la misma operación. La autorización sigue siendo de
- * Postgres: la función reenvía el JWT de la contadora.
- */
-export async function resolverSolicitud(id: string, aprobar: boolean, nota: string | null) {
-  const r = await invocarFuncion<{ accion: 'aprobada' | 'rechazada' }>(
-    'resolver-solicitud',
-    { solicitud_id: id, aprobar, nota },
-    { conSesion: true },
+export function resolverSolicitud(id: string, aprobar: boolean, nota: string | null) {
+  return intentar(() =>
+    enviar<{ accion: 'aprobada' | 'rechazada' }>(
+      `/admin/solicitudes/${id}/resolver`, { aprobar, nota },
+    ),
   )
-  return r.ok
-    ? { ok: true as const, accion: r.datos.accion }
-    : { ok: false as const, mensaje: r.mensaje, codigo_error: r.codigo }
 }
 
-export async function cargarFeriados(anio: number): Promise<Feriado[]> {
-  const { data, error } = await supabase
-    .from('feriados').select('*').eq('anio', anio).order('fecha')
-  if (error) throw error
-  return (data ?? []) as Feriado[]
-}
+export const cargarFeriados = (anio: number) =>
+  obtener<Feriado[]>(`/admin/feriados?anio=${anio}`)
 
-export async function guardarFeriado(f: { fecha: FechaISO; nombre: string }) {
-  const { error } = await supabase
-    .from('feriados')
-    .upsert({ fecha: f.fecha, nombre: f.nombre.trim() }, { onConflict: 'fecha' })
-  if (error) throw error
-}
+export const guardarFeriado = (f: { fecha: FechaISO; nombre: string }) =>
+  reemplazar<Feriado>('/admin/feriados', { fecha: f.fecha, nombre: f.nombre.trim() })
 
-export async function eliminarFeriado(fecha: FechaISO) {
-  const { error } = await supabase.from('feriados').delete().eq('fecha', fecha)
-  if (error) throw error
-}
+export const eliminarFeriado = (fecha: FechaISO) =>
+  borrar<{ ok: true }>(`/admin/feriados/${fecha}`)
 
-export async function cargarConfiguracion(): Promise<Configuracion> {
-  const { data, error } = await supabase.from('configuracion').select('*').eq('id', 1).single()
-  if (error) throw error
-  return data as Configuracion
-}
+export const cargarConfiguracion = () => obtener<Configuracion>('/admin/configuracion')
 
-export async function guardarConfiguracion(config: Partial<Configuracion>) {
-  const { error } = await supabase.from('configuracion').update(config).eq('id', 1)
-  if (error) throw error
-}
+export const guardarConfiguracion = (config: Omit<Configuracion, 'id'>) =>
+  reemplazar<Configuracion>('/admin/configuracion', config)

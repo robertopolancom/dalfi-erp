@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+
+    // Permite escribir `import './db.ts'` en el código fuente y que el emitido
+    // apunte a './db.js'. Así el mismo archivo lo entienden tsc, vitest y Node.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    "skipLibCheck": true,
+    "outDir": "dist-server",
+    "rootDir": ".",
+    "composite": true,
+    "declaration": true,
+    "declarationDir": "dist-server-types",
+    "sourceMap": true
+  },
+  "include": ["server/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["server/**/*.test.ts"]
+}

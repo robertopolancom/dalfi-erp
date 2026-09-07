@@ -5,16 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "node --experimental-strip-types --watch server/index.ts",
     "build": "tsc -b && vite build",
+    "start": "node dist-server/server/index.js",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit false --emitDeclarationOnly false || tsc -p tsconfig.app.json --noEmit",
-    "lint": "eslint .",
+    "lint": "tsc -b --force",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:test": "PGURL=\"${PGURL:?}\" RECREAR=1 STUB=1 bash supabase/tests/run.sh"
+    "db:migrar": "bash neon/migrar.sh",
+    "db:test": "RECREAR=1 bash neon/tests/run.sh",
+    "admin:crear": "node --experimental-strip-types scripts/crear-admin.ts"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.58.0",
+    "express": "^5.2.1",
+    "pg": "^8.23.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.4",
@@ -22,7 +26,9 @@
     "zod": "^4.1.11"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^26.4.1",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.1",
     "@vitejs/plugin-react": "^5.0.4",
@@ -32,5 +38,8 @@
     "typescript": "^5.9.3",
     "vite": "^7.1.9",
     "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

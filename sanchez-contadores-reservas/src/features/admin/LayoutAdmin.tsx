@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import type { Session } from '@supabase/supabase-js'
-import { supabase } from '../../lib/supabase'
+import { salir, sesionActual, type Administrador } from '../../lib/api'
 import { Cargando } from '../../components/Cargando'
 
 const SECCIONES = [
@@ -15,36 +14,40 @@ const SECCIONES = [
 
 export default function LayoutAdmin() {
   const navegar = useNavigate()
-  const [sesion, setSesion] = useState<Session | null>(null)
+  const [admin, setAdmin] = useState<Administrador | null>(null)
   const [listo, setListo] = useState(false)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSesion(data.session)
+    let vigente = true
+    sesionActual().then((sesion) => {
+      if (!vigente) return
+      setAdmin(sesion)
       setListo(true)
-      if (!data.session) navegar('/admin/entrar', { replace: true })
+      if (!sesion) navegar('/admin/entrar', { replace: true })
     })
+    return () => { vigente = false }
+  }, [navegar])
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_evento, nueva) => {
-      setSesion(nueva)
-      if (!nueva) navegar('/admin/entrar', { replace: true })
-    })
-
-    return () => sub.subscription.unsubscribe()
+  const cerrar = useCallback(async () => {
+    await salir().catch(() => undefined)
+    navegar('/admin/entrar', { replace: true })
   }, [navegar])
 
   if (!listo) return <Cargando texto="Verificando sesión…" />
-  if (!sesion) return null
+  if (!admin) return null
 
   return (
     <div className="min-h-dvh">
       <header className="sticky top-0 z-10 border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
-          <p className="font-bold text-marca-700">Sánchez Contadores</p>
+          <div className="min-w-0">
+            <p className="font-bold text-marca-700">Sánchez Contadores</p>
+            <p className="truncate text-xs text-slate-500">{admin.nombre}</p>
+          </div>
           <button
             type="button"
-            className="text-sm font-medium text-slate-600 underline"
-            onClick={() => supabase.auth.signOut()}
+            className="shrink-0 text-sm font-medium text-slate-600 underline"
+            onClick={cerrar}
           >
             Salir
           </button>

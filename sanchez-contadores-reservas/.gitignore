@@ -8,5 +8,7 @@ dist-ssr
 .DS_Store
 coverage
 .vite
-supabase/.temp
+neon/.temp
 *.tsbuildinfo
+dist-server
+dist-server-types

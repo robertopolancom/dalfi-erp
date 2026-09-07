@@ -1,3 +1,0 @@
-# Cloudflare Pages: la app es una SPA, así que cualquier ruta desconocida debe
-# servir index.html para que React Router resuelva la navegación.
-/*  /index.html  200

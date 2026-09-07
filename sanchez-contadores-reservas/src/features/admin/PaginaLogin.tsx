@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../../lib/supabase'
+import { entrar, sesionActual } from '../../lib/api'
 import { Aviso } from '../../components/Cargando'
 
 export default function PaginaLogin() {
@@ -11,27 +11,24 @@ export default function PaginaLogin() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) navegar('/admin/calendario', { replace: true })
+    let vigente = true
+    sesionActual().then((admin) => {
+      if (vigente && admin) navegar('/admin/calendario', { replace: true })
     })
+    return () => { vigente = false }
   }, [navegar])
 
-  async function entrar(e: React.FormEvent) {
+  async function iniciar(e: React.FormEvent) {
     e.preventDefault()
     setEnviando(true)
     setError(null)
 
-    const { error: err } = await supabase.auth.signInWithPassword({
-      email: correo.trim(),
-      password: clave,
-    })
-
+    const r = await entrar(correo, clave)
     setEnviando(false)
-    if (err) {
-      // Mensaje genérico a propósito: no revelamos si el correo existe.
-      setError('Correo o contraseña incorrectos.')
-      return
-    }
+
+    // El servidor responde lo mismo si el correo no existe o si la contraseña
+    // falla, así que no hay que distinguir aquí.
+    if (!r.ok) { setError(r.mensaje); return }
     navegar('/admin/calendario', { replace: true })
   }
 
@@ -40,7 +37,7 @@ export default function PaginaLogin() {
       <h1 className="mb-1 text-xl font-bold text-marca-700">Sánchez Contadores</h1>
       <p className="mb-6 text-sm text-slate-600">Panel de administración</p>
 
-      <form className="tarjeta space-y-4" onSubmit={entrar}>
+      <form className="tarjeta space-y-4" onSubmit={iniciar}>
         <div>
           <label className="etiqueta" htmlFor="correo">Correo</label>
           <input
