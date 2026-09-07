@@ -39,9 +39,12 @@ echo "== Levantando el servidor =="
 # RESEND_API_KEY va con un valor falso a propósito: el escenario de prueba no
 # tiene ninguna reserva en plazo de recordatorio, así que el notificador se
 # construye pero nunca llega a llamar a Resend. Ningún correo sale de aquí.
+# Se levanta con la misma configuración que en producción detrás de Cloudflare:
+# dos saltos de proxy y CF-Connecting-IP como fuente de la IP real.
 PORT="$PUERTO" NODE_ENV=test CRON_SECRET=secreto-de-prueba \
   RESEND_API_KEY=clave-falsa-de-prueba \
   CORREO_REMITENTE='Pruebas <pruebas@ejemplo.invalid>' \
+  SALTOS_DE_PROXY=2 DETRAS_DE_CLOUDFLARE=1 \
   node dist-server/server/index.js > "$TMP/servidor.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -rf "$TMP"' EXIT
@@ -185,6 +188,82 @@ comprobar "con el secreto correcto, el cron corre" "$(echo "$CRON" | jq_ ok)" "t
 # Las reservas de prueba son de 2027 y hoy no estamos a 3 días laborables de
 # ninguna, así que no debe enviarse nada.
 comprobar "no envía recordatorios fuera de plazo" "$(echo "$CRON" | jq_ enviados)" "0"
+
+echo ""
+echo "== Rate limiting detrás de Cloudflare =="
+# El límite público es de 8 reservas por IP cada 10 minutos. Si la app leyera
+# mal la IP real, dos visitantes distintos compartirían contador y el segundo
+# quedaría bloqueado por culpa del primero.
+psql "$DATABASE_URL" -qtAX -c "delete from rate_limit_publico" > /dev/null
+
+# Nueve intentos desde la MISMA IP: el noveno debe caer.
+for i in $(seq 1 8); do
+  curl -s -o /dev/null -X POST "$BASE/api/publico/reservas" \
+    -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 190.80.1.1' \
+    -d '{"centro_id":"00000000-0000-0000-0000-000000000000","fecha_inicio":"2027-04-05","correo_contacto":"x@test.do","telefono":"809-000-0000"}'
+done
+comprobar "la novena petición de la misma IP se corta" \
+  "$(curl -s -X POST "$BASE/api/publico/reservas" \
+     -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 190.80.1.1' \
+     -d '{"centro_id":"00000000-0000-0000-0000-000000000000","fecha_inicio":"2027-04-05","correo_contacto":"x@test.do","telefono":"809-000-0000"}' \
+     | jq_ codigo_error)" "DEMASIADOS_INTENTOS"
+
+# Otra IP a través del mismo Cloudflare: NO debe heredar el bloqueo. Este es el
+# fallo que causaría leer la IP del proxy en vez de la del visitante.
+comprobar "un visitante distinto no hereda el bloqueo del anterior" \
+  "$(curl -s -X POST "$BASE/api/publico/reservas" \
+     -H 'Content-Type: application/json' -H 'CF-Connecting-IP: 190.80.9.9' \
+     -d '{"centro_id":"00000000-0000-0000-0000-000000000000","fecha_inicio":"2027-04-05","correo_contacto":"x@test.do","telefono":"809-000-0000"}' \
+     | jq_ codigo_error)" "CENTRO_NO_EXISTE"
+
+CONTADORES="$(psql "$DATABASE_URL" -qtAX -c \
+  'select count(*) from rate_limit_publico where clave like $$reserva:%$$')"
+comprobar "cada visitante tiene su propio contador" "$CONTADORES" "2"
+
+echo ""
+echo "== Cabeceras de caché para Cloudflare =="
+comprobar "la API se marca no-store" \
+  "$(curl -sI "$BASE/api/publico/configuracion" | grep -i '^cache-control' | tr -d '\r' | awk '{print $2}')" "no-store"
+comprobar "el index.html se marca no-cache" \
+  "$(curl -sI "$BASE/consulta" | grep -i '^cache-control' | tr -d '\r' | awk '{print $2}')" "no-cache"
+ASSET="$(node -e "
+  const fs=require('fs');
+  const f=fs.readdirSync('dist/assets').find(n=>n.startsWith('index-')&&n.endsWith('.js'));
+  console.log(f)")"
+if curl -sI "$BASE/assets/$ASSET" | grep -qi 'max-age=31536000, immutable'; then
+  ok "los assets con hash se cachean un año"
+else
+  falla "los assets con hash deberían cachearse un año"
+fi
+
+echo ""
+echo "== Dominio canónico =="
+comprobar "sin DOMINIO_CANONICO no se redirige nada" \
+  "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/consulta")" "200"
+
+# Segunda instancia con el dominio canónico puesto, para comprobar que la
+# redirección no se muerde la cola: si redirigiera también las peticiones que
+# ya llegan al dominio bueno, el navegador daría un bucle infinito.
+PUERTO2=$((PUERTO + 1))
+PORT="$PUERTO2" NODE_ENV=test DOMINIO_CANONICO=sanchezcontadores.sebengroup.com \
+  node dist-server/server/index.js > "$TMP/servidor2.log" 2>&1 &
+PID2=$!
+for _ in $(seq 1 40); do
+  if curl -sf -H 'Host: sanchezcontadores.sebengroup.com' \
+       "http://127.0.0.1:$PUERTO2/health" > /dev/null 2>&1; then break; fi
+  sleep 0.25
+done
+
+comprobar "la URL de Render redirige al dominio canónico" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: scr.onrender.com' \
+     "http://127.0.0.1:$PUERTO2/consulta")" "308"
+comprobar "redirige conservando la ruta" \
+  "$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: scr.onrender.com' \
+     "http://127.0.0.1:$PUERTO2/consulta")" "https://sanchezcontadores.sebengroup.com/consulta"
+comprobar "el dominio bueno NO se redirige a sí mismo (sin bucle)" \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: sanchezcontadores.sebengroup.com' \
+     "http://127.0.0.1:$PUERTO2/consulta")" "200"
+kill $PID2 2>/dev/null || true
 
 echo ""
 echo "== Cerrar sesión =="

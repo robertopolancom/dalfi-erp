@@ -1,5 +1,9 @@
 # Blueprint de Render para el servicio de reservas de Sánchez Contadores.
 #
+# Se publica en https://sanchezcontadores.sebengroup.com, siguiendo la misma
+# convención que dalfistudionails.sebengroup.com: un subdominio por cliente en
+# el dominio corporativo de SEBEN Group, con el DNS en Cloudflare.
+#
 # Un solo servicio web sirve la API y el frontend compilado, así que no hay
 # CORS que configurar ni un segundo despliegue que mantener sincronizado.
 #
@@ -15,11 +19,28 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true
+    domains:
+      - sanchezcontadores.sebengroup.com
     envVars:
       - key: NODE_VERSION
         value: 22
       - key: NODE_ENV
         value: production
+
+      # --- Cloudflare delante de Render ------------------------------------
+      # Dos proxies encadenados: Cloudflare y el de Render. Si este número se
+      # queda en 1, req.ip devuelve la IP de Cloudflare y TODO el tráfico cae
+      # en la misma clave de rate limiting. Ponlo en 1 solo si quitas
+      # Cloudflare de en medio (nube gris).
+      - key: SALTOS_DE_PROXY
+        value: 2
+      # Hace que la IP real del visitante se lea de CF-Connecting-IP.
+      - key: DETRAS_DE_CLOUDFLARE
+        value: 1
+      # Redirige a este dominio cualquier visita que entre por la URL
+      # *.onrender.com, para que la app no quede accesible por dos sitios.
+      - key: DOMINIO_CANONICO
+        value: sanchezcontadores.sebengroup.com
 
       # Cadena de conexión de Neon. Es el secreto más sensible del sistema:
       # con ella se lee y escribe todo. Usa el endpoint con pooling.
@@ -38,7 +59,7 @@ services:
 
       # Base de los enlaces que van dentro de los correos.
       - key: APP_URL
-        sync: false
+        value: https://sanchezcontadores.sebengroup.com
 
       # Protege POST /api/cron/recordatorios, que no está detrás de sesión.
       - key: CRON_SECRET
@@ -64,7 +85,7 @@ services:
       - key: NODE_VERSION
         value: 22
       - key: APP_URL
-        sync: false
+        value: https://sanchezcontadores.sebengroup.com
       # Debe tener EXACTAMENTE el mismo valor que el CRON_SECRET del servicio
       # web. Cópialo desde allí; `generateValue` genera uno distinto por
       # servicio y los dos no coincidirían.

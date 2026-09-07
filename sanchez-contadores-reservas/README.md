@@ -37,6 +37,7 @@ calendario que aplica reglas de negocio y un panel para la contadora.
 | Servidor | Express 5 sobre Node 22, en TypeScript compilado |
 | Base de datos | Neon (PostgreSQL), vía `pg.Pool` y `DATABASE_URL` |
 | Hospedaje | Render: un servicio web + un cron job |
+| Dominio | `sanchezcontadores.sebengroup.com`, con DNS en Cloudflare |
 | Autenticación | Propia: `scrypt` para la contraseña, tokens de sesión en cookie `HttpOnly` |
 | Correo | Resend por API HTTP, detrás de una interfaz `CanalNotificacion` |
 | Excel | SheetJS (`xlsx`), generado en el navegador |
@@ -206,6 +207,9 @@ Ningún secreto va en el código ni en Git. `.env.example` está sin valores.
 | `CRON_SECRET` | Protege `POST /api/cron/recordatorios` |
 | `PORT` | Puerto de escucha. Render lo inyecta |
 | `DIR_ESTATICO` | Ruta del `dist/`. Solo para casos raros; por defecto `<raíz>/dist` |
+| `SALTOS_DE_PROXY` | Proxies delante de la app. **2** con Cloudflare + Render; 1 sin Cloudflare |
+| `DETRAS_DE_CLOUDFLARE` | `1` para leer la IP real de `CF-Connecting-IP` |
+| `DOMINIO_CANONICO` | Redirige a este dominio lo que entre por otro (la URL de Render) |
 
 **El frontend no necesita ninguna variable.** Se sirve desde el mismo origen que
 la API y usa rutas relativas, así que no hay nada que inyectar en el bundle.
@@ -325,35 +329,132 @@ Entre las tres suites se cubren, además de cada regla:
 - que el panel responde 401 sin sesión y vuelve a hacerlo tras salir;
 - que un correo inexistente y una contraseña incorrecta dan el **mismo** mensaje,
   para no delatar qué cuentas existen;
-- que la lista pública de centros no filtra correos ni teléfonos.
+- que la lista pública de centros no filtra correos ni teléfonos;
+- que detrás de Cloudflare cada visitante tiene su propio contador de rate
+  limiting y no hereda el bloqueo de otro;
+- que la redirección al dominio canónico conserva la ruta y no se muerde la cola
+  (una redirección mal hecha ahí es un bucle infinito en producción);
+- que el `index.html` no se cachea y los assets con hash sí, para que Cloudflare
+  no deje a nadie pegado a la versión anterior tras un despliegue.
 
 ---
 
 ## Despliegue
 
-`render.yaml` es un blueprint con dos servicios: el web y el cron diario.
+La app se publica en **`sanchezcontadores.sebengroup.com`**, siguiendo la misma
+convención que `dalfistudionails.sebengroup.com`: un subdominio por cliente en
+el dominio corporativo de SEBEN Group. El DNS de `sebengroup.com` está en
+Cloudflare, y `render.yaml` es un blueprint con dos servicios: el web y el cron
+diario.
 
-1. **Neon.** Crea el proyecto y copia la cadena del endpoint *con pooling*.
-   Aplica las migraciones y crea la cuenta de la contadora.
-2. **Render.** Conecta el repositorio; el blueprint define build (`npm ci && npm
-   run build`), arranque (`npm start`) y `healthCheckPath: /health`.
-3. **Secretos.** Las variables marcadas `sync: false` se introducen a mano en el
-   dashboard: `DATABASE_URL`, `RESEND_API_KEY`, `CORREO_REMITENTE`,
-   `CORREO_CONTADORA` y `APP_URL`.
-4. **El `CRON_SECRET` debe ser idéntico en los dos servicios.** El blueprint lo
-   genera en el web; cópialo al cron a mano. Si no coinciden, los recordatorios
-   fallan con 401 y no se envía nada.
-5. **Resend.** Verifica el dominio del remitente antes de esperar correos.
+### 1. Neon
 
-El cron corre a las 13:00 UTC, que son las 9:00 en República Dominicana (UTC-4,
-sin horario de verano).
+Crea el proyecto y copia la cadena del endpoint **con pooling**. Aplica las
+migraciones y crea la cuenta de la contadora:
+
+```bash
+DATABASE_URL="postgresql://..." npm run db:migrar
+DATABASE_URL="postgresql://..." npm run admin:crear -- contadora@dominio.do "Nombre" "contraseña-larga"
+```
+
+### 2. Render
+
+Conecta el repositorio. El blueprint define build (`npm ci && npm run build`),
+arranque (`npm start`) y `healthCheckPath: /health`. En **Settings → Custom
+Domains** añade `sanchezcontadores.sebengroup.com`; Render mostrará el destino
+CNAME que hay que crear en Cloudflare.
+
+Las variables marcadas `sync: false` se introducen a mano en el dashboard:
+`DATABASE_URL`, `RESEND_API_KEY`, `CORREO_REMITENTE` y `CORREO_CONTADORA`.
+
+### 3. Cloudflare (DNS de sebengroup.com)
+
+En el panel de `sebengroup.com` → **DNS → Records**:
+
+| Tipo | Nombre | Contenido | Proxy |
+|---|---|---|---|
+| `CNAME` | `sanchezcontadores` | el destino que dé Render (`*.onrender.com`) | ver abajo |
+
+**El orden importa.** Crea el registro con el **proxy desactivado (nube gris)**
+y espera a que Render marque el dominio como verificado y emita el certificado.
+Con la nube naranja desde el principio, Render puede no completar la
+verificación, porque no ve el origen que espera.
+
+Cuando Render diga *Certificate issued*, enciende el proxy (nube naranja) si
+quieres el CDN y la protección de Cloudflare delante.
+
+**SSL/TLS → Overview: modo `Full (strict)`.** Este es el ajuste que más
+problemas da: en modo `Flexible`, Cloudflare habla con Render por HTTP mientras
+el navegador cree que va por HTTPS, y el resultado es un **bucle de
+redirecciones** que deja la página inservible. Render sirve HTTPS válido, así
+que `Full (strict)` es lo correcto.
+
+Activa también **Always Use HTTPS**. La cookie de sesión sale con `Secure`
+cuando `NODE_ENV=production`, así que sin HTTPS no habría manera de entrar al
+panel.
+
+### 4. Los dos saltos de proxy
+
+Con Cloudflare encendido, el camino de una petición es:
+
+```
+visitante → Cloudflare → proxy de Render → la app
+```
+
+Son **dos** proxies, no uno. Por eso el blueprint pone `SALTOS_DE_PROXY=2` y
+`DETRAS_DE_CLOUDFLARE=1`. Si se dejaran en la configuración de un solo proxy,
+`req.ip` devolvería la IP de Cloudflare y **todo el tráfico del mundo
+compartiría el mismo contador de rate limiting**: en cuanto entrara la novena
+reserva del día, los centros legítimos quedarían bloqueados sin motivo. Hay
+pruebas que cubren exactamente ese caso en `neon/tests/api.test.sh`.
+
+Si algún día quitas Cloudflare de en medio (nube gris permanente), baja
+`SALTOS_DE_PROXY` a 1 y quita `DETRAS_DE_CLOUDFLARE`.
+
+### 5. Una puerta que queda entreabierta
+
+El servicio de Render sigue siendo alcanzable por su URL `*.onrender.com`.
+`DOMINIO_CANONICO` redirige esas visitas al subdominio bueno, lo que basta para
+navegadores y para que la app no quede indexada dos veces, pero **no impide que
+un script llame a Render directamente e invente la cabecera `CF-Connecting-IP`**
+para saltarse el rate limiting.
+
+El daño posible se limita a saturar el formulario público: las reglas de negocio
+viven en SQL, así que ni con eso se puede sobrevender un cupo, reservar dos veces
+con el mismo centro ni salirse de la ventana. Para cerrarlo del todo hay dos
+caminos, cuando quieras:
+
+- restringir el servicio de Render a los rangos de IP de Cloudflare, o
+- exigir una cabecera secreta que solo Cloudflare añada, con una Transform Rule
+  en el panel, y rechazar en el servidor lo que no la traiga.
+
+### 6. Resend
+
+Verifica **`sebengroup.com`** (o el subdominio que uses como remitente) en
+Resend antes de esperar correos: hasta que los registros SPF y DKIM estén
+publicados en Cloudflare, los envíos fallan o van directos a spam.
+
+### 7. El cron
+
+`CRON_SECRET` debe ser **idéntico** en el servicio web y en el cron. El
+blueprint lo genera solo en el web; cópialo al cron a mano. Si no coinciden, los
+recordatorios fallan con 401 y no se envía nada.
+
+Corre a las 13:00 UTC, que son las 9:00 en República Dominicana (UTC-4, sin
+horario de verano).
+
+### Cambiar el subdominio
+
+Si prefieres otro nombre, son tres sitios y un registro de DNS: el campo
+`domains` de `render.yaml`, y las variables `DOMINIO_CANONICO` y `APP_URL`.
+Nada en el código lo tiene escrito a mano.
 
 ---
 
 ## Guía de uso para la contadora
 
-**Entrar.** `https://<tu-dominio>/admin/entrar` con tu correo y contraseña. La
-sesión dura 14 días.
+**Entrar.** `https://sanchezcontadores.sebengroup.com/admin/entrar` con tu
+correo y contraseña. La sesión dura 14 días.
 
 **Calendario.** Vista mensual de la temporada. Cada día muestra los centros que
 lo ocupan y un contador `usados/máximo`; se pone en rojo cuando el día llegó al

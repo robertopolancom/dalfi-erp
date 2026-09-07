@@ -41,10 +41,37 @@ export function error(
 }
 
 /**
- * IP del cliente para el rate limiting. Render pone la del cliente primero en
- * `x-forwarded-for`; con `trust proxy` activo, Express ya la resuelve en `req.ip`.
+ * IP real del visitante, para agrupar el rate limiting.
+ *
+ * Con Cloudflare delante de Render hay DOS saltos de proxy, no uno:
+ *
+ *     visitante -> Cloudflare -> proxy de Render -> esta app
+ *
+ * Cloudflare manda `X-Forwarded-For: <visitante>` y el proxy de Render le
+ * añade la IP de Cloudflare, así que la cabecera llega como
+ * `<visitante>, <cloudflare>`. Con `trust proxy` en 1, Express se queda con la
+ * penúltima entrada, que es la de Cloudflare: TODO el tráfico del mundo caería
+ * en la misma clave y el límite de 8 reservas por 10 minutos dejaría fuera a
+ * los centros legítimos en cuanto entrara el noveno.
+ *
+ * Por eso, cuando la app está detrás de Cloudflare, se usa `CF-Connecting-IP`,
+ * que Cloudflare fija siempre con la IP real y sobrescribe si el cliente
+ * intenta enviarla él.
+ *
+ * Riesgo residual, dicho claramente: la URL de Render (`*.onrender.com`) sigue
+ * siendo alcanzable, y quien la llame directamente puede inventarse esa
+ * cabecera y saltarse el límite. Por eso el flag es explícito y no se deduce
+ * de la presencia de la cabecera. El daño posible se limita a saturar el
+ * formulario público: las reglas de negocio viven en SQL, así que ni con eso
+ * se puede sobrevender un cupo ni reservar dos veces con el mismo centro.
+ * Para cerrarlo del todo hay que restringir el servicio de Render a los rangos
+ * de Cloudflare; el README explica cómo.
  */
 export function ipCliente(peticion: Request): string {
+  if (process.env['DETRAS_DE_CLOUDFLARE'] === '1') {
+    const deCloudflare = peticion.get('cf-connecting-ip')
+    if (deCloudflare) return deCloudflare.trim()
+  }
   return peticion.ip ?? 'desconocida'
 }
 

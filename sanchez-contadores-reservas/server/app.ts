@@ -12,17 +12,39 @@ const DIAS_ANTES_RECORDATORIO = 3
 export function crearApp(opciones: { directorioEstatico: string }) {
   const app = express()
 
-  // Render está detrás de un proxy: sin esto, req.ip sería siempre la del
-  // proxy y el rate limiting agruparía a todo el mundo bajo la misma clave.
-  app.set('trust proxy', 1)
+  // Cuántos proxies hay delante. Solo Render: 1. Cloudflare + Render: 2.
+  // Si el número se queda corto, req.ip devuelve la IP de un proxy en vez de
+  // la del visitante y el rate limiting agrupa a todo el mundo en una clave.
+  app.set('trust proxy', Number(process.env['SALTOS_DE_PROXY'] ?? 1))
   app.disable('x-powered-by')
 
   app.use(express.json({ limit: '32kb' }))
+
+  // Con Cloudflare delante, el servicio de Render sigue siendo alcanzable por
+  // su URL `*.onrender.com`. Redirigir al dominio canónico evita que la app
+  // quede indexada dos veces y que alguien la use por la puerta de atrás sin
+  // pasar por Cloudflare.
+  const dominioCanonico = process.env['DOMINIO_CANONICO']
+  if (dominioCanonico) {
+    app.use((peticion, respuesta, siguiente) => {
+      const anfitrion = peticion.get('host')
+      if (!anfitrion || anfitrion === dominioCanonico) { siguiente(); return }
+      respuesta.redirect(308, `https://${dominioCanonico}${peticion.originalUrl}`)
+    })
+  }
 
   app.use((_peticion, respuesta, siguiente) => {
     respuesta.setHeader('X-Content-Type-Options', 'nosniff')
     respuesta.setHeader('X-Frame-Options', 'DENY')
     respuesta.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin')
+    siguiente()
+  })
+
+  // Cloudflare cachea por su cuenta lo que le parece cacheable. Ninguna
+  // respuesta de la API lo es: llevan disponibilidad en vivo y datos de
+  // reservas.
+  app.use('/api', (_peticion, respuesta, siguiente) => {
+    respuesta.setHeader('Cache-Control', 'no-store')
     siguiente()
   })
 
@@ -84,9 +106,26 @@ export function crearApp(opciones: { directorioEstatico: string }) {
 
   // --- Frontend -------------------------------------------------------------
   // El mismo servicio sirve la SPA: un solo despliegue y nada de CORS.
-  app.use(express.static(opciones.directorioEstatico, { maxAge: '1h', index: false }))
+  //
+  // Vite pone un hash en el nombre de cada archivo de /assets, así que un
+  // archivo con un nombre dado nunca cambia de contenido y puede cachearse
+  // para siempre. El index.html es lo contrario: es el que apunta a los
+  // assets nuevos tras cada despliegue, y si Cloudflare lo guarda los
+  // visitantes se quedan pegados a la versión anterior.
+  app.use(express.static(opciones.directorioEstatico, {
+    index: false,
+    setHeaders(respuesta, ruta) {
+      respuesta.setHeader(
+        'Cache-Control',
+        ruta.includes(`${path.sep}assets${path.sep}`)
+          ? 'public, max-age=31536000, immutable'
+          : 'public, max-age=3600',
+      )
+    },
+  }))
 
   app.get('/{*ruta}', (_peticion, respuesta) => {
+    respuesta.setHeader('Cache-Control', 'no-cache')
     respuesta.sendFile(path.join(opciones.directorioEstatico, 'index.html'))
   })
 
