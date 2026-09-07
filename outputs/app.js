@@ -11812,7 +11812,9 @@ async function abrirConversacion(conversationId) {
           : m.senderType === "bot" ? "Bot" : "Sistema";
         // El adjunto se pide por su propia URL en vez de venir dentro del hilo: diez fotos en
         // una conversación serían varios megas en cada apertura de la pantalla.
-        const urlAdjunto = m.tieneAdjunto ? functionEndpoint(`chat/messages/${m.id}/media`) : null;
+        // La URL viene firmada del servidor: se abre sin sesion, que es lo que necesita una
+        // etiqueta <img> (no manda cabeceras) y lo que permite reenviar el enlace.
+        const urlAdjunto = m.mediaHref || null;
         let adjunto = "";
         if (urlAdjunto && m.messageType === "image") {
           adjunto = `<a href="${urlAdjunto}" target="_blank" rel="noopener"><img class="chat-adjunto" src="${urlAdjunto}" alt="${escapeHtml(m.mediaFilename || "Adjunto")}" loading="lazy"></a>`;

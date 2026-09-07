@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { b64url, signPayload, verifySignedPayload } from "./signed-links.mjs";
 
 // Enlace público para que la clienta vea su factura. NO se guarda nada: el token es una firma
 // HMAC del propio facturaID, así que no hay tabla, ni archivo, ni PDF acumulándose en ningún
@@ -17,17 +17,11 @@ function secretFor(env) {
   return String(env.INVOICE_LINK_SECRET || env.ERP_WEBHOOK_SECRET || "");
 }
 
-function b64url(buffer) {
-  return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromB64url(value) {
-  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
-  return Buffer.from(padded + "=".repeat((4 - (padded.length % 4)) % 4), "base64").toString("utf8");
-}
-
+// La firma vive en signed-links.mjs, compartida con los adjuntos del chat. El FORMATO del token
+// de factura no cambia --sigue siendo b64url(id) + "." + firma-- porque hay enlaces ya enviados
+// a clientes que tienen que seguir abriendo.
 function sign(env, payload) {
-  return b64url(createHmac("sha256", secretFor(env)).update(payload).digest()).slice(0, 43);
+  return signPayload(secretFor(env), payload);
 }
 
 export function invoiceToken(env, invoiceId) {
@@ -38,22 +32,8 @@ export function invoiceToken(env, invoiceId) {
 }
 
 export function verifyInvoiceToken(env, token) {
-  if (!secretFor(env)) return null;
-  const raw = String(token || "");
-  const dot = raw.lastIndexOf(".");
-  if (dot <= 0) return null;
-  const payload = raw.slice(0, dot);
-  const provided = raw.slice(dot + 1);
-  const expected = sign(env, payload);
-  // Comparación en tiempo constante: no filtrar cuántos caracteres acertó quien prueba tokens.
-  if (provided.length !== expected.length) return null;
-  if (!timingSafeEqual(Buffer.from(provided), Buffer.from(expected))) return null;
-  try {
-    const id = fromB64url(payload);
-    return id && /^[\w-]{1,80}$/.test(id) ? id : null;
-  } catch {
-    return null;
-  }
+  const id = verifySignedPayload(secretFor(env), token);
+  return id && /^[\w-]{1,80}$/.test(id) ? id : null;
 }
 
 export function invoiceUrl(env, invoiceId) {

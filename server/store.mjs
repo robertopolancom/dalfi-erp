@@ -1,5 +1,6 @@
 import { isClientRole } from "./reservapp-auth.mjs";
 import { normalizePhone } from "./phone.mjs";
+import { mediaUrl } from "./media-link.mjs";
 
 export class NeonDocumentStore {
   constructor(pool) {
@@ -2457,7 +2458,9 @@ export class NeonChatStore {
 
   // El hilo. limit alto por defecto porque una conversación de WhatsApp de meses sigue
   // siendo pequeña comparada con lo que cuesta paginar una que casi nunca lo necesita.
-  async thread({ conversationId, limit = 200 } = {}) {
+  // env llega para poder firmar el enlace del adjunto aqui mismo: la pantalla recibe una
+  // URL lista para poner en un <img>, en vez de tener que saber como se arma.
+  async thread({ conversationId, limit = 200, env = null } = {}) {
     const [conversation, messages] = await Promise.all([
       this.pool.query(
         `select c.id, c.phone_normalized, c.client_id, c.wa_profile_name, c.bot_state,
@@ -2508,6 +2511,7 @@ export class NeonChatStore {
         messageType: message.message_type,
         mediaUrl: message.media_url,
         tieneAdjunto: message.tiene_adjunto,
+        mediaHref: message.tiene_adjunto && env ? mediaUrl(env, message.id) : null,
         mediaMime: message.media_mime,
         mediaFilename: message.media_filename,
         deliveryStatus: message.delivery_status,
@@ -2579,6 +2583,25 @@ export class NeonChatStore {
     } finally {
       client.release();
     }
+  }
+
+  // Borra el contenido de los adjuntos con más de 3 días, dejando la fila y el registro de que
+  // llegaron. Es lo mismo que hace purgeExpiredDepositReceipts con las fotos de comprobante y
+  // por los mismos dos motivos: no acumular espacio en Neon, y que un enlace público reenviado
+  // deje de servir solo pasado un tiempo corto.
+  //
+  // Se mide por la fecha del mensaje y no por la de la cita, porque un adjunto de WhatsApp no
+  // tiene por qué venir de una cita: mucha gente manda una foto antes de reservar nada.
+  async purgeExpiredChatMedia({ days = 3 } = {}) {
+    const result = await this.pool.query(
+      `update app.chat_messages
+          set media_data = null
+        where media_data is not null
+          and created_at <= now() - ($1 || ' days')::interval
+        returning id`,
+      [String(days)],
+    );
+    return { purgedCount: result.rowCount };
   }
 
   // El contenido de un adjunto, pedido de uno en uno. Devuelve null si ya se purgó, que es un

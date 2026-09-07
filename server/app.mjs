@@ -20,6 +20,7 @@ import { businessMinutesBetween } from "./store.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, sendInvoiceEmail } from "./email.mjs";
 import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
+import { mediaUrl, verifyMediaToken } from "./media-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
   RESERVAPP_ROLES,
@@ -1549,7 +1550,13 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar DEPOSIT_RECEIPT_PURGE_CRON_SECRET." });
       if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
       try {
-        res.json({ ok: true, ...(await bookingStore.purgeExpiredDepositReceipts()) });
+        const recibos = await bookingStore.purgeExpiredDepositReceipts();
+        // El mismo cron diario se lleva tambien los adjuntos del chat con mas de 3 dias. Se
+        // aprovecha en vez de crear un segundo cron con su propio secreto: las dos purgas hacen
+        // lo mismo --vaciar el archivo dejando el registro de que existio-- y una sola pasada es
+        // una cosa menos que se puede quedar sin programar.
+        const chat = chatStore ? await chatStore.purgeExpiredChatMedia({ days: 3 }) : { purgedCount: 0 };
+        res.json({ ok: true, ...recibos, chatMediaPurgedCount: chat.purgedCount });
       } catch (error) { next(error); }
     });
 
@@ -2085,7 +2092,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
       const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver la bandeja de mensajes");
       if (auth.error) return relayAuthError(res, auth.error);
-      const thread = await chatStore.thread({ conversationId: req.params.id });
+      const thread = await chatStore.thread({ conversationId: req.params.id, env });
       if (!thread) return res.status(404).json({ error: "Conversación no encontrada." });
       res.json(thread);
     } catch (error) {
@@ -2110,26 +2117,36 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   // resultado real. Guardar antes y enviar después dejaría el hilo diciendo que se contestó
   // cuando WhatsApp lo rechazó -- alguien creería que ya atendió a un cliente que sigue
   // esperando.
-  // El contenido de un adjunto, servido de uno en uno y no dentro del hilo: diez fotos en una
-  // conversación serían varios megas en cada apertura de la pantalla.
-  app.get("/api/chat/messages/:id/media", async (req, res, next) => {
+  // El adjunto de una conversación, por enlace firmado y SIN sesión.
+  //
+  // La primera versión de esto exigía sesión del ERP y no funcionaba: una etiqueta <img> del
+  // navegador hace una petición normal y no manda la cabecera de sesión, así que la foto nunca
+  // cargaba. Ahora el enlace se firma (ver server/media-link.mjs) y se abre solo, que es además
+  // lo que hace falta para poder reenviarlo.
+  //
+  // Fuera de /api a propósito, igual que /factura/:token: son las dos puertas públicas del
+  // servidor y conviene que se distingan de un vistazo de las que sí piden sesión.
+  app.get("/chat/media/:token", async (req, res, next) => {
     try {
-      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
-      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver los adjuntos de la bandeja");
-      if (auth.error) return relayAuthError(res, auth.error);
+      if (!chatStore) return res.status(503).send("Bandeja no disponible.");
+      const messageId = verifyMediaToken(env, req.params.token);
+      if (!messageId) return res.status(404).send("Enlace no válido.");
 
-      const adjunto = await chatStore.attachment({ messageId: req.params.id });
-      if (!adjunto) return res.status(404).json({ error: "Mensaje no encontrado." });
-      // 410 y no 404: la diferencia importa. El archivo existió y se purgó, que no es lo mismo
-      // que no haber existido nunca -- mismo criterio que las fotos de comprobante.
-      if (adjunto.purgado) return res.status(410).json({ error: "El adjunto ya se archivó. El mensaje sigue en el historial." });
+      const adjunto = await chatStore.attachment({ messageId });
+      if (!adjunto) return res.status(404).send("Adjunto no encontrado.");
+      // 410 y no 404: la diferencia importa. El archivo existió y se borró a los 3 días para no
+      // acumular espacio; eso no es lo mismo que no haber existido nunca.
+      if (adjunto.purgado) {
+        return res.status(410).send("Este archivo ya se borró. Los adjuntos se guardan 3 días.");
+      }
 
       const buffer = Buffer.from(adjunto.data, "base64");
       res.setHeader("Content-Type", adjunto.mime);
-      // inline para poder verlo en la pantalla sin descargarlo; nosniff porque el tipo lo eligió
-      // quien mandó el archivo y no queremos que el navegador lo reinterprete.
       res.setHeader("Content-Disposition", `inline; filename="${(adjunto.filename || "adjunto").replace(/[^\w.-]/g, "_")}"`);
+      // El tipo lo eligió quien mandó el archivo, así que no dejamos que el navegador lo
+      // reinterprete. Y nada de caché compartida: el enlace es público pero el contenido no.
       res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, max-age=300");
       res.send(buffer);
     } catch (error) {
       next(error);
