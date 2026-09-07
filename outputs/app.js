@@ -11810,9 +11810,21 @@ async function abrirConversacion(conversationId) {
         const quien = m.senderType === "cliente" ? hilo.name
           : m.senderType === "staff" ? (m.staffName || "Personal")
           : m.senderType === "bot" ? "Bot" : "Sistema";
-        // Los tipos que todavía no se renderizan (foto, audio) se muestran como etiqueta en
-        // vez de omitirse: saber que llegó algo importa más que poder verlo aún.
-        const cuerpo = m.body ? escapeHtml(m.body) : `<em>[${escapeHtml(m.messageType)}]</em>`;
+        // El adjunto se pide por su propia URL en vez de venir dentro del hilo: diez fotos en
+        // una conversación serían varios megas en cada apertura de la pantalla.
+        const urlAdjunto = m.tieneAdjunto ? functionEndpoint(`chat/messages/${m.id}/media`) : null;
+        let adjunto = "";
+        if (urlAdjunto && m.messageType === "image") {
+          adjunto = `<a href="${urlAdjunto}" target="_blank" rel="noopener"><img class="chat-adjunto" src="${urlAdjunto}" alt="${escapeHtml(m.mediaFilename || "Adjunto")}" loading="lazy"></a>`;
+        } else if (urlAdjunto) {
+          adjunto = `<a class="chat-adjunto-enlace" href="${urlAdjunto}" target="_blank" rel="noopener">📎 ${escapeHtml(m.mediaFilename || m.mediaMime || "Adjunto")}</a>`;
+        } else if (m.messageType !== "text") {
+          // Sin contenido: o se purgó, o llegó un tipo que todavía no bajamos. Se dice que
+          // llegó algo en vez de omitirlo -- saber que existió importa más que poder verlo.
+          adjunto = `<em class="muted">[${escapeHtml(m.messageType)} no disponible]</em>`;
+        }
+        const texto = m.body ? escapeHtml(m.body) : "";
+        const cuerpo = [texto, adjunto].filter(Boolean).join("<br>") || `<em>[${escapeHtml(m.messageType)}]</em>`;
         return `
           <div class="chat-msg chat-${escapeHtml(m.direction)}">
             <div class="chat-meta">${escapeHtml(quien)} · ${escapeHtml(bandejaCuando(m.createdAt))}</div>

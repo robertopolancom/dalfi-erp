@@ -2043,6 +2043,14 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         body: typeof body.body === "string" ? body.body.slice(0, 8000) : null,
         messageType: body.messageType || "text",
         mediaUrl: body.mediaUrl || null,
+        // El adjunto llega en base64 porque es como el ERP ya guarda las fotos de comprobante
+        // (migración 0018). El tope es la defensa real: sin él, un vídeo de WhatsApp de 16 MB
+        // se convierte en ~21 MB de base64 dentro de una fila de Postgres.
+        mediaBase64: typeof body.mediaBase64 === "string" && body.mediaBase64.length <= 8_000_000
+          ? body.mediaBase64
+          : null,
+        mediaMime: body.mediaMime || null,
+        mediaFilename: body.mediaFilename || null,
         waMessageId: body.waMessageId || null,
         botState: body.botState || null,
         // null (no false) cuando no viene, para que un mensaje suelto no apague por accidente
@@ -2102,6 +2110,32 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   // resultado real. Guardar antes y enviar después dejaría el hilo diciendo que se contestó
   // cuando WhatsApp lo rechazó -- alguien creería que ya atendió a un cliente que sigue
   // esperando.
+  // El contenido de un adjunto, servido de uno en uno y no dentro del hilo: diez fotos en una
+  // conversación serían varios megas en cada apertura de la pantalla.
+  app.get("/api/chat/messages/:id/media", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver los adjuntos de la bandeja");
+      if (auth.error) return relayAuthError(res, auth.error);
+
+      const adjunto = await chatStore.attachment({ messageId: req.params.id });
+      if (!adjunto) return res.status(404).json({ error: "Mensaje no encontrado." });
+      // 410 y no 404: la diferencia importa. El archivo existió y se purgó, que no es lo mismo
+      // que no haber existido nunca -- mismo criterio que las fotos de comprobante.
+      if (adjunto.purgado) return res.status(410).json({ error: "El adjunto ya se archivó. El mensaje sigue en el historial." });
+
+      const buffer = Buffer.from(adjunto.data, "base64");
+      res.setHeader("Content-Type", adjunto.mime);
+      // inline para poder verlo en la pantalla sin descargarlo; nosniff porque el tipo lo eligió
+      // quien mandó el archivo y no queremos que el navegador lo reinterprete.
+      res.setHeader("Content-Disposition", `inline; filename="${(adjunto.filename || "adjunto").replace(/[^\w.-]/g, "_")}"`);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.send(buffer);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/chat/conversations/:id/reply", async (req, res, next) => {
     try {
       if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });

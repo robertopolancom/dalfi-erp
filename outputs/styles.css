@@ -1438,3 +1438,8 @@ th {
 .estado-persona{background:#fff4e0;color:#8a5300}
 .estado-bot{background:#eaf3ea;color:#2b6b34}
 #bandeja-al-bot:disabled{opacity:.5;cursor:not-allowed}
+
+/* Bandeja: adjuntos. Se limita el alto para que una foto vertical no empuje el resto del hilo
+   fuera de la pantalla. */
+.chat-adjunto{display:block;max-width:220px;max-height:220px;border-radius:8px;margin-top:.35rem;object-fit:cover}
+.chat-adjunto-enlace{display:inline-block;margin-top:.35rem;text-decoration:none}

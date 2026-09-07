@@ -2317,6 +2317,9 @@ export class NeonChatStore {
     body = null,
     messageType = "text",
     mediaUrl = null,
+    mediaBase64 = null,
+    mediaMime = null,
+    mediaFilename = null,
     waMessageId = null,
     senderStaffId = null,
     botState = null,
@@ -2371,8 +2374,9 @@ export class NeonChatStore {
       const message = await client.query(
         `insert into app.chat_messages
            (conversation_id, direction, sender_type, sender_staff_id, body,
-            message_type, media_url, wa_message_id, delivery_status)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            message_type, media_url, media_data, media_mime, media_filename,
+            wa_message_id, delivery_status)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          on conflict (wa_message_id) do nothing
          returning id, created_at`,
         [
@@ -2383,6 +2387,9 @@ export class NeonChatStore {
           body,
           messageType,
           mediaUrl,
+          mediaBase64,
+          mediaMime,
+          mediaFilename,
           waMessageId,
           direction === "in" ? "received" : "sent",
         ],
@@ -2466,6 +2473,9 @@ export class NeonChatStore {
       this.pool.query(
         `select m.id, m.direction, m.sender_type, m.body, m.message_type, m.media_url,
                 m.delivery_status, m.delivery_error, m.created_at,
+                -- El contenido del adjunto NO viaja aqui: un hilo con diez fotos serian varios
+                -- megas en cada apertura. Solo se dice que existe; la imagen se pide aparte.
+                (m.media_data is not null) as tiene_adjunto, m.media_mime, m.media_filename,
                 st.full_name as staff_name
            from app.chat_messages m
            left join app.staff st on st.id = m.sender_staff_id
@@ -2497,6 +2507,9 @@ export class NeonChatStore {
         body: message.body,
         messageType: message.message_type,
         mediaUrl: message.media_url,
+        tieneAdjunto: message.tiene_adjunto,
+        mediaMime: message.media_mime,
+        mediaFilename: message.media_filename,
         deliveryStatus: message.delivery_status,
         deliveryError: message.delivery_error,
         createdAt: message.created_at,
@@ -2566,6 +2579,25 @@ export class NeonChatStore {
     } finally {
       client.release();
     }
+  }
+
+  // El contenido de un adjunto, pedido de uno en uno. Devuelve null si ya se purgó, que es un
+  // estado normal y esperado y no un error: la fila y el registro de que llegó siguen ahí.
+  async attachment({ messageId }) {
+    const r = await this.pool.query(
+      `select media_data, media_mime, media_filename, message_type
+         from app.chat_messages where id = $1`,
+      [messageId],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      data: row.media_data,
+      mime: row.media_mime || "application/octet-stream",
+      filename: row.media_filename,
+      messageType: row.message_type,
+      purgado: !row.media_data,
+    };
   }
 
   // Se devolvió la conversación al bot: deja de esperar a una persona y se suelta la
