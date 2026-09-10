@@ -946,7 +946,16 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     // reservado a administración (manicurista/asistente no revisan comprobantes).
     app.post("/api/reservapp/agenda/appointments/:id/deposit/review", async (req, res, next) => {
       if (!(await requireBookingStaff(req, res))) return;
-      const approve = req.body?.approve === true;
+      // Exigir el booleano en vez de `req.body?.approve === true`: así cualquier body con el
+      // campo mal escrito (o ausente) se responde 400 en vez de contar como RECHAZO silencioso
+      // con ok:true, que es lo que pasaba antes -- rechazaba el depósito de una clienta sin que
+      // nadie se enterara. Los dos frontends ya mandan booleano estricto (outputs/app.js usa
+      // dataset.approve === "true", outputs/reservar/app.js pasa true/false literales), esto
+      // protege a quien automatice la ruta después: un bot, el bridge o un cron.
+      if (typeof req.body?.approve !== "boolean") {
+        return res.status(400).json({ error: "Falta indicar si el comprobante se aprueba o se rechaza." });
+      }
+      const approve = req.body.approve;
       const note = cleanText(req.body?.note, 200);
       try {
         const session = await reservappSession(req);

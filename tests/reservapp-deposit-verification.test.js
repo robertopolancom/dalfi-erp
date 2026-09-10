@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import { NeonBookingStore } from "../server/store.mjs";
 
 // Comprobante de depósito (RD$500, ya exigido desde la creación de la cita -- ver
@@ -170,4 +171,32 @@ test("purgeExpiredDepositReceipts(): nada que purgar, devuelve purgedCount 0", a
   const store = new NeonBookingStore(pool);
   const result = await store.purgeExpiredDepositReceipts();
   assert.deepEqual(result, { purgedCount: 0 });
+});
+
+// Encontrado el 2026-09-10 probando la ruta a mano: la revisión leía `req.body?.approve === true`,
+// así que un body con el campo mal escrito -- mandé {decision:"aprobar"} -- no daba error, caía a
+// false y RECHAZABA el depósito respondiendo ok:true. Nadie se enteraba. Los frontends mandan el
+// booleano bien, pero la ruta la puede automatizar después un bot, el bridge o un cron.
+const appMjs = readFileSync(new URL("../server/app.mjs", import.meta.url), "utf8");
+const reviewRoute = appMjs.slice(
+  appMjs.indexOf('app.post("/api/reservapp/agenda/appointments/:id/deposit/review"'),
+  appMjs.indexOf("bookingStore.reviewDepositReceipt"),
+);
+
+test("la revisi\u00f3n de dep\u00f3sito exige el booleano: un body mal formado es 400, nunca un rechazo silencioso", () => {
+  assert.ok(reviewRoute, "no se encontr\u00f3 la ruta de revisi\u00f3n");
+  assert.match(reviewRoute, /typeof req\.body\?\.approve !== "boolean"/);
+  assert.match(reviewRoute, /res\.status\(400\)/);
+  assert.ok(!/const approve = req\.body\?\.approve === true/.test(reviewRoute),
+    "volvi\u00f3 el patr\u00f3n que convierte cualquier body raro en rechazo");
+});
+
+// Si un frontend empezara a mandar algo que no sea booleano (un "true" de dataset sin comparar,
+// por ejemplo), la validaci\u00f3n de arriba le devolver\u00eda 400 y el bot\u00f3n dejar\u00eda de funcionar.
+test("los dos frontends siguen mandando approve como booleano estricto", () => {
+  const erp = readFileSync(new URL("../outputs/app.js", import.meta.url), "utf8");
+  const reservapp = readFileSync(new URL("../outputs/reservar/app.js", import.meta.url), "utf8");
+  assert.match(erp, /reviewDeposit\(button\.dataset\.reservationId, button\.dataset\.approve === "true"\)/);
+  assert.match(reservapp, /reviewAppointmentDeposit\(true, event\.currentTarget\)/);
+  assert.match(reservapp, /reviewAppointmentDeposit\(false, event\.currentTarget\)/);
 });
