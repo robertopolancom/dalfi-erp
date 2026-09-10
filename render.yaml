@@ -56,6 +56,14 @@ services:
         sync: false
       - key: DEPOSIT_REVIEW_REMINDER_CRON_SECRET
         sync: false
+      # Credencial del Worker dalfi-erp-closing-cron (Cron Trigger 23:59 Santo Domingo) para
+      # llamar a POST /api/run-closing-catchup, que genera los cierres diarios que falten sin
+      # depender de que nadie abra el ERP. Tiene que ser EXACTAMENTE el mismo valor que el
+      # secret CLOSING_CRON_SECRET del Worker ("wrangler secret put" en workers/closing-cron).
+      # Mientras esta variable no exista, la ruta responde 503 y no hace nada -- el cron falla
+      # sin romper nada y los cierres los sigue creando el navegador al abrir el ERP.
+      - key: CLOSING_CRON_SECRET
+        sync: false
       # Avisos por correo al personal (nueva reserva, comprobante subido, recordatorio
       # horario) -- Gmail SMTP con contraseña de aplicación, ver server/email.mjs.
       # Transporte de los avisos por correo. Render bloquea la salida SMTP (comprobado el
