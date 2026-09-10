@@ -89,7 +89,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     "script-src 'self' https://cdn.jsdelivr.net",
     "style-src 'self' 'unsafe-inline'",
     `connect-src 'self' ${supabaseConnectSrc}`.trim(),
-    "img-src 'self' data:",
+    // blob: lo necesita compressSiteImage() en outputs/app.js: pasa el archivo elegido por
+    // URL.createObjectURL() a un <img> antes de redimensionarlo en canvas. Sin blob: el
+    // navegador bloquea esa carga y la subida de imágenes falla siempre.
+    "img-src 'self' data: blob:",
     "font-src 'self'",
     "frame-ancestors 'none'",
     "base-uri 'self'",

@@ -7,6 +7,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+async function readHeaders() {
+  return readFile(new URL("../outputs/reservar/_headers", import.meta.url), "utf8");
+}
+
 async function readApp() {
   return readFile(new URL("../outputs/reservar/app.js", import.meta.url), "utf8");
 }
@@ -54,4 +58,16 @@ test("el input del comprobante NO fuerza la cámara (deja escoger de la galería
   const app = await readApp();
   assert.match(app, /input\.type = "file"; input\.accept = "image\/\*"; input\.className = "hidden";/);
   assert.doesNotMatch(app, /input\.capture/);
+});
+
+// Regresión 2026-09-10, encontrada probando la app en vivo: compressImageFile() pasa el archivo
+// por URL.createObjectURL() (una URL blob:) antes de redimensionarlo en canvas, pero el CSP de
+// outputs/reservar/_headers decía `img-src 'self' data:`, sin blob:. El navegador bloqueaba la
+// carga y solo saltaba el onerror, así que TODA subida de comprobante moría con "No se pudo leer
+// la imagen." -- desde que la función se lanzó (2026-08-31) y con la cámara igual que con la
+// galería. Los tests de caracterización por texto fuente no lo venían porque nunca cargan una
+// imagen de verdad; por eso este mira el CSP, que es donde estaba el fallo.
+test("el CSP de ReservApp permite blob: en img-src (sin eso, compressImageFile siempre falla)", async () => {
+  const headers = await readHeaders();
+  assert.match(headers, /img-src 'self' data: blob:;/);
 });

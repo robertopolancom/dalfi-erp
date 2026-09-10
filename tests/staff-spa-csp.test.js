@@ -56,3 +56,14 @@ test("sin SUPABASE_URL configurado, el CSP sigue siendo válido (sin connect-src
     assert.match(csp, /connect-src 'self'/);
   });
 });
+
+// Regresión 2026-09-10: el CSP decía `img-src 'self' data:`, sin blob:, y compressSiteImage()
+// (outputs/app.js) carga el archivo elegido con URL.createObjectURL() en un <img> antes de
+// redimensionarlo en canvas. El navegador bloqueaba esa carga en silencio -- solo saltaba el
+// onerror -- así que la subida de imágenes fallaba siempre en producción.
+test("el CSP del personal permite blob: en img-src (lo usa la compresi\u00f3n antes de subir)", async () => {
+  await withServer({ SUPABASE_URL: "https://miproyecto.supabase.co" }, async (base) => {
+    const response = await fetch(`${base}/`);
+    assert.match(response.headers.get("content-security-policy"), /img-src 'self' data: blob:/);
+  });
+});
