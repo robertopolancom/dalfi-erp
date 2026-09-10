@@ -190,8 +190,16 @@ test("la expresion cron activa vive UNICAMENTE en workers/closing-cron/wrangler.
   assert.match(wranglerToml, /^\[triggers\]\s*\ncrons = \["59 3 \* \* \*"\]/m, "el Cron Trigger debe estar activo (sin comentar) con exactamente 59 3 * * * (23:59 hora de Santo Domingo, UTC-4 estable, sin horario de verano)");
 });
 
-test("APP_BASE_URL en wrangler.toml apunta al dominio productivo real de Cloudflare Pages, no a un placeholder", () => {
-  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/dalfi-erp\.pages\.dev"/);
+// Apuntaba a https://dalfi-erp.pages.dev hasta el 2026-09-10. Ese proyecto se borro el
+// 2026-08-24, asi que el cron no habria servido de nada aunque se desplegara: hoy el
+// catch-up lo sirve el backend de Render en POST /api/run-closing-catchup.
+test("APP_BASE_URL en wrangler.toml apunta al backend real, no a un dominio muerto ni a un placeholder", () => {
+  assert.match(wranglerToml, /APP_BASE_URL = "https:\/\/ssc\.dalfistudio\.com"/);
+  // Solo el VALOR importa: el comentario de arriba menciona el dominio viejo a proposito,
+  // para que se entienda por que cambio.
+  const asignaciones = wranglerToml.split("\n").filter((l) => /^\s*APP_BASE_URL\s*=/.test(l));
+  assert.equal(asignaciones.length, 1, "debe haber exactamente un APP_BASE_URL");
+  assert.ok(!/dalfi-erp\.pages\.dev/.test(asignaciones[0]), "dalfi-erp.pages.dev ya no existe");
 });
 
 // --- 25: README sin secretos ---

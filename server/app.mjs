@@ -1,4 +1,5 @@
 import express from "express";
+import { timingSafeEqual } from "node:crypto";
 import {
   resolveErpIdentity,
   requireErpPermission,
@@ -16,6 +17,7 @@ import { authorizeDatabaseChanges, detectDatabaseChanges } from "../functions/ap
 import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
+import { runClosingCatchUp } from "./closing-catchup.mjs";
 import { businessMinutesBetween } from "./store.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, sendInvoiceEmail } from "./email.mjs";
@@ -2266,6 +2268,53 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   app.get("/api/me", authenticate, (req, res) => {
     const { userId, email, role, isActive, permissions } = req.erpIdentity;
     res.json({ userId, email, role, isActive, permissions });
+  });
+
+  // Catch-up de cierres, disparado por el Worker workers/closing-cron (Cron Trigger a las
+  // 23:59 de Santo Domingo). Existe para que los cierres diarios se generen AUNQUE NADIE
+  // abra el ERP: ensureProvisionalClosings() en outputs/app.js corre en el navegador, as\u00ed
+  // que sin esto los cierres solo aparec\u00edan cuando alguien entraba a la app.
+  //
+  // No lleva `authenticate` a prop\u00f3sito -- quien llama es un Worker, no una persona con
+  // sesi\u00f3n del ERP. Su credencial es el header x-cron-secret, que debe coincidir con
+  // CLOSING_CRON_SECRET; sin esa variable configurada la ruta se apaga sola (503) en vez
+  // de quedar abierta.
+  app.post("/api/run-closing-catchup", async (req, res, next) => {
+    const expected = env.CLOSING_CRON_SECRET;
+    if (!expected) return res.status(503).json({ error: "El catch-up de cierres no est\u00e1 configurado." });
+    const provided = req.get("x-cron-secret") || "";
+    // Comparaci\u00f3n de largo constante para no filtrar el secreto por tiempo de respuesta.
+    const a = Buffer.from(String(provided));
+    const b = Buffer.from(String(expected));
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: "Secreto de cron inv\u00e1lido." });
+    }
+    // Un reintento si otra sesi\u00f3n guarda entre la lectura y el guardado: se vuelve a leer
+    // y se recalcula sobre el documento nuevo, nunca se reescribe el que qued\u00f3 viejo.
+    for (let intento = 1; intento <= 2; intento += 1) {
+      try {
+        const current = await store.read();
+        if (!current) return res.status(404).json({ error: "Base de datos no encontrada." });
+        const document = current.data;
+        const { created, normalized } = runClosingCatchUp(document.data, new Date());
+        if (!created && !normalized) return res.json({ ok: true, created: 0, normalized: 0 });
+        const result = await store.save({
+          document,
+          expectedUpdatedAt: current.updatedAt,
+          identity: { userId: null, email: "cron:closing-catchup", role: "system" },
+          changes: { domains: ["cierres"], tables: ["cierres"], envelope: false },
+        });
+        if (result.missing) return res.status(404).json({ error: "Base de datos no encontrada." });
+        if (result.conflict) {
+          if (intento === 1) continue;
+          return res.status(409).json({ error: "Otra sesi\u00f3n guard\u00f3 primero." });
+        }
+        return res.json({ ok: true, created, normalized, updatedAt: result.updatedAt });
+      } catch (error) {
+        return next(error);
+      }
+    }
+    return res.status(409).json({ error: "Otra sesi\u00f3n guard\u00f3 primero." });
   });
 
   app.get("/api/database", authenticate, async (req, res, next) => {
