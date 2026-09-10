@@ -45,3 +45,13 @@ test("las 5 variantes de badge de depósito ya existen en el CSS (deposit-*)", a
   }
   assert.match(css, /\.deposit-upload\{/);
 });
+
+// Regresión 2026-09-10: el input llevaba capture="environment", así que en el móvil se abría la
+// cámara de una vez y no había forma de escoger una captura de pantalla ya guardada -- que es como
+// llega la mayoría de los comprobantes de transferencia. Sin `capture`, el menú nativo del sistema
+// ofrece las dos: tomar la foto o buscarla en la galería.
+test("el input del comprobante NO fuerza la cámara (deja escoger de la galería también)", async () => {
+  const app = await readApp();
+  assert.match(app, /input\.type = "file"; input\.accept = "image\/\*"; input\.className = "hidden";/);
+  assert.doesNotMatch(app, /input\.capture/);
+});

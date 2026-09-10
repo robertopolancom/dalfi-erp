@@ -1142,7 +1142,11 @@ function depositUploadControl(appointmentId, { showAccounts = true, onUploaded =
     wrap.append(accounts);
   }
   const input = document.createElement("input");
-  input.type = "file"; input.accept = "image/*"; input.capture = "environment"; input.className = "hidden";
+  // Sin `capture`: con capture="environment" el móvil abría la cámara directamente y no dejaba
+  // elegir una captura de pantalla ya guardada, que es como llega la mayoría de los comprobantes
+  // de transferencia. Con solo accept="image/*", iOS y Android muestran el menú nativo con las
+  // dos opciones (Fototeca / Tomar foto / Elegir archivo).
+  input.type = "file"; input.accept = "image/*"; input.className = "hidden";
   const btn = document.createElement("button");
   btn.className = "secondary compact deposit-upload-btn"; btn.type = "button";
   btn.textContent = t("Cargar comprobante", "Upload receipt");
