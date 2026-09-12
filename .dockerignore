@@ -1,0 +1,9 @@
+node_modules
+.git
+.env*
+*.log
+tests
+manual_usuario
+backups
+work
+.claude
