@@ -1,4 +1,5 @@
 import express from "express";
+import compression from "compression";
 import { timingSafeEqual } from "node:crypto";
 import {
   resolveErpIdentity,
@@ -101,6 +102,11 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     "form-action 'self'",
   ].join("; ");
 
+  // La SPA del ERP son ~176 KB de HTML en cada carga y el JSON de la agenda tampoco es
+  // pequeño. Comprimir baja eso a la quinta parte: carga más rápida para el personal y menos
+  // transferencia de salida, que en Cloud Run se paga desde el primer byte fuera de
+  // Norteamérica. Va antes que todo lo demás para que alcance también a los estáticos.
+  app.use(compression());
   app.use((req, res, next) => {
     res.set("X-Content-Type-Options", "nosniff");
     res.set("Referrer-Policy", "same-origin");
