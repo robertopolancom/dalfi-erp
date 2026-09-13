@@ -441,7 +441,21 @@ function saveState({ skipRemote = false } = {}) {
 function initSupabaseClient() {
   if (supabaseClient || !supabaseUrl || !supabasePublishableKey || !window.supabase?.createClient) return;
   supabaseClient = window.supabase.createClient(supabaseUrl, supabasePublishableKey);
+  // Al volver del enlace de "no recuerdo contraseña", supabase-js lee el token del hash de la URL
+  // y avisa con PASSWORD_RECOVERY. Esa sesión sirve para una sola cosa: fijar la contraseña nueva,
+  // y por eso el panel se abre sin pedir la anterior (quien llega aquí justamente no la sabe).
+  supabaseClient.auth.onAuthStateChange((event, session) => {
+    if (event !== "PASSWORD_RECOVERY") return;
+    supabaseSession = session;
+    pendingPasswordRecovery = true;
+    if (typeof openPasswordRecoveryPanel === "function") openPasswordRecoveryPanel();
+  });
 }
+
+// wireAuth() corre después de initSupabaseClient(), así que el evento puede llegar antes de que
+// exista el panel. Se guarda la señal y wireAuth la recoge al terminar de montarse.
+let pendingPasswordRecovery = false;
+let openPasswordRecoveryPanel = null;
 
 function isSupabaseReady() {
   return Boolean(supabaseClient && supabaseSession?.user);
@@ -11959,14 +11973,28 @@ function wireAuth() {
     byId("password-change-form").dataset.mode = mode;
     byId("password-change-email-label").classList.toggle("hidden", mode !== "forgot");
     byId("cancel-password-change").classList.toggle("hidden", mode === "forced");
+    // En "recovery" el enlace del correo ya demostró quién eres: pedir la contraseña vieja sería
+    // pedir justo lo que no recuerdas, así que ese campo se esconde y deja de ser obligatorio.
+    const esRecuperacion = mode === "recovery";
+    byId("password-current").closest("label").classList.toggle("hidden", esRecuperacion);
+    byId("password-current").required = !esRecuperacion;
     byId("password-current").placeholder = mode === "forgot" || mode === "forced" ? "Contraseña temporal" : "Contraseña actual";
-    byId("password-change-title").textContent = mode === "forgot" ? "Crear contraseña nueva" : "Cambiar contraseña";
+    byId("password-change-title").textContent =
+      mode === "forgot" || esRecuperacion ? "Crear contraseña nueva" : "Cambiar contraseña";
     byId("password-change-message").textContent =
-      mode === "forgot"
-        ? "Usa la contraseña temporal que te entregó el administrador."
-        : "La contraseña nueva será la que usarás para entrar al ERP.";
-    byId(mode === "forgot" ? "password-change-email" : "password-current").focus();
+      esRecuperacion
+        ? "Escribe la contraseña que vas a usar de ahora en adelante."
+        : mode === "forgot"
+          ? "Usa la contraseña temporal que te entregó el administrador."
+          : "La contraseña nueva será la que usarás para entrar al ERP.";
+    byId(mode === "forgot" ? "password-change-email" : esRecuperacion ? "password-new" : "password-current").focus();
   };
+
+  openPasswordRecoveryPanel = () => resetPasswordPanel("recovery");
+  if (pendingPasswordRecovery) {
+    pendingPasswordRecovery = false;
+    openPasswordRecoveryPanel();
+  }
 
   byId("open-login").addEventListener("click", () => {
     byId("auth-panel").classList.remove("hidden");
@@ -12021,11 +12049,36 @@ function wireAuth() {
   // cambio de contrasena sin importar si el correo existe o no: la
   // verificacion real ocurre en signInWithPassword() mas abajo, que solo
   // tiene exito si la contrasena temporal es correcta.
-  byId("forgot-password-form").addEventListener("submit", (event) => {
+  // Pedir el enlace por correo. La respuesta es siempre la misma exista o no el correo (el
+  // servidor tampoco lo distingue), para que esto no sirva para averiguar quién tiene cuenta.
+  byId("forgot-password-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const email = byId("forgot-email").value.trim();
     const message = byId("forgot-password-message");
-    message.textContent = "Si tu correo esta registrado y un administrador ya generó una contraseña temporal, continúa a continuación.";
+    const boton = event.currentTarget.querySelector('button[type="submit"]');
+    if (!email) {
+      message.textContent = "Escribe tu correo.";
+      return;
+    }
+    boton.disabled = true;
+    message.textContent = "Enviando...";
+    try {
+      await fetch("/api/password-reset/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      message.textContent = "Listo. Si ese correo tiene cuenta, ahí te llega el enlace para crear tu contraseña. Revisa también la carpeta de spam.";
+    } catch (error) {
+      console.error("password-reset:", error);
+      message.textContent = "No se pudo enviar el correo. Revisa tu conexión e inténtalo de nuevo.";
+    } finally {
+      boton.disabled = false;
+    }
+  });
+  // Quien ya tiene una contraseña temporal del administrador no necesita el correo.
+  byId("use-temp-password").addEventListener("click", () => {
+    const email = byId("forgot-email").value.trim();
     resetPasswordPanel("forgot");
     byId("password-change-email").value = email;
   });
@@ -12037,6 +12090,7 @@ function wireAuth() {
       return;
     }
     const mode = event.currentTarget.dataset.mode || (isPasswordResetRequired() ? "forced" : "own");
+    const esRecuperacion = mode === "recovery";
     const email = mode === "forgot" ? byId("password-change-email").value.trim() : supabaseSession?.user?.email;
     const currentPassword = byId("password-current").value;
     const newPassword = byId("password-new").value;
@@ -12055,7 +12109,18 @@ function wireAuth() {
       return;
     }
     message.textContent = "Actualizando contraseña...";
-    const signInResult = await supabaseClient.auth.signInWithPassword({ email, password: currentPassword });
+    // Venir del enlace del correo ya deja una sesión abierta: no hay contraseña vieja que validar.
+    let signInResult;
+    if (esRecuperacion) {
+      const actual = await supabaseClient.auth.getSession();
+      if (!actual.data.session) {
+        message.textContent = "El enlace ya venció. Pide uno nuevo desde \u201cNo recuerdo contraseña\u201d.";
+        return;
+      }
+      signInResult = { data: { session: actual.data.session, user: actual.data.session.user }, error: null };
+    } else {
+      signInResult = await supabaseClient.auth.signInWithPassword({ email, password: currentPassword });
+    }
     if (signInResult.error) {
       message.textContent = "La contraseña actual o temporal no es correcta.";
       return;

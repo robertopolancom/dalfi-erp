@@ -21,7 +21,8 @@ import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { runClosingCatchUp } from "./closing-catchup.mjs";
 import { businessMinutesBetween } from "./store.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
-         notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, sendInvoiceEmail } from "./email.mjs";
+         notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, sendInvoiceEmail,
+         sendBusinessEmail } from "./email.mjs";
 import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { mediaUrl, verifyMediaToken } from "./media-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
@@ -2494,10 +2495,20 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   // en vez de JSON: el fetch "tenia exito" pero result.users quedaba
   // undefined, asi que el panel de Usuarios mostraba "No hay usuarios
   // registrados" en vez de un error real, aunque Supabase Auth nunca fallo.
+  // Una contraseña temporal se dicta por teléfono o por WhatsApp, así que lo que importa es que
+  // se pueda leer en voz alta sin equivocarse. La versión vieja ("hK3mNpQrSt#1") era imposible de
+  // pasar sin que la otra persona escribiera mal una mayúscula. Ahora sale como "Coral-4821":
+  // palabra corriente + guion + cuatro dígitos. Son ~26.000 combinaciones por palabra, suficiente
+  // porque la contraseña vive minutos: al entrar con ella el ERP obliga a cambiarla.
+  const TEMP_PASSWORD_WORDS = [
+    "Coral", "Perla", "Jazmin", "Aurora", "Canela", "Ambar", "Menta", "Lirio",
+    "Nacar", "Fresa", "Marfil", "Almendra", "Violeta", "Turquesa", "Girasol", "Azahar",
+  ];
   const generateTemporaryPassword = () => {
-    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-    const bytes = crypto.getRandomValues(new Uint8Array(10));
-    return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("") + "#1";
+    const bytes = crypto.getRandomValues(new Uint8Array(3));
+    const palabra = TEMP_PASSWORD_WORDS[bytes[0] % TEMP_PASSWORD_WORDS.length];
+    const numero = String(((bytes[1] << 8) | bytes[2]) % 9000 + 1000);
+    return `${palabra}-${numero}`;
   };
 
   const relayAuthError = async (res, response) => {
@@ -2714,6 +2725,64 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       res.json({ user: toPublicUser(body, profileResult.profile), temporaryPassword: resetPassword ? temporaryPassword : undefined });
     } catch (error) {
       next(error);
+    }
+  });
+
+  // Recuperar la contraseña sin depender de que un administrador esté disponible. El enlace lo
+  // firma Supabase (admin/generate_link, type recovery) pero el correo lo manda Resend con el
+  // remitente del negocio: el SMTP propio de Supabase en plan gratis limita a unos pocos correos
+  // por hora y no avisa cuando los descarta, así que el personal se quedaría esperando un mensaje
+  // que nunca llega. Responde 200 siempre, exista o no el correo -- si no, esta ruta se convierte
+  // en una forma de averiguar quién tiene cuenta.
+  app.post("/api/password-reset/request", bookingRateLimit, async (req, res, next) => {
+    const email = normalizeUserEmail(req.body?.email);
+    if (!email || !email.includes("@")) return res.json({ ok: true });
+    try {
+      const supabaseUrl = env.SUPABASE_URL;
+      const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
+      if (!supabaseUrl || !serviceRoleKey) {
+        console.error("password-reset: faltan variables de Supabase");
+        return res.json({ ok: true });
+      }
+      const base = String(env.SEBEN_SUITE_HOST || "").trim();
+      const redirectTo = base ? `https://${base}/` : "https://ssc.dalfistudio.com/";
+      const response = await fetchImpl(`${supabaseUrl}/auth/v1/admin/generate_link`, {
+        method: "POST",
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ type: "recovery", email, options: { redirect_to: redirectTo } }),
+      });
+      if (!response.ok) {
+        // Correo desconocido: Supabase devuelve 400/422. No es un error que deba ver quien pregunta.
+        console.warn("password-reset: generate_link respondio", response.status);
+        return res.json({ ok: true });
+      }
+      const data = await response.json().catch(() => ({}));
+      const link = data.action_link || data.properties?.action_link;
+      if (!link) {
+        console.error("password-reset: generate_link no devolvio action_link");
+        return res.json({ ok: true });
+      }
+      const html = `<p>Hola,</p>
+<p>Pediste crear una contrase&ntilde;a nueva para entrar a <strong>Seben Suite Connect</strong>.</p>
+<p><a href="${link}" style="background:#14312a;color:#fff;padding:11px 20px;border-radius:6px;text-decoration:none;display:inline-block">Crear mi contrase&ntilde;a</a></p>
+<p>El enlace sirve una sola vez y caduca en una hora. Si no fuiste t&uacute;, no hace falta que hagas nada: tu contrase&ntilde;a actual sigue igual.</p>
+<p>Dalfi Studio Nails</p>`;
+      const text = `Pediste crear una contrasena nueva para entrar a Seben Suite Connect.\n\n${link}\n\nEl enlace sirve una sola vez y caduca en una hora. Si no fuiste tu, no hace falta que hagas nada.`;
+      await sendBusinessEmail(env, {
+        to: email,
+        subject: "Crear tu contrase\u00f1a de Seben Suite Connect",
+        html,
+        text,
+      });
+      res.json({ ok: true });
+    } catch (error) {
+      // Tampoco aquí se filtra el motivo: se registra y se responde igual que en el caso bueno.
+      console.error("password-reset:", error);
+      res.json({ ok: true });
     }
   });
 

@@ -92,11 +92,12 @@
               <input id="forgot-email" type="email" placeholder="correo@empresa.com" required />
             </label>
             <div class="auth-actions">
-              <button class="primary-btn inline" type="submit">Validar reset</button>
+              <button class="primary-btn inline" type="submit">Enviarme el enlace</button>
+              <button class="secondary-btn" id="use-temp-password" type="button">Tengo una contraseña temporal</button>
               <button class="secondary-btn" id="cancel-forgot-password" type="button">Cancelar</button>
             </div>
           </form>
-          <p class="auth-note" id="forgot-password-message">Si el administrador ya reseteó tu contraseña, podrás crear una nueva.</p>
+          <p class="auth-note" id="forgot-password-message">Te llega un correo con un enlace para crear tu contraseña nueva. Si el administrador te dio una contraseña temporal, usa el otro botón.</p>
         </section>
 
         <section class="auth-panel hidden" id="password-change-panel">
