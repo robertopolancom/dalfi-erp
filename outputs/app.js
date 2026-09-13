@@ -11979,8 +11979,9 @@ function wireAuth() {
     byId("password-current").closest("label").classList.toggle("hidden", esRecuperacion);
     byId("password-current").required = !esRecuperacion;
     byId("password-current").placeholder = mode === "forgot" || mode === "forced" ? "Contraseña temporal" : "Contraseña actual";
-    byId("password-change-title").textContent =
-      mode === "forgot" || esRecuperacion ? "Crear contraseña nueva" : "Cambiar contraseña";
+    // Siempre "Cambiar contraseña": el correo dice eso y la pantalla tiene que decir lo mismo,
+    // o quien llega desde el enlace duda de si aterrizó donde debía.
+    byId("password-change-title").textContent = "Cambiar contraseña";
     byId("password-change-message").textContent =
       esRecuperacion
         ? "Escribe la contraseña que vas a usar de ahora en adelante."

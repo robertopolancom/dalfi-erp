@@ -2767,14 +2767,14 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         return res.json({ ok: true });
       }
       const html = `<p>Hola,</p>
-<p>Pediste crear una contrase&ntilde;a nueva para entrar a <strong>Seben Suite Connect</strong>.</p>
-<p><a href="${link}" style="background:#14312a;color:#fff;padding:11px 20px;border-radius:6px;text-decoration:none;display:inline-block">Crear mi contrase&ntilde;a</a></p>
+<p>Pediste cambiar tu contrase&ntilde;a de <strong>Seben Suite Connect</strong>.</p>
+<p><a href="${link}" style="background:#14312a;color:#fff;padding:11px 20px;border-radius:6px;text-decoration:none;display:inline-block">Cambiar mi contrase&ntilde;a</a></p>
 <p>El enlace sirve una sola vez y caduca en una hora. Si no fuiste t&uacute;, no hace falta que hagas nada: tu contrase&ntilde;a actual sigue igual.</p>
 <p>Dalfi Studio Nails</p>`;
-      const text = `Pediste crear una contrasena nueva para entrar a Seben Suite Connect.\n\n${link}\n\nEl enlace sirve una sola vez y caduca en una hora. Si no fuiste tu, no hace falta que hagas nada.`;
+      const text = `Pediste cambiar tu contrasena de Seben Suite Connect.\n\n${link}\n\nEl enlace sirve una sola vez y caduca en una hora. Si no fuiste tu, no hace falta que hagas nada.`;
       await sendBusinessEmail(env, {
         to: email,
-        subject: "Crear tu contrase\u00f1a de Seben Suite Connect",
+        subject: "Cambiar tu contrase\u00f1a de Seben Suite Connect",
         html,
         text,
       });
