@@ -1615,6 +1615,45 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     // entre los dos servicios, solo el secreto en sí. Mismo filtro y mismos nombres de campo que
     // ya espera buildPaymentAccountCandidate() del lado del bot (banco/tipoCuenta/numeroCuenta/
     // titular/documento/tipoDocumento) para no tener que tocar ese código.
+    // Estado del chatbot. El bridge dejó de guardarlo en un archivo dentro de la Mac (ver
+    // neon/migrations/0029): ahora lo lee al arrancar y lo reescribe tras cada cambio, contra
+    // esta ruta y con el mismo x-chatbot-secret que ya usa para reservar. Así el bridge puede
+    // correr en Cloud Run --disco efímero, se apaga sin tráfico-- sin perder las conversaciones,
+    // y sigue sin necesitar credenciales de base de datos ni una sola dependencia npm.
+    const requireChatbotSecret = (req, res) => {
+      const expectedSecret = env.CHATBOT_SECRET;
+      if (!expectedSecret) {
+        res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
+        return false;
+      }
+      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) {
+        res.status(401).json({ error: "Secreto de chatbot inválido." });
+        return false;
+      }
+      return true;
+    };
+
+    app.get("/api/booking/bridge-state", bookingRateLimit, async (req, res, next) => {
+      if (!requireChatbotSecret(req, res)) return;
+      try {
+        res.json(await bookingStore.readBridgeState());
+      } catch (error) { next(error); }
+    });
+
+    app.put("/api/booking/bridge-state", bookingRateLimit, async (req, res, next) => {
+      if (!requireChatbotSecret(req, res)) return;
+      const state = req.body?.state;
+      // Guardar undefined o un array dejaría el estado en una forma que loadState no sabe leer, y
+      // el bridge arrancaría creyendo que no hay conversaciones. Mejor rechazarlo aquí.
+      if (!state || typeof state !== "object" || Array.isArray(state)) {
+        return res.status(400).json({ error: "El estado debe ser un objeto." });
+      }
+      try {
+        const updatedBy = String(req.body?.updatedBy || "").slice(0, 120) || null;
+        res.json({ ok: true, ...(await bookingStore.writeBridgeState(state, updatedBy)) });
+      } catch (error) { next(error); }
+    });
+
     app.get("/api/booking/bank-accounts", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.CHATBOT_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });

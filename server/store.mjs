@@ -2187,6 +2187,28 @@ export class NeonBookingStore {
   // Atendida o Cancelada -- así no se acumulan fotos de citas ya resueltas ocupando la base,
   // pero el rastro de auditoría (quién revisó el depósito y cuándo) se queda para siempre. Ver
   // POST /api/booking/purge-deposit-receipts y workers/deposit-receipt-purge-cron/.
+  // Estado del chatbot (ver neon/migrations/0029). Una sola fila con el snapshot entero, que es
+  // como el bridge ya lo serializaba cuando vivía en /data/state.json.
+  async readBridgeState() {
+    const result = await this.pool.query(
+      "select state, updated_at, updated_by from app.chatbot_bridge_state where id=true",
+    );
+    const row = result.rows[0];
+    return { state: row?.state ?? {}, updatedAt: row?.updated_at ?? null, updatedBy: row?.updated_by ?? null };
+  }
+
+  async writeBridgeState(state, updatedBy = null) {
+    const result = await this.pool.query(
+      `insert into app.chatbot_bridge_state (id, state, updated_at, updated_by)
+            values (true, $1::jsonb, clock_timestamp(), $2)
+       on conflict (id) do update
+            set state = excluded.state, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+         returning updated_at`,
+      [JSON.stringify(state ?? {}), updatedBy],
+    );
+    return { updatedAt: result.rows[0]?.updated_at ?? null };
+  }
+
   async purgeExpiredDepositReceipts() {
     const result = await this.pool.query(
       `update app.appointment_deposit_receipts r
