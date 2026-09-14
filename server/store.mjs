@@ -1847,12 +1847,13 @@ export class NeonBookingStore {
          for update`,
       [staffId, winnerId, startsAt, endsAt],
     );
-    if (!losers.rows.length) return [];
+    if (!losers.rows.length) return { moved: [], stranded: [] };
 
     const settingsResult = await client.query("select timezone, settings from app.business_settings where id=true");
     const businessSettings = settingsResult.rows[0]?.settings || {};
 
     const moved = [];
+    const stranded = [];
     const reservedThisPass = [];
     for (const loser of losers.rows) {
       const originalStart = new Date(loser.starts_at);
@@ -1863,7 +1864,18 @@ export class NeonBookingStore {
       const slot = await this.findNearestFreeSlotSameDay(client, {
         staffId, date, durationMinutes, aroundMinute, excludeAppointmentId: loser.id, alreadyReassigned: reservedThisPass,
       });
-      if (!slot) continue; // sigue en conflicto -- el personal la reprograma a mano
+      if (!slot) {
+        // No cupo ningún hueco ese mismo día: la cita se queda donde estaba, en conflicto, y hay
+        // que reprogramarla a mano. Antes esto se descartaba en silencio y el choque aparecía
+        // mucho después, cuando alguien intentaba confirmarla. Ahora sale por aquí para que
+        // server/app.mjs avise al personal en el momento.
+        stranded.push({
+          id: loser.id,
+          legacyId: loser.legacy_id,
+          at: { startsAt: originalStart.toISOString(), endsAt: originalEnd.toISOString() },
+        });
+        continue;
+      }
       reservedThisPass.push(slot);
       const hoursUntil = businessMinutesBetween(Date.now(), slot.start.getTime(), businessSettings) / 60;
       const newConfirmationStatus = hoursUntil <= 4 ? "NoRequerida" : "Programada";
@@ -1878,9 +1890,10 @@ export class NeonBookingStore {
           where id=$1`,
         [loser.id, slot.start.toISOString(), slot.end.toISOString(), newConfirmationStatus, JSON.stringify(movedFrom)],
       );
+      const newLocalMinutes = NeonBookingStore.localMinutesOf(slot.start);
+      const newHora = `${String(Math.floor(newLocalMinutes / 60)).padStart(2, "0")}:${String(newLocalMinutes % 60).padStart(2, "0")}`;
+      const oldHora = `${String(Math.floor(aroundMinute / 60)).padStart(2, "0")}:${String(aroundMinute % 60).padStart(2, "0")}`;
       if (loser.legacy_id) {
-        const newLocalMinutes = NeonBookingStore.localMinutesOf(slot.start);
-        const newHora = `${String(Math.floor(newLocalMinutes / 60)).padStart(2, "0")}:${String(newLocalMinutes % 60).padStart(2, "0")}`;
         await this.mirrorAppointmentToDocument(client, loser.legacy_id, (doc) => {
           doc.fecha = date;
           doc.hora = newHora;
@@ -1890,12 +1903,12 @@ export class NeonBookingStore {
         });
       }
       moved.push({
-        id: loser.id, legacyId: loser.legacy_id,
-        from: { startsAt: originalStart.toISOString(), endsAt: originalEnd.toISOString() },
-        to: { startsAt: slot.start.toISOString(), endsAt: slot.end.toISOString() },
+        id: loser.id, legacyId: loser.legacy_id, date,
+        from: { startsAt: originalStart.toISOString(), endsAt: originalEnd.toISOString(), time: oldHora },
+        to: { startsAt: slot.start.toISOString(), endsAt: slot.end.toISOString(), time: newHora },
       });
     }
-    return moved;
+    return { moved, stranded };
   }
 
   // Cambio manual de estatus (Confirmada/Atendida/NoAsistio/Programada) desde un click en la
@@ -1924,18 +1937,19 @@ export class NeonBookingStore {
       );
       const row = result.rows[0] || null;
       let displaced = [];
+      let stranded = [];
       if (row?.legacy_id) {
         const ESTADO_BY_STATUS = { scheduled: "Programada", confirmed: "Confirmada", completed: "Atendida", no_show: "No asistió" };
         const estado = ESTADO_BY_STATUS[status];
         if (estado) await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estado = estado; doc.updated_at = new Date().toISOString(); });
       }
       if (row && status === "confirmed") {
-        displaced = await this.resolveDisplacedAppointments(client, {
+        ({ moved: displaced, stranded } = await this.resolveDisplacedAppointments(client, {
           winnerId: row.id, staffId: row.staff_id, startsAt: row.starts_at, endsAt: row.ends_at,
-        });
+        }));
       }
       await client.query("commit");
-      return row ? { ...row, displaced } : row;
+      return row ? { ...row, displaced, stranded } : row;
     } catch (error) {
       await client.query("rollback").catch(() => {});
       if (error?.code === "23P01") {
@@ -1999,12 +2013,13 @@ export class NeonBookingStore {
 
   async appointmentSummary(id) {
     const result = await this.pool.query(
-      `select a.legacy_id, c.full_name client_name, s.full_name staff_name,
+      `select a.legacy_id, a.deposit_status, c.full_name client_name, p.phone_original client_phone, s.full_name staff_name,
               to_char(a.starts_at at time zone bs.timezone,'YYYY-MM-DD') date,
               to_char(a.starts_at at time zone bs.timezone,'HH24:MI') time,
               coalesce(string_agg(distinct x.service_name_snapshot, ', '),'Cita') service_name
          from app.appointments a
          left join app.clients c on c.id=a.client_id
+         left join app.client_phones p on p.client_id=c.id and p.is_primary
          left join app.staff s on s.id=a.staff_id
          left join app.appointment_services x on x.appointment_id=a.id
          cross join app.business_settings bs
@@ -2016,7 +2031,7 @@ export class NeonBookingStore {
         -- clause'. Se llevaba por delante los tres avisos que dependen de este resumen
         -- -- comprobante de depósito subido, cita cancelada y confirmación de la clienta --
         -- antes incluso de intentar mandar el correo.
-        group by a.id, a.legacy_id, a.starts_at, c.full_name, s.full_name, bs.timezone`,
+        group by a.id, a.legacy_id, a.starts_at, a.deposit_status, c.full_name, p.phone_original, s.full_name, bs.timezone`,
       [id],
     );
     return result.rows[0] || null;
@@ -2165,13 +2180,13 @@ export class NeonBookingStore {
       // Aprobar el comprobante es la otra vía (junto a setAppointmentStatus) que puede dejar a
       // otras citas 'scheduled' compitiendo por un horario que esta acaba de ganar -- ver
       // resolveDisplacedAppointments más arriba.
-      const displaced = approve
+      const { moved: displaced, stranded } = approve
         ? await this.resolveDisplacedAppointments(client, {
             winnerId: row.id, staffId: row.staff_id, startsAt: row.starts_at, endsAt: row.ends_at,
           })
-        : [];
+        : { moved: [], stranded: [] };
       await client.query("commit");
-      return { ...row, displaced };
+      return { ...row, displaced, stranded };
     } catch (error) {
       await client.query("rollback").catch(() => {});
       if (error?.code === "23P01") {

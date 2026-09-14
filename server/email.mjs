@@ -276,6 +276,27 @@ export async function notifyAppointmentConfirmedByClient(env, appointment, creat
   }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
+// El horario de esta cita lo ganó otra (depósito aprobado o confirmación de administración) y el
+// sistema NO encontró ningún hueco libre ese mismo día para reubicarla: se queda donde estaba, en
+// conflicto, y nadie la puede confirmar sin chocar con appointments_no_staff_overlap. Es el único
+// caso del desplazamiento que no se resuelve solo, así que es el que hay que contarle a alguien --
+// antes se descartaba en silencio (ver resolveDisplacedAppointments en server/store.mjs).
+export async function notifyAppointmentStranded(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
+  const line = aptLine(appointment);
+  // Lo que NO hay que hacer cuando llames: pedirle el depósito otra vez. Lo que ya pagó se queda
+  // con la cita y vale para la fecha nueva (regla de Roberto, 2026-09-14).
+  const deposito = appointment.depositStatus === "Verificado"
+    ? "Ya tiene el depósito verificado: se le queda a favor para la fecha nueva, no se lo vuelvas a pedir."
+    : appointment.depositStatus === "ComprobanteRecibido"
+      ? "Ya subió su comprobante: se le queda a favor para la fecha nueva, no se lo vuelvas a pedir."
+      : "";
+  return sendBusinessEmail(env, {
+    subject: `Hay que reprogramar a mano -- ${appointment.clientName || "Cliente"}`,
+    text: [`${line}`, "", "Otra cita ganó ese horario y no quedó ningún hueco libre ese mismo día para moverla. Sigue en la agenda a su hora original, en conflicto: llama al cliente y reprográmala desde SSC.", deposito].filter((x) => x !== undefined).join("\n").trim(),
+    html: `<p>${line}</p><p>Otra cita ganó ese horario y <strong>no quedó ningún hueco libre ese mismo día</strong> para moverla. Sigue en la agenda a su hora original, en conflicto: llama al cliente y reprográmala desde SSC.</p>${deposito ? `<p>${deposito}</p>` : ""}`,
+  }, createTransportImpl, resolve4Impl, fetchImpl);
+}
+
 // Recordatorio horario (solo dentro de la ventana de negocio, ver isWithinDepositReminderWindow
 // en server/app.mjs) mientras un comprobante siga subido sin que el personal lo confirme o
 // rechace.

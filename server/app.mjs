@@ -20,9 +20,10 @@ import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/g
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { runClosingCatchUp } from "./closing-catchup.mjs";
 import { businessMinutesBetween } from "./store.mjs";
+import { buildMovedAppointmentMessage } from "./moved-appointment-message.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
-         notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, sendInvoiceEmail,
-         sendBusinessEmail } from "./email.mjs";
+         notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
+         sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
 import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { mediaUrl, verifyMediaToken } from "./media-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
@@ -439,6 +440,88 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       return { ok: response.ok, status: response.status, body };
     } catch (error) {
       return { ok: false, error: error.message };
+    }
+  };
+
+  // Perder la carrera por el horario era, hasta ahora, algo que el cliente solo descubría si
+  // abría ReservApp por su cuenta -- si no entraba, se presentaba a una hora que ya no era la
+  // suya. Este es el aviso que cierra ese hueco, y sale en el momento en que el sistema la
+  // reubica, no en el recordatorio de las 4 horas.
+  //
+  // NO usa el evento del recordatorio (booking.confirmation_reminder): aquel ceba en el bot un
+  // "responde 1 para confirmar asistencia", y aceptar un horario nuevo no es lo mismo que
+  // confirmar que vienes. Aquí la respuesta la lee una persona en la bandeja del ERP, que es a
+  // donde llegan todos los mensajes entrantes -- por eso el texto no promete un menú de números.
+  const sendMovedAppointmentWhatsApp = async ({ reservationId, phone, clientName, service, date, previousTime, newTime, depositStatus }) => {
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!bridgeSecret) return { ok: false, reason: "pending_configuration" };
+    if (!phone) return { ok: false, reason: "sin_telefono" };
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
+    const text = buildMovedAppointmentMessage({ clientName, service, date, previousTime, newTime, depositStatus });
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/overdue-reminders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          event: "booking.appointment_moved",
+          actionRequired: "await_customer_reply",
+          reservationId,
+          recipientPhone: normalizePhone(phone),
+          whatsappFormattedText: text,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) return { ok: false, status: response.status, body };
+      // El bridge contesta 200 aunque no haya mandado nada: si no reconoce el evento devuelve
+      // { status: 'IGNORED', reason: 'UNKNOWN_EVENT' } (ver bridge/overdue-reminders.js). Dar eso
+      // por bueno mirando solo response.ok es el error que ya se cometió una vez aquí -- se
+      // marcaban mensajes como enviados que nunca salieron. Pasa de verdad durante un despliegue:
+      // si el ERP sube antes que el bridge, este evento es desconocido para él.
+      if (body?.status !== "OK") {
+        return { ok: false, status: response.status, reason: body?.reason || body?.status || "sin_confirmacion", body };
+      }
+      return { ok: true, status: response.status, body };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  };
+
+  // Los dos desenlaces de un desplazamiento, cada uno con su destinatario: a quien se pudo mover,
+  // se le escribe; a quien no cupo en ningún hueco del día, no hay nada que escribirle todavía --
+  // eso lo tiene que resolver una persona, así que el aviso va al personal.
+  //
+  // Se llama SIEMPRE después de responder el HTTP: confirmar una cita no puede quedarse esperando
+  // a WhatsApp ni a un correo. Los fallos se registran, no se propagan.
+  const announceDisplacement = (updated) => {
+    for (const mov of updated?.displaced || []) {
+      emailBestEffort(
+        bookingStore.appointmentSummary(mov.id).then((s) => {
+          if (!s) return null;
+          return sendMovedAppointmentWhatsApp({
+            reservationId: s.legacy_id || mov.id,
+            phone: s.client_phone,
+            clientName: s.client_name,
+            service: s.service_name,
+            date: s.date,
+            previousTime: mov.from?.time,
+            newTime: mov.to?.time || s.time,
+            depositStatus: s.deposit_status,
+          }).then((r) => (r.ok ? r : { sent: false, reason: r.reason || `bridge ${r.status || ""}`.trim(), error: r.error }));
+        }),
+        `aviso de cita movida (${mov.legacyId || mov.id})`,
+      );
+    }
+    for (const varada of updated?.stranded || []) {
+      emailBestEffort(
+        bookingStore.appointmentSummary(varada.id).then((s) => {
+          if (!s) return null;
+          return notifyAppointmentStranded(env, {
+            legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
+            staffName: s.staff_name, date: s.date, time: s.time, depositStatus: s.deposit_status,
+          });
+        }),
+        `cita sin hueco para reubicar (${varada.legacyId || varada.id})`,
+      );
     }
   };
 
@@ -929,6 +1012,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const updated = await bookingStore.setAppointmentStatus({ id: appointmentId, status });
         if (!updated) return res.status(404).json({ error: "Esa cita no existe o ya está cancelada." });
         res.json({ ok: true, appointment: updated });
+        announceDisplacement(updated);
       } catch (error) {
         if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
@@ -973,6 +1057,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const reviewedBy = session?.account.role ? `${session.account.role}:${session.account.id}` : "erp";
         const updated = await bookingStore.reviewDepositReceipt({ appointmentId: req.params.id, approve, reviewedBy, note: note || null });
         res.json({ ok: true, appointment: updated });
+        announceDisplacement(updated);
       } catch (error) {
         if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);

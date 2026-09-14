@@ -532,13 +532,26 @@ async function reviewAppointmentDeposit(approve, button) {
       method: "POST", body: JSON.stringify({ approve }),
     });
     $("appointment-detail-dialog").close();
-    if (result.appointment?.displaced?.length) {
-      message($("agenda-message"), `Depósito confirmado. Se movió automáticamente ${result.appointment.displaced.length === 1 ? "1 cita" : `${result.appointment.displaced.length} citas`} que compartían ese horario -- revisa "Cita movida" en el calendario.`, true);
-    }
+    const aviso = displacementNotice(result.appointment, "Depósito confirmado.");
+    if (aviso) message($("agenda-message"), aviso.text, aviso.ok);
     loadAgendaView();
   } catch (error) { message($("appointment-deposit-message"), error.message); }
   finally { button.disabled = false; }
 }
+// Qué contarle a quien acaba de ganar el horario. Las que el sistema movió solo ya no necesitan
+// a nadie: al cliente se le escribió por WhatsApp en ese mismo momento. Las que NO cupieron en
+// ningún hueco del día sí -- siguen en conflicto a su hora original y no se arreglan solas, así
+// que el aviso deja de ser un "listo" verde y pasa a ser una tarea pendiente.
+function displacementNotice(appointment, encabezado) {
+  const movidas = appointment?.displaced?.length || 0;
+  const varadas = appointment?.stranded?.length || 0;
+  if (!movidas && !varadas) return null;
+  const partes = [encabezado];
+  if (movidas) partes.push(`Se movió ${movidas === 1 ? "1 cita" : `${movidas} citas`} que compartían ese horario y ya se les avisó -- revisa "Cita movida" en el calendario.`);
+  if (varadas) partes.push(`${varadas === 1 ? "1 cita no cupo" : `${varadas} citas no cupieron`} en ningún hueco libre de ese día: hay que llamar y reprogramar a mano.`);
+  return { text: partes.join(" "), ok: varadas === 0 };
+}
+
 $("appointment-deposit-approve").addEventListener("click", (event) => reviewAppointmentDeposit(true, event.currentTarget));
 $("appointment-deposit-reject").addEventListener("click", (event) => reviewAppointmentDeposit(false, event.currentTarget));
 
@@ -834,9 +847,8 @@ async function setAppointmentDetailStatus(status, button) {
       method: "POST", body: JSON.stringify({ status }),
     });
     $("appointment-detail-dialog").close();
-    if (result.appointment?.displaced?.length) {
-      message($("agenda-message"), `Cita confirmada. Se movió automáticamente ${result.appointment.displaced.length === 1 ? "1 cita" : `${result.appointment.displaced.length} citas`} que compartían ese horario -- revisa "Cita movida" en el calendario.`, true);
-    }
+    const aviso = displacementNotice(result.appointment, "Cita confirmada.");
+    if (aviso) message($("agenda-message"), aviso.text, aviso.ok);
     loadAgendaView();
   } catch (error) { message($("appointment-cancel-message"), error.message); }
   finally { button.disabled = false; }
