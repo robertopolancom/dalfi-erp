@@ -926,6 +926,92 @@ function badgeEl(text, className) {
   return span;
 }
 
+// Reagendar dentro de la app. Se abre bajo la propia tarjeta en vez de en un diálogo aparte para
+// que el cliente no pierda de vista qué cita está moviendo -- es el error más fácil de cometer
+// cuando hay varias citas activas en la lista.
+//
+// El servidor manda dos cosas distintas y las dos importan: `allowed:false` con su motivo (la
+// cita está muy encima, o es antigua y no tiene servicios) y, si se puede, los horarios libres.
+// Cuando no se puede, esto NO deja al cliente en un callejón: le ofrece WhatsApp, que es lo que
+// hacía antes el botón entero.
+function whatsappModifyHref(apt) {
+  return `https://wa.me/18296679289?text=${encodeURIComponent(t(
+    `Hola, quisiera modificar mi cita (referencia ${apt.legacy_id}), del ${apt.date} a las ${formatSlotTime(apt.start_time)}.`,
+    `Hi, I'd like to modify my appointment (reference ${apt.legacy_id}) on ${apt.date} at ${formatSlotTime(apt.start_time)}.`,
+  ))}`;
+}
+
+function toggleReschedulePanel(apt, card, button) {
+  const abierto = card.querySelector(".reschedule-panel");
+  if (abierto) { abierto.remove(); button.textContent = t("Cambiar hora", "Change time"); return; }
+  button.textContent = t("Cerrar", "Close");
+
+  const panel = document.createElement("div");
+  panel.className = "reschedule-panel";
+  const label = document.createElement("label");
+  label.textContent = t("Elige el día", "Pick a day");
+  const input = document.createElement("input");
+  input.type = "date"; input.value = apt.date;
+  input.min = new Date().toISOString().slice(0, 10);
+  const msg = document.createElement("p"); msg.className = "reschedule-message";
+  const slots = document.createElement("div"); slots.className = "reschedule-slots";
+  label.append(input);
+  panel.append(label, msg, slots);
+  card.append(panel);
+
+  const cargar = async () => {
+    slots.replaceChildren();
+    msg.textContent = t("Buscando horarios…", "Looking for times…");
+    try {
+      const data = await api(`/api/reservapp/my-appointments/${apt.id}/reschedule-options?date=${encodeURIComponent(input.value)}`);
+      if (!data.allowed) {
+        msg.textContent = data.message;
+        const wa = Object.assign(document.createElement("a"), {
+          className: "secondary compact", target: "_blank", rel: "noopener",
+          href: whatsappModifyHref(apt), textContent: t("Escribirnos por WhatsApp", "Message us on WhatsApp"),
+        });
+        slots.append(wa);
+        return;
+      }
+      if (!data.slots.length) {
+        msg.textContent = t("Ese día no queda espacio. Prueba con otro.", "No space that day. Try another one.");
+        return;
+      }
+      msg.textContent = t("Toca la hora que prefieras.", "Tap the time you prefer.");
+      for (const slot of data.slots) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "secondary compact reschedule-slot";
+        b.textContent = `${formatSlotTime(slot.time)} · ${slot.staffName}`;
+        b.addEventListener("click", () => confirmarReagendar(apt, input.value, slot, panel, msg));
+        slots.append(b);
+      }
+    } catch (error) {
+      msg.textContent = error.message;
+    }
+  };
+  input.addEventListener("change", cargar);
+  cargar();
+}
+
+async function confirmarReagendar(apt, date, slot, panel, msg) {
+  panel.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+  msg.textContent = t("Moviendo tu cita…", "Moving your appointment…");
+  try {
+    await api(`/api/reservapp/my-appointments/${apt.id}/reschedule`, {
+      method: "POST",
+      body: JSON.stringify({ date, time: slot.time, staffId: slot.staffId }),
+    });
+    message($("my-appointments-message"), t("Listo, tu cita quedó cambiada.", "Done, your appointment was changed."), true);
+    loadMyAppointments();
+  } catch (error) {
+    // El caso que de verdad pasa: entre que vio los horarios y tocó uno, otra cita se confirmó
+    // en ese hueco. El servidor lo detecta con el constraint, y aquí se le vuelven a pedir los
+    // horarios para que elija de lo que queda libre AHORA, no de lo que había hace un minuto.
+    msg.textContent = error.message;
+    panel.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+  }
+}
+
 function renderAppointmentCard(apt) {
   const card = document.createElement("article");
   card.className = "appointment-card";
@@ -970,15 +1056,14 @@ function renderAppointmentCard(apt) {
     btn.className = "primary compact appointment-confirm-btn"; btn.type = "button";
     btn.textContent = t("Confirmar hora reservada", "Confirm reserved time");
     btn.addEventListener("click", () => confirmMyAppointment(apt.legacy_id, btn));
-    const modifyLink = Object.assign(document.createElement("a"), {
-      className: "secondary compact appointment-modify-link", target: "_blank", rel: "noopener",
-      href: `https://wa.me/18296679289?text=${encodeURIComponent(t(
-        `Hola, quisiera modificar mi cita (referencia ${apt.legacy_id}), del ${apt.date} a las ${formatSlotTime(apt.start_time)}.`,
-        `Hi, I'd like to modify my appointment (reference ${apt.legacy_id}) on ${apt.date} at ${formatSlotTime(apt.start_time)}.`,
-      ))}`,
-      textContent: t("Modificar", "Modify"),
-    });
-    row.append(btn, modifyLink);
+    // "Modificar" era un enlace a WhatsApp: el cliente escribía y alguien del salón lo movía a
+    // mano. Ahora abre el reagendar dentro de la app. El enlace de WhatsApp no desaparece: sigue
+    // siendo la salida cuando la regla no deja mover la cita sola (ver rescheduleOptions).
+    const modifyBtn = document.createElement("button");
+    modifyBtn.className = "secondary compact appointment-modify-link"; modifyBtn.type = "button";
+    modifyBtn.textContent = t("Cambiar hora", "Change time");
+    modifyBtn.addEventListener("click", () => toggleReschedulePanel(apt, card, modifyBtn));
+    row.append(btn, modifyBtn);
     card.append(row);
   }
 
@@ -1256,6 +1341,11 @@ function formatDateTimeLocal(value) {
 function renderTeamAppointmentCard(apt) {
   const card = document.createElement("article");
   card.className = "appointment-card";
+  // Una cita en 'scheduled' no aparta el horario (migración 0024): mientras nadie la confirme es
+  // como si el cliente no tuviera cita, y confirmarla o retirarla es trabajo del salón. Los badges
+  // ya lo dicen, pero son tres o cuatro por tarjeta y en una columna llena no los lee nadie: esto
+  // marca la tarjeta ENTERA para que se vea de un vistazo cuáles están sin resolver.
+  if (apt.status === "scheduled") card.classList.add("appointment-card--sin-confirmar");
 
   const top = document.createElement("div"); top.className = "appointment-top";
   const service = document.createElement("span"); service.className = "appointment-service"; service.textContent = apt.services || "Cita";

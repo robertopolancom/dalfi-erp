@@ -23,7 +23,7 @@ import { businessMinutesBetween } from "./store.mjs";
 import { buildMovedAppointmentMessage } from "./moved-appointment-message.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
-         sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
+         notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
 import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { mediaUrl, verifyMediaToken } from "./media-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
@@ -1074,6 +1074,70 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       catch (error) { next(error); }
     });
 
+    // Horarios libres para que el cliente mueva su cita. Responde 200 con allowed:false cuando la
+    // regla lo impide -- no es un error de la petición, es la respuesta: "hoy no puedes, y este es
+    // el motivo". La pantalla usa ese motivo para ofrecerle WhatsApp en vez de dejarlo colgado.
+    app.get("/api/reservapp/my-appointments/:id/reschedule-options", requireReservapp, async (req, res, next) => {
+      if (!isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
+      const date = cleanText(req.query?.date, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "Elige una fecha válida." });
+      try {
+        const appointmentId = await bookingStore.resolveAppointmentId(req.params.id);
+        if (!appointmentId) return res.status(404).json({ error: "Esa cita no existe." });
+        const result = await bookingStore.rescheduleOptions({
+          appointmentId, clientId: req.reservapp.account.client_id, date,
+        });
+        if (result.notFound) return res.status(404).json({ error: "Esa cita no existe." });
+        res.json(result);
+      } catch (error) { next(error); }
+    });
+
+    // El cliente cambia su propia cita de hora. Antes esto no existía: en "Mis citas" solo había
+    // "Cancelar esta cita", así que quien quería otra hora cancelaba y volvía a reservar -- y de
+    // paso perdía el depósito. Reagendar mueve la cita con su depósito puesto.
+    //
+    // El guard de la regla vive en el store (rescheduleOwnAppointment), no aquí: es la misma
+    // transacción que hace el movimiento, así que no hay ventana entre comprobar y mover.
+    app.post("/api/reservapp/my-appointments/:id/reschedule", requireReservapp, async (req, res, next) => {
+      if (!isClientRole(req.reservapp.account.role)) return res.status(403).json({ error: "Solo disponible para cuentas de cliente." });
+      const date = cleanText(req.body?.date, 10);
+      const time = cleanText(req.body?.time, 5);
+      const staffId = cleanText(req.body?.staffId, 40) || null;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) {
+        return res.status(400).json({ error: "Elige una fecha y una hora válidas." });
+      }
+      try {
+        const appointmentId = await bookingStore.resolveAppointmentId(req.params.id);
+        if (!appointmentId) return res.status(404).json({ error: "Esa cita no existe." });
+        const result = await bookingStore.rescheduleOwnAppointment({
+          appointmentId, clientId: req.reservapp.account.client_id, date, time, staffId,
+        });
+        if (result.notFound) return res.status(404).json({ error: "Esa cita no existe." });
+        // 409 y no 400: la petición estaba bien formada, lo que falla es el estado del mundo
+        // (ya pasó, ya se ocupó, o está demasiado encima).
+        if (result.blocked) return res.status(409).json({ error: result.message, reason: result.blocked });
+        res.json({ ok: true, appointment: result.appointment });
+        // Después de responder: el cambio ya está hecho y confirmado en pantalla, el correo es un
+        // extra que no debe hacerle esperar a nadie. Es el ÚNICO cambio de agenda que no pasa por
+        // el salón, así que sin este aviso la manicurista se entera cuando la clienta no llega.
+        emailBestEffort(
+          bookingStore.appointmentSummary(appointmentId).then((s) => {
+            if (!s) return null;
+            return notifyAppointmentRescheduledByClient(env, {
+              legacyId: s.legacy_id, clientName: s.client_name, serviceName: s.service_name,
+              staffName: s.staff_name, date: s.date, time: s.time,
+              previousDate: result.from?.date, previousTime: result.from?.time,
+              depositStatus: s.deposit_status,
+            });
+          }),
+          `cita movida por la clienta (${req.params.id})`,
+        );
+      } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
+    });
+
     // El cliente sube la foto del comprobante del depósito de RD$500 -- ver
     // submitDepositReceipt en server/store.mjs. Base64 en JSON (no multipart) porque el límite
     // de body ya está en 8MB (MAX_BODY_BYTES) y evita sumar una dependencia como multer solo
@@ -1651,6 +1715,27 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     // comprobante de depósito de citas ya Atendidas/Canceladas hace 5+ días, nunca la fila ni la
     // cita (ver purgeExpiredDepositReceipts en server/store.mjs). Mismo patrón de secreto por
     // cabecera que /api/booking/send-reminders, con su propio secreto dedicado.
+    // Cierra las citas que nadie confirmó y cuya hora ya pasó: quedan como "No asistió". Una cita
+    // sin confirmar nunca apartó el horario (migración 0024), así que si el cliente hubiera venido
+    // alguien le habría puesto "Atendida" -- dejarla en 'scheduled' para siempre hace que el
+    // calendario mienta sobre qué pasó ese día.
+    //
+    // Es reversible a propósito: si se atiende tarde y alguien la marca "Atendida" después, pasa
+    // de no_show a completed sin pelear (ver setAppointmentStatus).
+    app.post("/api/booking/expire-unconfirmed", bookingRateLimit, async (req, res, next) => {
+      const expectedSecret = env.EXPIRE_UNCONFIRMED_CRON_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar EXPIRE_UNCONFIRMED_CRON_SECRET." });
+      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      try {
+        // El margen evita cerrar una cita que acaba de terminar mientras la manicurista todavía
+        // está cobrando y aún no le ha dado a "Atendida".
+        const graceMinutes = Number.isFinite(Number(req.body?.graceMinutes)) ? Number(req.body.graceMinutes) : 120;
+        const result = await bookingStore.expireUnconfirmedPastAppointments({ graceMinutes });
+        if (result.expiredCount) console.log(`[expire-unconfirmed] citas cerradas como no asistidas: ${result.expiredCount}`);
+        res.json({ ok: true, expiredCount: result.expiredCount });
+      } catch (error) { next(error); }
+    });
+
     app.post("/api/booking/purge-deposit-receipts", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.DEPOSIT_RECEIPT_PURGE_CRON_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar DEPOSIT_RECEIPT_PURGE_CRON_SECRET." });

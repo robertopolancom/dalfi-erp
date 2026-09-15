@@ -297,6 +297,23 @@ export async function notifyAppointmentStranded(env, appointment, createTranspor
   }, createTransportImpl, resolve4Impl, fetchImpl);
 }
 
+// La clienta movió su propia cita desde "Mis citas". Es el único cambio de agenda que no pasa
+// por nadie del salón, así que sin este correo la manicurista se entera cuando la clienta no
+// aparece a la hora que ella tenía apuntada. El asunto lleva las dos horas para que se entienda
+// sin abrir nada.
+export async function notifyAppointmentRescheduledByClient(env, appointment, createTransportImpl = nodemailer.createTransport, resolve4Impl = dnsPromises.resolve4, fetchImpl = globalThis.fetch) {
+  const line = aptLine(appointment);
+  const desde = `${appointment.previousDate} ${appointment.previousTime}`;
+  const deposito = appointment.depositStatus === "Verificado" || appointment.depositStatus === "ComprobanteRecibido"
+    ? " Su depósito sigue aplicado a la cita."
+    : "";
+  return sendBusinessEmail(env, {
+    subject: `Cita movida por la clienta -- ${appointment.clientName || "Cliente"} -- ${appointment.previousTime} → ${appointment.time}`,
+    text: `${line}\n\nLa clienta cambió su cita ella misma desde ReservApp.\nAntes: ${desde}\nAhora: ${appointment.date} ${appointment.time}\n\nEse horario vuelve a quedar libre en la agenda.${deposito}`,
+    html: `<p>${line}</p><p>La clienta cambió su cita ella misma desde ReservApp.</p><p>Antes: <strong>${desde}</strong><br>Ahora: <strong>${appointment.date} ${appointment.time}</strong></p><p>Ese horario vuelve a quedar libre en la agenda.${deposito}</p>`,
+  }, createTransportImpl, resolve4Impl, fetchImpl);
+}
+
 // Recordatorio horario (solo dentro de la ventana de negocio, ver isWithinDepositReminderWindow
 // en server/app.mjs) mientras un comprobante siga subido sin que el personal lo confirme o
 // rechace.

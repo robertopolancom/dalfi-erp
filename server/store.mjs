@@ -1943,7 +1943,11 @@ export class NeonBookingStore {
         const estado = ESTADO_BY_STATUS[status];
         if (estado) await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => { doc.estado = estado; doc.updated_at = new Date().toISOString(); });
       }
-      if (row && status === "confirmed") {
+      // 'completed' cuenta igual que 'confirmed' (regla de Roberto, 2026-09-14: si el cliente vino
+      // y se le atendió, esa cita valía aunque nadie llegara a confirmarla a tiempo). En el
+      // constraint de la migración 0024 ya bloqueaba el horario; lo que faltaba era que también
+      // desplazara a las que seguían compitiendo por él, o quedaban en conflicto para siempre.
+      if (row && ["confirmed", "completed"].includes(status)) {
         ({ moved: displaced, stranded } = await this.resolveDisplacedAppointments(client, {
           winnerId: row.id, staffId: row.staff_id, startsAt: row.starts_at, endsAt: row.ends_at,
         }));
@@ -1990,6 +1994,202 @@ export class NeonBookingStore {
       [clientId],
     );
     return result.rows;
+  }
+
+  // Una cita que nunca se confirmó y cuya hora ya pasó no era una cita: no apartó el horario, y
+  // si el cliente hubiera venido alguien le habría puesto "Atendida". Dejarla en 'scheduled' para
+  // siempre ensucia la agenda y hace que el calendario mienta sobre qué pasó ese día.
+  //
+  // Regla de Roberto (2026-09-14): si no se confirmó y pasó la fecha, queda como no asistida.
+  // Nunca toca 'confirmed' (esa sí apartó horario y merece que una persona diga si vino o no),
+  // ni nada terminal. Y es reversible: si alguien la atiende y lo marca después,
+  // setAppointmentStatus permite no_show -> completed sin pelear.
+  //
+  // Se compara contra ends_at y no starts_at: una cita de 3 horas que empezó hace 10 minutos no
+  // ha "pasado" todavía.
+  // Todo en UNA transacción, no en llamadas sueltas contra el pool: el espejo al documento del ERP
+  // es un read-modify-write sobre una única fila (app.erp_document) y su `for update` solo sirve
+  // dentro de una transacción. Suelto, dos citas caducadas a la vez se pisarían la una a la otra.
+  async expireUnconfirmedPastAppointments({ graceMinutes = 0 } = {}) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const result = await client.query(
+        `update app.appointments
+            set status='no_show', updated_at=clock_timestamp()
+          where status='scheduled'
+            and ends_at < now() - ($1 || ' minutes')::interval
+          returning id, legacy_id`,
+        [String(Math.max(0, Number(graceMinutes) || 0))],
+      );
+      for (const row of result.rows) {
+        if (!row.legacy_id) continue;
+        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => {
+          doc.estado = "No asistió";
+          doc.updated_at = new Date().toISOString();
+        });
+      }
+      await client.query("commit");
+      return { expiredCount: result.rows.length, ids: result.rows.map((r) => r.id) };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Reagendar que hace el PROPIO cliente desde "Mis citas". Hasta ahora lo único que podía hacer
+  // ahí era cancelar, así que quien quería otra hora tenía que cancelar y volver a reservar --
+  // y al cancelar perdía el depósito por el camino. Aquí la cita se mueve y el depósito viaja
+  // con ella: este update NO toca deposit_status, igual que resolveDisplacedAppointments.
+  //
+  // Regla de negocio (Roberto, 2026-09-14): se puede reagendar si la cita NO está confirmada, o
+  // si faltan al menos 90 minutos LABORABLES para su hora. Dicho al revés, que es como conviene
+  // leerlo: lo único que se bloquea es una cita ya confirmada que está encima. Una cita sin
+  // confirmar no tiene el horario apartado (ver migración 0024), así que moverla no le quita el
+  // puesto a nadie ni aunque falten diez minutos; una confirmada sí, y a esa altura ya hay una
+  // manicurista con ese rato reservado.
+  //
+  // Minutos LABORABLES, no de reloj: una cita de mañana a las 9:00 vista a las 20:00 de hoy
+  // tiene 13 horas de reloj por delante pero puede no tener ni una laborable, y al revés. Se usa
+  // businessMinutesBetween, el mismo que decide el seguimiento de las 4 horas.
+  static RESCHEDULE_MIN_BUSINESS_MINUTES = 90;
+
+  // Los horarios libres que se le ofrecen al cliente para mover SU cita. Endpoint propio y no
+  // /api/fast-booking/availability por dos razones: aquel exige que le manden los serviceIds, que
+  // el cliente no tiene (mis-citas devuelve los nombres concatenados, no los ids), y sobre todo
+  // porque aquí hay que aplicar la misma regla que el movimiento -- si no se puede reagendar, lo
+  // honesto es decirlo ANTES de enseñarle horarios que no va a poder tomar.
+  async rescheduleOptions({ appointmentId, clientId, date }) {
+    const row = (await this.pool.query(
+      `select id, client_id, status, starts_at from app.appointments where id=$1`,
+      [appointmentId],
+    )).rows[0];
+    if (!row || row.client_id !== clientId) return { notFound: true };
+    if (["cancelled", "replaced", "completed", "no_show"].includes(row.status)) {
+      return { allowed: false, reason: "estado", message: "Esa cita ya no se puede cambiar." };
+    }
+
+    const settings = (await this.pool.query("select settings from app.business_settings where id=true")).rows[0]?.settings || {};
+    const faltan = businessMinutesBetween(Date.now(), new Date(row.starts_at).getTime(), settings);
+    if (row.status === "confirmed" && faltan < NeonBookingStore.RESCHEDULE_MIN_BUSINESS_MINUTES) {
+      return {
+        allowed: false,
+        reason: "muy_encima",
+        message: "Tu cita ya está confirmada y falta muy poco para tu hora. Escríbenos y la movemos contigo.",
+      };
+    }
+
+    const servicios = await this.pool.query(
+      `select service_id from app.appointment_services
+        where appointment_id=$1 and service_id is not null order by position`,
+      [appointmentId],
+    );
+    const serviceIds = servicios.rows.map((r) => r.service_id);
+    // Una cita heredada del ERP viejo puede no tener service_id (solo el nombre en snapshot). Sin
+    // ids no hay forma de preguntarle a la agenda cuánto dura, así que se dice y no se adivina.
+    if (!serviceIds.length) {
+      return { allowed: false, reason: "sin_servicios", message: "Esta cita es antigua y hay que moverla con nosotros. Escríbenos y lo hacemos." };
+    }
+
+    const disponibilidad = await this.availability({ serviceIds, date });
+    return { allowed: true, slots: disponibilidad.slots || [], durationMinutes: disponibilidad.durationMinutes || null };
+  }
+
+  async rescheduleOwnAppointment({ appointmentId, clientId, date, time, staffId }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const current = await client.query(
+        `select id, legacy_id, client_id, staff_id, status, starts_at, ends_at
+           from app.appointments where id=$1 for update`,
+        [appointmentId],
+      );
+      const row = current.rows[0];
+      // Mismo 404 para "no existe" y "no es tuya": no confirmar qué ids existen.
+      if (!row || row.client_id !== clientId) {
+        await client.query("rollback");
+        return { notFound: true };
+      }
+      if (["cancelled", "replaced", "completed", "no_show"].includes(row.status)) {
+        await client.query("rollback");
+        return { blocked: "estado", message: "Esa cita ya no se puede cambiar." };
+      }
+
+      const settingsResult = await client.query("select timezone, settings from app.business_settings where id=true");
+      const timezone = settingsResult.rows[0]?.timezone || "America/Santo_Domingo";
+      const businessSettings = settingsResult.rows[0]?.settings || {};
+      const faltan = businessMinutesBetween(Date.now(), new Date(row.starts_at).getTime(), businessSettings);
+      if (row.status === "confirmed" && faltan < NeonBookingStore.RESCHEDULE_MIN_BUSINESS_MINUTES) {
+        await client.query("rollback");
+        return {
+          blocked: "muy_encima",
+          message: "Tu cita ya está confirmada y falta muy poco para tu hora. Escríbenos y la movemos contigo.",
+        };
+      }
+
+      const durationMinutes = Math.round((new Date(row.ends_at) - new Date(row.starts_at)) / 60_000);
+      const nuevo = await client.query(
+        `select ($1::date + $2::time)::timestamp at time zone $3 starts_at,
+                (($1::date + $2::time)::timestamp + ($4 || ' minutes')::interval) at time zone $3 ends_at`,
+        [date, time, timezone, String(durationMinutes)],
+      );
+      const startsAt = nuevo.rows[0].starts_at;
+      const endsAt = nuevo.rows[0].ends_at;
+      // Moverla al mismo sitio donde ya está no es un error, pero tampoco hay nada que hacer.
+      if (new Date(startsAt).getTime() === new Date(row.starts_at).getTime()
+        && (staffId || row.staff_id) === row.staff_id) {
+        await client.query("rollback");
+        return { blocked: "sin_cambio", message: "Esa es la hora que ya tienes." };
+      }
+
+      // Cambiar de hora invalida lo que se había avisado sobre la anterior: el recordatorio se
+      // vuelve a armar y la confirmación arranca de cero, porque lo que el cliente confirmó (si
+      // confirmó) era la hora vieja.
+      const actualizada = await client.query(
+        `update app.appointments
+            set starts_at=$2, ends_at=$3, staff_id=$4,
+                confirmation_status='Programada', first_reminder_sent_at=null,
+                updated_at=clock_timestamp()
+          where id=$1
+          returning id, legacy_id, staff_id, starts_at, ends_at, status, deposit_status`,
+        [appointmentId, startsAt, endsAt, staffId || row.staff_id],
+      );
+
+      if (row.legacy_id) {
+        await this.mirrorAppointmentToDocument(client, row.legacy_id, (doc) => {
+          doc.fecha = date;
+          doc.hora = time;
+          doc.estadoConfirmacion = "Programada";
+          doc.updated_at = new Date().toISOString();
+        });
+      }
+      await client.query("commit");
+      // La hora ANTERIOR se devuelve ya en hora local porque el aviso al personal la necesita
+      // ("movió su cita de las 14:30 a las 16:00") y después del update ya no hay dónde leerla:
+      // este camino no escribe moved_from -- eso es para cuando el sistema mueve a alguien sin
+      // pedirle permiso, y aquí la clienta lo pidió.
+      const antesMin = NeonBookingStore.localMinutesOf(new Date(row.starts_at));
+      return {
+        appointment: actualizada.rows[0],
+        from: {
+          date: new Date(new Date(row.starts_at).getTime() - 4 * 3600000).toISOString().slice(0, 10),
+          time: `${String(Math.floor(antesMin / 60)).padStart(2, "0")}:${String(antesMin % 60).padStart(2, "0")}`,
+        },
+        to: { date, time },
+      };
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      // 23P01 = appointments_no_staff_overlap. Pasa de verdad: entre que el cliente vio los
+      // horarios libres y tocó el botón, otra cita pudo confirmarse en ese mismo hueco.
+      if (error?.code === "23P01") {
+        return { blocked: "ocupado", message: "Ese horario acaba de ocuparse. Elige otro, por favor." };
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   // Resumen liviano de una cita para los avisos por correo al personal (nueva reserva,
