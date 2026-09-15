@@ -5,6 +5,13 @@ name = "dalfi-erp-expire-unconfirmed-cron"
 main = "worker.js"
 compatibility_date = "2026-09-14"
 
+# Este Worker solo tiene manejador `scheduled`: no atiende peticiones HTTP de nadie. Sin estas
+# dos lineas, wrangler le habilita por defecto una URL publica (*.workers.dev) y URLs de vista
+# previa que no sirven para nada y son superficie de mas. Los otros cinco crons del repo no las
+# declaran y por eso si tienen URL publica; aqui se cierra.
+workers_dev = false
+preview_urls = false
+
 # Variables NO secretas.
 [vars]
 # El backend real al que este Worker le hace fetch(). Desde la migracion de 2026-09-12 este
