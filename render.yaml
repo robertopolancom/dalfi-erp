@@ -34,14 +34,12 @@ services:
         value: ssc.dalfistudio.com
       # Orígenes que pueden LEER GET /api/site-content/:siteKey (el contenido que el
       # personal edita desde el panel "Página web" del ERP). La misma página de Nails se
-      # sirve desde la raíz, www y nails a la vez. El cuarto de la lista,
-      # dalfistudionails.sebengroup.com, SIGUE VIVO a propósito: es el sitio que Meta puede
-      # estar visitando durante la verificación de empresa, en revisión desde principios de
-      # septiembre de 2026. Quitarlo SOLO cuando Meta apruebe, y en el orden que explica
-      # docs/PENDIENTES.md (sección 1) -- cambiar el sitio en Business Manager antes de que
-      # aprueben reinicia la revisión desde cero.
+      # sirve desde la raíz, www y nails a la vez.
+      # El 2026-09-14 Meta aprobó la verificación de empresa y se retiró el cuarto origen,
+      # dalfistudionails.sebengroup.com: su custom domain de Worker se borró y el hostname
+      # ya no resuelve. Con eso sebengroup.com queda libre de Dalfi.
       - key: SITE_CONTENT_ALLOWED_ORIGIN
-        value: https://dalfistudio.com,https://www.dalfistudio.com,https://nails.dalfistudio.com,https://dalfistudionails.sebengroup.com
+        value: https://dalfistudio.com,https://www.dalfistudio.com,https://nails.dalfistudio.com
       - key: RESERVAPP_PUBLIC_URL
         value: https://reservapp.dalfistudio.com
       - key: CHATBOT_BRIDGE_URL
@@ -55,6 +53,15 @@ services:
       - key: CHATBOT_SECRET
         sync: false
       - key: DEPOSIT_REVIEW_REMINDER_CRON_SECRET
+        sync: false
+      # Credencial del Worker dalfi-erp-expire-unconfirmed-cron (Cron Trigger 3am Santo Domingo)
+      # para llamar a POST /api/booking/expire-unconfirmed, que cierra como "No asistió" las citas
+      # que nadie confirmó y cuya hora ya pasó -- sin confirmar nunca apartaron el horario, así que
+      # nunca fueron citas reales. Tiene que ser EXACTAMENTE el mismo valor que el secret del
+      # Worker ("wrangler secret put" en workers/expire-unconfirmed-cron). Mientras esta variable
+      # no exista, la ruta responde 500 y no hace nada: el cron falla sin romper nada y las citas
+      # se quedan como están hasta que alguien las cierre a mano.
+      - key: EXPIRE_UNCONFIRMED_CRON_SECRET
         sync: false
       # Credencial del Worker dalfi-erp-closing-cron (Cron Trigger 23:59 Santo Domingo) para
       # llamar a POST /api/run-closing-catchup, que genera los cierres diarios que falten sin

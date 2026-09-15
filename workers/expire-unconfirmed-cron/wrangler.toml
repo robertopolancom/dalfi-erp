@@ -1,0 +1,27 @@
+# Worker independiente (NO Cloudflare Pages) que cierra cada madrugada las citas que nadie
+# confirmo y cuya hora ya paso. Ver workers/expire-unconfirmed-cron/README.md para el paso a paso
+# de configuracion y despliegue (ninguno de esos pasos se ejecuto como parte de esta tarea).
+name = "dalfi-erp-expire-unconfirmed-cron"
+main = "worker.js"
+compatibility_date = "2026-09-14"
+
+# Variables NO secretas.
+[vars]
+# El backend real al que este Worker le hace fetch(). Desde la migracion de 2026-09-12 este
+# dominio apunta a Cloud Run, no a Render -- el Worker no nota la diferencia.
+APP_BASE_URL = "https://ssc.dalfistudio.com"
+# Minutos de margen tras el fin de la cita antes de darla por no asistida. Dos horas: una cita
+# que acaba de terminar no se puede cerrar sola mientras la manicurista todavia esta cobrando y
+# aun no le ha dado a "Atendida".
+GRACE_MINUTES = "120"
+
+# EXPIRE_UNCONFIRMED_CRON_SECRET se configura por separado como Secret (nunca en este archivo ni
+# en Git): "wrangler secret put EXPIRE_UNCONFIRMED_CRON_SECRET". Debe ser EXACTAMENTE el mismo
+# valor que env.EXPIRE_UNCONFIRMED_CRON_SECRET en el servicio dalfi-erp de Cloud Run, que es lo
+# que exige POST /api/booking/expire-unconfirmed en server/app.mjs.
+
+# 07:00 UTC = 3:00 a.m. hora de Santo Domingo. De madrugada a proposito: para cuando corre, el
+# dia anterior esta cerrado del todo y nadie esta atendiendo. Una vez al dia alcanza -- lo que
+# decide que cerrar es la hora de cada cita, no cuando pase el cron.
+[triggers]
+crons = ["0 7 * * *"]

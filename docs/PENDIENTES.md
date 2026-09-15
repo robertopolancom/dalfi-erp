@@ -8,10 +8,34 @@ Escrito el 2026-09-04, al terminar la migración a `dalfistudio.com`.
 
 ---
 
-## 1. Cerrar el corte limpio de `sebengroup.com`
+## 1. Cerrar el corte limpio de `sebengroup.com` — ✅ HECHO el 2026-09-14
 
-**Disparador:** que Meta apruebe la verificación de empresa.
-**Duración:** unos dos minutos.
+**Disparador:** que Meta apruebe la verificación de empresa. **Se cumplió**: Meta
+marcó la empresa como "Verificada" el 14 de septiembre de 2026.
+
+**Lo que se ejecutó ese día:**
+
+- El sitio declarado en Business Manager ya era `https://nails.dalfistudio.com/`
+  (se había puesto al rellenar la ficha), así que el paso 2 no hizo falta.
+- Se borró el custom domain de Worker `dalfistudionails.sebengroup.com`
+  (id `166ab9c849dabac259458c777795bbc7805836c9`, worker `seben-dalfistudionails`).
+  Comprobado después: ya **no resuelve** y los tres que quedan en ese mismo worker
+  —`nails.dalfistudio.com`, `dalfistudio.com` y `www.dalfistudio.com`— siguen en 200.
+- Se quitó el origen muerto de `SITE_CONTENT_ALLOWED_ORIGIN` en `render.yaml`.
+
+**Cabo suelto real:** el backend ya no lo sirve Render sino **Cloud Run**, cuyas
+variables se cargaron a mano y **no** las manda este `render.yaml`. El servicio vivo
+sigue aceptando el origen muerto hasta que se edite la variable en la consola de Cloud
+Run (`gcloud` no está instalado). Es inofensivo —ese hostname ya no existe, nadie puede
+servir desde él—, así que conviene aprovechar el próximo despliegue en vez de crear una
+revisión solo para esto.
+
+`sebengroup.com` queda ya sin nada de Dalfi: solo `cash`, `payadominotorneos`,
+`funceca`, `www` y todo el correo.
+
+<details>
+<summary>Procedimiento original, conservado por si hay que rehacerlo</summary>
+
 **Estado al 2026-09-04:** "En revisión" en el panel de Meta.
 
 ### Por qué quedó a medias
@@ -78,6 +102,8 @@ curl -s -D- -o /dev/null -H 'Origin: https://nails.dalfistudio.com' \
 
 Con esto `sebengroup.com` queda solo con lo de SEBEN: `cash`,
 `payadominotorneos`, `funceca`, `www` y todo el correo.
+
+</details>
 
 ---
 
