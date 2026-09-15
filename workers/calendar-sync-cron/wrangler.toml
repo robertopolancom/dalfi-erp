@@ -1,19 +1,19 @@
 # =============================================================================
-# NO DESPLEGAR. Comprobado el 2026-09-15:
+# RETIRADO 2026-09-04. NO DESPLEGAR. NO TERMINAR.
 #
-#   - Este Worker NUNCA se ha desplegado: la API de Cloudflare responde
-#     "This Worker does not exist on your account" (code 10007).
-#   - La ruta que llama, POST /api/calendar/google-pull, NO EXISTE en el ERP:
-#     responde 404 y no aparece en server/app.mjs.
-#   - El secreto que exige, GOOGLE_CALENDAR_SYNC_SECRET, no esta declarado en
-#     ningun sitio del repo ni en las variables del servicio.
-#   - Su cron es cada minuto: desplegarlo despertaria el ERP de forma continua
-#     y anularia el escalado a cero de Cloud Run.
+# Esto NO es un Worker a medias: se borro de Cloudflare a proposito y el codigo
+# se conserva solo como registro. El porque esta en README.md, y la decision de
+# fondo es de Roberto (confirmada el 2026-09-04): Google Calendar es un espejo
+# de SOLO LECTURA. El ERP es la unica fuente de verdad y empuja a Google con
+# syncChangedAppointmentsToGoogleCalendar(); traer de vuelta Google -> ERP, que
+# es justo lo que hacia este cron, convertiria el calendario en una segunda
+# fuente editable.
 #
-# La sincronizacion con Google Calendar hoy va por Apps Script (ver
-# GOOGLE_CALENDAR_PROVIDER=apps_script y functions/api/_lib/google-calendar.js),
-# asi que esto quedo atras. Borrar la carpeta o terminarlo es decision de
-# Roberto; mientras tanto, que nadie lo despliegue por error.
+# Si una sesion futura propone revivirlo, la respuesta por defecto es NO. Antes
+# de investigar nada desde cero, leer README.md: ahi esta todo.
+#
+# (Comprobado de nuevo el 2026-09-15: no existe en la cuenta -- code 10007 --,
+# /api/calendar/google-pull responde 404, y su cron era cada minuto.)
 # =============================================================================
 
 # RETIRADO 2026-09-04 -- este Worker ya no existe en Cloudflare, ver README.md.
