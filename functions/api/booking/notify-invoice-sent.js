@@ -1,3 +1,10 @@
+// MUERTO desde la migracion a Cloud Run (2026-09). Esta era una Cloudflare Pages Function y la
+// API del ERP ya no se sirve desde Pages, asi que nadie puede llamar esto: el boton del ERP
+// recibia 404 y la factura no salia. El camino vivo es POST /api/factura/:id/enviar en
+// server/app.mjs con channel:"whatsapp" -- manda la plantilla factura_lista (con el enlace de la
+// factura y la invitacion a la resena) a traves de /webhook/invoice-ready del bridge.
+// Se conserva solo como referencia del contrato viejo; no agregar nada aqui.
+//
 // Endpoint server-side que reenvia al Chatbot Bridge el aviso de factura enviada
 // (dispara la solicitud de resena por WhatsApp). Existe para que el secreto
 // compartido con el bridge (ERP_WEBHOOK_SECRET) nunca viaje al navegador: antes

@@ -24,7 +24,7 @@ import { buildMovedAppointmentMessage } from "./moved-appointment-message.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
-import { buildInvoiceView, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
+import { buildInvoiceView, invoiceToken, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { mediaUrl, verifyMediaToken } from "./media-link.mjs";
 import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
@@ -48,6 +48,13 @@ const RELAY_OTP_TTL_MS = 10 * 60 * 1000;
 const RELAY_OTP_MAX_ATTEMPTS = 5;
 const RELAY_OTP_REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RELAY_OTP_REQUEST_LIMIT_MAX = 5;
+
+// Enlace de reseña de Google del negocio. El mismo que ya usan ReservApp (outputs/reservar/app.js)
+// y la página pública: es el enlace de "escribir reseña" de la ficha, no la ficha. Se puede
+// sustituir con GOOGLE_REVIEW_URL sin tocar código ni volver a pedirle nada a Meta, porque lo que
+// va en la plantilla de WhatsApp es /resena de este servidor, no esta dirección.
+const GOOGLE_REVIEW_URL_DEFAULT =
+  "https://www.google.com/maps/place//data=!4m3!3m2!1s0x8ea54f001fe84fb3:0x87f47f6d24a641bd!12e1";
 
 // Ventana de negocio para el recordatorio horario de comprobantes de depósito pendientes de
 // revisar (ver POST /api/booking/send-deposit-review-reminders): 8am-11pm hora de Santo
@@ -479,6 +486,48 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       // si el ERP sube antes que el bridge, este evento es desconocido para él.
       if (body?.status !== "OK") {
         return { ok: false, status: response.status, reason: body?.reason || body?.status || "sin_confirmacion", body };
+      }
+      return { ok: true, status: response.status, body };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  };
+
+  // Manda la factura por WhatsApp a través del bridge. Va por PLANTILLA (factura_lista, de
+  // Utilidad): este mensaje sale al terminar el servicio, casi siempre fuera de la ventana de 24
+  // horas desde el último mensaje de la clienta, y ahí el texto libre se pierde -- la Graph API lo
+  // acepta con un message id y Meta lo tira después con 131047, asíncronamente. Del enlace solo
+  // viaja el token: la base está fija en la plantilla que Meta aprobó.
+  //
+  // El texto de respaldo se manda igual, para el único caso en que el bridge no tenga plantilla
+  // configurada todavía. Ver bridge/invoice-ready.js.
+  const sendInvoiceWhatsApp = async ({ invoiceId, phone, clientName, total, url }) => {
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!bridgeSecret) return { ok: false, reason: "pending_configuration" };
+    if (!phone) return { ok: false, reason: "sin_telefono" };
+    const token = invoiceToken(env, invoiceId);
+    if (!token) return { ok: false, reason: "sin_enlace" };
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/invoice-ready`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          event: "invoice.ready",
+          invoiceId,
+          recipientPhone: normalizePhone(phone),
+          clientName: clientName || "Cliente",
+          total,
+          invoiceToken: token,
+          whatsappFormattedText: `Hola ${clientName || ""}, aquí está tu factura de Dalfi Studio Nails: ${url}`.trim(),
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) return { ok: false, status: response.status, body };
+      // Mismo cuidado que en sendMovedAppointmentWhatsApp: el bridge contesta 200 aunque no haya
+      // mandado nada. Mirar solo response.ok es el error que ya se cometió aquí una vez.
+      if (body?.status !== "SENT") {
+        return { ok: false, status: response.status, reason: body?.reason || body?.error || body?.status || "sin_confirmacion", body };
       }
       return { ok: true, status: response.status, body };
     } catch (error) {
@@ -2190,6 +2239,18 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       .catch((error) => console.error(`email: ${what} falló --`, error?.message || error));
   }
 
+  // El botón "Dejar mi reseña" de la plantilla factura_lista de WhatsApp apunta AQUÍ, no a Google.
+  // Es un botón de URL estática, así que su destino queda congelado en la plantilla aprobada por
+  // Meta: mandarlo a Google directo obligaría a pedir una aprobación nueva cada vez que cambie la
+  // ficha del negocio. Con este salto intermedio el destino se cambia con una variable de entorno.
+  // También sirve para el caso feo del enlace de Google: lleva "place//" y signos "!", y un botón
+  // de Meta con eso es una apuesta.
+  app.get("/resena", (_req, res) => {
+    const destino = String(env.GOOGLE_REVIEW_URL || GOOGLE_REVIEW_URL_DEFAULT);
+    res.set("Cache-Control", "no-store");
+    res.redirect(302, destino);
+  });
+
   app.get("/factura/:token", async (req, res, next) => {
     const invoiceId = verifyInvoiceToken(env, req.params.token);
     // Un token inválido y una factura borrada se responden igual: no confirmar qué IDs existen.
@@ -2205,11 +2266,11 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     } catch (error) { next(error); }
   });
 
-  // Enviar la factura a la clienta. Devuelve siempre el enlace y un wa.me con el mensaje ya
-  // escrito -- ese wa.me es hoy la vía real de WhatsApp: el bridge no puede iniciar conversación
-  // hasta que Meta apruebe una plantilla de utilidad (ver el TEMPORAL de más arriba), así que
-  // quien factura le da enviar desde el WhatsApp del salón. Con channel:"email" además lo manda
-  // por correo, que sí sale solo.
+  // Enviar la factura a la clienta. Devuelve siempre el enlace, y un wa.me con el mensaje ya
+  // escrito como RESPALDO para que alguien lo mande a mano si el envío automático falla.
+  // Con channel:"whatsapp" lo manda de verdad, por la plantilla factura_lista (ver
+  // sendInvoiceWhatsApp); con channel:"email" sale por correo. En los dos casos el resultado va en
+  // el cuerpo: `whatsapp.sent` / `email.sent`. Un 200 aquí NO significa que salió.
   app.post("/api/factura/:id/enviar", authenticate, async (req, res, next) => {
     const invoiceId = String(req.params.id || "").trim();
     if (!/^[\w-]{1,80}$/.test(invoiceId)) return res.status(400).json({ error: "Factura inválida." });
@@ -2234,7 +2295,24 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         if (!to) return res.status(400).json({ error: "Esa clienta no tiene correo registrado." });
         email = await sendInvoiceEmail(env, { to, clientName: view.clienteNombre, invoiceId, url, total: view.total });
       }
-      res.json({ ok: true, url, whatsappUrl, email });
+
+      let whatsapp = { sent: false, reason: "not_requested" };
+      if (channel === "whatsapp") {
+        if (!phone) return res.status(400).json({ error: "Esa clienta no tiene teléfono registrado." });
+        // El total va ya formateado porque entra tal cual en la plantilla de Meta: el bridge no
+        // sabe de pesos dominicanos ni debe saberlo. Mismo formato que el correo (email.mjs).
+        const montoEnPalabras = `RD$ ${(Number(view.total) || 0).toLocaleString("es-DO", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const enviado = await sendInvoiceWhatsApp({
+          invoiceId, phone, clientName: view.clienteNombre, total: montoEnPalabras, url,
+        });
+        // Un fallo NO es un error del endpoint: el enlace y el wa.me ya van en la respuesta, y con
+        // eso quien factura puede mandarlo a mano. Devolver 502 solo haría que el ERP tirara la
+        // información útil.
+        whatsapp = enviado.ok
+          ? { sent: true }
+          : { sent: false, reason: enviado.reason || (enviado.error ? `bridge: ${enviado.error}` : `bridge ${enviado.status || ""}`.trim()) };
+      }
+      res.json({ ok: true, url, whatsappUrl, email, whatsapp });
     } catch (error) { next(error); }
   });
 

@@ -3725,12 +3725,17 @@
 
         <p class="form-message" id="invoice-modal-message" style="margin-bottom: 12px; min-height: 20px; font-weight: bold;"></p>
 
-        <div class="row-actions" style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
-          <button class="primary-btn" id="invoice-modal-send-close" type="button" style="background: #16a34a; color: white; border: none; font-weight: bold; padding: 10px 18px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 6px;">
-            💬 Enviar por WhatsApp y Cerrar
+        <!-- El envío por WhatsApp es la acción principal de esta pantalla, no una más: ocupa su
+             propia fila y a todo el ancho para que no se confunda con imprimir o cerrar. Manda la
+             factura con su enlace y la invitación a dejar la reseña en Google. -->
+        <div class="row-actions" style="display: flex; flex-direction: column; gap: 10px;">
+          <button class="primary-btn" id="invoice-modal-send-close" type="button" style="background: #16a34a; color: white; border: none; font-weight: bold; font-size: 16px; padding: 14px 18px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; box-shadow: 0 2px 6px rgba(22, 163, 74, .3);">
+            💬 Enviar factura por WhatsApp
           </button>
-          <button class="secondary-btn" id="invoice-modal-print" type="button">🖨️ Imprimir / PDF</button>
-          <button class="secondary-btn" id="invoice-modal-close" type="button">Cerrar sin enviar</button>
+          <div style="display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end;">
+            <button class="secondary-btn" id="invoice-modal-print" type="button">🖨️ Imprimir / PDF</button>
+            <button class="secondary-btn" id="invoice-modal-close" type="button">Cerrar sin enviar</button>
+          </div>
         </div>
       </section>
     </dialog>

@@ -3955,14 +3955,13 @@ function invoiceReportHtml(invoiceId) {
   `;
 }
 
-// Envía la factura a la clienta como enlace. WhatsApp: hoy abre wa.me con el mensaje ya escrito
-// para que quien factura le dé enviar desde el WhatsApp del salón -- el bridge no puede iniciar
-// conversación hasta que Meta apruebe una plantilla de utilidad (ver el TEMPORAL en
-// server/app.mjs). Correo: sale solo por Gmail SMTP.
+// Envía la factura a la clienta como enlace. WhatsApp sale solo, por la plantilla factura_lista
+// (ver sendInvoiceWhatsApp en server/app.mjs); si ese envío falla, se cae a abrir wa.me con el
+// mensaje ya escrito para que quien factura lo mande desde el WhatsApp del salón. Correo: Gmail SMTP.
 async function sendInvoiceToClient(channel, invoiceId) {
   if (!isSupabaseReady()) { alert("Inicia sesión en el ERP para enviar la factura."); return; }
-  // wa.me tiene que abrirse de forma síncrona por el clic, o el navegador bloquea la ventana;
-  // se abre en blanco y se le pone el destino cuando responde el servidor.
+  // La ventana de wa.me solo puede abrirse de forma síncrona dentro del clic, o el navegador la
+  // bloquea. Se abre en blanco por si hay que usarla de respaldo, y se cierra si no hizo falta.
   const popup = channel === "whatsapp" ? window.open("", "_blank") : null;
   try {
     const response = await fetch(`/api/factura/${encodeURIComponent(invoiceId)}/enviar`, {
@@ -3973,6 +3972,12 @@ async function sendInvoiceToClient(channel, invoiceId) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     if (channel === "whatsapp") {
+      // Ojo: el 200 no dice que salió. El resultado real está en payload.whatsapp.sent.
+      if (payload.whatsapp?.sent) {
+        if (popup) popup.close();
+        alert("Factura enviada por WhatsApp, con el enlace y la invitación a dejar la reseña.");
+        return;
+      }
       if (!payload.whatsappUrl) throw new Error("Esa clienta no tiene teléfono registrado.");
       popup.location = payload.whatsappUrl;
       return;
@@ -4038,70 +4043,53 @@ function openInvoiceReport(invoiceId) {
 
 let activeModalInvoiceId = "";
 
+// El botón grande del momento de facturar: manda la factura por WhatsApp con su enlace y la
+// invitación a dejar la reseña en Google.
+//
+// Antes esto llamaba a /api/booking/notify-invoice-sent, que era una Cloudflare Pages Function y
+// NUNCA se portó a Cloud Run -- desde la migración el botón devolvía 404 y no salía nada. Y aunque
+// hubiera existido, mandaba un recibo en texto libre sin el enlace de la factura, que es justo lo
+// que Meta descarta fuera de la ventana de 24 horas (131047). Ahora va por el mismo endpoint que
+// el resto de los envíos de factura, con la plantilla factura_lista.
 async function sendInvoiceToChatbotBridge({ invoiceId, clientPhone, clientName }) {
   const phoneDigits = (clientPhone || "").replace(/[^\d]/g, "");
   if (!phoneDigits) {
     throw new Error("El cliente no tiene un número de teléfono válido para WhatsApp.");
   }
+  if (!isSupabaseReady()) throw new Error("Inicia sesión en el ERP para enviar la factura.");
 
-  const invoice = dbTable("facturas").find((r) => r.facturaID === invoiceId);
-  const details = dbTable("facturaDetalle").filter((d) => d.facturaID === invoiceId);
-  const lines = details.map((d) => ({ name: d.servicio, total: d.subtotal }));
+  const response = await fetch(`/api/factura/${encodeURIComponent(invoiceId)}/enviar`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
+    body: JSON.stringify({ channel: "whatsapp", phone: phoneDigits })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error || `El servidor devolvió status ${response.status}`);
 
-  const receiptText = typeof DalfiBookingEngine !== "undefined" && DalfiBookingEngine.generateWhatsAppReceiptText
-    ? DalfiBookingEngine.generateWhatsAppReceiptText({
-        eventType: "invoice.created",
-        invoiceId: invoiceId,
-        clientName: clientName || invoice?.clienteNombre || "Cliente",
-        clientPhone: clientPhone,
-        date: invoice?.fechaOperacion || dateOnly(invoice?.fechaHora),
-        lines: lines,
-        subtotal: invoice?.totalFacturado || 0,
-        tip: invoice?.propinaCobrada || invoice?.propinaPendiente || 0,
-        total: invoice?.totalConPropina || invoice?.totalFacturado || 0,
-        paymentMethods: [invoice?.estadoFactura || "Pagada"]
-      })
-    : "";
-
-  const requestBody = {
-    invoiceId: invoiceId,
-    clientPhone: phoneDigits,
-    clientName: clientName || invoice?.clienteNombre || "Cliente",
-    whatsappFormattedText: receiptText
-  };
-
-  let response;
-  try {
-    response = await fetch("/api/booking/notify-invoice-sent", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${supabaseSession.access_token}` },
-      body: JSON.stringify(requestBody)
-    });
-  } catch (err) {
-    console.warn("No se pudo conectar con el servidor del ERP, registrando evento diferido:", err);
+  // El 200 no significa que salió: hay que leer whatsapp.sent. Confundir las dos cosas ya costó
+  // mensajes marcados como enviados que nunca se mandaron.
+  if (!payload.whatsapp?.sent) {
     logAudit("whatsapp_invoice_sent_fallback", {
       entity: "facturas",
       entityId: invoiceId,
-      newData: requestBody,
-      success: true,
-      note: `Envío a WhatsApp (${phoneDigits}) registrado en modo offline/servidor diferido.`
+      newData: { phone: phoneDigits, reason: payload.whatsapp?.reason || "desconocido" },
+      success: false,
+      note: `No se pudo enviar la factura ${invoiceId} por WhatsApp (${payload.whatsapp?.reason || "desconocido"}). Enlace: ${payload.url || "sin enlace"}`
     });
-    return { status: "OK", simulated: true };
-  }
-
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(result?.error || `El servidor devolvió status ${response.status}`);
+    const error = new Error(payload.whatsapp?.reason || "el bridge no confirmó el envío");
+    error.whatsappUrl = payload.whatsappUrl || "";
+    error.invoiceUrl = payload.url || "";
+    throw error;
   }
 
   logAudit("whatsapp_invoice_sent", {
     entity: "facturas",
     entityId: invoiceId,
-    newData: { phone: phoneDigits, result },
+    newData: { phone: phoneDigits, url: payload.url },
     success: true,
-    note: `Factura ${invoiceId} enviada a WhatsApp (${phoneDigits}). Solicitud de reseña activada.`
+    note: `Factura ${invoiceId} enviada por WhatsApp a ${phoneDigits}, con enlace e invitación a reseña.`
   });
-  return result.result || result;
+  return payload;
 }
 
 function openInvoiceViewModal(invoiceId) {
@@ -14682,21 +14670,23 @@ function wireForms() {
       });
 
       msgElem.style.color = "#16a34a";
-      msgElem.textContent = res.simulated
-        ? "✅ Factura registrada. Evento enviado a WhatsApp correctamente."
-        : "✅ ¡Factura y solicitud de reseña enviadas por WhatsApp con éxito!";
+      msgElem.textContent = "✅ Factura enviada por WhatsApp, con el enlace y la invitación a dejar la reseña.";
 
       setTimeout(() => {
         const dialog = byId("invoice-sent-modal");
         if (dialog) dialog.close ? dialog.close() : dialog.removeAttribute("open");
         sendBtn.disabled = false;
-        sendBtn.textContent = "💬 Enviar por WhatsApp y Cerrar";
-      }, 1200);
+        sendBtn.textContent = "💬 Enviar factura por WhatsApp";
+      }, 1600);
     } catch (err) {
+      // Si el envío automático no salió, la factura igual existe y su enlace también: se ofrece
+      // mandarlo a mano desde el WhatsApp del salón en vez de dejar a la clienta sin nada.
       msgElem.style.color = "#dc2626";
-      msgElem.textContent = `Error al enviar: ${err.message}`;
+      msgElem.innerHTML = err.whatsappUrl
+        ? `No salió el envío automático (${escapeHtml(err.message)}). <a href="${escapeHtml(err.whatsappUrl)}" target="_blank" rel="noopener"><strong>Enviarlo a mano por WhatsApp</strong></a>`
+        : `Error al enviar: ${escapeHtml(err.message)}`;
       sendBtn.disabled = false;
-      sendBtn.textContent = "💬 Enviar por WhatsApp y Cerrar";
+      sendBtn.textContent = "💬 Enviar factura por WhatsApp";
     }
   });
 
