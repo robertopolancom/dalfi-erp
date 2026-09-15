@@ -55,6 +55,7 @@ function applyLanguage(lang) {
   // que refleje el idioma nuevo sin tener que recargar la página.
   if (!$("client-appointments-card").classList.contains("hidden")) loadMyAppointments(state.myAppointmentsScope || "active");
   if (!$("booking-card").classList.contains("hidden") && state.wizardStep === 3) loadAvailability();
+  if (!$("booking-card").classList.contains("hidden") && state.wizardStep === 4) renderBookingDepositAccounts();
   if (!$("success-card").classList.contains("hidden")) renderBankAccounts($("success-bank-accounts"));
   if ($("bank-accounts-dialog").open) renderBankAccounts($("dialog-bank-accounts"));
 }
@@ -165,7 +166,29 @@ function goToStep(step) {
   $("progress-bar").style.width = `${WIZARD_STEP_PROGRESS[step] ?? 8}%`;
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (step === 3) loadAvailability();
-  if (step === 4) renderBookingSelectionSummary();
+  if (step === 4) { renderBookingSelectionSummary(); renderBookingDepositAccounts(); }
+}
+
+// Las cuentas para transferir, en el mismo paso donde se le dice que hace falta un depósito.
+// Antes solo salían DESPUÉS de confirmar, en la pantalla de éxito: el cliente leía "se requiere un
+// depósito de RD$500" y se quedaba sin saber a dónde mandarlo (pedido de Roberto, 2026-09-15).
+//
+// GET /api/reservapp/bank-accounts es una ruta autenticada a propósito -- lleva número de cuenta,
+// titular y cédula, y esa decisión (no exponerlos al público) no se toca aquí. Así que sin sesión
+// no se piden: se le dice, con todas las letras, que las verá al confirmar. Que es verdad, y es
+// mejor que un "cargando" eterno o un error.
+function renderBookingDepositAccounts() {
+  const caja = $("booking-bank-accounts");
+  if (!caja) return;
+  if (state.account) return renderBankAccounts(caja);
+  caja.textContent = "";
+  const nota = document.createElement("p");
+  nota.className = "bank-accounts-pending";
+  nota.textContent = t(
+    "Al confirmar te mostramos las cuentas para transferir el depósito, y podrás subir tu comprobante ahí mismo.",
+    "Once you confirm we'll show you the accounts for the transfer, and you'll be able to upload your receipt right there.",
+  );
+  caja.append(nota);
 }
 
 function formatSlotTime(time) {

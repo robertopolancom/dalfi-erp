@@ -10,6 +10,12 @@ compatibility_date = "2026-07-09"
 # cron no serviria de nada aunque se desplegara. Hoy el catch-up lo sirve el
 # backend de Render en POST /api/run-closing-catchup (server/app.mjs, portado
 # desde la vieja Pages Function el 2026-09-10).
+# Este Worker solo tiene manejador `scheduled`: no atiende peticiones HTTP de nadie. Sin estas
+# dos lineas, wrangler le habilita por defecto una URL publica (*.workers.dev) y URLs de vista
+# previa que no sirven para nada y son superficie de mas.
+workers_dev = false
+preview_urls = false
+
 [vars]
 APP_BASE_URL = "https://ssc.dalfistudio.com"
 

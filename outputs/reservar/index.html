@@ -93,6 +93,11 @@
           <label class="trap" aria-hidden="true">Sitio web<input id="website" tabindex="-1" autocomplete="off" /></label>
           <button class="primary" id="submit-booking" type="submit" data-en="Confirm booking">Confirmar reserva</button>
           <p class="policy"><span data-en="A deposit of">Se requiere un depósito de</span> <strong>RD$500</strong><span data-en=" is required. Your appointment is created in Dalfi and published to Google Calendar, and changes can't be made from Google.">. La cita se crea en Dalfi y se publica en Google Calendar sin permitir cambios desde Google.</span></p>
+          <!-- Las cuentas para transferir, aquí mismo donde se le avisa del depósito. Antes solo
+               aparecían después de confirmar, en la pantalla de éxito, y el cliente se quedaba
+               leyendo "deposita RD$500" sin saber a dónde (pedido de Roberto, 2026-09-15). Lo
+               rellena renderBookingDepositAccounts() en app.js. -->
+          <div class="bank-accounts" id="booking-bank-accounts"></div>
           <div class="step-actions"><button class="secondary" id="step4-back" type="button" data-en="Back">Atrás</button></div>
         </div>
       </form>

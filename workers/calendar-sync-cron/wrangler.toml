@@ -1,8 +1,32 @@
+# =============================================================================
+# NO DESPLEGAR. Comprobado el 2026-09-15:
+#
+#   - Este Worker NUNCA se ha desplegado: la API de Cloudflare responde
+#     "This Worker does not exist on your account" (code 10007).
+#   - La ruta que llama, POST /api/calendar/google-pull, NO EXISTE en el ERP:
+#     responde 404 y no aparece en server/app.mjs.
+#   - El secreto que exige, GOOGLE_CALENDAR_SYNC_SECRET, no esta declarado en
+#     ningun sitio del repo ni en las variables del servicio.
+#   - Su cron es cada minuto: desplegarlo despertaria el ERP de forma continua
+#     y anularia el escalado a cero de Cloud Run.
+#
+# La sincronizacion con Google Calendar hoy va por Apps Script (ver
+# GOOGLE_CALENDAR_PROVIDER=apps_script y functions/api/_lib/google-calendar.js),
+# asi que esto quedo atras. Borrar la carpeta o terminarlo es decision de
+# Roberto; mientras tanto, que nadie lo despliegue por error.
+# =============================================================================
+
 # RETIRADO 2026-09-04 -- este Worker ya no existe en Cloudflare, ver README.md.
 # Se conserva el archivo para que quede constancia de cómo estaba configurado.
 name = "dalfi-erp-calendar-sync-cron"
 main = "worker.js"
 compatibility_date = "2026-07-09"
+
+# Este Worker solo tiene manejador `scheduled`: no atiende peticiones HTTP de nadie. Sin estas
+# dos lineas, wrangler le habilita por defecto una URL publica (*.workers.dev) y URLs de vista
+# previa que no sirven para nada y son superficie de mas.
+workers_dev = false
+preview_urls = false
 
 [vars]
 # Apuntaba a dalfi-erp.pages.dev, un proyecto borrado el 2026-08-24. Si algún día

@@ -10,6 +10,12 @@ compatibility_date = "2026-07-09"
 # Variable NO secreta: el backend real (Render + Neon) al que este Worker le hace fetch().
 # dalfi-erp.pages.dev (Cloudflare Pages + Supabase) se eliminó -- la lógica de recordatorios se
 # portó a POST /api/booking/send-reminders en server/app.mjs (ver ahí checkConfirmationReminder).
+# Este Worker solo tiene manejador `scheduled`: no atiende peticiones HTTP de nadie. Sin estas
+# dos lineas, wrangler le habilita por defecto una URL publica (*.workers.dev) y URLs de vista
+# previa que no sirven para nada y son superficie de mas.
+workers_dev = false
+preview_urls = false
+
 [vars]
 APP_BASE_URL = "https://ssc.dalfistudio.com"
 
