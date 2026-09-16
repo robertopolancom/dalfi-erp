@@ -44,7 +44,18 @@ import {
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const BOOKING_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const BOOKING_LIMIT_MAX = 25;
-const RELAY_OTP_TTL_MS = 10 * 60 * 1000;
+// Cuánto vale un código de verificación. Eran 10 minutos y se subió a 30 el 2026-09-16 por un
+// motivo que no es de comodidad: las plantillas de AUTENTICACIÓN de WhatsApp llevan un tiempo de
+// vida igual a esta caducidad, y Meta DESCARTA el mensaje si el teléfono no se conecta dentro de
+// ese plazo -- sin entregarlo y, muchas veces, sin avisar de que falló. Con 10 minutos, una
+// clienta que pide el código y no se queda mirando la pantalla no lo recibe nunca. Pasó de verdad
+// (2026-09-16, varias clientas esperando).
+//
+// Tiene que ir a la par de "Caduca en" de la plantilla activacion_reservapp_v3 en Meta: si aquí
+// dura más que allí, el mensaje se pierde igual; si dura menos, llega un código ya vencido.
+const SETUP_OTP_TTL_MS = 30 * 60 * 1000;
+
+const RELAY_OTP_TTL_MS = SETUP_OTP_TTL_MS;
 const RELAY_OTP_MAX_ATTEMPTS = 5;
 const RELAY_OTP_REQUEST_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RELAY_OTP_REQUEST_LIMIT_MAX = 5;
@@ -440,11 +451,26 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
           actionRequired: "await_customer_reply",
           reservationId,
           recipientPhone: normalizePhone(phone),
+          // Las piezas sueltas, además del texto ya armado: el recordatorio sale por PLANTILLA
+          // (recordatorio_cita), y una plantilla necesita sus variables, no un párrafo. El texto
+          // se sigue mandando porque es el respaldo si el bridge todavía no tiene plantilla
+          // configurada. Ver bridge/overdue-reminders.js.
+          clientName: clientName || "",
+          service: service || "tu servicio",
+          date: String(date || ""),
+          time: String(time || ""),
           whatsappFormattedText: text,
         }),
       });
       const body = await response.json().catch(() => ({}));
-      return { ok: response.ok, status: response.status, body };
+      // response.ok NO basta: el bridge contesta 200 aunque no haya mandado nada (IGNORED,
+      // FAILED). Es la misma trampa que ya costó dar por enviados mensajes que nunca salieron,
+      // y aquí seguía sin corregir.
+      if (!response.ok) return { ok: false, status: response.status, body };
+      if (body?.status !== "OK") {
+        return { ok: false, status: response.status, reason: body?.reason || body?.status || "sin_confirmacion", body };
+      }
+      return { ok: true, status: response.status, body };
     } catch (error) {
       return { ok: false, error: error.message };
     }
@@ -657,13 +683,13 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const existingAccount = await bookingStore.accountByPhone(phone);
         if (existingAccount && !existingAccount.password_hash) {
           const code = generateOtpCode();
-          const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+          const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
           const prepared = await bookingStore.prepareSetup({ accountId: existingAccount.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
           // TEMPORAL: ver comentario junto a RESERVAPP_SKIP_PHONE_VERIFICATION más abajo -- mismo
           // interruptor, mismo mecanismo, solo que reutilizando una cuenta ya existente.
           if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
             const activationTicket = secureToken();
-            const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+            const newExpiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
             const verify = await bookingStore.verifySetupOtp({ accountId: existingAccount.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
             if (!verify.notFound && !verify.locked && !verify.invalid) {
               return res.status(202).json({
@@ -717,7 +743,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // consulta la ERP por su teléfono y crea (o enlaza) la ficha real. Si abandona aquí, no
         // queda ningún rastro ni en la ERP ni en ReservApp.
         const code = generateOtpCode();
-        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
         const registration = existingClient ? null : { firstName, lastName, email, birthDate, sex, address, preferredService };
         const pendiente = await bookingStore.createPendingRegistration({
           phone, existingClientId: existingClient?.id || null, registration,
@@ -735,7 +761,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // esta rama `if` y la env var en Render, no hace falta tocar nada más.
         if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
           const activationTicket = secureToken();
-          const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+          const newExpiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
           const verify = await bookingStore.verifyPendingRegistrationOtp({ phone, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
           if (!verify.notFound && !verify.locked && !verify.invalid) {
             return res.status(202).json({
@@ -780,7 +806,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       try {
         const account = await bookingStore.accountByPhone(phone);
         const activationTicket = secureToken();
-        const newExpiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        const newExpiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
         // Cuenta ya existente (invitación de personal, o alguien que ya tenía cuenta antes de
         // este cambio) -- camino de siempre, sin tocar. Si no hay cuenta, es un autorregistro
         // nuevo: el código vive en reservapp_pending_registrations, no en reservapp_setup_tokens,
@@ -889,7 +915,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
             return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
           }
           const code = generateOtpCode();
-          const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+          const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
           const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone });
           await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: account.full_name || "", purpose: "reset" });
           return res.status(202).json({
@@ -1248,13 +1274,14 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     // falta un código por WhatsApp, y quien se quedaba esperando ese código no tenía forma de
     // llegar a los números. Clientas reclamando que no tienen cómo pagar el depósito.
     //
-    // Lo que se abre es lo necesario para transferir --banco, tipo de producto, número y
-    // titular-- y NADA más. La CÉDULA del titular sigue pidiendo sesión: un número de cuenta
-    // publicado sirve para que te paguen, pero una cédula publicada en internet es material para
-    // suplantar a una persona, y eso no hace falta para hacer un depósito.
+    // Va TODO lo que pide un banco para transferir, cédula del titular incluida. Se planteó
+    // dejarla fuera --una cédula publicada es material para suplantar a alguien-- y Roberto
+    // decidió que sí el 2026-09-16, con un motivo operativo concreto: una transferencia
+    // INTERBANCARIA en República Dominicana exige el documento del beneficiario, así que sin ella
+    // quien no tenga cuenta en el mismo banco no puede depositar. Es una decisión del dueño del
+    // negocio sobre datos del propio negocio, tomada sabiendo lo que implica.
     app.get("/api/reservapp/bank-accounts", async (req, res, next) => {
       try {
-        const sesion = await reservappSession(req);
         const row = await store.read();
         const cuentas = Array.isArray(documentData(row?.data)?.cuentas) ? documentData(row?.data).cuentas : [];
         const accounts = cuentas
@@ -1264,9 +1291,8 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
             tipoProducto: a.tipoProducto || "",
             numeroCuenta: a.numeroCuenta || "",
             titular: a.titular || "",
-            ...(sesion
-              ? { documento: a.documentoTitular || "", tipoDocumento: a.tipoDocumentoTitular || "Cédula" }
-              : {}),
+            documento: a.documentoTitular || "",
+            tipoDocumento: a.tipoDocumentoTitular || "Cédula",
           }))
           .filter((a) => a.banco && a.numeroCuenta);
         res.json({ accounts });
@@ -1303,7 +1329,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         if (!allowed) return res.status(403).json({ error: "Solo administración puede crear credenciales del equipo." });
         const account = await bookingStore.createEmployeeAccount({ staffId, phone, role, createdByAccountId: session?.account.id || null });
         const code = generateOtpCode();
-        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+        const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
         const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone });
         const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: "Equipo Dalfi" });
         res.status(201).json({ account: publicAccount(account), deliveryStatus: delivery.status });

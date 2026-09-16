@@ -309,7 +309,21 @@
 (function () {
   var PUENTE = "https://bot.dalfistudio.com";
   var CLAVE_SESION = "dalfi.chat.sesion";
-  var MS_ENTRE_SONDEOS = 4000;
+
+  // El sondeo es lo único de este chat que cuesta dinero de verdad: cada vuelta es una petición al
+  // puente Y otra del puente al ERP. A 4 segundos fijos, una pestaña abierta media hora son 900
+  // peticiones para no traer nada.
+  //
+  // Así que el ritmo se ajusta a lo que puede pasar de verdad:
+  //   * RAPIDO solo cuando hay una persona en camino o acaba de haber actividad. Es el único
+  //     momento en que puede llegar algo que el visitante esté esperando.
+  //   * LENTO el resto del tiempo. Lo que responde el bot no llega por aquí: llega en la propia
+  //     petición del mensaje.
+  //   * Nada mientras la pestaña esté oculta. Nadie está mirando, y al volver se sondea de
+  //     inmediato, así que no se pierde nada.
+  var MS_RAPIDO = 4000;
+  var MS_LENTO = 20000;
+  var MS_ACTIVIDAD_RECIENTE = 60000;
 
   var fab = document.getElementById("dalfi-fab");
   var panel = document.getElementById("dalfi-panel");
@@ -325,8 +339,11 @@
   var sesion = null;
   var marcaUltimo = null;
   var sondeo = null;
+  var ritmoActual = null;
   var conversacionEmpezada = false;
   var hiloRestaurado = false;
+  var esperandoPersona = false;
+  var ultimaActividad = 0;
 
   function idDeSesion() {
     if (sesion) return sesion;
@@ -368,14 +385,23 @@
   }
 
   function marcarEsperandoHumano(esperando) {
+    esperandoPersona = Boolean(esperando);
     estado.textContent = esperando
       ? "Te estamos pasando con una persona…"
       : "Te respondo al momento";
+    ajustarRitmo();
+  }
+
+  function ritmoQueToca() {
+    if (esperandoPersona) return MS_RAPIDO;
+    if (Date.now() - ultimaActividad < MS_ACTIVIDAD_RECIENTE) return MS_RAPIDO;
+    return MS_LENTO;
   }
 
   async function enviarMensaje(texto) {
     if (!texto) return;
     pintar(texto, "visitante");
+    ultimaActividad = Date.now();
     input.value = "";
     enviar.disabled = true;
     conversacionEmpezada = true;
@@ -414,9 +440,10 @@
         }
         // De ahí en adelante, solo lo que escribió una persona: lo que dijo el bot ya se pintó
         // al responder, y volver a pintarlo sacaría cada respuesta dos veces.
-        if (m.de === "staff") pintar(m.texto, "persona", "Dalfi Studio");
+        if (m.de === "staff") { pintar(m.texto, "persona", "Dalfi Studio"); ultimaActividad = Date.now(); }
       });
       hiloRestaurado = true;
+      ajustarRitmo();
       // La marca la fija el servidor: el reloj del visitante no sirve para esto.
       if (datos.after) marcaUltimo = datos.after;
       if (typeof datos.esperandoHumano === "boolean") marcarEsperandoHumano(datos.esperandoHumano);
@@ -424,14 +451,30 @@
   }
 
   function arrancarSondeo() {
-    if (sondeo || !conversacionEmpezada) return;
-    sondeo = setInterval(sondear, MS_ENTRE_SONDEOS);
+    if (!conversacionEmpezada || panel.hidden || document.hidden) return;
+    var ritmo = ritmoQueToca();
+    if (sondeo && ritmo === ritmoActual) return;
+    pararSondeo();
+    ritmoActual = ritmo;
+    sondeo = setInterval(sondear, ritmo);
+  }
+
+  function ajustarRitmo() {
+    if (sondeo) arrancarSondeo();
   }
 
   function pararSondeo() {
     if (sondeo) clearInterval(sondeo);
     sondeo = null;
+    ritmoActual = null;
   }
+
+  // Una pestaña en segundo plano no tiene a nadie mirándola. Al volver se sondea en el acto, así
+  // que lo que llegara mientras tanto aparece igual y sin esperar una vuelta entera.
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) return pararSondeo();
+    if (!panel.hidden && conversacionEmpezada) { sondear(); arrancarSondeo(); }
+  });
 
   async function abrir() {
     panel.hidden = false;

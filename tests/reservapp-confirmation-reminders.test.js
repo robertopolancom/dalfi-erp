@@ -70,6 +70,11 @@ function bookingStoreMock({ appointments = [], settings = {} } = {}) {
   };
 }
 
+// Los dobles del puente devuelven la forma REAL de su respuesta, { status: "OK", ... } (ver
+// handleOverdueReminder en dalfi-chatbot-n8n). Antes devolvían { status: "SENT" }, que este
+// endpoint del puente no manda nunca, y pasaban igual porque el ERP solo miraba response.ok --
+// justo el descuido que daba por enviados recordatorios que Meta rechazaba después con 131047.
+// Si alguien afloja esto, vuelve el silencio.
 async function withServer({ appointments, settings, fetchImpl, env }, run) {
   const store = bookingStoreMock({ appointments, settings });
   const app = createApp({
@@ -101,7 +106,7 @@ test("POST /api/booking/send-reminders: cita 'Programada' a <=4h laborales recib
   let bridgeCalled = null;
   await withServer({
     appointments, env: { BOOKING_REMINDER_CRON_SECRET: "shh", ERP_WEBHOOK_SECRET: "bridge-secret" },
-    fetchImpl: async (url, init) => { bridgeCalled = { url, body: JSON.parse(init.body) }; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); },
+    fetchImpl: async (url, init) => { bridgeCalled = { url, body: JSON.parse(init.body) }; return new Response(JSON.stringify({ status: "OK", action: "REMINDER_SENT", deliveryStatus: "SENT_AS_TEMPLATE" }), { status: 200 }); },
   }, async (base, store) => {
     const response = await fetch(`${base}/api/booking/send-reminders`, { method: "POST", headers: { "x-cron-secret": "shh" } });
     assert.equal(response.status, 200);
@@ -139,7 +144,7 @@ test("POST /api/booking/send-reminders: 'PendienteConfirmarHora' con >=1h labora
   }];
   await withServer({
     appointments, env: { BOOKING_REMINDER_CRON_SECRET: "shh", ERP_WEBHOOK_SECRET: "bridge-secret" },
-    fetchImpl: async () => new Response(JSON.stringify({ status: "SENT" }), { status: 200 }),
+    fetchImpl: async () => new Response(JSON.stringify({ status: "OK", action: "REMINDER_SENT", deliveryStatus: "SENT_AS_TEMPLATE" }), { status: 200 }),
   }, async (base, store) => {
     const response = await fetch(`${base}/api/booking/send-reminders`, { method: "POST", headers: { "x-cron-secret": "shh" } });
     const body = await response.json();

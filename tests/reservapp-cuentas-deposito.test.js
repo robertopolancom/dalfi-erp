@@ -3,10 +3,12 @@
 // quien se quedaba esperando ese código no tenía forma de saber a dónde depositar. El 2026-09-16
 // llegaron clientas reclamando exactamente eso.
 //
-// Lo que estas pruebas protegen es la línea que se decidió al abrirlo: se abre lo que hace falta
-// para transferir (banco, producto, número, titular) y NO la cédula del titular. Un número de
-// cuenta publicado sirve para que te paguen; una cédula publicada sirve para suplantar a una
-// persona, y no hace falta para hacer un depósito.
+// Va TODO lo que pide un banco para transferir, cédula del titular incluida. Se planteó dejarla
+// fuera --una cédula publicada es material para suplantar a alguien-- y Roberto decidió que sí el
+// 2026-09-16, con un motivo operativo: una transferencia INTERBANCARIA en República Dominicana
+// exige el documento del beneficiario, así que sin ella quien no tenga cuenta en el mismo banco
+// no puede depositar. Decisión del dueño sobre datos de su propio negocio, tomada sabiendo lo que
+// implica; si alguien la revisa en el futuro, que sepa que no fue un descuido.
 
 import assert from "node:assert/strict";
 import { once } from "node:events";
@@ -71,29 +73,20 @@ test("CD01 — sin sesión SÍ se ven las cuentas: es lo que hace falta para pod
   });
 });
 
-test("CD02 — sin sesión NO viaja la cédula del titular", async () => {
+test("CD02 — sin sesión viaja también la cédula: sin ella no se puede transferir entre bancos", async () => {
   await conServidor(async (base) => {
     const { accounts } = await (await pedir(base)).json();
-    assert.equal(accounts[0].documento, undefined, "una cédula publicada sirve para suplantar a alguien");
-    assert.equal(accounts[0].tipoDocumento, undefined);
-    // Y que no se cuele por otro nombre de campo.
-    assert.doesNotMatch(JSON.stringify(accounts), /402-1234567-8/);
-  });
-});
-
-test("CD03 — con sesión sí se incluye, que es donde tiene sentido", async () => {
-  await conServidor(async (base) => {
-    const { accounts } = await (await pedir(base, `reservapp_session=${TOKEN}`)).json();
     assert.equal(accounts[0].documento, "402-1234567-8");
     assert.equal(accounts[0].tipoDocumento, "Cédula");
+    assert.equal(accounts[0].titular, "Dalfina Guzmán");
   });
 });
 
-test("CD04 — una cookie de sesión inválida se trata como si no hubiera", async () => {
+test("CD03 — con sesión se ve exactamente lo mismo", async () => {
   await conServidor(async (base) => {
-    const { accounts } = await (await pedir(base, "reservapp_session=inventado")).json();
-    assert.equal(accounts[0].numeroCuenta, "9601234567");
-    assert.equal(accounts[0].documento, undefined);
+    const sin = await (await pedir(base)).json();
+    const con = await (await pedir(base, `reservapp_session=${TOKEN}`)).json();
+    assert.deepEqual(con.accounts, sin.accounts, "tener cuenta no da acceso a nada distinto aquí");
   });
 });
 
