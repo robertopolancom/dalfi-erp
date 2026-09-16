@@ -2561,6 +2561,11 @@ export class NeonChatStore {
   // entraría dos veces en el historial cada vez que el bridge tarde en responder.
   async ingest({
     phone,
+    // Identidad del canal web. Excluyente con `phone`: quien escribe desde la página no tiene
+    // teléfono, y no se le puede inventar uno sin envenenar el emparejamiento con
+    // app.client_phones. Ver la migración 0030.
+    webSessionId = null,
+    webDisplayName = null,
     waProfileName = null,
     direction,
     senderType,
@@ -2576,8 +2581,16 @@ export class NeonChatStore {
     needsHuman = null,
     handoffReason = null,
   }) {
-    const phoneNormalized = NeonChatStore.normalizePhone(phone);
-    if (!phoneNormalized) throw new Error("Falta el teléfono de la conversación.");
+    const sesionWeb = String(webSessionId || "").trim() || null;
+    const phoneNormalized = sesionWeb ? null : NeonChatStore.normalizePhone(phone);
+    if (!sesionWeb && !phoneNormalized) throw new Error("Falta el teléfono de la conversación.");
+    const canal = sesionWeb ? "web" : "whatsapp";
+    // El índice único es PARCIAL desde la 0030 (uno por canal), y Postgres no lo infiere sin su
+    // predicado: `on conflict (phone_normalized)` a secas falla con "no unique or exclusion
+    // constraint matching". Literal fijo elegido por canal, nunca entrada de usuario.
+    const conflicto = sesionWeb
+      ? "(web_session_id) where web_session_id is not null"
+      : "(phone_normalized) where phone_normalized is not null";
 
     const client = await this.pool.connect();
     try {
@@ -2586,36 +2599,43 @@ export class NeonChatStore {
       // Se busca la clienta por teléfono en cada mensaje, no solo al crear: mucha gente
       // escribe antes de existir como clienta, y cuando se le da de alta después queremos
       // que su historial anterior quede enlazado sin tener que migrarlo a mano.
-      const clientRow = await client.query(
-        `select client_id from app.client_phones where phone_normalized = $1 limit 1`,
-        [phoneNormalized],
-      );
+      // Sin teléfono no hay a quién emparejar: una conversación web arranca anónima y se queda
+      // así hasta que la persona diga quién es. Es lo correcto, no una carencia.
+      const clientRow = phoneNormalized
+        ? await client.query(
+            `select client_id from app.client_phones where phone_normalized = $1 limit 1`,
+            [phoneNormalized],
+          )
+        : { rows: [] };
       const clientId = clientRow.rows[0]?.client_id || null;
 
       const preview = String(body || "").slice(0, 140) || null;
       const conversation = await client.query(
         `insert into app.chat_conversations
-           (phone_normalized, client_id, wa_profile_name, bot_state, needs_human,
+           (channel, phone_normalized, web_session_id, web_display_name,
+            client_id, wa_profile_name, bot_state, needs_human,
             handoff_reason, handoff_requested_at, last_message_at, last_message_preview)
-         values ($1, $2, $3, $4, coalesce($5, false), $6,
-                 case when $5 is true then now() else null end, now(), $7)
-         on conflict (phone_normalized) do update set
+         values ($1, $2, $3, $4, $5, $6, $7, coalesce($8, false), $9,
+                 case when $8 is true then now() else null end, now(), $10)
+         on conflict ${conflicto} do update set
            -- coalesce en cascada: lo que no venga en este mensaje no debe borrar lo que ya
            -- se sabía. Un mensaje suelto sin nombre de perfil no puede dejar la conversación
            -- anónima si antes sí lo teníamos.
            client_id = coalesce(app.chat_conversations.client_id, excluded.client_id),
            wa_profile_name = coalesce(excluded.wa_profile_name, app.chat_conversations.wa_profile_name),
+           web_display_name = coalesce(excluded.web_display_name, app.chat_conversations.web_display_name),
            bot_state = coalesce(excluded.bot_state, app.chat_conversations.bot_state),
-           needs_human = coalesce($5, app.chat_conversations.needs_human),
-           handoff_reason = coalesce($6, app.chat_conversations.handoff_reason),
+           needs_human = coalesce($8, app.chat_conversations.needs_human),
+           handoff_reason = coalesce($9, app.chat_conversations.handoff_reason),
            handoff_requested_at = case
-             when $5 is true and app.chat_conversations.needs_human is false then now()
+             when $8 is true and app.chat_conversations.needs_human is false then now()
              else app.chat_conversations.handoff_requested_at end,
            last_message_at = now(),
-           last_message_preview = coalesce($7, app.chat_conversations.last_message_preview),
+           last_message_preview = coalesce($10, app.chat_conversations.last_message_preview),
            updated_at = now()
          returning id`,
-        [phoneNormalized, clientId, waProfileName, botState, needsHuman, handoffReason, preview],
+        [canal, phoneNormalized, sesionWeb, webDisplayName, clientId, waProfileName,
+         botState, needsHuman, handoffReason, preview],
       );
       const conversationId = conversation.rows[0].id;
 
@@ -2663,7 +2683,7 @@ export class NeonChatStore {
   // que es exactamente el orden en que hay que atenderlas.
   async conversations({ limit = 50 } = {}) {
     const result = await this.pool.query(
-      `select c.id, c.phone_normalized, c.client_id, c.wa_profile_name, c.bot_state,
+      `select c.id, c.phone_normalized, c.channel, c.web_session_id, c.web_display_name, c.client_id, c.wa_profile_name, c.bot_state,
               c.needs_human, c.handoff_reason, c.handoff_requested_at, c.assigned_staff_id,
               c.last_message_at, c.last_message_preview, c.staff_last_read_at,
               cl.full_name as client_name,
@@ -2690,7 +2710,12 @@ export class NeonChatStore {
       clientId: row.client_id,
       // El nombre de la ficha manda sobre el del perfil de WhatsApp: el de WhatsApp lo
       // elige la persona y puede ser un apodo o un emoji.
-      name: row.client_name || row.wa_profile_name || row.phone_normalized,
+      // El nombre de la ficha manda; después el del perfil. En una conversación web puede no
+      // haber ninguno de los dos: quien llega al sitio es anónimo hasta que dice quién es, y
+      // enseñar el identificador de sesión no le diría nada a nadie.
+      name: row.client_name || row.wa_profile_name || row.web_display_name
+        || row.phone_normalized || "Visitante de la web",
+      channel: row.channel || "whatsapp",
       isClient: Boolean(row.client_id),
       botState: row.bot_state,
       needsHuman: row.needs_human,
@@ -2712,7 +2737,7 @@ export class NeonChatStore {
   async thread({ conversationId, limit = 200, env = null } = {}) {
     const [conversation, messages] = await Promise.all([
       this.pool.query(
-        `select c.id, c.phone_normalized, c.client_id, c.wa_profile_name, c.bot_state,
+        `select c.id, c.phone_normalized, c.channel, c.web_session_id, c.web_display_name, c.client_id, c.wa_profile_name, c.bot_state,
                 c.needs_human, c.handoff_reason, c.assigned_staff_id,
                 cl.full_name as client_name,
                 st.full_name as assigned_staff_name
@@ -2743,7 +2768,12 @@ export class NeonChatStore {
       id: row.id,
       phone: row.phone_normalized,
       clientId: row.client_id,
-      name: row.client_name || row.wa_profile_name || row.phone_normalized,
+      // El nombre de la ficha manda; después el del perfil. En una conversación web puede no
+      // haber ninguno de los dos: quien llega al sitio es anónimo hasta que dice quién es, y
+      // enseñar el identificador de sesión no le diría nada a nadie.
+      name: row.client_name || row.wa_profile_name || row.web_display_name
+        || row.phone_normalized || "Visitante de la web",
+      channel: row.channel || "whatsapp",
       isClient: Boolean(row.client_id),
       botState: row.bot_state,
       needsHuman: row.needs_human,
@@ -2793,6 +2823,60 @@ export class NeonChatStore {
       [conversationId],
     );
     return r.rows[0]?.phone_normalized || null;
+  }
+
+  // Por dónde hay que contestarle a esta conversación. phoneOf() ya no alcanza desde que la
+  // bandeja mezcla WhatsApp y el chat de la web (migración 0030): una conversación web no tiene
+  // teléfono y su respuesta viaja por otro camino. Quien vaya a responder tiene que preguntar
+  // esto, no asumir que siempre hay número.
+  async destinoDe(conversationId) {
+    const r = await this.pool.query(
+      `select channel, phone_normalized, web_session_id
+         from app.chat_conversations where id = $1`,
+      [conversationId],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      channel: row.channel || "whatsapp",
+      phone: row.phone_normalized || null,
+      webSessionId: row.web_session_id || null,
+    };
+  }
+
+  // Los mensajes que el visitante de la web todavía no ha visto. Es lo que sondea el widget:
+  // solo lo SALIENTE (bot y personal), porque lo que él escribió ya lo tiene en pantalla.
+  // `after` es una marca de tiempo ISO; sin ella devuelve el hilo completo, que es lo que hace
+  // falta cuando alguien recarga la página y quiere recuperar su conversación.
+  async mensajesDeSesionWeb({ webSessionId, after = null, limit = 50 }) {
+    const sesion = String(webSessionId || "").trim();
+    if (!sesion) return { conversationId: null, messages: [] };
+    const conv = await this.pool.query(
+      "select id, needs_human from app.chat_conversations where web_session_id = $1",
+      [sesion],
+    );
+    const row = conv.rows[0];
+    if (!row) return { conversationId: null, messages: [] };
+    const result = await this.pool.query(
+      `select id, direction, sender_type, body, created_at
+         from app.chat_messages
+        where conversation_id = $1
+          and direction = 'out'
+          and ($2::timestamptz is null or created_at > $2::timestamptz)
+        order by created_at asc
+        limit $3`,
+      [row.id, after, Math.min(Number(limit) || 50, 200)],
+    );
+    return {
+      conversationId: row.id,
+      needsHuman: row.needs_human === true,
+      messages: result.rows.map((m) => ({
+        id: m.id,
+        senderType: m.sender_type,
+        body: m.body,
+        at: m.created_at?.toISOString?.() || m.created_at,
+      })),
+    };
   }
 
   // Deja constancia de lo que escribió una persona del equipo. Se llama DESPUÉS de intentar

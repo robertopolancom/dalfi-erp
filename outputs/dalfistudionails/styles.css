@@ -286,7 +286,7 @@ footer{padding:40px 0 48px;border-top:1px solid var(--line)}
    de pestaña). Conecta al WhatsApp con chatbot del estudio (809-346-3030), no al número
    personal que aparece en Ubicación. */
 .whatsapp-fab{
-  position:fixed;right:20px;bottom:20px;z-index:50;
+  position:fixed;right:20px;bottom:92px;z-index:50;
   display:flex;align-items:center;gap:10px;
   background:#25D366;color:#fff;text-decoration:none;
   border-radius:999px;padding:14px 20px 14px 14px;
@@ -302,7 +302,7 @@ footer{padding:40px 0 48px;border-top:1px solid var(--line)}
   .photo-grid{grid-template-columns:1fr 1fr;gap:14px}
   .photo-grid .photo.wide{grid-column:span 2}
   .banner img{aspect-ratio:16/9}
-  .whatsapp-fab{padding:14px;right:16px;bottom:16px}
+  .whatsapp-fab{padding:14px;right:16px;bottom:84px}
   .whatsapp-fab span{
     position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;
   }
@@ -323,3 +323,94 @@ footer{padding:40px 0 48px;border-top:1px solid var(--line)}
   #reservar-dialog{width:100%;height:100%;max-width:100%;max-height:100%;border-radius:0}
 }
 
+
+
+/* ---------- chat con Dalfi ----------
+   El bot del sitio. Va DEBAJO del botón de WhatsApp a propósito: quien ya sabe que quiere
+   escribir por WhatsApp no debería tener que esquivar un chat, y quien solo tiene una pregunta
+   suelta encuentra primero el que le responde en el acto.
+   Paleta del sitio (salvia y papel), no el verde de WhatsApp: son dos cosas distintas y
+   confundirlas haría que alguien abra el chat creyendo que abre WhatsApp. */
+.dalfi-fab{
+  position:fixed;right:20px;bottom:20px;z-index:50;
+  display:flex;align-items:center;gap:10px;
+  background:var(--sage-deep);color:var(--paper);
+  border:0;border-radius:999px;padding:14px 20px 14px 14px;cursor:pointer;
+  font-family:Poppins;font-weight:600;font-size:.86rem;
+  box-shadow:0 10px 26px rgba(75,80,64,.36), 0 2px 6px rgba(0,0,0,.12);
+  transition:transform .18s ease, box-shadow .18s ease;
+}
+.dalfi-fab:hover{transform:translateY(-2px);box-shadow:0 14px 30px rgba(75,80,64,.44), 0 2px 6px rgba(0,0,0,.14)}
+.dalfi-fab:focus-visible{outline:2px solid var(--clay);outline-offset:3px}
+.dalfi-fab svg{flex:none}
+.dalfi-fab[hidden]{display:none}
+
+.dalfi-panel{
+  position:fixed;right:20px;bottom:20px;z-index:60;
+  width:min(380px, calc(100vw - 32px));
+  height:min(560px, calc(100vh - 40px));
+  display:flex;flex-direction:column;
+  background:var(--paper);border:1px solid var(--line);border-radius:18px;
+  box-shadow:var(--shadow);overflow:hidden;
+}
+.dalfi-panel[hidden]{display:none}
+
+.dalfi-head{
+  display:flex;align-items:center;gap:12px;
+  padding:14px 16px;background:var(--sage-deep);color:var(--paper);
+}
+.dalfi-head .dalfi-avatar{
+  width:36px;height:36px;border-radius:999px;flex:none;
+  background:var(--sage-pale);color:var(--sage-deep);
+  display:grid;place-items:center;font-family:"Playfair Display",Georgia,serif;font-size:1.05rem;
+}
+.dalfi-head-text{flex:1;min-width:0}
+.dalfi-head-name{font-family:Poppins;font-weight:600;font-size:.95rem;line-height:1.2}
+.dalfi-head-sub{font-size:.74rem;opacity:.85;line-height:1.3}
+.dalfi-close{
+  background:transparent;border:0;color:inherit;cursor:pointer;padding:6px;border-radius:8px;line-height:0;
+}
+.dalfi-close:hover{background:rgba(255,255,255,.14)}
+
+.dalfi-log{
+  flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;
+  background:var(--paper-deep);
+}
+.dalfi-msg{
+  max-width:82%;padding:10px 13px;border-radius:14px;
+  font-size:.88rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere;
+}
+.dalfi-msg.de-bot{align-self:flex-start;background:#fff;border:1px solid var(--line);border-bottom-left-radius:5px}
+.dalfi-msg.de-persona{align-self:flex-start;background:var(--sage-pale);border:1px solid var(--sage);border-bottom-left-radius:5px}
+.dalfi-msg.de-visitante{align-self:flex-end;background:var(--sage-deep);color:var(--paper);border-bottom-right-radius:5px}
+.dalfi-msg-firma{display:block;font-size:.68rem;font-weight:600;opacity:.7;margin-bottom:3px}
+
+.dalfi-aviso{
+  align-self:center;text-align:center;font-size:.74rem;color:var(--muted);
+  background:#fff;border:1px dashed var(--line);border-radius:10px;padding:7px 11px;max-width:92%;
+}
+
+.dalfi-sugerencias{display:flex;flex-wrap:wrap;gap:7px;padding:0 16px 10px;background:var(--paper-deep)}
+.dalfi-sugerencia{
+  background:#fff;border:1px solid var(--line);border-radius:999px;
+  padding:7px 12px;font-family:Poppins;font-size:.77rem;color:var(--sage-deep);cursor:pointer;
+}
+.dalfi-sugerencia:hover{background:var(--sage-pale);border-color:var(--sage)}
+
+.dalfi-form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--paper)}
+.dalfi-input{
+  flex:1;min-width:0;border:1px solid var(--line);border-radius:999px;
+  padding:11px 15px;font-family:Poppins;font-size:.88rem;background:#fff;color:var(--ink);
+}
+.dalfi-input:focus{outline:2px solid var(--sage);outline-offset:0}
+.dalfi-enviar{
+  flex:none;border:0;border-radius:999px;width:42px;height:42px;cursor:pointer;
+  background:var(--sage-deep);color:var(--paper);display:grid;place-items:center;
+}
+.dalfi-enviar:disabled{opacity:.5;cursor:default}
+
+@media (max-width:640px){
+  .dalfi-fab{padding:14px;right:16px;bottom:16px}
+  .dalfi-fab span{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+  .dalfi-panel{right:8px;left:8px;bottom:8px;width:auto;height:min(78vh, calc(100vh - 16px))}
+}

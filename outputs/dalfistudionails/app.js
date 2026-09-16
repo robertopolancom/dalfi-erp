@@ -288,3 +288,185 @@
     })
     .catch(function () {}); // sin conexión o backend caído -- se queda el contenido estático
 })();
+
+// ---------------------------------------------------------------------------
+// Chat con Dalfi
+//
+// El bot vive en el puente (bot.dalfistudio.com), no aquí: es el MISMO motor que contesta por
+// WhatsApp, con la misma fuente de verdad aprobada para horarios, servicios y ubicación. Esta
+// página solo pinta la conversación.
+//
+// Dos cosas que conviene no "simplificar" después:
+//
+//   1. La sesión se guarda en localStorage para que alguien que recarga no pierda el hilo, pero
+//      NO es una identidad ni autoriza nada. Por este canal no puede viajar nunca un dato de
+//      ficha, cita o factura. Si algún día hace falta eso, hará falta iniciar sesión de verdad.
+//
+//   2. El sondeo solo corre mientras el panel está abierto Y hay una conversación empezada. Una
+//      pestaña olvidada abierta toda la noche golpeando al servidor es un coste real, y aquí no
+//      hay nada que sondear hasta que alguien escribe.
+// ---------------------------------------------------------------------------
+(function () {
+  var PUENTE = "https://bot.dalfistudio.com";
+  var CLAVE_SESION = "dalfi.chat.sesion";
+  var MS_ENTRE_SONDEOS = 4000;
+
+  var fab = document.getElementById("dalfi-fab");
+  var panel = document.getElementById("dalfi-panel");
+  if (!fab || !panel) return;
+
+  var log = document.getElementById("dalfi-log");
+  var form = document.getElementById("dalfi-form");
+  var input = document.getElementById("dalfi-input");
+  var enviar = document.getElementById("dalfi-enviar");
+  var estado = document.getElementById("dalfi-estado");
+  var sugerencias = document.getElementById("dalfi-sugerencias");
+
+  var sesion = null;
+  var marcaUltimo = null;
+  var sondeo = null;
+  var conversacionEmpezada = false;
+
+  function idDeSesion() {
+    if (sesion) return sesion;
+    try { sesion = localStorage.getItem(CLAVE_SESION); } catch (e) { sesion = null; }
+    if (!sesion || !/^[A-Za-z0-9_-]{16,64}$/.test(sesion)) {
+      // randomUUID sin guiones: 32 caracteres, dentro de lo que el puente acepta. El respaldo
+      // cubre navegadores viejos y páginas servidas sin contexto seguro, donde no existe.
+      sesion = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID().replace(/-/g, "")
+        : String(Date.now()) + Math.random().toString(36).slice(2).padEnd(12, "0");
+      try { localStorage.setItem(CLAVE_SESION, sesion); } catch (e) { /* modo privado: la sesión dura lo que la pestaña */ }
+    }
+    return sesion;
+  }
+
+  function pintar(texto, quien, firma) {
+    if (!texto) return;
+    var div = document.createElement("div");
+    div.className = "dalfi-msg de-" + quien;
+    if (firma) {
+      var f = document.createElement("span");
+      f.className = "dalfi-msg-firma";
+      f.textContent = firma;
+      div.appendChild(f);
+    }
+    // textContent y nunca innerHTML: lo que llega del servidor incluye texto que escribió otra
+    // persona desde la bandeja, y pintarlo como HTML sería meter una inyección en la propia web.
+    div.appendChild(document.createTextNode(texto));
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function aviso(texto) {
+    var div = document.createElement("div");
+    div.className = "dalfi-aviso";
+    div.textContent = texto;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function marcarEsperandoHumano(esperando) {
+    estado.textContent = esperando
+      ? "Te estamos pasando con una persona…"
+      : "Te respondo al momento";
+  }
+
+  async function enviarMensaje(texto) {
+    if (!texto) return;
+    pintar(texto, "visitante");
+    input.value = "";
+    enviar.disabled = true;
+    conversacionEmpezada = true;
+    try {
+      var res = await fetch(PUENTE + "/web-chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: idDeSesion(), text: texto })
+      });
+      var datos = await res.json().catch(function () { return {}; });
+      if (datos.reply) pintar(datos.reply, "bot", "Dalfi");
+      if (datos.esperandoHumano) marcarEsperandoHumano(true);
+      // A partir del primer mensaje hay hilo que sondear: puede contestar una persona.
+      arrancarSondeo();
+    } catch (e) {
+      aviso("No pude enviar tu mensaje. Revisa tu conexión e inténtalo otra vez.");
+    } finally {
+      enviar.disabled = false;
+      input.focus();
+    }
+  }
+
+  async function sondear() {
+    try {
+      var url = PUENTE + "/web-chat/poll?sessionId=" + encodeURIComponent(idDeSesion())
+        + (marcaUltimo ? "&after=" + encodeURIComponent(marcaUltimo) : "");
+      var res = await fetch(url);
+      var datos = await res.json().catch(function () { return {}; });
+      (datos.messages || []).forEach(function (m) {
+        // Lo que dijo el bot ya se pintó al responder: si se volviera a pintar aquí, cada
+        // respuesta saldría dos veces. Del sondeo solo interesa lo que escribió una persona.
+        if (m.de === "staff") pintar(m.texto, "persona", "Dalfi Studio");
+      });
+      // La marca la fija el servidor: el reloj del visitante no sirve para esto.
+      if (datos.after) marcaUltimo = datos.after;
+      if (typeof datos.esperandoHumano === "boolean") marcarEsperandoHumano(datos.esperandoHumano);
+    } catch (e) { /* un sondeo perdido lo arregla el siguiente */ }
+  }
+
+  function arrancarSondeo() {
+    if (sondeo || !conversacionEmpezada) return;
+    sondeo = setInterval(sondear, MS_ENTRE_SONDEOS);
+  }
+
+  function pararSondeo() {
+    if (sondeo) clearInterval(sondeo);
+    sondeo = null;
+  }
+
+  function abrir() {
+    panel.hidden = false;
+    fab.hidden = true;
+    if (!log.childElementCount) {
+      pintar("¡Hola! Soy Dalfi 💅 Puedo decirte qué servicios damos, el horario, dónde estamos y cómo reservar tu cita. ¿Qué necesitas?", "bot", "Dalfi");
+    }
+    arrancarSondeo();
+    input.focus();
+  }
+
+  function cerrar() {
+    panel.hidden = true;
+    fab.hidden = false;
+    // Se para al cerrar: nadie está mirando, y una pestaña abierta toda la noche no tiene por
+    // qué seguir preguntando.
+    pararSondeo();
+    fab.focus();
+  }
+
+  fab.addEventListener("click", abrir);
+  document.getElementById("dalfi-cerrar").addEventListener("click", cerrar);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !panel.hidden) cerrar();
+  });
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    enviarMensaje(input.value.trim());
+  });
+
+  sugerencias.addEventListener("click", function (e) {
+    var boton = e.target.closest("[data-dalfi-pregunta]");
+    if (!boton) return;
+    enviarMensaje(boton.dataset.dalfiPregunta);
+  });
+
+  // Reservar no lo resuelve el chat: lo resuelve ReservApp, que ya está embebido en esta misma
+  // página. Duplicar aquí el flujo de reserva sería mantener dos veces las mismas reglas de
+  // disponibilidad y depósito, y que un día dejen de coincidir.
+  //
+  // El botón "Reservar mi cita" del chat lleva la clase js-reservar, así que lo abre el mismo
+  // código que el resto de los botones de reservar del sitio (ver arriba). Aquí solo se cierra
+  // el panel para que el diálogo no quede detrás.
+  var chipReservar = panel.querySelector(".js-reservar");
+  if (chipReservar) chipReservar.addEventListener("click", cerrar);
+})();

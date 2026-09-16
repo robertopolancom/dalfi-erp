@@ -18,6 +18,13 @@ function chatStoreFalso() {
     guardados,
     devueltas,
     async phoneOf(id) { return id === "conv-1" ? "18295590744" : null; },
+    // Desde la migración 0030 la bandeja mezcla canales, así que responder ya no pregunta por
+    // el teléfono sino por el destino completo: hay conversaciones sin número.
+    async destinoDe(id) {
+      if (id === "conv-1") return { channel: "whatsapp", phone: "18295590744", webSessionId: null };
+      if (id === "conv-web") return { channel: "web", phone: null, webSessionId: "sesion-abc" };
+      return null;
+    },
     async staffIdByEmail() { return "staff-1"; },
     async recordStaffReply(args) { guardados.push(args); return { id: "msg-1" }; },
     async returnToBot(args) { devueltas.push(args); },
@@ -147,5 +154,53 @@ test("devolver al bot marca la conversación aunque el puente falle, y lo avisa"
     assert.equal(body.ok, false);
     assert.match(body.aviso, /timeout/);
     assert.equal(chatStore.devueltas.length, 1);
+  });
+});
+
+// El chat "Dalfi" del sitio público entra en esta misma bandeja, pero entrega al revés que
+// WhatsApp: el mensaje del personal NO viaja por el puente, se queda aquí y el widget lo recoge
+// sondeando. Al puente solo se le pide pausar el bot. Confundir las dos cosas tiene consecuencias
+// opuestas en cada canal -- en WhatsApp, un puente caído significa que el mensaje no salió; en la
+// web significa que sí llegó pero el bot puede hablar por encima de la persona.
+test("una respuesta a una conversación web se entrega aunque el puente no conteste OK", async () => {
+  const puenteRaro = new Response(JSON.stringify({ status: "FAILED", error: "lo que sea" }), { status: 200 });
+  await conServidor(puenteRaro, async (base, chatStore, llamadas) => {
+    const r = await fetch(`${base}/api/chat/conversations/conv-web/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Ya te atiendo" }),
+    });
+    assert.equal(r.status, 200);
+    const cuerpo = await r.json();
+    assert.equal(cuerpo.ok, true, "en la web el mensaje llega por la bandeja, no por el puente");
+    assert.match(cuerpo.aviso, /pausar el bot/, "y hay que avisar de lo que sí falló");
+
+    // El puente recibe la sesión web, no un teléfono inventado.
+    assert.equal(llamadas[0].cuerpo.channel, "web");
+    assert.equal(llamadas[0].cuerpo.webSessionId, "sesion-abc");
+    assert.equal(llamadas[0].cuerpo.recipientPhone, null);
+
+    assert.equal(chatStore.guardados[0].deliveryStatus, "sent");
+  });
+});
+
+test("una respuesta web con el puente OK no lleva aviso", async () => {
+  const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
+  await conServidor(ok, async (base) => {
+    const cuerpo = await (await fetch(`${base}/api/chat/conversations/conv-web/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Dime" }),
+    })).json();
+    assert.equal(cuerpo.ok, true);
+    assert.equal(cuerpo.aviso, undefined);
+  });
+});
+
+test("en WhatsApp un puente caído SIGUE significando que no salió", async () => {
+  // La contraparte de la prueba de arriba: el canal web no puede relajar la honestidad del otro.
+  const puenteRaro = new Response(JSON.stringify({ status: "FAILED" }), { status: 200 });
+  await conServidor(puenteRaro, async (base, chatStore) => {
+    const cuerpo = await (await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
+    })).json();
+    assert.equal(cuerpo.ok, false);
+    assert.equal(chatStore.guardados[0].deliveryStatus, "failed");
   });
 });

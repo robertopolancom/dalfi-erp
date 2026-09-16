@@ -343,6 +343,48 @@
   <span>Comunícate por WhatsApp</span>
 </a>
 
+<!-- Chat con Dalfi. El bot es el MISMO que contesta por WhatsApp (ver bridge/web-chat.js en
+     dalfi-chatbot-n8n): misma fuente de verdad aprobada para horarios, servicios y ubicación.
+     Dos bots con dos textos acabarían diciendo cosas distintas el día que cambie un horario.
+     Cuando hace falta una persona, la conversación aparece en la bandeja del ERP y la respuesta
+     vuelve AQUÍ, sin sacar a nadie del sitio. -->
+<button class="dalfi-fab" id="dalfi-fab" type="button" aria-haspopup="dialog" aria-controls="dalfi-panel">
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.3-.6L3 21l1.8-4.6A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z"/></svg>
+  <span>Chatea con Dalfi</span>
+</button>
+
+<section class="dalfi-panel" id="dalfi-panel" role="dialog" aria-modal="false" aria-labelledby="dalfi-titulo" hidden>
+  <header class="dalfi-head">
+    <span class="dalfi-avatar" aria-hidden="true">D</span>
+    <span class="dalfi-head-text">
+      <span class="dalfi-head-name" id="dalfi-titulo">Dalfi</span>
+      <span class="dalfi-head-sub" id="dalfi-estado">Te respondo al momento</span>
+    </span>
+    <button type="button" class="dalfi-close" id="dalfi-cerrar" aria-label="Cerrar el chat">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </header>
+
+  <!-- aria-live para que un lector de pantalla anuncie lo que va llegando sin tener que
+       volver a entrar en la lista. -->
+  <div class="dalfi-log" id="dalfi-log" role="log" aria-live="polite"></div>
+
+  <div class="dalfi-sugerencias" id="dalfi-sugerencias">
+    <button class="dalfi-sugerencia" type="button" data-dalfi-pregunta="¿Qué servicios ofrecen?">Servicios</button>
+    <button class="dalfi-sugerencia" type="button" data-dalfi-pregunta="¿Cuál es el horario?">Horario</button>
+    <button class="dalfi-sugerencia" type="button" data-dalfi-pregunta="¿Dónde están ubicadas?">Ubicación</button>
+    <button class="dalfi-sugerencia" type="button" data-dalfi-pregunta="¿Cómo reservo una cita?">Cómo reservar</button>
+    <button class="dalfi-sugerencia js-reservar" type="button">Reservar mi cita</button>
+  </div>
+
+  <form class="dalfi-form" id="dalfi-form" autocomplete="off">
+    <input class="dalfi-input" id="dalfi-input" type="text" maxlength="1000" placeholder="Escribe tu pregunta…" aria-label="Escribe tu pregunta" />
+    <button class="dalfi-enviar" id="dalfi-enviar" type="submit" aria-label="Enviar">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h15M13 6l6 6-6 6"/></svg>
+    </button>
+  </form>
+</section>
+
 <script src="app.js"></script>
 </body>
 </html>

@@ -2342,7 +2342,12 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         return res.status(401).json({ error: "Secreto de chatbot inválido." });
       }
       const body = req.body || {};
-      if (!body.phone) return res.status(400).json({ error: "Falta el teléfono." });
+      // Una conversación del chat de la web no tiene teléfono y nunca lo tendrá mientras la
+      // persona no lo dé: se identifica por su sesión de navegador (migración 0030). Exigir
+      // teléfono aquí era lo que impedía que el widget del sitio entrara en esta misma bandeja.
+      if (!body.phone && !body.webSessionId) {
+        return res.status(400).json({ error: "Falta el teléfono o la sesión web." });
+      }
       if (!["in", "out"].includes(body.direction)) {
         return res.status(400).json({ error: "direction debe ser 'in' o 'out'." });
       }
@@ -2351,6 +2356,8 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       }
       const result = await chatStore.ingest({
         phone: body.phone,
+        webSessionId: body.webSessionId || null,
+        webDisplayName: typeof body.webDisplayName === "string" ? body.webDisplayName.slice(0, 80) : null,
         waProfileName: body.waProfileName || null,
         direction: body.direction,
         senderType: body.senderType,
@@ -2375,6 +2382,27 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       // 200 incluso si era duplicado: Meta reintenta el webhook si no recibe 200, y
       // devolverle un error por algo que ya guardamos provocaría más reintentos, no menos.
       res.json({ ok: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Lo que el widget de la web todavía no ha visto. Lo pide el BRIDGE, no el navegador: así el
+  // sitio público habla con un solo origen y aquí no hace falta abrir CORS ni exponer la bandeja.
+  // Mismo secreto de máquina que /api/chat/ingest -- quien llama es el puente, no una persona.
+  //
+  // La sesión web NO autoriza nada: solo selecciona un hilo. Por eso esto devuelve únicamente
+  // los mensajes salientes de esa conversación y ningún dato de la ficha de nadie.
+  app.get("/api/chat/web/:sessionId/messages", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const expectedSecret = env.CHATBOT_SECRET;
+      if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
+      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) {
+        return res.status(401).json({ error: "Secreto de chatbot inválido." });
+      }
+      const after = typeof req.query.after === "string" && req.query.after ? req.query.after : null;
+      res.json(await chatStore.mensajesDeSesionWeb({ webSessionId: req.params.sessionId, after }));
     } catch (error) {
       next(error);
     }
@@ -2469,8 +2497,12 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       const texto = cleanText(req.body?.body, 4000);
       if (!texto) return res.status(400).json({ error: "Escribe un mensaje." });
 
-      const phone = await chatStore.phoneOf(req.params.id);
-      if (!phone) return res.status(404).json({ error: "Conversación no encontrada." });
+      // No basta con el teléfono desde que la bandeja mezcla WhatsApp y el chat del sitio: hay
+      // conversaciones sin número, y responderlas por WhatsApp sería imposible. Ver migración 0030.
+      const destino = await chatStore.destinoDe(req.params.id);
+      if (!destino) return res.status(404).json({ error: "Conversación no encontrada." });
+      const esWeb = destino.channel === "web";
+      if (!esWeb && !destino.phone) return res.status(404).json({ error: "Conversación no encontrada." });
 
       const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
       if (!bridgeSecret) return res.status(503).json({ error: "El puente de WhatsApp no está configurado." });
@@ -2484,7 +2516,13 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const response = await fetchImpl(`${bridgeBase}/webhook/erp-chat-reply`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
-          body: JSON.stringify({ recipientPhone: phone, text: texto, staffId: staffId || auth.identity?.email || "erp" }),
+          body: JSON.stringify({
+            recipientPhone: destino.phone,
+            webSessionId: destino.webSessionId,
+            channel: destino.channel,
+            text: texto,
+            staffId: staffId || auth.identity?.email || "erp",
+          }),
         });
         resultado = await response.json().catch(() => ({}));
         if (!response.ok) fallo = `El puente respondió ${response.status}.`;
@@ -2492,7 +2530,14 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         fallo = error.message;
       }
 
-      const entregado = !fallo && resultado?.status === "OK";
+      // Los dos canales entregan de forma distinta, y mentir sobre eso deja clientes sin
+      // respuesta y a nadie enterado:
+      //   * WhatsApp: entrega el puente. Si el puente falla, el mensaje NO salió.
+      //   * Web: entrega esta misma bandeja -- el widget sondea y lo recoge de aquí. Lo único
+      //     que se le pide al puente es PAUSAR el bot; si eso falla, el mensaje igual llega,
+      //     pero el bot puede hablar por encima de la persona, y eso hay que decirlo.
+      const entregado = esWeb ? true : (!fallo && resultado?.status === "OK");
+      const botSinPausar = esWeb && (Boolean(fallo) || resultado?.status !== "OK");
       // El mensaje se guarda SIEMPRE, salga o no. Un intento fallido que desaparece del hilo
       // es peor que uno visible marcado como fallido: sin rastro, nadie sabe que hay un
       // cliente sin respuesta.
@@ -2506,7 +2551,13 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       });
 
       if (entregado) {
-        return res.json({ ok: true, viaPlantilla: Boolean(resultado?.viaPlantilla) });
+        return res.json({
+          ok: true,
+          viaPlantilla: Boolean(resultado?.viaPlantilla),
+          ...(botSinPausar
+            ? { aviso: "El mensaje llegó, pero no se pudo pausar el bot: puede contestar por encima de ti." }
+            : {}),
+        });
       }
       // 200 y no 5xx: el mensaje SÍ quedó registrado en el hilo. Lo que falló es la entrega, y
       // eso es justamente lo que hay que contarle a quien escribió.

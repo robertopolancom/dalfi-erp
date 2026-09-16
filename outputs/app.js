@@ -11768,6 +11768,7 @@ async function renderBandeja() {
       <tr class="${c.estado === "espera" ? "row-alert" : ""}" data-conversation="${escapeHtml(c.id)}">
         <td>
           <strong>${escapeHtml(c.name)}</strong>
+          ${c.channel === "web" ? '<small class="muted" title="Está escribiendo desde la página web ahora mismo"> · 💬 web</small>' : ""}
           ${c.isClient ? "" : '<small class="muted"> · sin ficha</small>'}
           ${c.unread ? `<span class="badge">${c.unread}</span>` : ""}
         </td>
@@ -11794,8 +11795,13 @@ async function abrirConversacion(conversationId) {
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "No se pudo abrir la conversación.");
     const hilo = await response.json();
     const estado = bandejaEstado(hilo);
+    // Que venga de la web cambia cómo hay que atenderla: esa persona está delante de la pantalla
+    // esperando, y si cierra la pestaña no hay número al que devolverle la llamada. En WhatsApp
+    // se puede contestar dos horas después; aquí no.
     byId("bandeja-thread-title").innerHTML =
-      `${escapeHtml(hilo.name)}${hilo.isClient ? "" : ' <small class="muted">· sin ficha</small>'}` +
+      `${escapeHtml(hilo.name)}` +
+      (hilo.channel === "web" ? ' <span class="estado-pin estado-bot">💬 Chat de la web — está esperando ahora</span>' : "") +
+      `${hilo.isClient ? "" : ' <small class="muted">· sin ficha</small>'}` +
       ` <span class="estado-pin ${estado.clase}">${escapeHtml(estado.texto)}</span>` +
       (hilo.estado === "persona" && hilo.assignedStaffName ? ` <small class="muted">${escapeHtml(hilo.assignedStaffName)}</small>` : "");
     // El boton solo tiene sentido si el bot esta apartado. Deshabilitarlo cuando ya esta
