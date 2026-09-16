@@ -1522,8 +1522,20 @@ export class NeonBookingStore {
          returning id`,
         [normalizedPhone.rows[0].value, phone, existingClientId, registration ? JSON.stringify(registration) : null, draft ? JSON.stringify(draft) : null, tokenHash, expiresAt],
       );
+      // El envío del código queda registrado igual que en prepareSetup. account_id va en null a
+      // propósito: en un autorregistro todavía no hay cuenta, la crea completePendingRegistration
+      // cuando la persona elige su contraseña. Sin esta fila, sendSetupWhatsApp no tiene dónde
+      // anotar si el código salió o falló, y un autorregistro roto es invisible -- que es
+      // exactamente cómo se perdieron los recordatorios de confirmación durante un mes.
+      const outbox = await client.query(
+        `insert into app.reservapp_whatsapp_outbox
+          (account_id,recipient_phone,event_type,payload)
+         values (null,app.normalize_phone($1),'reservapp.account_setup',$2::jsonb)
+         returning id,status`,
+        [phone, JSON.stringify({ expiresAt, pendingRegistrationId: inserted.rows[0].id })],
+      );
       await client.query("commit");
-      return { id: inserted.rows[0].id };
+      return { id: inserted.rows[0].id, outbox: outbox.rows[0] };
     } catch (error) {
       await client.query("rollback").catch(() => {});
       throw error;

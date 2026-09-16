@@ -719,7 +719,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const code = generateOtpCode();
         const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
         const registration = existingClient ? null : { firstName, lastName, email, birthDate, sex, address, preferredService };
-        await bookingStore.createPendingRegistration({
+        const pendiente = await bookingStore.createPendingRegistration({
           phone, existingClientId: existingClient?.id || null, registration,
           draft: hasDraftIntent ? draft : null, tokenHash: hashToken(code), expiresAt,
         });
@@ -749,13 +749,12 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // firstName/lastName solo llegan si es un cliente realmente nuevo (ver validación
         // arriba) -- si ya existía en el ERP, usa el nombre que ya tenía su ficha.
         const displayName = firstName && lastName ? `${firstName} ${lastName}` : existingClient.full_name;
-        // TEMPORAL: mientras RESERVAPP_SKIP_PHONE_VERIFICATION=true, la rama de arriba siempre
-        // retorna antes de llegar aquí, así que este envío real nunca se ejecuta hoy.
-        // createPendingRegistration todavía no inserta fila en reservapp_whatsapp_outbox -- el
-        // día que se apague el interruptor y este camino vuelva a ejecutarse de verdad, hace
-        // falta añadir ese insert (mismo patrón que prepareSetup) antes de confiar en el registro
-        // de entregas de sendSetupWhatsApp. outboxId va en null a propósito mientras tanto.
-        const delivery = await sendSetupWhatsApp({ outboxId: null, phone, code, name: displayName });
+        // Este es el camino vivo desde que se quitó RESERVAPP_SKIP_PHONE_VERIFICATION del servicio
+        // (2026-09-15): el código sale de verdad por WhatsApp. outboxId ya no va en null --
+        // createPendingRegistration inserta su fila en reservapp_whatsapp_outbox, que es donde
+        // sendSetupWhatsApp anota si salió o falló. Sin esa fila, un autorregistro que no llega
+        // sería invisible.
+        const delivery = await sendSetupWhatsApp({ outboxId: pendiente.outbox?.id || null, phone, code, name: displayName });
         res.status(202).json({
           pendingConfirmation: true,
           deliveryStatus: delivery.status,

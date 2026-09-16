@@ -26,6 +26,7 @@ function fakePool({ pendingRow, clientRow = undefined } = {}) {
       }
       if (sql.startsWith("update app.reservapp_pending_registrations set consumed_at")) return { rowCount: 1 };
       if (sql.startsWith("insert into app.reservapp_pending_registrations")) return { rows: [{ id: "pending-new" }] };
+      if (sql.includes("insert into app.reservapp_whatsapp_outbox")) return { rows: [{ id: "outbox-1", status: "pending" }] };
       if (sql.startsWith("select id, full_name from app.clients where id=$1")) {
         return { rows: clientRow ? [clientRow] : [], rowCount: clientRow ? 1 : 0 };
       }
@@ -308,5 +309,32 @@ test("complete-setup: PHONE_ACCOUNT_CONFLICT se traduce a 409, no un 500 genéri
       body: JSON.stringify({ token: "activation-ticket", password: "Contrasena123" }),
     });
     assert.equal(response.status, 409);
+  });
+});
+
+// El autorregistro manda un código por WhatsApp y ese envío TIENE que quedar anotado. Mientras
+// RESERVAPP_SKIP_PHONE_VERIFICATION estuvo puesto (hasta el 2026-09-15) este camino no se
+// ejecutaba y la fila del outbox no existía; el propio código lo dejaba escrito como deuda. Al
+// apagar el interruptor, sin esta fila sendSetupWhatsApp no tendría dónde marcar 'sent' o
+// 'failed' y un autorregistro que no llega sería otra vez invisible -- que es exactamente cómo
+// los recordatorios de confirmación estuvieron un mes muertos sin que nadie lo notara.
+test("createPendingRegistration deja la fila del outbox para poder anotar si el código salió", async () => {
+  const { pool, queries } = fakePool();
+  const store = new NeonBookingStore(pool);
+
+  const result = await store.createPendingRegistration({
+    phone: "809-555-1234", registration: { firstName: "Ana", lastName: "Pérez" },
+    tokenHash: "hash", expiresAt: "2026-09-15T12:00:00.000Z",
+  });
+
+  assert.equal(result.id, "pending-new");
+  assert.equal(result.outbox.id, "outbox-1", "sin esto app.mjs vuelve a mandar outboxId: null");
+
+  const insert = queries.find((q) => q.sql.includes("insert into app.reservapp_whatsapp_outbox"));
+  assert.ok(insert, "el envío del código tiene que quedar registrado");
+  assert.match(insert.sql, /values \(null,/, "en un autorregistro todavía no hay cuenta");
+  assert.equal(insert.params[0], "809-555-1234");
+  assert.deepEqual(JSON.parse(insert.params[1]), {
+    expiresAt: "2026-09-15T12:00:00.000Z", pendingRegistrationId: "pending-new",
   });
 });
