@@ -45,8 +45,20 @@ export function invoiceUrl(env, invoiceId) {
 
 // Arma la factura a partir del documento vivo del ERP. Devuelve null si la factura ya no existe
 // (eliminada o nunca existió) -- quien llama decide qué mostrar.
+// El documento del ERP viene envuelto: { schema, meta, data: { facturas, clientes, ... } }. Leerlo
+// como si las tablas colgaran de la raíz es el fallo que tuvo esta función --y con ella TODO el
+// enlace de factura, por enlace, correo y WhatsApp-- devolviendo "esa factura no existe" para
+// cualquier factura real desde que se lanzó (2026-09-04). Se descubrió el 2026-09-15 al probar el
+// envío de verdad contra producción, no con pruebas: las pruebas traían el documento ya plano.
+// Mismo desenvuelto que documentData() en store.mjs y unwrapDocument() en google-calendar.js; se
+// acepta también la forma plana porque hay fixtures y documentos viejos que la usan.
+function tablasDelDocumento(document) {
+  if (document?.data && typeof document.data === "object") return document.data;
+  return document && typeof document === "object" ? document : {};
+}
+
 export function buildInvoiceView(document, invoiceId) {
-  const data = document && typeof document === "object" ? document : {};
+  const data = tablasDelDocumento(document);
   const invoices = Array.isArray(data.facturas) ? data.facturas : [];
   const invoice = invoices.find((row) => String(row?.facturaID) === String(invoiceId));
   if (!invoice) return null;

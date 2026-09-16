@@ -94,3 +94,40 @@ test("renderInvoiceNotFound: no revela nada de la factura", () => {
   assert.match(html, /ya no está disponible/);
   assert.ok(!html.includes("FAC-"));
 });
+
+// El documento del ERP viene envuelto --{ schema, meta, data: { facturas, ... } }-- y
+// buildInvoiceView lo leía como si las tablas colgaran de la raíz. Resultado: "esa factura no
+// existe" para CUALQUIER factura real, y con ello el enlace, el correo y el WhatsApp de factura
+// muertos desde que se lanzaron el 2026-09-04. Ninguna prueba lo vio porque todas traían el
+// documento ya plano; se descubrió probando contra producción el 2026-09-15.
+test("buildInvoiceView encuentra la factura en el documento envuelto del ERP", () => {
+  const documento = {
+    schema: [], meta: { version: 1 },
+    data: {
+      facturas: [{ facturaID: "FAC-0149", clienteID: "CLI-1", clienteNombre: "Roberto Polanco", totalFacturado: 2000 }],
+      facturaDetalle: [{ facturaID: "FAC-0149", servicio: "Manicura", cantidad: 1, precioBase: 2000, subtotal: 2000 }],
+      clientes: [{ clienteID: "CLI-1", nombreCompleto: "Roberto Polanco", telefono: "8295550000" }],
+    },
+  };
+  const view = buildInvoiceView(documento, "FAC-0149");
+  assert.ok(view, "sin esto el enlace de factura no sirve para nada");
+  assert.equal(view.clienteNombre, "Roberto Polanco");
+  assert.equal(view.clienteTelefono, "8295550000");
+  assert.equal(view.total, 2000);
+  assert.equal(view.lines.length, 1);
+});
+
+test("buildInvoiceView sigue aceptando el documento plano", () => {
+  // Hay fixtures y documentos viejos con las tablas en la raíz; desenvolver no puede romperlos.
+  const view = buildInvoiceView({
+    facturas: [{ facturaID: "FAC-1", clienteNombre: "Ana", totalFacturado: 500 }],
+  }, "FAC-1");
+  assert.ok(view);
+  assert.equal(view.clienteNombre, "Ana");
+});
+
+test("buildInvoiceView devuelve null si la factura no está, en cualquiera de las dos formas", () => {
+  assert.equal(buildInvoiceView({ data: { facturas: [] } }, "FAC-0149"), null);
+  assert.equal(buildInvoiceView({ facturas: [] }, "FAC-0149"), null);
+  assert.equal(buildInvoiceView(null, "FAC-0149"), null);
+});

@@ -24,11 +24,15 @@ const ENV = {
   ERP_WEBHOOK_SECRET: SECRETO, CHATBOT_BRIDGE_URL: "https://bridge.test",
 };
 
-const DOCUMENTO = {
+// Con la forma REAL del documento del ERP: las tablas cuelgan de .data, no de la raíz. Este
+// fixture estaba plano y por eso estas mismas pruebas pasaban en verde mientras en producción el
+// endpoint devolvía 404 para cualquier factura. Si alguien lo vuelve a aplanar, se pierde otra vez
+// lo único que distingue esta prueba de la realidad.
+const DOCUMENTO = { schema: [], meta: {}, data: {
   facturas: [{ facturaID: "FAC-1024", clienteID: "CLI-7", clienteNombre: "María Gómez", fechaOperacion: "2026-09-15", totalFacturado: 1500 }],
   facturaDetalle: [{ facturaID: "FAC-1024", servicio: "Manicure", cantidad: 1, precioBase: 1500, subtotal: 1500 }],
   clientes: [{ clienteID: "CLI-7", nombreCompleto: "María Gómez", telefono: "8095551234", email: "maria@ejemplo.test" }],
-};
+} };
 
 async function conServidor(respuestaDelPuente, run, { env = ENV } = {}) {
   const llamadas = [];
@@ -102,7 +106,7 @@ test("FW03 — si el bridge no contesta, tampoco se da por enviado", async () =>
 
 test("FW04 — sin teléfono en la ficha no se intenta nada y se dice por qué", async () => {
   const ok = new Response(JSON.stringify({ status: "SENT" }), { status: 200 });
-  const sinTelefono = { ...DOCUMENTO, clientes: [{ clienteID: "CLI-7", nombreCompleto: "María Gómez" }] };
+  const sinTelefono = { ...DOCUMENTO, data: { ...DOCUMENTO.data, clientes: [{ clienteID: "CLI-7", nombreCompleto: "María Gómez" }] } };
   const llamadas = [];
   const app = createApp({
     store: { async read() { return { data: sinTelefono, updatedAt: "2026-09-15T00:00:00.000Z", version: 1 }; } },
