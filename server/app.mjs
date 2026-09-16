@@ -20,7 +20,7 @@ import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/g
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { runClosingCatchUp } from "./closing-catchup.mjs";
 import { businessMinutesBetween, documentData } from "./store.mjs";
-import { buildMovedAppointmentMessage } from "./moved-appointment-message.mjs";
+import { buildMovedAppointmentMessage, fechaEnPalabras } from "./moved-appointment-message.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
@@ -500,6 +500,13 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
           actionRequired: "await_customer_reply",
           reservationId,
           recipientPhone: normalizePhone(phone),
+          // Las piezas que pide la plantilla cita_movida, en su orden verificado en Meta:
+          // nombre, hora ANTERIOR, servicio, y fecha+hora NUEVAS en una sola frase. El texto
+          // completo se sigue mandando como respaldo para cuando no haya plantilla configurada.
+          clientName: clientName || "",
+          previousTime: String(previousTime || ""),
+          service: service || "tu servicio",
+          newWhen: `${fechaEnPalabras(date)} a las ${newTime}`,
           whatsappFormattedText: text,
         }),
       });
