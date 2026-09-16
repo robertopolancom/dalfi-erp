@@ -256,7 +256,6 @@ dialog form{padding:28px}
 .appointment-badge.moved{background:#fff7ed;color:#c2410c}
 /* Aviso en el paso del depósito cuando todavía no hay sesión y por eso no se pueden pedir las
    cuentas (ver renderBookingDepositAccounts en app.js). */
-.bank-accounts-pending{margin:0;font-size:.8rem;line-height:1.5;color:#6E6A60}
 /* Cita sin confirmar en el calendario del equipo: no aparta el horario y necesita que alguien la
    confirme o la retire. Se marca la tarjeta entera (borde + tinte) porque los badges se pierden
    en una columna llena -- ver renderTeamAppointmentCard. */

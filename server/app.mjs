@@ -1243,8 +1243,18 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     // Cuentas bancarias activas para mostrar junto al botón "Cargar comprobante" -- mismos campos
     // y mismo filtro (tipoCuenta="Banco" + estado activo) que ya usa el ERP legado en
     // bankAccounts()/isBankAccount() de outputs/app.js, para no duplicar cuentas de caja/efectivo.
-    app.get("/api/reservapp/bank-accounts", requireReservapp, async (req, res, next) => {
+    // Las cuentas para el depósito SIN exigir sesión (2026-09-16). Estaba cerrado a usuarios
+    // registrados, y en la práctica eso dejaba a la gente sin poder pagar: para registrarse hace
+    // falta un código por WhatsApp, y quien se quedaba esperando ese código no tenía forma de
+    // llegar a los números. Clientas reclamando que no tienen cómo pagar el depósito.
+    //
+    // Lo que se abre es lo necesario para transferir --banco, tipo de producto, número y
+    // titular-- y NADA más. La CÉDULA del titular sigue pidiendo sesión: un número de cuenta
+    // publicado sirve para que te paguen, pero una cédula publicada en internet es material para
+    // suplantar a una persona, y eso no hace falta para hacer un depósito.
+    app.get("/api/reservapp/bank-accounts", async (req, res, next) => {
       try {
+        const sesion = await reservappSession(req);
         const row = await store.read();
         const cuentas = Array.isArray(row?.data?.cuentas) ? row.data.cuentas : [];
         const accounts = cuentas
@@ -1254,8 +1264,9 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
             tipoProducto: a.tipoProducto || "",
             numeroCuenta: a.numeroCuenta || "",
             titular: a.titular || "",
-            documento: a.documentoTitular || "",
-            tipoDocumento: a.tipoDocumentoTitular || "Cédula",
+            ...(sesion
+              ? { documento: a.documentoTitular || "", tipoDocumento: a.tipoDocumentoTitular || "Cédula" }
+              : {}),
           }))
           .filter((a) => a.banco && a.numeroCuenta);
         res.json({ accounts });

@@ -173,22 +173,15 @@ function goToStep(step) {
 // Antes solo salían DESPUÉS de confirmar, en la pantalla de éxito: el cliente leía "se requiere un
 // depósito de RD$500" y se quedaba sin saber a dónde mandarlo (pedido de Roberto, 2026-09-15).
 //
-// GET /api/reservapp/bank-accounts es una ruta autenticada a propósito -- lleva número de cuenta,
-// titular y cédula, y esa decisión (no exponerlos al público) no se toca aquí. Así que sin sesión
-// no se piden: se le dice, con todas las letras, que las verá al confirmar. Que es verdad, y es
-// mejor que un "cargando" eterno o un error.
+// Las cuentas se muestran SIEMPRE, con sesión o sin ella (2026-09-16). Antes, sin sesión, aquí
+// solo se prometía "al confirmar te las mostramos", y eso dejaba a la gente sin poder pagar:
+// para tener sesión hay que registrarse, y quien se quedaba esperando el código de WhatsApp no
+// llegaba nunca a los números. El endpoint ya oculta la cédula del titular a quien no tiene
+// sesión; lo que se ve aquí es lo que hace falta para transferir.
 function renderBookingDepositAccounts() {
   const caja = $("booking-bank-accounts");
   if (!caja) return;
-  if (state.account) return renderBankAccounts(caja);
-  caja.textContent = "";
-  const nota = document.createElement("p");
-  nota.className = "bank-accounts-pending";
-  nota.textContent = t(
-    "Al confirmar te mostramos las cuentas para transferir el depósito, y podrás subir tu comprobante ahí mismo.",
-    "Once you confirm we'll show you the accounts for the transfer, and you'll be able to upload your receipt right there.",
-  );
-  caja.append(nota);
+  renderBankAccounts(caja);
 }
 
 function formatSlotTime(time) {
@@ -1177,18 +1170,11 @@ function renderBankAccounts(container) {
 }
 
 // Botón fijo del inicio: "Ver cuentas bancarias para depósito" (pedido de Roberto 2026-09-05,
-// "que en el inicio siempre se vea"). Siempre visible, incluso sin sesión -- pero las cuentas
-// solo se piden con sesión iniciada, porque GET /api/reservapp/bank-accounts es una ruta
-// autenticada (decisión explícita: no exponer números de cuenta, titular y cédula al público).
-// Sin sesión abre el mismo diálogo de acceso que ya usa el resto de la app.
+// "que en el inicio siempre se vea"). Desde el 2026-09-16 ABRE SIEMPRE, con sesión o sin ella:
+// antes mandaba a iniciar sesión, y quien todavía no tenía cuenta --porque el código de
+// verificación no le había llegado-- se quedaba sin forma de saber a dónde depositar. Pedirle
+// que se registre para poder pagarte es ponerle una puerta al dinero que quiere darte.
 $("home-bank-accounts").addEventListener("click", () => {
-  if (!state.account) {
-    message($("booking-message"), t(
-      "Entra a tu cuenta para ver las cuentas bancarias del depósito.",
-      "Log in to see the bank accounts for the deposit.",
-    ));
-    return $("identify-dialog").showModal();
-  }
   renderBankAccounts($("dialog-bank-accounts"));
   $("bank-accounts-dialog").showModal();
 });

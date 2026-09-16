@@ -139,14 +139,33 @@ test("la pantalla de éxito trae el botón de subir el comprobante, sin repetir 
   assert.match(app, /renderSuccessDepositUpload\(isFallback \? result\.appointments : \[result\.appointment\]\)/);
 });
 
-test("el inicio tiene un botón fijo de cuentas bancarias que exige sesión antes de pedirlas", async () => {
+// Hasta el 2026-09-16 este botón exigía sesión antes de pedir las cuentas, y esta prueba fijaba
+// ESA regla. Se cambió la regla, no se borró la prueba: ahora fija la contraria, porque exigir
+// sesión creaba un círculo cerrado --para registrarte hace falta un código por WhatsApp, y quien
+// se quedaba esperando ese código no tenía forma de saber a dónde depositar-- y llegaron clientas
+// reclamando que no podían pagar. La cédula del titular sigue protegida, pero eso lo decide el
+// servidor (ver tests/reservapp-cuentas-deposito.test.js), no esta pantalla.
+test("el botón de cuentas del inicio abre siempre, sin pedir sesión", async () => {
   const app = await readApp();
   const html = await readHtml();
   assert.match(html, /id="home-bank-accounts"/);
   assert.match(html, /id="bank-accounts-dialog"/);
   assert.match(html, /id="dialog-bank-accounts"/);
-  assert.match(app, /\$\("home-bank-accounts"\)\.addEventListener\("click", \(\) => \{\s*if \(!state\.account\) \{/);
+  assert.match(app, /\$\("home-bank-accounts"\)\.addEventListener\("click", \(\) => \{\s*renderBankAccounts/);
+  assert.doesNotMatch(
+    app,
+    /\$\("home-bank-accounts"\)\.addEventListener\("click", \(\) => \{\s*if \(!state\.account\)/,
+    "volver a exigir sesión aquí deja a quien no pudo registrarse sin forma de pagar",
+  );
   assert.match(app, /renderBankAccounts\(\$\("dialog-bank-accounts"\)\);\s*\$\("bank-accounts-dialog"\)\.showModal\(\);/);
+});
+
+// El paso del depósito dentro de la reserva, por el mismo motivo: antes, sin sesión, solo
+// prometía "al confirmar te las mostramos".
+test("el paso del depósito pinta las cuentas aunque no haya sesión", async () => {
+  const app = await readApp();
+  assert.match(app, /function renderBookingDepositAccounts\(\) \{[\s\S]{0,200}renderBankAccounts\(caja\);/);
+  assert.doesNotMatch(app, /bank-accounts-pending/, "ya no hay promesa que sustituya a los números");
 });
 
 test("el CSS del visor del comprobante existe", async () => {
