@@ -19,7 +19,7 @@ import { extractDomainSlice } from "../functions/api/_lib/domain-slices.js";
 import { syncChangedAppointmentsToGoogleCalendar } from "../functions/api/_lib/google-calendar.js";
 import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { runClosingCatchUp } from "./closing-catchup.mjs";
-import { businessMinutesBetween } from "./store.mjs";
+import { businessMinutesBetween, documentData } from "./store.mjs";
 import { buildMovedAppointmentMessage } from "./moved-appointment-message.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
@@ -1256,7 +1256,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       try {
         const sesion = await reservappSession(req);
         const row = await store.read();
-        const cuentas = Array.isArray(row?.data?.cuentas) ? row.data.cuentas : [];
+        const cuentas = Array.isArray(documentData(row?.data)?.cuentas) ? documentData(row?.data).cuentas : [];
         const accounts = cuentas
           .filter((a) => String(a.tipoCuenta || "") === "Banco" && String(a.estado || "Activo").toLowerCase() === "activo")
           .map((a) => ({
@@ -1889,7 +1889,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if ((req.get("x-chatbot-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de chatbot inválido." });
       try {
         const row = await store.read();
-        const cuentas = Array.isArray(row?.data?.cuentas) ? row.data.cuentas : [];
+        const cuentas = Array.isArray(documentData(row?.data)?.cuentas) ? documentData(row?.data).cuentas : [];
         const accounts = cuentas
           .filter((a) => String(a.tipoCuenta || "") === "Banco" && String(a.estado || "Activo").toLowerCase() === "activo")
           .map((a) => ({

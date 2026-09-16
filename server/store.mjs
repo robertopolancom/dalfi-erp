@@ -70,7 +70,12 @@ function legacyId(prefix) {
   return `${prefix}-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function documentData(document) {
+// El documento del ERP viene envuelto: { schema, meta, data: { facturas, clientes, cuentas... } }.
+// Leer las tablas de la raíz devuelve undefined en silencio -- no falla, simplemente no encuentra
+// nada. Ya costó dos veces: el enlace de factura entero (2026-09-04 a 2026-09-15) y los números
+// de cuenta del depósito, que nunca se vieron. Se exporta para que haya UNA definición en el
+// servidor y nadie vuelva a escribir `row.data.cuentas` a mano.
+export function documentData(document) {
   if (document?.data && typeof document.data === "object") return document.data;
   return document;
 }
