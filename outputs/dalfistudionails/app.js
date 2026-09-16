@@ -326,6 +326,7 @@
   var marcaUltimo = null;
   var sondeo = null;
   var conversacionEmpezada = false;
+  var hiloRestaurado = false;
 
   function idDeSesion() {
     if (sesion) return sesion;
@@ -404,10 +405,18 @@
       var res = await fetch(url);
       var datos = await res.json().catch(function () { return {}; });
       (datos.messages || []).forEach(function (m) {
-        // Lo que dijo el bot ya se pintó al responder: si se volviera a pintar aquí, cada
-        // respuesta saldría dos veces. Del sondeo solo interesa lo que escribió una persona.
+        if (!hiloRestaurado) {
+          // Primera vuelta tras cargar la página: llega el hilo entero, las dos direcciones, y
+          // se pinta tal cual para devolverle al visitante su conversación.
+          pintar(m.texto, m.mio ? "visitante" : (m.de === "staff" ? "persona" : "bot"),
+            m.mio ? null : (m.de === "staff" ? "Dalfi Studio" : "Dalfi"));
+          return;
+        }
+        // De ahí en adelante, solo lo que escribió una persona: lo que dijo el bot ya se pintó
+        // al responder, y volver a pintarlo sacaría cada respuesta dos veces.
         if (m.de === "staff") pintar(m.texto, "persona", "Dalfi Studio");
       });
+      hiloRestaurado = true;
       // La marca la fija el servidor: el reloj del visitante no sirve para esto.
       if (datos.after) marcaUltimo = datos.after;
       if (typeof datos.esperandoHumano === "boolean") marcarEsperandoHumano(datos.esperandoHumano);
@@ -424,14 +433,21 @@
     sondeo = null;
   }
 
-  function abrir() {
+  async function abrir() {
     panel.hidden = false;
     fab.hidden = true;
+    input.focus();
+    if (log.childElementCount) { arrancarSondeo(); return; }
+
+    // Si ya había conversación de una visita anterior, se recupera antes de saludar: recibir
+    // "¡Hola! Soy Dalfi" encima de un hilo a medias es desconcertante.
+    await sondear();
     if (!log.childElementCount) {
       pintar("¡Hola! Soy Dalfi 💅 Puedo decirte qué servicios damos, el horario, dónde estamos y cómo reservar tu cita. ¿Qué necesitas?", "bot", "Dalfi");
+    } else {
+      conversacionEmpezada = true;
+      arrancarSondeo();
     }
-    arrancarSondeo();
-    input.focus();
   }
 
   function cerrar() {

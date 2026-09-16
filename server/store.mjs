@@ -2844,10 +2844,14 @@ export class NeonChatStore {
     };
   }
 
-  // Los mensajes que el visitante de la web todavía no ha visto. Es lo que sondea el widget:
-  // solo lo SALIENTE (bot y personal), porque lo que él escribió ya lo tiene en pantalla.
-  // `after` es una marca de tiempo ISO; sin ella devuelve el hilo completo, que es lo que hace
-  // falta cuando alguien recarga la página y quiere recuperar su conversación.
+  // Lo que el widget sondea.
+  //
+  // Con `after`: solo lo SALIENTE y nuevo (bot y personal). Lo que el visitante escribió ya lo
+  // tiene en pantalla, y devolvérselo se lo pintaría dos veces.
+  //
+  // Sin `after` (primera vuelta tras cargar la página): el hilo COMPLETO, las dos direcciones.
+  // Devolver solo lo saliente aquí dejaría al visitante viendo respuestas sueltas sin las
+  // preguntas que las provocaron, que se entiende peor que no restaurar nada.
   async mensajesDeSesionWeb({ webSessionId, after = null, limit = 50 }) {
     const sesion = String(webSessionId || "").trim();
     if (!sesion) return { conversationId: null, messages: [] };
@@ -2861,8 +2865,7 @@ export class NeonChatStore {
       `select id, direction, sender_type, body, created_at
          from app.chat_messages
         where conversation_id = $1
-          and direction = 'out'
-          and ($2::timestamptz is null or created_at > $2::timestamptz)
+          and ($2::timestamptz is null or (direction = 'out' and created_at > $2::timestamptz))
         order by created_at asc
         limit $3`,
       [row.id, after, Math.min(Number(limit) || 50, 200)],
@@ -2872,6 +2875,7 @@ export class NeonChatStore {
       needsHuman: row.needs_human === true,
       messages: result.rows.map((m) => ({
         id: m.id,
+        direction: m.direction,
         senderType: m.sender_type,
         body: m.body,
         at: m.created_at?.toISOString?.() || m.created_at,
