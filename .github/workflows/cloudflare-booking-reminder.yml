@@ -48,7 +48,15 @@ jobs:
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "Falta CLOUDFLARE_API_TOKEN"; exit 1; }
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Falta CLOUDFLARE_ACCOUNT_ID"; exit 1; }
-          test -n "$BOOKING_REMINDER_CRON_SECRET" || { echo "Falta BOOKING_REMINDER_CRON_SECRET (debe ser igual al configurado en Render)"; exit 1; }
+          # BOOKING_REMINDER_CRON_SECRET es OPCIONAL a proposito. Exigirlo dejo este workflow en
+          # rojo desde el 2026-08-13, y lo unico que se ganaba era tener una copia mas del secreto
+          # de produccion guardada tambien en GitHub. El Worker ya lo tiene: desplegar codigo NO
+          # borra los secretos de un Worker.
+          if [ -n "$BOOKING_REMINDER_CRON_SECRET" ]; then
+            echo "Secreto presente: se rotara en el Worker y se verificara el contrato completo."
+          else
+            echo "Sin BOOKING_REMINDER_CRON_SECRET: se despliega y se verifica que el endpoint rechace sin credenciales."
+          fi
 
       - name: Install and test
         run: |
@@ -61,8 +69,12 @@ jobs:
         run: |
           set -euo pipefail
           npx --yes wrangler@"$WRANGLER_VERSION" deploy             --config workers/booking-reminder-cron/wrangler.toml
-          printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
-            npx --yes wrangler@"$WRANGLER_VERSION" secret put BOOKING_REMINDER_CRON_SECRET               --config workers/booking-reminder-cron/wrangler.toml
+          # Solo si se pidio rotar. El Worker conserva sus secretos entre despliegues, asi que
+          # esto no hace falta para publicar un cambio de codigo.
+          if [ -n "$BOOKING_REMINDER_CRON_SECRET" ]; then
+            printf '%s' "$BOOKING_REMINDER_CRON_SECRET" |
+              npx --yes wrangler@"$WRANGLER_VERSION" secret put BOOKING_REMINDER_CRON_SECRET                 --config workers/booking-reminder-cron/wrangler.toml
+          fi
 
       - name: Verify endpoint contract against Render (ssc.dalfistudio.com)
         shell: bash
@@ -70,6 +82,14 @@ jobs:
           set -euo pipefail
           unauthorized_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}'             --request POST "$APP_BASE_URL/api/booking/send-reminders")"
           test "$unauthorized_status" = "401"
+
+          # La otra mitad -- que el secreto del Worker y el del ERP coincidan de verdad -- solo se
+          # puede comprobar teniendolo. Sin el se avisa en vez de fallar: un workflow siempre rojo
+          # es lo mismo que no tener workflow, porque nadie lo mira.
+          if [ -z "$BOOKING_REMINDER_CRON_SECRET" ]; then
+            echo "Desplegado y protegido (401 sin credenciales). No se verifico que el secreto coincida: anade BOOKING_REMINDER_CRON_SECRET a los secretos del repo si quieres esa comprobacion."
+            exit 0
+          fi
 
           response_file="$(mktemp)"
           authenticated_status="$(curl --silent --show-error --output "$response_file" --write-out '%{http_code}'             --request POST "$APP_BASE_URL/api/booking/send-reminders"             --header "x-cron-secret: $BOOKING_REMINDER_CRON_SECRET")"
