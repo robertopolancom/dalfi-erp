@@ -207,3 +207,16 @@ test("ASG10 — cerrar y devolver al bot limpian el espejo del motor", async () 
     assert.match(consultas[0], /needs_human = false/, `${metodo} da la atención por terminada`);
   }
 });
+
+test("ASG11 — queda escrito que una ficha activa no significa que deba atender", async () => {
+  // El error que quedaba por cometer es el simétrico del de ASG06: ver una manicurista con ficha
+  // activa y sin correo, pensar que es un dato incompleto, y "completarlo". Eso le abre la
+  // bandeja entera -- nombres y teléfonos de todas las clientas -- a alguien cuyo trabajo no es
+  // atender. Las manicuristas no atienden: atienden la administradora y el personal de apoyo.
+  const fuente = await readFile(new URL("../server/store.mjs", import.meta.url), "utf8");
+  const nota = fuente.slice(0, fuente.indexOf("async staffIdByEmail"));
+  assert.match(nota, /manicuristas no atienden/i,
+    "la regla no está en ningún sitio del código si no está aquí");
+  assert.match(nota, /canManageReservations/,
+    "hay que decir dónde se decide de verdad quién atiende");
+});

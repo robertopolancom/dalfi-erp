@@ -2934,6 +2934,16 @@ export class NeonChatStore {
   // Mezclarlo salió caro el 2026-09-16: al exigir tomar la conversación antes de responder, la
   // bandeja quedó bloqueada para todo el mundo, y la única salida aparente era activar fichas de
   // gente que no atiende clientas -- lo que las habría puesto a la venta en ReservApp.
+  //
+  // Y AL REVÉS TAMBIÉN, que es el error que queda por cometer: una ficha activa en app.staff NO
+  // implica que esa persona deba atender la bandeja. Las manicuristas no atienden; atienden la
+  // administradora y el personal de apoyo. Así que si algún día ves una manicurista con ficha
+  // activa y SIN correo aquí, eso no es un dato que falte: es que no atiende. Ponerle el correo
+  // "para completarla" le abre la bandeja, con los nombres y los teléfonos de todas las clientas.
+  //
+  // Quién atiende se decide con el permiso canManageReservations en su perfil del ERP, y el
+  // correo de esta tabla es solo lo que permite firmar el mensaje con su nombre. Hacen falta los
+  // dos, y ninguno de los dos se pone "por si acaso".
   async staffIdByEmail(email) {
     if (!email) return null;
     const r = await this.pool.query(
