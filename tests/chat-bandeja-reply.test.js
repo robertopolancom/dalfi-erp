@@ -11,12 +11,34 @@ import { createApp } from "../server/app.mjs";
 
 const PERMISOS = { can_manage_reservations: true, can_manage_configuration: true };
 
-function chatStoreFalso() {
+// `asignadaA` modela quién tiene la conversación tomada. Desde 2026-09-16 responder exige
+// tenerla: hasta entonces cualquiera podía contestar y la asignación se escribía DESPUÉS del
+// envío, así que dos personas podían escribirle a la misma clienta y el sistema se enteraba
+// cuando ya había dos mensajes fuera.
+function chatStoreFalso({ asignadaA = "staff-1", nombreAsignada = "Ana", ultimoEntranteAt = new Date().toISOString() } = {}) {
   const guardados = [];
   const devueltas = [];
+  const pausadas = [];
   return {
     guardados,
     devueltas,
+    pausadas,
+    async assignmentOf(id) {
+      if (!["conv-1", "conv-web"].includes(id)) return null;
+      return {
+        assignedStaffId: asignadaA,
+        assignedStaffName: nombreAsignada,
+        channel: id === "conv-web" ? "web" : "whatsapp",
+        staffLastReadAt: new Date().toISOString(),
+        botState: null,
+      };
+    },
+    async thread(args) {
+      const esWeb = args.conversationId === "conv-web";
+      const dentro = esWeb || (Date.now() - new Date(ultimoEntranteAt).getTime() < 24 * 60 * 60 * 1000);
+      return { id: args.conversationId, channel: esWeb ? "web" : "whatsapp", within24h: dentro, lastInboundAt: ultimoEntranteAt, messages: [], version: "v" };
+    },
+    async marcarBotPausado(args) { pausadas.push(args); },
     async phoneOf(id) { return id === "conv-1" ? "18295590744" : null; },
     // Desde la migración 0030 la bandeja mezcla canales, así que responder ya no pregunta por
     // el teléfono sino por el destino completo: hay conversaciones sin número.
@@ -31,8 +53,8 @@ function chatStoreFalso() {
   };
 }
 
-async function conServidor(respuestaDelPuente, run) {
-  const chatStore = chatStoreFalso();
+async function conServidor(respuestaDelPuente, run, opcionesDelStore = {}) {
+  const chatStore = chatStoreFalso(opcionesDelStore);
   const llamadas = [];
   const fetchImpl = async (url, options) => {
     const u = String(url);
@@ -202,5 +224,79 @@ test("en WhatsApp un puente caído SIGUE significando que no salió", async () =
     })).json();
     assert.equal(cuerpo.ok, false);
     assert.equal(chatStore.guardados[0].deliveryStatus, "failed");
+  });
+});
+
+// --- Reglas de la bandeja compartida (2026-09-16) -------------------------------------------
+//
+// Lo que protegen estas pruebas no es una pantalla: es que dos personas no le escriban a la misma
+// clienta a la vez. Hasta ahora el sistema lo permitía y solo se notaba después, leyendo el hilo.
+
+test("responder sin haberla tomado se rechaza con 409 y no manda nada", async () => {
+  const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
+  await conServidor(ok, async (base, chatStore, llamadas) => {
+    const r = await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
+    });
+    assert.equal(r.status, 409);
+    const cuerpo = await r.json();
+    assert.equal(cuerpo.needsClaim, true, "la pantalla necesita saber que el arreglo es tomarla");
+    assert.equal(llamadas.length, 0, "no puede salir nada al puente");
+    assert.equal(chatStore.guardados.length, 0);
+  }, { asignadaA: null });
+});
+
+test("si la tiene otra persona, responder da 403 y dice quién la tiene", async () => {
+  const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
+  await conServidor(ok, async (base, chatStore, llamadas) => {
+    const r = await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
+    });
+    assert.equal(r.status, 403);
+    const cuerpo = await r.json();
+    assert.match(cuerpo.error, /Milady/, "sin el nombre, quien atiende no sabe con quién hablar");
+    assert.equal(llamadas.length, 0);
+  }, { asignadaA: "staff-2", nombreAsignada: "Milady" });
+});
+
+test("fuera de la ventana de 24 h se rechaza con 422 ANTES de mandar nada", async () => {
+  // Meta acepta el envío y lo descarta después, asíncronamente, con 131047. Si no se comprueba
+  // aquí, quien atiende ve "enviado" y la clienta no recibe nada.
+  const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
+  const haceDosDias = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  await conServidor(ok, async (base, chatStore, llamadas) => {
+    const r = await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
+    });
+    assert.equal(r.status, 422);
+    const cuerpo = await r.json();
+    assert.equal(cuerpo.within24h, false);
+    assert.match(cuerpo.error, /24 horas/);
+    assert.equal(llamadas.length, 0, "no se gasta un envío que Meta va a tirar");
+    assert.equal(chatStore.guardados.length, 0);
+  }, { ultimoEntranteAt: haceDosDias });
+});
+
+test("el chat de la web NO tiene ventana: se responde aunque haga días", async () => {
+  const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
+  const haceDosDias = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  await conServidor(ok, async (base) => {
+    const r = await fetch(`${base}/api/chat/conversations/conv-web/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Dime" }),
+    });
+    assert.equal(r.status, 200, "la ventana de 24h es de WhatsApp, no del canal web");
+  }, { ultimoEntranteAt: haceDosDias });
+});
+
+test("responder deja constancia de que el bot quedó pausado", async () => {
+  // Sin esto la bandeja dice "Con el bot" mientras una persona está contestando, y quien mire la
+  // lista no sabe si el bot va a hablar por encima.
+  const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
+  await conServidor(ok, async (base, chatStore) => {
+    await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
+      method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
+    });
+    assert.equal(chatStore.pausadas.length, 1);
+    assert.equal(chatStore.pausadas[0].conversationId, "conv-1");
   });
 });

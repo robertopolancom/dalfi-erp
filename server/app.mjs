@@ -21,6 +21,7 @@ import { registerLegacyBookingApi } from "./legacy-booking-api.mjs";
 import { runClosingCatchUp } from "./closing-catchup.mjs";
 import { businessMinutesBetween, documentData } from "./store.mjs";
 import { buildMovedAppointmentMessage, fechaEnPalabras } from "./moved-appointment-message.mjs";
+import { construirNotificacion, enviarPush, pushConfigurado } from "./push.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
@@ -2422,10 +2423,40 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // una transferencia a humano que ya estaba pedida. Ver el coalesce del upsert.
         needsHuman: typeof body.needsHuman === "boolean" ? body.needsHuman : null,
         handoffReason: body.handoffReason || null,
+        // Cuánto aguanta una asignación sin que el agente la toque antes de que el bot retome.
+        // Se resuelve aquí, al entrar el mensaje, porque es el único momento en que una pausa
+        // olvidada tiene consecuencia: si la clienta no vuelve a escribir, da igual.
+        autoResumeMs: Number(env.INBOX_AUTO_RESUME_MS || 30 * 60 * 1000),
       });
       // 200 incluso si era duplicado: Meta reintenta el webhook si no recibe 200, y
       // devolverle un error por algo que ya guardamos provocaría más reintentos, no menos.
       res.json({ ok: true, ...result });
+
+      // --- Todo lo de aquí abajo va DESPUÉS de responder, y nada de ello puede fallar hacia
+      // arriba: el puente está esperando este 200 para contestarle a Meta.
+
+      // Si la asignación caducó por inactividad, hay que reactivar también el motor: la pausa
+      // vive en los dos lados y soltarla solo en la bandeja dejaría a la clienta sin bot y sin
+      // persona.
+      if (result?.reanudadaPorInactividad) {
+        devolverConversacionAlBot(result.conversationId, null)
+          .then((r) => {
+            if (!r.ok) console.error(`bandeja: se reanudó por inactividad pero el bot sigue pausado (${r.motivo}).`);
+          })
+          .catch(() => {});
+      }
+
+      // Aviso al personal. Solo para lo entrante y sin duplicar: el push sale cuando la clienta
+      // escribe, no cuando el bot responde.
+      if (!result?.duplicate && body.direction === "in") {
+        avisarAlPersonal({
+          conversationId: result.conversationId,
+          name: body.waProfileName || body.webDisplayName || body.phone || "Alguien",
+          channel: body.webSessionId ? "web" : "whatsapp",
+          preview: typeof body.body === "string" ? body.body : "",
+          needsHuman: body.needsHuman === true,
+        });
+      }
     } catch (error) {
       next(error);
     }
@@ -2454,13 +2485,112 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
 
   // La lista de la bandeja. Permiso de reservas: es trabajo de recepción, la misma gente
   // que ya gestiona citas es la que responde WhatsApp.
+  // ------------------------------------------------------------------------
+  // Web Push del personal. Las claves VAPID viven en variables de entorno y NUNCA se escriben en
+  // ningún archivo ni log; la pública se sirve por este endpoint en vez de incrustarla en el
+  // build de la PWA, para poder rotar el par sin volver a desplegar el cliente.
+  // ------------------------------------------------------------------------
+  app.get("/api/push/public-key", async (req, res, next) => {
+    try {
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "activar notificaciones");
+      if (auth.error) return relayAuthError(res, auth.error);
+      if (!pushConfigurado(env)) return res.status(503).json({ error: "Las notificaciones no están configuradas." });
+      res.json({ publicKey: env.VAPID_PUBLIC_KEY });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/push/subscriptions", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "activar notificaciones");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const staffId = await chatStore.staffIdByEmail(auth.identity?.email);
+      if (!staffId) return res.status(403).json({ error: "Tu usuario no tiene ficha de personal activa." });
+
+      const sub = req.body?.subscription || req.body || {};
+      const r = await chatStore.savePushSubscription({
+        userId: staffId,
+        endpoint: cleanText(sub.endpoint, 500),
+        p256dh: cleanText(sub.keys?.p256dh, 200),
+        auth: cleanText(sub.keys?.auth, 200),
+        // Solo para poder distinguir dispositivos al explicar por qué llegan dos avisos.
+        userAgent: cleanText(req.get("user-agent"), 200),
+      });
+      if (!r.ok) return res.status(400).json({ error: "Suscripción incompleta." });
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  app.delete("/api/push/subscriptions", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "desactivar notificaciones");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const endpoint = cleanText(req.body?.endpoint, 500);
+      if (!endpoint) return res.status(400).json({ error: "Falta el endpoint." });
+      await chatStore.deletePushSubscription({ endpoint });
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  // Avisar al personal de que hay algo que atender. Se llama DESPUÉS de responder la ingesta y
+  // nunca se espera: el bridge está esperando este 200 para contestarle a Meta, y un push lento
+  // no puede retrasar eso. Un aviso perdido es malo; que Meta reintente y el bot conteste dos
+  // veces es peor.
+  const avisarAlPersonal = async ({ conversationId, name, channel, preview, needsHuman }) => {
+    if (!chatStore || !pushConfigurado(env)) return;
+    try {
+      const suscripciones = await chatStore.pushTargetsForConversation(conversationId);
+      if (!suscripciones.length) return;
+      const resultados = await enviarPush({
+        env,
+        suscripciones,
+        payload: construirNotificacion({ conversationId, name, channel, preview, needsHuman }),
+      });
+      for (const r of resultados) {
+        await chatStore.recordPushResult({ id: r.id, ok: r.ok, statusCode: r.statusCode }).catch(() => {});
+      }
+    } catch (error) {
+      console.error("push: no se pudo avisar al personal --", error.message);
+    }
+  };
+
+  // El canal pedido en la consulta, validado. Devuelve null si no se pidió ninguno (todos) y
+  // false si pidieron uno que no existe -- que no es lo mismo que "todos" y no debe tratarse como
+  // tal: pedir ?channel=instagram y recibir la bandeja entera sería mentirle a quien pregunta.
+  //
+  // La base ya tiene un check que solo admite estos dos valores (migración 0030); esto es para
+  // fallar con un 400 claro en vez de con una consulta que no devuelve nada.
+  const CANALES = ["whatsapp", "web"];
+  function canalPedido(req) {
+    const pedido = typeof req.query.channel === "string" ? req.query.channel.trim() : "";
+    if (!pedido) return null;
+    return CANALES.includes(pedido) ? pedido : false;
+  }
+
   app.get("/api/chat/conversations", async (req, res, next) => {
     try {
       if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
       const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "ver la bandeja de mensajes");
       if (auth.error) return relayAuthError(res, auth.error);
       const limit = Math.min(Number(req.query.limit) || 50, 200);
-      res.json({ conversations: await chatStore.conversations({ limit }) });
+      const channel = canalPedido(req);
+      if (channel === false) return res.status(400).json({ error: "Canal inválido." });
+
+      // Peticiones condicionales. La bandeja se sondea cada pocos segundos desde varios móviles y
+      // la respuesta casi siempre es "no ha cambiado nada": sin esto, cada vuelta arma la lista
+      // entera con sus subconsultas para devolver lo mismo que ya tenía el cliente.
+      //
+      // El ETag se calcula con UNA consulta agregada sin joins. Si coincide, se contesta 304 y no
+      // se toca nada más.
+      const etag = `W/"${await chatStore.conversationsVersion({ channel })}"`;
+      res.set("ETag", etag);
+      // No-store para que sea el ETag quien decida, no un caché intermedio: una bandeja servida
+      // de caché puede ocultar que alguien está esperando.
+      res.set("Cache-Control", "no-store");
+      if (req.get("If-None-Match") === etag) return res.status(304).end();
+
+      res.json({ conversations: await chatStore.conversations({ limit, channel }) });
     } catch (error) {
       next(error);
     }
@@ -2473,6 +2603,17 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (auth.error) return relayAuthError(res, auth.error);
       const thread = await chatStore.thread({ conversationId: req.params.id, env });
       if (!thread) return res.status(404).json({ error: "Conversación no encontrada." });
+      // Quién es quien pregunta, para que la pantalla pueda distinguir "la tienes tú" de "la
+      // tiene otra" sin adivinar. El servidor sigue siendo el que decide en /reply; esto solo
+      // evita que alguien escriba un párrafo para que se lo rechacen al pulsar Enviar.
+      thread.miStaffId = await chatStore.staffIdByEmail(auth.identity?.email);
+      // Igual que la lista: el hilo abierto se sondea cada pocos segundos y casi nunca cambia.
+      // Aquí el 304 ahorra menos consultas (el hilo hay que leerlo para saber su versión) pero
+      // ahorra lo que más pesa: mandar doscientos mensajes por la red una y otra vez.
+      const etag = `W/"${thread.version}"`;
+      res.set("ETag", etag);
+      res.set("Cache-Control", "no-store");
+      if (req.get("If-None-Match") === etag) return res.status(304).end();
       res.json(thread);
     } catch (error) {
       next(error);
@@ -2532,6 +2673,127 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     }
   });
 
+  // ------------------------------------------------------------------------
+  // Tomar / soltar / cerrar. Los usan por igual la bandeja del ERP y la PWA del personal: la
+  // asignación es POR PERSONA, no por dispositivo ni por aplicación, así que quien la tomó desde
+  // el móvil puede seguir contestando desde el ERP y al revés.
+  // ------------------------------------------------------------------------
+
+  // Resuelve quién es el agente que llama. Devuelve null si su correo no corresponde a personal
+  // activo -- puede pasar con una cuenta del ERP que no tenga ficha en app.staff, y sin ficha no
+  // se puede asignar nada a nadie.
+  const agenteQueLlama = async (auth) => chatStore.staffIdByEmail(auth.identity?.email);
+
+  // Reactivar el bot al otro lado. La pausa vive en el motor (bridge), así que cerrar o soltar
+  // solo en la bandeja dejaría a esa clienta sin bot y sin persona.
+  //
+  // Va por el mismo webhook que ya usaba "devolver al bot", con el destino completo: una
+  // conversación del chat de la web no tiene teléfono, y mandarle uno vacío al puente era lo que
+  // hacía que devolver al bot no funcionara nunca en ese canal.
+  const devolverConversacionAlBot = async (conversationId, auth) => {
+    const destino = await chatStore.destinoDe(conversationId);
+    if (!destino) return { ok: false, motivo: "no_existe" };
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!bridgeSecret) return { ok: false, motivo: "sin_configurar" };
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/erp-chat-control`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          recipientPhone: destino.phone,
+          webSessionId: destino.webSessionId,
+          channel: destino.channel,
+          command: "RETURN_TO_BOT",
+          staffId: auth?.identity?.email || "erp",
+        }),
+      });
+      if (!response.ok) return { ok: false, motivo: `puente_${response.status}` };
+      const cuerpo = await response.json().catch(() => ({}));
+      // El puente contesta 200 aunque no haya hecho nada. Ya costó una vez dar por buenos
+      // mensajes que nunca salieron; aquí se lee el cuerpo.
+      if (cuerpo?.status && cuerpo.status !== "OK") return { ok: false, motivo: cuerpo.status };
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, motivo: error.message };
+    }
+  };
+
+  app.post("/api/chat/conversations/:id/claim", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "tomar conversaciones");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const staffId = await agenteQueLlama(auth);
+      if (!staffId) return res.status(403).json({ error: "Tu usuario no tiene ficha de personal activa." });
+
+      const r = await chatStore.claimConversation({ conversationId: req.params.id, staffId });
+      if (r.ok) return res.json({ ok: true, assignedStaffId: r.assignedStaffId });
+      if (r.reason === "no_existe") return res.status(404).json({ error: "Conversación no encontrada." });
+      // 409 y no 403: no es que no tengas permiso, es que llegaste segunda. La diferencia importa
+      // en la pantalla -- a un 409 se le enseña quién la tiene, a un 403 se le enseña la puerta.
+      return res.status(409).json({
+        error: `Esta conversación la está atendiendo ${r.assignedStaffName || "otra persona"}.`,
+        assignedStaffId: r.assignedStaffId,
+        assignedStaffName: r.assignedStaffName,
+      });
+    } catch (error) { next(error); }
+  });
+
+  app.post("/api/chat/conversations/:id/release", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "soltar conversaciones");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const staffId = await agenteQueLlama(auth);
+      if (!staffId) return res.status(403).json({ error: "Tu usuario no tiene ficha de personal activa." });
+
+      const r = await chatStore.releaseConversation({ conversationId: req.params.id, staffId });
+      // No se puede soltar lo que no se tiene. Se contesta 409 con el estado real para que la
+      // pantalla se corrija sola en vez de quedarse con un botón que no hace nada.
+      if (!r.ok) {
+        const actual = await chatStore.assignmentOf(req.params.id);
+        if (!actual) return res.status(404).json({ error: "Conversación no encontrada." });
+        return res.status(409).json({
+          error: "Esta conversación no la tienes tú.",
+          assignedStaffId: actual.assignedStaffId,
+          assignedStaffName: actual.assignedStaffName,
+        });
+      }
+      res.json({ ok: true });
+    } catch (error) { next(error); }
+  });
+
+  // Cerrar: se acabó la atención humana. Suelta, apaga needs_human y devuelve al bot -- las tres
+  // cosas juntas, porque dejar una a medias es lo que produce conversaciones que nadie atiende y
+  // a las que el bot tampoco contesta.
+  app.post("/api/chat/conversations/:id/close", async (req, res, next) => {
+    try {
+      if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "cerrar conversaciones");
+      if (auth.error) return relayAuthError(res, auth.error);
+      const staffId = await agenteQueLlama(auth);
+      if (!staffId) return res.status(403).json({ error: "Tu usuario no tiene ficha de personal activa." });
+
+      const actual = await chatStore.assignmentOf(req.params.id);
+      if (!actual) return res.status(404).json({ error: "Conversación no encontrada." });
+      const r = await chatStore.closeConversation({ conversationId: req.params.id, staffId });
+      if (!r.ok) {
+        return res.status(409).json({
+          error: `Esta conversación la está atendiendo ${actual.assignedStaffName || "otra persona"}.`,
+          assignedStaffId: actual.assignedStaffId,
+          assignedStaffName: actual.assignedStaffName,
+        });
+      }
+
+      // El bot vive en el bridge y su pausa está allí: cerrar aquí sin avisarle dejaría al motor
+      // callado para siempre con esa clienta. Si el aviso falla, la conversación ya quedó cerrada
+      // en la bandeja y se dice, en vez de fingir que todo salió bien.
+      const reanudado = await devolverConversacionAlBot(req.params.id, auth);
+      res.json({ ok: true, ...(reanudado.ok ? {} : { aviso: "Se cerró, pero no se pudo reactivar el bot: revisa el puente." }) });
+    } catch (error) { next(error); }
+  });
+
   app.post("/api/chat/conversations/:id/reply", async (req, res, next) => {
     try {
       if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
@@ -2547,6 +2809,39 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!destino) return res.status(404).json({ error: "Conversación no encontrada." });
       const esWeb = destino.channel === "web";
       if (!esWeb && !destino.phone) return res.status(404).json({ error: "Conversación no encontrada." });
+
+      // Solo contesta quien la tiene tomada. Hasta ahora cualquiera podía responder y la
+      // asignación se escribía DESPUÉS del envío, así que dos personas podían escribirle a la
+      // misma clienta sin que el sistema lo impidiera. Tomarla primero es lo que cierra esa
+      // carrera; esto es la otra mitad.
+      const asignacion = await chatStore.assignmentOf(req.params.id);
+      const yo = await chatStore.staffIdByEmail(auth.identity?.email);
+      if (!asignacion?.assignedStaffId) {
+        return res.status(409).json({
+          error: "Toma la conversación antes de responder.",
+          needsClaim: true,
+        });
+      }
+      if (asignacion.assignedStaffId !== yo) {
+        return res.status(403).json({
+          error: `Esta conversación la está atendiendo ${asignacion.assignedStaffName || "otra persona"}.`,
+          assignedStaffId: asignacion.assignedStaffId,
+          assignedStaffName: asignacion.assignedStaffName,
+        });
+      }
+
+      // La ventana de 24 horas de WhatsApp. Se comprueba ANTES de enviar porque el rechazo de
+      // Meta llega tarde y de forma asíncrona (131047): quien atiende vería "enviado" y la
+      // clienta no recibiría nada. En el chat de la web no hay ventana.
+      const hilo = await chatStore.thread({ conversationId: req.params.id, limit: 1, env });
+      if (!esWeb && hilo && hilo.within24h === false) {
+        return res.status(422).json({
+          error: "Han pasado más de 24 horas desde el último mensaje de la clienta. "
+            + "WhatsApp no permite escribirle texto libre hasta que vuelva a escribir.",
+          within24h: false,
+          lastInboundAt: hilo.lastInboundAt,
+        });
+      }
 
       const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
       if (!bridgeSecret) return res.status(503).json({ error: "El puente de WhatsApp no está configurado." });
@@ -2594,6 +2889,14 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         deliveryError: entregado ? null : (fallo || resultado?.mensaje || resultado?.error || resultado?.status || "No se pudo entregar."),
       });
 
+      // La bandeja tiene que reflejar que el bot está pausado. Hasta ahora bot_state solo se
+      // escribía al entrar un mensaje de la clienta, así que la pantalla decía "Con el bot"
+      // mientras una persona estaba respondiendo -- y quien mirara la lista no sabía si el bot
+      // iba a hablar por encima.
+      await chatStore.marcarBotPausado({ conversationId: req.params.id }).catch((error) => {
+        console.error("bandeja: no se pudo marcar el bot como pausado --", error.message);
+      });
+
       if (entregado) {
         return res.json({
           ok: true,
@@ -2622,26 +2925,13 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageReservations", "devolver la conversación al bot");
       if (auth.error) return relayAuthError(res, auth.error);
 
-      const phone = await chatStore.phoneOf(req.params.id);
-      if (!phone) return res.status(404).json({ error: "Conversación no encontrada." });
+      const destino = await chatStore.destinoDe(req.params.id);
+      if (!destino) return res.status(404).json({ error: "Conversación no encontrada." });
 
-      const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
-      const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
-      let avisoDelPuente = null;
-      if (bridgeSecret) {
-        try {
-          const response = await fetchImpl(`${bridgeBase}/webhook/erp-chat-control`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
-            body: JSON.stringify({ recipientPhone: phone, command: "RETURN_TO_BOT", staffId: auth.identity?.email || "erp" }),
-          });
-          if (!response.ok) avisoDelPuente = `El puente respondió ${response.status}.`;
-        } catch (error) {
-          avisoDelPuente = error.message;
-        }
-      } else {
-        avisoDelPuente = "El puente de WhatsApp no está configurado.";
-      }
+      // Mismo camino que usa cerrar. Antes esto se armaba a mano aquí y solo sabía de teléfonos,
+      // así que en el chat de la web no devolvía nada al bot.
+      const reactivado = await devolverConversacionAlBot(req.params.id, auth);
+      const avisoDelPuente = reactivado.ok ? null : `No se pudo reactivar el bot (${reactivado.motivo}).`;
 
       // La bandeja se actualiza aunque el puente falle: para el equipo la conversación deja de
       // estar en espera igualmente. El aviso se devuelve para que se sepa que el bot puede

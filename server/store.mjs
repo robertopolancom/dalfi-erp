@@ -2542,6 +2542,34 @@ export class NeonBookingStore {
 // Se deriva de lo que ya hay en la tabla en vez de guardar una columna nueva: assigned_staff_id
 // se rellena al responder y se vacía al devolver la conversación al bot, así que ya es
 // exactamente "hay una persona al mando".
+// El valor de bot_state que significa "el bot no contesta, hay una persona al mando".
+//
+// Tiene que ser EXACTAMENTE el que usa el motor del bridge (STATES.ATENCION_HUMANA en
+// src/constants.js): esta columna es un espejo del estado del motor, y si los dos nombres se
+// separan, la bandeja dirá una cosa y el bot hará otra.
+//
+// Hasta hoy esta columna solo se escribía al entrar un mensaje del cliente (ver ingest), así que
+// cuando una persona respondía, el motor quedaba pausado pero la bandeja seguía mostrando "Con el
+// bot" hasta el siguiente mensaje. Por eso ahora se escribe también al responder.
+// La ventana de 24 horas de WhatsApp. Meta solo deja escribir texto libre dentro de las 24 horas
+// siguientes al último mensaje DE LA CLIENTA; pasado ese plazo hay que usar una plantilla
+// aprobada. Fuera de WhatsApp no existe tal cosa: en el chat de la web se puede contestar siempre.
+//
+// Esto importa aquí y no solo en el bridge porque el rechazo llega tarde: Meta acepta el envío y
+// lo descarta después, de forma asíncrona, con el código 131047. Saberlo ANTES de mandar es la
+// diferencia entre avisarle a quien atiende y dejarla creyendo que contestó.
+export const VENTANA_WHATSAPP_MS = 24 * 60 * 60 * 1000;
+
+export function dentroDeLaVentana(channel, lastInboundAt) {
+  if ((channel || "whatsapp") !== "whatsapp") return true;
+  if (!lastInboundAt) return false;
+  const t = new Date(lastInboundAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t < VENTANA_WHATSAPP_MS;
+}
+
+export const BOT_PAUSADO_POR_PERSONA = "ATENCION_HUMANA";
+
 export function estadoDeConversacion({ needs_human: necesitaHumano, assigned_staff_id: asignada }) {
   if (asignada) return "persona";
   if (necesitaHumano) return "espera";
@@ -2585,6 +2613,9 @@ export class NeonChatStore {
     botState = null,
     needsHuman = null,
     handoffReason = null,
+    // Cuánto puede estar un agente sin tocar una conversación antes de que el bot la retome.
+    // Cero o null lo desactiva. Ver la explicación junto al UPDATE de abajo.
+    autoResumeMs = null,
   }) {
     const sesionWeb = String(webSessionId || "").trim() || null;
     const phoneNormalized = sesionWeb ? null : NeonChatStore.normalizePhone(phone);
@@ -2644,6 +2675,32 @@ export class NeonChatStore {
       );
       const conversationId = conversation.rows[0].id;
 
+      // Reanudación automática: si la conversación está en manos de alguien que lleva rato sin
+      // tocarla y la clienta acaba de escribir, se suelta y el bot retoma.
+      //
+      // Se resuelve AQUÍ y no con un barrido periódico a propósito. Una pausa solo tiene
+      // consecuencia cuando alguien escribe: si la clienta no vuelve a hablar, que el bot siga
+      // pausado no le afecta a nadie. Hacerlo en este punto evita sostener un cron --que en capa
+      // gratuita es un recurso contado-- y además acierta siempre en el momento exacto.
+      //
+      // La medida de "sin tocarla" es staff_last_read_at, que se actualiza al tomar, al abrir y
+      // al responder. No sirve updated_at: eso cambia con cada mensaje de la clienta, así que una
+      // clienta insistente mantendría viva para siempre una asignación que nadie atiende.
+      let reanudada = false;
+      if (direction === "in" && Number(autoResumeMs) > 0) {
+        const soltada = await client.query(
+          `update app.chat_conversations
+              set assigned_staff_id = null, bot_state = null, updated_at = now()
+            where id = $1
+              and assigned_staff_id is not null
+              and (staff_last_read_at is null
+                   or staff_last_read_at < now() - ($2 || ' milliseconds')::interval)
+            returning id`,
+          [conversationId, String(Math.trunc(Number(autoResumeMs)))],
+        );
+        reanudada = soltada.rowCount === 1;
+      }
+
       // on conflict do nothing + returning: si el wamid ya estaba, no devuelve fila y se
       // sale sin duplicar. El upsert de arriba ya corrió, pero es idempotente también.
       const message = await client.query(
@@ -2675,6 +2732,9 @@ export class NeonChatStore {
         conversationId,
         messageId: message.rows[0]?.id || null,
         duplicate: message.rows.length === 0,
+        // Quien llama necesita saberlo para avisar al bridge de que reanude su propio estado: la
+        // pausa vive en los dos lados y soltarla solo aquí dejaría al motor callado para siempre.
+        reanudadaPorInactividad: reanudada,
       };
     } catch (error) {
       await client.query("rollback");
@@ -2686,7 +2746,7 @@ export class NeonChatStore {
 
   // La lista de la bandeja. Ordena por lo que espera a una persona y luego por reciente,
   // que es exactamente el orden en que hay que atenderlas.
-  async conversations({ limit = 50 } = {}) {
+  async conversations({ limit = 50, channel = null } = {}) {
     const result = await this.pool.query(
       `select c.id, c.phone_normalized, c.channel, c.web_session_id, c.web_display_name, c.client_id, c.wa_profile_name, c.bot_state,
               c.needs_human, c.handoff_reason, c.handoff_requested_at, c.assigned_staff_id,
@@ -2697,24 +2757,29 @@ export class NeonChatStore {
                 where m.conversation_id = c.id
                   and m.direction = 'in'
                   and (c.staff_last_read_at is null or m.created_at > c.staff_last_read_at)
-              ) as unread
+              ) as unread,
+              -- Cuándo escribió la clienta por última vez. No se guarda como columna porque sería
+              -- un dato más que mantener sincronizado; derivarlo cuesta un índice que ya existe
+              -- por conversation_id y la bandeja son decenas de filas, no millones.
+              (select max(m2.created_at) from app.chat_messages m2
+                where m2.conversation_id = c.id and m2.direction = 'in'
+              ) as last_inbound_at
          from app.chat_conversations c
          left join app.clients cl on cl.id = c.client_id
          left join app.staff st on st.id = c.assigned_staff_id
+        where ($2::text is null or c.channel = $2::text)
         -- Fuera del bot = arriba, este esperando o ya en manos de alguien. Antes solo
         -- miraba needs_human, asi que una conversacion que alguien tomo por iniciativa
         -- propia (sin que el bot la transfiriera) se perdia entre las automaticas.
         order by (c.needs_human or c.assigned_staff_id is not null) desc,
                  c.last_message_at desc nulls last
         limit $1`,
-      [limit],
+      [limit, channel],
     );
     return result.rows.map((row) => ({
       id: row.id,
       phone: row.phone_normalized,
       clientId: row.client_id,
-      // El nombre de la ficha manda sobre el del perfil de WhatsApp: el de WhatsApp lo
-      // elige la persona y puede ser un apodo o un emoji.
       // El nombre de la ficha manda; después el del perfil. En una conversación web puede no
       // haber ninguno de los dos: quien llega al sitio es anónimo hasta que dice quién es, y
       // enseñar el identificador de sesión no le diría nada a nadie.
@@ -2731,8 +2796,30 @@ export class NeonChatStore {
       lastMessageAt: row.last_message_at,
       preview: row.last_message_preview,
       unread: Number(row.unread) || 0,
+      lastInboundAt: row.last_inbound_at,
+      within24h: dentroDeLaVentana(row.channel, row.last_inbound_at),
       estado: estadoDeConversacion(row),
     }));
+  }
+
+  // La marca de versión de la bandeja, para poder contestar 304 sin traer nada.
+  //
+  // Es una sola fila agregada: el momento del último cambio y cuántas conversaciones hay. Lo
+  // segundo importa porque si una conversación desapareciera, el máximo no se movería y el
+  // cliente se quedaría con una lista que ya no existe.
+  //
+  // Esta consulta es la que se ejecuta en el caso normal --nada cambió-- así que tiene que ser
+  // barata: sin joins, sin subconsultas, sin recorrer mensajes.
+  async conversationsVersion({ channel = null } = {}) {
+    const r = await this.pool.query(
+      `select max(updated_at) as ultima, count(*) as total
+         from app.chat_conversations
+        where ($1::text is null or channel = $1::text)`,
+      [channel],
+    );
+    const row = r.rows[0] || {};
+    const ultima = row.ultima?.toISOString?.() || row.ultima || "0";
+    return `${ultima}:${row.total ?? 0}`;
   }
 
   // El hilo. limit alto por defecto porque una conversación de WhatsApp de meses sigue
@@ -2743,7 +2830,9 @@ export class NeonChatStore {
     const [conversation, messages] = await Promise.all([
       this.pool.query(
         `select c.id, c.phone_normalized, c.channel, c.web_session_id, c.web_display_name, c.client_id, c.wa_profile_name, c.bot_state,
-                c.needs_human, c.handoff_reason, c.assigned_staff_id,
+                c.needs_human, c.handoff_reason, c.assigned_staff_id, c.updated_at,
+                (select max(m2.created_at) from app.chat_messages m2
+                  where m2.conversation_id = c.id and m2.direction = 'in') as last_inbound_at,
                 cl.full_name as client_name,
                 st.full_name as assigned_staff_name
            from app.chat_conversations c
@@ -2785,7 +2874,14 @@ export class NeonChatStore {
       handoffReason: row.handoff_reason,
       assignedStaffId: row.assigned_staff_id,
       assignedStaffName: row.assigned_staff_name,
+      lastInboundAt: row.last_inbound_at,
+      within24h: dentroDeLaVentana(row.channel, row.last_inbound_at),
       estado: estadoDeConversacion(row),
+      // Versión del hilo, para el 304 del sondeo. Lleva el último mensaje Y el updated_at de la
+      // conversación: si solo mirara los mensajes, tomar o soltar la conversación no cambiaría la
+      // marca y el agente no vería que ya la tiene otra persona.
+      version: `${messages.rows.length}:${messages.rows.at(-1)?.created_at?.toISOString?.()
+        || messages.rows.at(-1)?.created_at || "0"}:${row.updated_at?.toISOString?.() || row.updated_at || "0"}`,
       messages: messages.rows.map((message) => ({
         id: message.id,
         direction: message.direction,
@@ -2904,18 +3000,25 @@ export class NeonChatStore {
          returning id, created_at`,
         [conversationId, staffId, body, waMessageId, deliveryStatus, deliveryError],
       );
-      // Se marca quién la tomó, pero NO se apaga needs_human: que alguien haya contestado no
-      // significa que el asunto esté cerrado. Para eso está devolver la conversación al bot,
-      // que es un acto explícito.
+      // NO se apaga needs_human: que alguien haya contestado no significa que el asunto esté
+      // cerrado. Para eso está cerrar la conversación, que es un acto explícito.
+      //
+      // Y ya NO se asigna aquí. Esta línea decía `assigned_staff_id = coalesce($2, ...)`, o sea
+      // que la conversación se asignaba DESPUÉS de haber mandado el mensaje: dos personas podían
+      // escribirle a la misma clienta y el sistema se enteraba cuando ya había dos mensajes
+      // fuera. Ahora asignar es un paso previo y atómico (claimConversation), y responder sin
+      // tenerla asignada lo rechaza el endpoint.
+      //
+      // staff_last_read_at sí se toca: responder es la señal más fuerte de que el agente sigue
+      // ahí, y es lo que mide la inactividad para la reanudación automática.
       await client.query(
         `update app.chat_conversations
-            set assigned_staff_id = coalesce($2, assigned_staff_id),
-                last_message_at = now(),
-                last_message_preview = $3,
+            set last_message_at = now(),
+                last_message_preview = $2,
                 staff_last_read_at = now(),
                 updated_at = now()
           where id = $1`,
-        [conversationId, staffId, String(body || "").slice(0, 140) || null],
+        [conversationId, String(body || "").slice(0, 140) || null],
       );
       await client.query("commit");
       return inserted.rows[0];
@@ -3011,6 +3114,204 @@ export class NeonChatStore {
         where id = $1`,
       [conversationId],
     );
+  }
+
+  // ------------------------------------------------------------------------
+  // Asignación de conversaciones (bandeja compartida)
+  //
+  // Hasta hoy la asignación era un efecto secundario de responder: recordStaffReply hacía
+  // `assigned_staff_id = coalesce($2, assigned_staff_id)`, o sea que se la quedaba quien
+  // contestara primero. El problema no era quién se la quedaba, era CUÁNDO: la asignación se
+  // escribía DESPUÉS de haber mandado el WhatsApp, así que dos personas podían escribirle a la
+  // misma clienta y el sistema solo se enteraba después, cuando ya había dos mensajes fuera.
+  //
+  // Ahora tomar es un acto explícito y atómico, y responder exige tenerla.
+  // ------------------------------------------------------------------------
+
+  // Toma la conversación. Es idempotente para quien ya la tiene (volver a entrar desde otro
+  // dispositivo no falla) y falla limpio para cualquier otro.
+  //
+  // Todo el peso está en el WHERE: la condición y la escritura ocurren en la misma sentencia, así
+  // que dos agentes que pulsen "Tomar" en el mismo instante no pueden ganar los dos. Comprobar
+  // antes con un SELECT y actualizar después tendría exactamente el hueco que esto cierra.
+  async claimConversation({ conversationId, staffId }) {
+    if (!staffId) return { ok: false, reason: "sin_agente" };
+    const r = await this.pool.query(
+      `update app.chat_conversations
+          set assigned_staff_id = $2,
+              -- Se marca como leída al tomarla: quien la toma la está abriendo, y esta marca es
+              -- además la que mide la inactividad del agente para la reanudación automática.
+              staff_last_read_at = now(),
+              updated_at = now()
+        where id = $1
+          and (assigned_staff_id is null or assigned_staff_id = $2)
+        returning assigned_staff_id`,
+      [conversationId, staffId],
+    );
+    if (r.rowCount === 1) return { ok: true, assignedStaffId: r.rows[0].assigned_staff_id };
+
+    // No se pudo: o no existe, o la tiene otra persona. Se distinguen porque la respuesta al
+    // agente es distinta -- un 404 y un 409 no se arreglan igual.
+    const actual = await this.pool.query(
+      `select c.assigned_staff_id, st.full_name as assigned_staff_name
+         from app.chat_conversations c
+         left join app.staff st on st.id = c.assigned_staff_id
+        where c.id = $1`,
+      [conversationId],
+    );
+    if (!actual.rows.length) return { ok: false, reason: "no_existe" };
+    return {
+      ok: false,
+      reason: "ocupada",
+      assignedStaffId: actual.rows[0].assigned_staff_id,
+      assignedStaffName: actual.rows[0].assigned_staff_name,
+    };
+  }
+
+  // Suelta la conversación. Solo quien la tiene puede soltarla: si no, cualquiera podría quitarle
+  // de las manos una conversación a la compañera que la está atendiendo.
+  async releaseConversation({ conversationId, staffId }) {
+    const r = await this.pool.query(
+      `update app.chat_conversations
+          set assigned_staff_id = null, updated_at = now()
+        where id = $1 and assigned_staff_id = $2`,
+      [conversationId, staffId],
+    );
+    return { ok: r.rowCount === 1 };
+  }
+
+  // Quién la tiene y desde cuándo no la toca. Lo usan /reply (para rechazar a quien no la tiene)
+  // y la reanudación automática.
+  async assignmentOf(conversationId) {
+    const r = await this.pool.query(
+      `select c.assigned_staff_id, c.staff_last_read_at, c.channel, c.bot_state,
+              st.full_name as assigned_staff_name
+         from app.chat_conversations c
+         left join app.staff st on st.id = c.assigned_staff_id
+        where c.id = $1`,
+      [conversationId],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    return {
+      assignedStaffId: row.assigned_staff_id,
+      assignedStaffName: row.assigned_staff_name,
+      staffLastReadAt: row.staff_last_read_at,
+      channel: row.channel || "whatsapp",
+      botState: row.bot_state,
+    };
+  }
+
+  // Deja constancia en la bandeja de que el bot está pausado. El motor ya lo sabe (lo pausa el
+  // bridge); esto es solo el espejo, para que la pantalla no diga "Con el bot" mientras una
+  // persona está respondiendo.
+  async marcarBotPausado({ conversationId }) {
+    await this.pool.query(
+      `update app.chat_conversations set bot_state = $2, updated_at = now() where id = $1`,
+      [conversationId, BOT_PAUSADO_POR_PERSONA],
+    );
+  }
+
+  // Cerrar = se acabó la atención humana. Suelta la asignación, apaga needs_human y devuelve al
+  // bot. Es returnToBot con un nombre que dice lo que significa para quien atiende, y se mantiene
+  // como método aparte porque el endpoint de cerrar hace además otras cosas (avisar al bridge).
+  async closeConversation({ conversationId, staffId }) {
+    const r = await this.pool.query(
+      `update app.chat_conversations
+          set needs_human = false, handoff_reason = null, handoff_requested_at = null,
+              assigned_staff_id = null, staff_last_read_at = now(), updated_at = now()
+        where id = $1
+          and (assigned_staff_id is null or assigned_staff_id = $2)`,
+      [conversationId, staffId],
+    );
+    return { ok: r.rowCount === 1 };
+  }
+
+  // ------------------------------------------------------------------------
+  // Suscripciones de Web Push del personal (migración 0031)
+  // ------------------------------------------------------------------------
+
+  // Alta o actualización. La clave es el endpoint, que es la identidad del dispositivo: si el
+  // mismo navegador vuelve a suscribirse --pasa al reinstalar la PWA o al caducar la clave-- se
+  // actualiza su fila en vez de acumular duplicados que mandarían el mismo aviso dos veces.
+  //
+  // fail_count vuelve a cero al reaparecer: una suscripción que estuvo fallando y vuelve a darse
+  // de alta es un dispositivo sano otra vez.
+  async savePushSubscription({ userId, endpoint, p256dh, auth, userAgent = null }) {
+    if (!userId || !endpoint || !p256dh || !auth) return { ok: false, reason: "datos_incompletos" };
+    const r = await this.pool.query(
+      `insert into app.staff_push_subscriptions (user_id, endpoint, p256dh, auth, user_agent)
+       values ($1, $2, $3, $4, $5)
+       on conflict (endpoint) do update set
+         user_id = excluded.user_id,
+         p256dh = excluded.p256dh,
+         auth = excluded.auth,
+         user_agent = coalesce(excluded.user_agent, app.staff_push_subscriptions.user_agent),
+         fail_count = 0
+       returning id`,
+      [userId, endpoint, p256dh, auth, userAgent],
+    );
+    return { ok: true, id: r.rows[0].id };
+  }
+
+  async deletePushSubscription({ endpoint }) {
+    const r = await this.pool.query(
+      "delete from app.staff_push_subscriptions where endpoint = $1",
+      [endpoint],
+    );
+    return { ok: r.rowCount > 0 };
+  }
+
+  // A quién avisar de una conversación.
+  //
+  // Si la tiene alguien asignada, solo a esa persona: interrumpir a todo el equipo por una
+  // conversación que ya está atendida es la forma más rápida de que dejen de mirar los avisos.
+  // Si no la tiene nadie, a todo el personal activo con suscripción -- que es justo el caso en el
+  // que alguien tiene que enterarse.
+  async pushTargetsForConversation(conversationId) {
+    const r = await this.pool.query(
+      `select ps.id, ps.endpoint, ps.p256dh, ps.auth
+         from app.chat_conversations c
+         join app.staff st
+           on (c.assigned_staff_id is not null and st.id = c.assigned_staff_id)
+           or (c.assigned_staff_id is null and st.status = 'active')
+         join app.staff_push_subscriptions ps on ps.user_id = st.id
+        where c.id = $1`,
+      [conversationId],
+    );
+    return r.rows.map((row) => ({
+      id: row.id,
+      endpoint: row.endpoint,
+      keys: { p256dh: row.p256dh, auth: row.auth },
+    }));
+  }
+
+  // Resultado de un envío. Un 404 o un 410 significan "esta suscripción ya no existe" y se borra
+  // en el acto; el resto son pasajeros (5xx del servicio de push, red) y no deben costarle a nadie
+  // sus notificaciones al primer tropiezo, así que se cuentan y se borra al quinto seguido.
+  async recordPushResult({ id, ok, statusCode = null }) {
+    if (ok) {
+      await this.pool.query(
+        "update app.staff_push_subscriptions set last_success_at = now(), fail_count = 0 where id = $1",
+        [id],
+      );
+      return { borrada: false };
+    }
+    if (statusCode === 404 || statusCode === 410) {
+      await this.pool.query("delete from app.staff_push_subscriptions where id = $1", [id]);
+      return { borrada: true, motivo: "suscripcion_caducada" };
+    }
+    const r = await this.pool.query(
+      `update app.staff_push_subscriptions set fail_count = fail_count + 1
+        where id = $1 returning fail_count`,
+      [id],
+    );
+    const fallos = Number(r.rows[0]?.fail_count || 0);
+    if (fallos >= 5) {
+      await this.pool.query("delete from app.staff_push_subscriptions where id = $1", [id]);
+      return { borrada: true, motivo: "demasiados_fallos" };
+    }
+    return { borrada: false, fallos };
   }
 
   async markRead({ conversationId }) {
