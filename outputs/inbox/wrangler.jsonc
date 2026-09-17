@@ -5,5 +5,12 @@
   "assets": {
     "directory": ".",
     "html_handling": "auto-trailing-slash"
-  }
+  },
+  // El dominio se declara aquí y no se crea a mano en el panel: así queda en el repo, el CI lo
+  // mantiene, y nadie tiene que recordar en qué cuenta se configuró. `custom_domain` hace que
+  // wrangler cree también el registro DNS, porque dalfistudio.com ya vive en esta misma cuenta
+  // de Cloudflare.
+  "routes": [
+    { "pattern": "inbox.dalfistudio.com", "custom_domain": true }
+  ]
 }
