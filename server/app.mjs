@@ -2475,8 +2475,17 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       // persona.
       if (result?.reanudadaPorInactividad) {
         devolverConversacionAlBot(result.conversationId, null)
-          .then((r) => {
-            if (!r.ok) console.error(`bandeja: se reanudó por inactividad pero el bot sigue pausado (${r.motivo}).`);
+          .then(async (r) => {
+            if (r.ok) return;
+            // Aquí no se puede hacer lo mismo que al soltar a mano -- no hay nadie delante a
+            // quien decirle que falló, y la asignación ya se soltó dentro de la transacción de
+            // ingesta. Lo que sí se puede es dejar de MENTIR: se vuelve a marcar la pausa para
+            // que la bandeja enseñe "nadie atiende" y alguien lo recoja.
+            //
+            // Sin esto la base diría "atiende el bot" con el motor callado, que es el único caso
+            // en el que el cliente se queda sin respuesta Y la pantalla no avisa de nada.
+            console.error(`bandeja: se reanudó por inactividad pero el bot sigue pausado (${r.motivo}).`);
+            await chatStore.marcarBotPausado({ conversationId: result.conversationId }).catch(() => {});
           })
           .catch(() => {});
       }

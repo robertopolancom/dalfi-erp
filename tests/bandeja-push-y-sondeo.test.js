@@ -371,3 +371,39 @@ test("NADIE03 — no se le reanuda el bot a una conversación que atiende otra p
     assert.equal(hechos.puente, 0, "comprobar de quién es va ANTES de tocar el motor");
   });
 });
+
+test("NADIE04 — si la reanudación automática no alcanza al motor, se vuelve a marcar la pausa", async () => {
+  // La reanudación por inactividad suelta la asignación DENTRO de la transacción de ingesta, así
+  // que no se puede deshacer ni hay nadie delante a quien avisar. Lo que sí se puede es dejar de
+  // mentir: si el puente no contesta, se vuelve a marcar la pausa para que la bandeja enseñe
+  // "nadie atiende". Sin esto la base diría "atiende el bot" con el motor callado -- el único
+  // caso en el que el cliente se queda sin respuesta Y ninguna pantalla avisa.
+  const hechos = { vueltaAPausar: 0 };
+  const app = createApp({
+    store: { async read() { return { data: {}, updatedAt: "2026-09-17T00:00:00.000Z", version: 1 }; } },
+    chatStore: {
+      async ingest() { return { ok: true, conversationId: "c1", reanudadaPorInactividad: true }; },
+      async destinoDe() { return { channel: "whatsapp", phone: "8095551234", webSessionId: null }; },
+      async marcarBotPausado() { hechos.vueltaAPausar += 1; },
+      async pushTargetsForConversation() { return []; },
+    },
+    fetchImpl: async (url) => String(url).includes("erp-chat-control")
+      ? new Response("no", { status: 503 })
+      : new Response("{}", { status: 200 }),
+    env: { CHATBOT_SECRET: "entrada", ERP_WEBHOOK_SECRET: "s", CHATBOT_BRIDGE_URL: "https://puente.test" },
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const r = await fetch(`${base}/api/chat/ingest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-chatbot-secret": "entrada" },
+      body: JSON.stringify({ phone: "8095551234", direction: "in", senderType: "cliente", body: "hola" }),
+    });
+    assert.equal(r.status, 200, "la ingesta contesta 200 igualmente: Meta reintenta si no");
+    // Lo de después de responder es asíncrono a propósito (el puente espera este 200).
+    for (let i = 0; i < 40 && hechos.vueltaAPausar === 0; i += 1) await new Promise((r2) => setTimeout(r2, 25));
+    assert.equal(hechos.vueltaAPausar, 1, "hay que volver a marcar la pausa para que la bandeja avise");
+  } finally { server.close(); await once(server, "close"); }
+});
