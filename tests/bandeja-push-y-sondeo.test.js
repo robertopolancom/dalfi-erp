@@ -185,6 +185,20 @@ test("ERP01 — la bandeja tiene los tres botones y usan los endpoints compartid
     "tienen que ser los mismos endpoints que usa la PWA, no unos propios del ERP");
 });
 
+test("ERP05 — dos botones no pueden llamarse igual, y menos estos dos", async () => {
+  // El ERP tiene DOS caminos que reactivan el bot: cerrar (la tengo yo, he acabado) y la salida de
+  // emergencia (funciona aunque la tenga otra persona, para cuando alguien la tomó y se fue). Si
+  // los dos dicen "Devolver al bot", el segundo se pulsa por costumbre y le quita la conversación
+  // a quien la esté atendiendo en ese momento.
+  const html = await leerHtml();
+  const etiqueta = (id) => (html.match(new RegExp(`id="${id}"[^>]*>([^<]+)<`)) || [])[1]?.trim();
+  assert.equal(etiqueta("bandeja-tomar"), "Tomar conversación");
+  assert.equal(etiqueta("bandeja-soltar"), "Dejar libre");
+  assert.equal(etiqueta("bandeja-cerrar-conv"), "Devolver al bot");
+  assert.notEqual(etiqueta("bandeja-al-bot"), etiqueta("bandeja-cerrar-conv"));
+  assert.match(etiqueta("bandeja-al-bot"), /Forzar/);
+});
+
 test("ERP02 — no se puede escribir en una conversación que no es mía", async () => {
   const app = await leerApp();
   assert.match(app, /const mia = Boolean\(hilo\.assignedStaffId\) && hilo\.assignedStaffId === bandejaMiStaffId/);

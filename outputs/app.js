@@ -11815,7 +11815,7 @@ async function abrirConversacion(conversationId) {
       alBot.disabled = hilo.estado === "bot";
       alBot.title = hilo.estado === "bot"
         ? "El bot ya esta atendiendo esta conversacion"
-        : "El bot vuelve a atender esta conversacion";
+        : "Salida de emergencia: reactiva el bot aunque la conversacion la tenga otra persona. Para cuando alguien la tomo y se fue.";
     }
     pintarEstadoDeAtencion(hilo);
     contenedor.innerHTML = hilo.messages

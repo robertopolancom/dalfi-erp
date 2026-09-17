@@ -59,9 +59,11 @@
   </header>
   <div class="mensajes" id="mensajes" role="log" aria-live="polite"></div>
   <div class="acciones" id="acciones">
-    <button class="primario" id="boton-tomar" type="button">Tomar</button>
-    <button class="secundario oculta" id="boton-soltar" type="button">Soltar</button>
-    <button class="secundario oculta" id="boton-cerrar" type="button">Cerrar</button>
+    <button class="primario" id="boton-tomar" type="button">Tomar conversaci&oacute;n</button>
+    <!-- Dejar libre NO reactiva el bot: la deja sin dueno para que la tome otra persona, con el
+         bot todavia en pausa. Devolver al bot es lo otro, y por eso son dos botones. -->
+    <button class="secundario oculta" id="boton-soltar" type="button">Dejar libre</button>
+    <button class="secundario oculta" id="boton-cerrar" type="button">Devolver al bot</button>
   </div>
   <form class="responder" id="form-responder">
     <textarea id="texto" rows="2" maxlength="4000" placeholder="Escribe tu respuesta…"></textarea>

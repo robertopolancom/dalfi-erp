@@ -416,11 +416,24 @@
           userVisibleOnly: true,
           applicationServerKey: base64UrlABytes(clave),
         });
-        await transporte.suscribirPush(sub.toJSON());
+        // Si el servidor no se queda con la suscripción, hay que DESHACER la del navegador. Sin
+        // esto la pantalla mentía de la peor manera posible: el navegador sí tenía suscripción,
+        // así que decía "Activadas en este dispositivo" y ofrecía desactivarlas, mientras el
+        // servidor no tenía a quién avisar. Nunca llegaba nada y no había forma de saber por qué.
+        try {
+          await transporte.suscribirPush(sub.toJSON());
+        } catch (fallo) {
+          await sub.unsubscribe().catch(function () {});
+          throw fallo;
+        }
       }
       await estadoDePush();
     } catch (error) {
-      $("estado-push").textContent = error.message;
+      // Un 403 aquí no es un problema de notificaciones: es que el correo de esta cuenta no está
+      // en ninguna ficha de app.staff. Decirlo así ahorra la llamada.
+      $("estado-push").textContent = error.status === 403
+        ? "Tu cuenta no está vinculada a una ficha de personal. Hay que poner este correo en tu ficha desde el ERP."
+        : error.message;
     } finally {
       boton.disabled = false;
     }

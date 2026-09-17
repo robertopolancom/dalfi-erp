@@ -141,3 +141,25 @@ test("PWA12 — se puede recuperar la contraseña desde la propia pantalla de ac
     "el servidor responde igual exista o no el correo; prometer un correo que no llega es peor");
   assert.match(app, /vuelve aquí/, "el enlace abre el ERP: hay que decirlo o creerán que se equivocaron de app");
 });
+
+test("PWA13 — si el servidor no guarda la suscripción, la del navegador se deshace", async () => {
+  // Sin esto la pantalla mentía de la peor manera: el navegador SÍ tenía suscripción, así que
+  // decía "Activadas en este dispositivo" y ofrecía desactivarlas, mientras el servidor no tenía
+  // a quién avisar. No llegaba nada y no había forma de saber por qué.
+  const app = await leer("app.js");
+  const bloque = app.slice(app.indexOf("reg.pushManager.subscribe"), app.indexOf("await estadoDePush()"));
+  assert.match(bloque, /catch \(fallo\)[\s\S]*sub\.unsubscribe\(\)[\s\S]*throw fallo/,
+    "una suscripción local que el servidor no conoce es peor que no tener ninguna");
+  // Y el caso concreto que produce ese rechazo tiene que explicarse, porque se arregla en el ERP.
+  assert.match(app, /error\.status === 403/);
+  assert.match(app, /ficha de personal/);
+});
+
+test("PWA14 — los botones dicen lo que hacen, y dejar libre no es devolver al bot", async () => {
+  // Son tres cosas distintas y solo una reactiva el bot. Confundir "dejar libre" con "devolver al
+  // bot" deja a la clienta sin bot Y sin persona, que es el peor de los dos mundos.
+  const html = await leer("index.html");
+  assert.match(html, /id="boton-tomar"[^>]*>Tomar conversaci/);
+  assert.match(html, /id="boton-soltar"[^>]*>Dejar libre</);
+  assert.match(html, /id="boton-cerrar"[^>]*>Devolver al bot</);
+});
