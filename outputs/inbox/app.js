@@ -170,11 +170,14 @@
       // Lo más grave primero: si nadie la atiende, eso manda sobre "pide ayuda".
       if (!c.assignedStaffId && c.botPausado) cabecera.append(etiqueta("nadie atiende", "urgente"));
       else if (c.needsHuman && !c.assignedStaffId) cabecera.append(etiqueta("pide ayuda", "urgente"));
+      // Quién atiende, siempre a la vista. Nunca se deja una fila sin decirlo.
       if (c.assignedStaffId) {
         cabecera.append(etiqueta(
-          c.assignedStaffId === estado.miStaffId ? "la tienes tú" : (c.assignedStaffName || "ocupada"),
+          c.assignedStaffId === estado.miStaffId ? "la atiendes tú" : (c.assignedStaffName || "otro asesor"),
           "asignada",
         ));
+      } else if (!c.botPausado) {
+        cabecera.append(etiqueta("atiende el bot", "bot"));
       }
       if (c.channel !== "web" && c.within24h === false) cabecera.append(etiqueta("fuera de 24 h", "ventana"));
       li.append(cabecera);
@@ -258,10 +261,14 @@
     // pantalla: se leía igual que "sin tomar", que es una situación mucho menos grave.
     var abandonada = !hilo.assignedStaffId && hilo.botPausado;
 
+    // Solo dos estados, nunca un tercero: la atiende un asesor o la atiende el bot. "Sin tomar"
+    // se decía antes y era engañoso -- describía de quién NO era, no quién estaba respondiendo.
     $("hilo-estado").textContent = [
       hilo.channel === "web" ? "chat de la web" : "WhatsApp",
-      deOtra ? "la tiene " + (hilo.assignedStaffName || "otra persona") : (mia ? "la tienes tú" : "sin tomar"),
-      hilo.botPausado ? "bot en pausa" : "el bot está atendiendo",
+      abandonada ? "NO LA ATIENDE NADIE"
+        : deOtra ? "la atiende " + (hilo.assignedStaffName || "otro asesor")
+        : mia ? "la atiendes tú"
+        : "atiende el bot",
     ].join(" · ");
 
     $("boton-tomar").classList.toggle("oculta", Boolean(hilo.assignedStaffId));
@@ -281,7 +288,10 @@
     // Orden a propósito: primero lo que deja a alguien sin respuesta, después lo que te impide
     // responder. Si las dos cosas pasan a la vez, la que hay que leer es la primera.
     if (abandonada) {
-      aviso("aviso-hilo", "Nadie está atendiendo esto: el bot está en pausa y la conversación no la tiene nadie. Tómala, o devuélvela al bot.", true);
+      // Con el servidor arreglado esto ya no debería ocurrir: soltar y cerrar reanudan el bot
+      // antes de tocar nada. Se queda como red de seguridad -- para conversaciones que quedaron
+      // así antes del arreglo, y para el día que el puente falle de una forma nueva.
+      aviso("aviso-hilo", "Nadie está atendiendo esto: el bot está en pausa y no la tiene ningún asesor. Tómala, o devuélvela al bot.", true);
     } else if (fueraDeVentana && mia) {
       aviso("aviso-hilo", "Pasaron más de 24 horas desde su último mensaje: WhatsApp no deja escribirle texto libre hasta que vuelva a escribir.", true);
     } else {

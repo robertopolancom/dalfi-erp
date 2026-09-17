@@ -176,6 +176,15 @@ test("PWA15 — 'el bot en pausa y sin nadie' se ve, que es el estado que deja a
   // que ahora mismo no hay nadie ni nada respondiendo.
   assert.match(app, /if \(!c\.assignedStaffId && c\.botPausado\) cabecera\.append\(etiqueta\("nadie atiende"/);
   assert.match(app, /else if \(c\.needsHuman && !c\.assignedStaffId\)/);
-  // Y el estado del hilo tiene que decir qué hace el bot, no solo quién la tiene.
-  assert.match(app, /hilo\.botPausado \? "bot en pausa" : "el bot está atendiendo"/);
+  // Y la pantalla nunca puede ofrecer un tercer estado: o la atiende un asesor, o el bot.
+  // "sin tomar" se decía antes y era engañoso -- describía de quién NO era la conversación, no
+  // quién estaba respondiéndole al cliente.
+  assert.match(app, /"la atiende " \+ \(hilo\.assignedStaffName \|\| "otro asesor"\)/);
+  assert.match(app, /: "atiende el bot"/);
+  // Solo las líneas de CÓDIGO: el archivo menciona "sin tomar" en un comentario que explica
+  // justamente por qué se quitó, y prohibir la frase prohibiría también explicarlo.
+  const soloCodigo = app.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.doesNotMatch(soloCodigo, /"sin tomar"/, "no es un estado: es la ausencia de uno");
+  // En la lista, cada fila dice quién atiende. Ninguna se queda sin decirlo.
+  assert.match(app, /etiqueta\("atiende el bot", "bot"\)/);
 });

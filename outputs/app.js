@@ -11712,10 +11712,12 @@ function bandejaCuando(iso) {
 // Como se ve cada estado. El texto dice lo que PASA, no como se llama internamente: a quien
 // mira la bandeja no le sirve "TRANSFERENCIA_SOLICITADA", le sirve saber si el cliente se va a
 // quedar esperando porque el bot esta callado.
+// Solo hay dos estados y no puede haber un tercero: la atiende un asesor o la atiende el bot.
+// "espera" no es un tercer estado -- es el bot atendiendo mientras el cliente pide un asesor.
 const BANDEJA_ESTADOS = {
-  espera: { texto: "Espera a una persona", clase: "estado-espera" },
-  persona: { texto: "Con una persona", clase: "estado-persona" },
-  bot: { texto: "Con el bot", clase: "estado-bot" },
+  espera: { texto: "Atiende el bot · pide asesor", clase: "estado-espera" },
+  persona: { texto: "Atiende un asesor", clase: "estado-persona" },
+  bot: { texto: "Atiende el bot", clase: "estado-bot" },
 };
 
 function bandejaEstado(conversacion) {

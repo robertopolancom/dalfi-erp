@@ -295,3 +295,79 @@ test("CORS05 — restablecer contraseña también se pide desde la bandeja", asy
     assert.equal(r.headers.get("access-control-allow-origin"), ORIGEN_BANDEJA);
   });
 });
+
+// --- Nadie se queda sin atender ----------------------------------------------------------------
+//
+// Solo hay dos estados y no puede haber un tercero: la atiende un asesor o la atiende el bot.
+// Soltar o cerrar SIN reanudar el motor produce el tercero -- una conversación muda, en la que el
+// cliente escribe y no le contesta absolutamente nada. No da error en ninguna parte.
+
+function servidorDeAcciones({ puenteOk = true, asignadaA = "staff-1" } = {}) {
+  const hechos = { puente: 0, soltada: false, cerrada: false };
+  const app = createApp({
+    store: { async read() { return { data: {}, updatedAt: "2026-09-17T00:00:00.000Z", version: 1 }; } },
+    chatStore: {
+      async staffIdByEmail() { return "staff-1"; },
+      async assignmentOf() { return { assignedStaffId: asignadaA, assignedStaffName: "Ana" }; },
+      async destinoDe() { return { channel: "whatsapp", phone: "8095551234", webSessionId: null }; },
+      async releaseConversation() { hechos.soltada = true; return { ok: true }; },
+      async closeConversation() { hechos.cerrada = true; return { ok: true }; },
+    },
+    fetchImpl: async (url) => {
+      const u = String(url);
+      if (u.includes("/auth/v1/user")) return new Response(JSON.stringify({ id: "u1", email: "ana@dalfi.test" }), { status: 200 });
+      if (u.includes("erp_user_profiles")) return new Response(JSON.stringify([{ user_id: "u1", email: "ana@dalfi.test", role: "administradora", is_active: true, can_manage_reservations: true }]), { status: 200 });
+      if (u.includes("erp-chat-control")) {
+        hechos.puente += 1;
+        return puenteOk
+          ? new Response(JSON.stringify({ status: "OK" }), { status: 200 })
+          : new Response("boom", { status: 503 });
+      }
+      return new Response("{}", { status: 200 });
+    },
+    env: {
+      SUPABASE_URL: "https://x.supabase.co", SUPABASE_PUBLISHABLE_KEY: "k", SUPABASE_SERVICE_ROLE_KEY: "k",
+      ERP_WEBHOOK_SECRET: "secreto-de-prueba", CHATBOT_BRIDGE_URL: "https://puente.test",
+    },
+  });
+  return { app, hechos };
+}
+
+async function conAcciones(opciones, run) {
+  const { app, hechos } = servidorDeAcciones(opciones);
+  const server = app.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try { await run(`http://127.0.0.1:${server.address().port}`, hechos); }
+  finally { server.close(); await once(server, "close"); }
+}
+
+for (const accion of ["release", "close"]) {
+  test(`NADIE01/${accion} — el bot se reanuda ANTES de soltar la conversación`, async () => {
+    await conAcciones({}, async (base, hechos) => {
+      const r = await fetch(`${base}/api/chat/conversations/c1/${accion}`, { method: "POST", headers: AUTH });
+      assert.equal(r.status, 200);
+      assert.equal(hechos.puente, 1, "hay que avisar al motor: su pausa no vive en esta base");
+      assert.equal(accion === "release" ? hechos.soltada : hechos.cerrada, true);
+    });
+  });
+
+  test(`NADIE02/${accion} — si el puente no responde, NO se suelta`, async () => {
+    // Es preferible que la conversación siga siendo tuya, y puedas seguir contestando, a que
+    // quede en tierra de nadie con el motor callado.
+    await conAcciones({ puenteOk: false }, async (base, hechos) => {
+      const r = await fetch(`${base}/api/chat/conversations/c1/${accion}`, { method: "POST", headers: AUTH });
+      assert.equal(r.status, 502);
+      assert.match((await r.json()).error, /no la atendería nadie/);
+      assert.equal(hechos.soltada, false, "no puede quedar sin dueño con el bot en pausa");
+      assert.equal(hechos.cerrada, false);
+    });
+  });
+}
+
+test("NADIE03 — no se le reanuda el bot a una conversación que atiende otra persona", async () => {
+  await conAcciones({ asignadaA: "staff-9" }, async (base, hechos) => {
+    const r = await fetch(`${base}/api/chat/conversations/c1/release`, { method: "POST", headers: AUTH });
+    assert.equal(r.status, 409);
+    assert.equal(hechos.puente, 0, "comprobar de quién es va ANTES de tocar el motor");
+  });
+});

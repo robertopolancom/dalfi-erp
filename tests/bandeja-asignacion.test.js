@@ -178,3 +178,32 @@ test("ASG08 — el servidor dice si el bot está en pausa; el navegador no repit
     assert.match(codigo, /botPausado/, `${archivo} tiene que usar el booleano del servidor`);
   }
 });
+
+// LA REGLA: solo dos estados, nunca un tercero. O la atiende un asesor, o la atiende el bot.
+// Una conversación sin dueño y con el motor en pausa no es un estado válido: es un cliente
+// escribiéndole al vacío, y no produce ningún error en ninguna parte.
+test("ASG09 — soltar devuelve el turno al bot, no deja la conversación muda", async () => {
+  const consultas = [];
+  const pool = {
+    async query(sql, params) { consultas.push({ sql, params }); return { rowCount: 1, rows: [] }; },
+  };
+  await new NeonChatStore(pool).releaseConversation({ conversationId: "c1", staffId: "s1" });
+  assert.match(consultas[0].sql, /bot_state = null/,
+    "sin esto el motor sigue en pausa y la conversación no la atiende nadie");
+  assert.doesNotMatch(consultas[0].sql, /needs_human/,
+    "soltar es 'que la coja otro', no 'ya está resuelto': la petición de asesor se conserva");
+  assert.match(consultas[0].sql, /assigned_staff_id = \$2/, "solo puede soltar quien la tiene");
+});
+
+test("ASG10 — cerrar y devolver al bot limpian el espejo del motor", async () => {
+  // bot_state es un ESPEJO de STATES.ATENCION_HUMANA en el motor. Solo lo limpiaba la
+  // reanudación automática, así que al cerrar a mano la columna se quedaba diciendo "en pausa"
+  // en una conversación que el bot atendía con toda normalidad.
+  for (const metodo of ["closeConversation", "returnToBot"]) {
+    const consultas = [];
+    const pool = { async query(sql) { consultas.push(sql); return { rowCount: 1, rows: [] }; } };
+    await new NeonChatStore(pool)[metodo]({ conversationId: "c1", staffId: "s1" });
+    assert.match(consultas[0], /bot_state = null/, `${metodo} deja el espejo desfasado`);
+    assert.match(consultas[0], /needs_human = false/, `${metodo} da la atención por terminada`);
+  }
+});

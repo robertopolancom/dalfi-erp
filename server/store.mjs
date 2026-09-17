@@ -3133,11 +3133,16 @@ export class NeonChatStore {
   // Se devolvió la conversación al bot: deja de esperar a una persona y se suelta la
   // asignación. Es el único sitio donde needs_human vuelve a false, y a propósito: tiene que
   // ser una decisión de alguien, nunca un efecto secundario de haber contestado.
+  // bot_state = null no es opcional. Esta columna es un ESPEJO del estado del motor del puente:
+  // si el motor se reanuda y aquí sigue diciendo ATENCION_HUMANA, la bandeja enseña "bot en
+  // pausa" para siempre en una conversación que el bot está atendiendo con toda normalidad.
+  // Hasta ahora solo lo limpiaba la reanudación automática por inactividad, así que el espejo se
+  // quedaba desfasado en cuanto alguien cerraba una conversación a mano.
   async returnToBot({ conversationId }) {
     await this.pool.query(
       `update app.chat_conversations
           set needs_human = false, handoff_reason = null, handoff_requested_at = null,
-              assigned_staff_id = null, updated_at = now()
+              assigned_staff_id = null, bot_state = null, updated_at = now()
         where id = $1`,
       [conversationId],
     );
@@ -3197,10 +3202,20 @@ export class NeonChatStore {
 
   // Suelta la conversación. Solo quien la tiene puede soltarla: si no, cualquiera podría quitarle
   // de las manos una conversación a la compañera que la está atendiendo.
+  // Soltar una conversación TIENE que devolverle el turno al bot. Antes solo quitaba la
+  // asignación y dejaba bot_state en pausa: el resultado era una conversación que no atendía
+  // nadie -- ni el bot ni una persona -- y el cliente se quedaba escribiendo al vacío.
+  //
+  // Solo hay dos estados posibles y no puede haber un tercero: la atiende un asesor, o la
+  // atiende el bot.
+  //
+  // needs_human se conserva a propósito: soltar es "que la coja otro", no "ya está resuelto".
+  // El bot cubre mientras tanto y la conversación sigue arriba en Pendientes. Lo que sí la da
+  // por terminada es cerrar.
   async releaseConversation({ conversationId, staffId }) {
     const r = await this.pool.query(
       `update app.chat_conversations
-          set assigned_staff_id = null, updated_at = now()
+          set assigned_staff_id = null, bot_state = null, updated_at = now()
         where id = $1 and assigned_staff_id = $2`,
       [conversationId, staffId],
     );
@@ -3246,7 +3261,7 @@ export class NeonChatStore {
     const r = await this.pool.query(
       `update app.chat_conversations
           set needs_human = false, handoff_reason = null, handoff_requested_at = null,
-              assigned_staff_id = null, staff_last_read_at = now(), updated_at = now()
+              assigned_staff_id = null, bot_state = null, staff_last_read_at = now(), updated_at = now()
         where id = $1
           and (assigned_staff_id is null or assigned_staff_id = $2)`,
       [conversationId, staffId],

@@ -2783,16 +2783,43 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       const staffId = await agenteQueLlama(auth);
       if (!staffId) return res.status(403).json({ error: "Tu usuario no tiene ficha de personal activa." });
 
-      const r = await chatStore.releaseConversation({ conversationId: req.params.id, staffId });
-      // No se puede soltar lo que no se tiene. Se contesta 409 con el estado real para que la
-      // pantalla se corrija sola en vez de quedarse con un botón que no hace nada.
-      if (!r.ok) {
-        const actual = await chatStore.assignmentOf(req.params.id);
-        if (!actual) return res.status(404).json({ error: "Conversación no encontrada." });
+      // No se puede soltar lo que no se tiene. Se comprueba ANTES de tocar el puente para no
+      // reanudarle el bot a una conversación que está atendiendo otra persona.
+      const actual = await chatStore.assignmentOf(req.params.id);
+      if (!actual) return res.status(404).json({ error: "Conversación no encontrada." });
+      if (actual.assignedStaffId !== staffId) {
         return res.status(409).json({
           error: "Esta conversación no la tienes tú.",
           assignedStaffId: actual.assignedStaffId,
           assignedStaffName: actual.assignedStaffName,
+        });
+      }
+
+      // El bot PRIMERO, soltar después, y en ese orden a propósito.
+      //
+      // Soltar sin reanudar el bot deja una conversación que no atiende nadie: ni el bot (sigue
+      // en pausa en el motor) ni una persona (acaba de quedarse sin dueño). El cliente escribe
+      // y no le contesta absolutamente nada. Solo puede haber dos estados: atiende un asesor o
+      // atiende el bot.
+      //
+      // Si el puente no responde NO se suelta. Es preferible que la conversación siga siendo
+      // tuya -- y puedas seguir contestando -- a que quede en tierra de nadie.
+      const reanudado = await devolverConversacionAlBot(req.params.id, auth);
+      if (!reanudado.ok) {
+        return res.status(502).json({
+          error: `No se pudo reactivar el bot (${reanudado.motivo}), así que la conversación sigue siendo tuya. Si la soltáramos ahora, no la atendería nadie.`,
+        });
+      }
+
+      const r = await chatStore.releaseConversation({ conversationId: req.params.id, staffId });
+      if (!r.ok) {
+        // Alguien se adelantó entre la comprobación y la escritura. El bot ya está reanudado, que
+        // es el lado seguro: como mucho sobra un bot despierto, nunca falta quien atienda.
+        const ahora = await chatStore.assignmentOf(req.params.id);
+        return res.status(409).json({
+          error: "Esta conversación no la tienes tú.",
+          assignedStaffId: ahora?.assignedStaffId ?? null,
+          assignedStaffName: ahora?.assignedStaffName ?? null,
         });
       }
       res.json({ ok: true });
@@ -2812,8 +2839,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
 
       const actual = await chatStore.assignmentOf(req.params.id);
       if (!actual) return res.status(404).json({ error: "Conversación no encontrada." });
-      const r = await chatStore.closeConversation({ conversationId: req.params.id, staffId });
-      if (!r.ok) {
+      if (actual.assignedStaffId && actual.assignedStaffId !== staffId) {
         return res.status(409).json({
           error: `Esta conversación la está atendiendo ${actual.assignedStaffName || "otra persona"}.`,
           assignedStaffId: actual.assignedStaffId,
@@ -2821,11 +2847,29 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         });
       }
 
-      // El bot vive en el bridge y su pausa está allí: cerrar aquí sin avisarle dejaría al motor
-      // callado para siempre con esa clienta. Si el aviso falla, la conversación ya quedó cerrada
-      // en la bandeja y se dice, en vez de fingir que todo salió bien.
+      // El bot PRIMERO, igual que al soltar. Su pausa vive en el motor del puente, no aquí.
+      //
+      // Antes esto se hacía al revés: se cerraba y, si el puente fallaba, se devolvía un "aviso"
+      // y tan tranquilos. El resultado era exactamente la conversación que no atiende nadie --
+      // cerrada en la bandeja, muda en el motor. Ahora si el puente no responde no se cierra:
+      // sigue siendo tuya y puedes seguir contestando.
       const reanudado = await devolverConversacionAlBot(req.params.id, auth);
-      res.json({ ok: true, ...(reanudado.ok ? {} : { aviso: "Se cerró, pero no se pudo reactivar el bot: revisa el puente." }) });
+      if (!reanudado.ok) {
+        return res.status(502).json({
+          error: `No se pudo reactivar el bot (${reanudado.motivo}), así que la conversación sigue abierta. Si la cerráramos ahora, no la atendería nadie.`,
+        });
+      }
+
+      const r = await chatStore.closeConversation({ conversationId: req.params.id, staffId });
+      if (!r.ok) {
+        const ahora = await chatStore.assignmentOf(req.params.id);
+        return res.status(409).json({
+          error: `Esta conversación la está atendiendo ${ahora?.assignedStaffName || "otra persona"}.`,
+          assignedStaffId: ahora?.assignedStaffId ?? null,
+          assignedStaffName: ahora?.assignedStaffName ?? null,
+        });
+      }
+      res.json({ ok: true });
     } catch (error) { next(error); }
   });
 

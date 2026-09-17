@@ -99,6 +99,8 @@ input:focus,textarea:focus{outline:2px solid var(--salvia);outline-offset:0}
 .etiqueta.canal{background:var(--salvia-palida);color:var(--salvia-honda)}
 .etiqueta.urgente{background:var(--alerta);color:#fff;font-weight:600}
 .etiqueta.asignada{background:#fff;border:1px solid var(--linea)}
+/* El bot atendiendo es el estado NORMAL, no una alarma: gris discreto, no color. */
+.etiqueta.bot{background:var(--papel-hondo);color:var(--apagado)}
 .etiqueta.ventana{background:#F6E3DC;color:var(--alerta);font-weight:600}
 .etiqueta.sinleer{background:var(--salvia-honda);color:var(--papel);font-weight:700;margin-top:6px;display:inline-block}
 
