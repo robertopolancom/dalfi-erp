@@ -62,6 +62,14 @@ input:focus,textarea:focus{outline:2px solid var(--salvia);outline-offset:0}
 .primario{background:var(--salvia-honda);color:var(--papel);width:100%;margin-top:18px}
 .secundario{background:transparent;color:var(--salvia-honda);border:1px solid var(--linea)}
 .primario:disabled,.secundario:disabled{opacity:.45;cursor:default}
+/* Parece un enlace pero es un <button>, porque no navega a ninguna parte: dispara una peticion.
+   Mantiene los 44px de alto tactil aunque el texto sea pequeno. */
+.enlace{
+  display:block;width:100%;margin-top:12px;background:transparent;border:0;
+  color:var(--salvia-honda);font:inherit;font-size:.85rem;text-decoration:underline;
+  cursor:pointer;min-height:44px;
+}
+.enlace:disabled{opacity:.45;cursor:default;text-decoration:none}
 
 .aviso{margin:10px 0 0;font-size:.82rem;color:var(--apagado);min-height:1.1em;padding:0 16px}
 .aviso.alerta{color:var(--alerta);font-weight:600}

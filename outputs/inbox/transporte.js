@@ -132,5 +132,21 @@
     };
   }
 
-  global.DalfiTransporte = { crear: crearTransporte };
+  // Lo único que se pide SIN sesión, porque por definición quien lo usa no puede entrar. Va suelto
+  // y no dentro de crearTransporte: ahí todo pasa por obtenerToken, y aquí no hay token que pedir.
+  //
+  // El servidor contesta {ok:true} exista o no el correo (es a propósito: si no, esta ruta serviría
+  // para averiguar quién tiene cuenta), así que aquí no hay nada que interpretar. El único caso que
+  // sí hay que distinguir es el 429 del limitador, que sí es culpa de quien insiste.
+  async function restablecerClave(correo) {
+    var res = await fetch(API + "/api/password-reset/request", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: correo }),
+    });
+    if (res.status === 429) throw new Error("Demasiados intentos. Espera unos minutos.");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+  }
+
+  global.DalfiTransporte = { crear: crearTransporte, restablecerClave: restablecerClave };
 })(window);

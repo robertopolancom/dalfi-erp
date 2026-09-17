@@ -25,6 +25,9 @@
       <label for="clave">Contraseña</label>
       <input id="clave" type="password" autocomplete="current-password" required />
       <button class="primario" type="submit" id="boton-entrar">Entrar</button>
+      <!-- type="button" es obligatorio: dentro de un <form> un boton sin tipo envia el formulario,
+           o sea que intentaria iniciar sesion en vez de pedir el correo de recuperacion. -->
+      <button class="enlace" type="button" id="boton-olvide">Olvide mi contrase&ntilde;a</button>
       <p class="aviso" id="aviso-acceso" role="status"></p>
     </form>
   </div>

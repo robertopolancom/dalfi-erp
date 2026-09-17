@@ -68,6 +68,31 @@
     }
   });
 
+  // Olvido de contraseña. El correo que llega lleva a ssc.dalfistudio.com (el ERP) porque el enlace
+  // de recuperación de Supabase apunta allí y allí está la pantalla que ya sabe recibirlo. Se dice
+  // en el aviso: si no, la persona abre el correo en el móvil, aterriza en el ERP y cree que se
+  // equivocó de aplicación.
+  $("boton-olvide").addEventListener("click", async function () {
+    var correo = $("correo").value.trim();
+    if (!correo || correo.indexOf("@") < 0) {
+      $("correo").focus();
+      return aviso("aviso-acceso", "Escribe primero tu correo y vuelve a pulsar.", true);
+    }
+    var boton = $("boton-olvide");
+    boton.disabled = true;
+    aviso("aviso-acceso", "Enviando…");
+    try {
+      await window.DalfiTransporte.restablecerClave(correo);
+      // Redacción deliberadamente en condicional ("si esa cuenta existe"): el servidor contesta
+      // igual en ambos casos y prometer un correo que no va a llegar es peor que no prometerlo.
+      aviso("aviso-acceso", "Si esa cuenta existe, te llega un correo con el enlace. Se abre en el ERP; cuando cambies la contraseña, vuelve aquí.");
+    } catch (error) {
+      aviso("aviso-acceso", error.message, true);
+    } finally {
+      boton.disabled = false;
+    }
+  });
+
   async function cerrarSesion() {
     pararTodo();
     try { await iniciarSupabase().auth.signOut(); } catch (e) { /* da igual: igual salimos */ }

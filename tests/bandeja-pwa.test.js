@@ -118,3 +118,26 @@ test("PWA11 — la cabecera de seguridad no abre la API a cualquiera", async () 
   assert.match(headers, /\/sw\.js\n\s+Cache-Control: no-cache/,
     "un service worker cacheado deja la app vieja instalada para siempre");
 });
+
+test("PWA12 — se puede recuperar la contraseña desde la propia pantalla de acceso", async () => {
+  // Sin esto, quien olvida la contraseña tiene que pedirle a otra persona que le abra el ERP en
+  // una computadora. La bandeja es lo único que van a tener instalado.
+  const html = await leer("index.html");
+  assert.match(html, /id="boton-olvide"/);
+  assert.match(html, /id="boton-olvide"[^>]*type="button"|type="button"[^>]*id="boton-olvide"/,
+    "dentro de un <form>, un botón sin type envía el formulario");
+
+  const t = await leer("transporte.js");
+  assert.match(t, /\/api\/password-reset\/request/);
+  assert.doesNotMatch(
+    t.slice(t.indexOf("function restablecerClave")),
+    /obtenerToken/,
+    "quien pide esto no tiene sesión: pedirle token sería imposible de cumplir",
+  );
+  assert.match(t, /res\.status === 429/, "el limitador sí es un caso que la persona puede corregir");
+
+  const app = await leer("app.js");
+  assert.match(app, /Si esa cuenta existe/,
+    "el servidor responde igual exista o no el correo; prometer un correo que no llega es peor");
+  assert.match(app, /vuelve aquí/, "el enlace abre el ERP: hay que decirlo o creerán que se equivocaron de app");
+});
