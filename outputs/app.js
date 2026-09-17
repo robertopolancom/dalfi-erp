@@ -11900,13 +11900,15 @@ function pintarEstadoDeAtencion(hilo) {
   // La ventana de 24 horas de WhatsApp. El servidor la rechaza con 422, pero decirlo ANTES de
   // escribir es la diferencia entre avisar y hacer perder el tiempo.
   const fueraDeVentana = hilo.within24h === false;
-  const puedeResponder = mia && !fueraDeVentana;
+  // Cualquier asesor puede continuar, la tenga quien la tenga: la asignacion es informacion, no
+  // un candado. Lo unico que bloquea de verdad es la ventana de 24 h, que no es regla nuestra.
+  const puedeResponder = !fueraDeVentana;
   enviar.disabled = !puedeResponder;
   if (texto) texto.disabled = !puedeResponder;
 
   if (aviso && !aviso.textContent.startsWith("Enviado")) {
     if (deOtra) {
-      aviso.textContent = `La está atendiendo ${hilo.assignedStaffName || "otra persona"}. Si hace falta, que la suelte.`;
+      aviso.textContent = `La está atendiendo ${hilo.assignedStaffName || "otro asesor"}. Puedes continuar tú, pero que no le lleguen dos respuestas distintas.`;
       aviso.className = "bandeja-aviso bandeja-aviso-alerta";
     } else if (deNadie && hilo.botPausado) {
       // El peor de los dos mundos: el bot en pausa Y sin nadie asignado. A esa persona no le

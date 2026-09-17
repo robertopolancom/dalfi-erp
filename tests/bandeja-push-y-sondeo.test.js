@@ -199,13 +199,19 @@ test("ERP05 — dos botones no pueden llamarse igual, y menos estos dos", async 
   assert.match(etiqueta("bandeja-al-bot"), /Forzar/);
 });
 
-test("ERP02 — no se puede escribir en una conversación que no es mía", async () => {
+test("ERP02 — cualquier asesor puede continuar; lo único que bloquea son las 24 h", async () => {
+  // La asignación es información, no un candado: si quien empezó la conversación no está, el
+  // cliente no tiene por qué esperar a que vuelva. No pisarse va por procedimiento interno.
+  //
+  // La ventana de 24 h sí bloquea, y no por decisión nuestra: fuera de ella WhatsApp descarta el
+  // mensaje de forma asíncrona (131047) y el cliente no recibe nada, así que dejar escribir sería
+  // dejar creer que se contestó.
   const app = await leerApp();
-  assert.match(app, /const mia = Boolean\(hilo\.assignedStaffId\) && hilo\.assignedStaffId === bandejaMiStaffId/);
-  assert.match(app, /const puedeResponder = mia && !fueraDeVentana/);
+  assert.match(app, /const puedeResponder = !fueraDeVentana/);
   assert.match(app, /enviar\.disabled = !puedeResponder/);
-  assert.match(app, /texto\.disabled = !puedeResponder/,
-    "si la caja queda escribible, alguien redacta un párrafo para que se lo rechacen al enviar");
+  assert.match(app, /texto\.disabled = !puedeResponder/);
+  // Y que otra persona esté encima se avisa, no se prohíbe.
+  assert.match(app, /Puedes continuar tú, pero que no le lleguen dos respuestas distintas/);
 });
 
 test("ERP03 — fuera de la ventana de 24 h se dice el motivo, no solo se bloquea", async () => {

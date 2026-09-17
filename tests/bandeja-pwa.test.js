@@ -71,14 +71,18 @@ test("PWA06 — el manifest permite instalar de verdad", async () => {
   }
 });
 
-test("PWA07 — responder está bloqueado salvo que la conversación sea mía y dentro de ventana", async () => {
+test("PWA07 — cualquier asesor puede continuar; lo único que bloquea son las 24 h", async () => {
   const app = await leer("app.js");
-  assert.match(app, /var puede = mia && !fueraDeVentana/);
+  assert.match(app, /var puede = !fueraDeVentana/);
   assert.match(app, /\$\("texto"\)\.disabled = !puede/);
   assert.match(app, /\$\("boton-enviar"\)\.disabled = !puede/);
-  // Y el motivo tiene que estar a la vista, no solo el bloqueo.
-  assert.match(app, /Tómala para poder responder/);
+  // El único bloqueo que queda tiene que explicarse: no es una regla nuestra, es que WhatsApp
+  // descarta el mensaje y el cliente no recibiría nada.
   assert.match(app, /Fuera de la ventana de 24 h/);
+  // Que otra persona la tenga se avisa, pero no impide seguir.
+  assert.match(app, /Puedes continuar tú, pero que no le lleguen dos respuestas distintas/);
+  const soloCodigo = app.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+  assert.doesNotMatch(soloCodigo, /Tómala para poder responder/, "ya no hace falta tomarla");
 });
 
 test("PWA08 — todo lo que escribe otra persona se pinta como texto, nunca como HTML", async () => {

@@ -275,14 +275,17 @@
     $("boton-soltar").classList.toggle("oculta", !mia);
     $("boton-cerrar").classList.toggle("oculta", !mia);
 
-    // Solo responde quien la tiene. El servidor lo rechaza igualmente (409 sin tomar, 403 si es de
-    // otra), pero bloquear aquí evita escribir un párrafo entero para que lo rechacen al enviar.
-    var puede = mia && !fueraDeVentana;
+    // Cualquier asesor puede continuar la conversación, la tenga quien la tenga. Si quien la
+    // empezó no está, el cliente no tiene por qué esperar a que vuelva; no pisarse va por
+    // procedimiento interno, que admite matices que un candado no admite.
+    //
+    // Lo único que sigue bloqueando es la ventana de 24 h, y eso no es una regla nuestra: es que
+    // WhatsApp descarta el mensaje y el cliente no recibiría nada.
+    var puede = !fueraDeVentana;
     $("texto").disabled = !puede;
     $("boton-enviar").disabled = !puede;
-    $("texto").placeholder = deOtra ? "La está atendiendo otra persona"
-      : !hilo.assignedStaffId ? "Tómala para poder responder"
-      : fueraDeVentana ? "Fuera de la ventana de 24 h"
+    $("texto").placeholder = fueraDeVentana ? "Fuera de la ventana de 24 h"
+      : deOtra ? "Continuar (la atiende " + (hilo.assignedStaffName || "otro asesor") + ")"
       : "Escribe tu respuesta…";
 
     // Orden a propósito: primero lo que deja a alguien sin respuesta, después lo que te impide
@@ -292,7 +295,9 @@
       // antes de tocar nada. Se queda como red de seguridad -- para conversaciones que quedaron
       // así antes del arreglo, y para el día que el puente falle de una forma nueva.
       aviso("aviso-hilo", "Nadie está atendiendo esto: el bot está en pausa y no la tiene ningún asesor. Tómala, o devuélvela al bot.", true);
-    } else if (fueraDeVentana && mia) {
+    } else if (deOtra) {
+      aviso("aviso-hilo", "La está atendiendo " + (hilo.assignedStaffName || "otro asesor") + ". Puedes continuar tú, pero que no le lleguen dos respuestas distintas.", true);
+    } else if (fueraDeVentana) {
       aviso("aviso-hilo", "Pasaron más de 24 horas desde su último mensaje: WhatsApp no deja escribirle texto libre hasta que vuelva a escribir.", true);
     } else {
       aviso("aviso-hilo", "");

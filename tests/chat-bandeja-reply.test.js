@@ -11,10 +11,13 @@ import { createApp } from "../server/app.mjs";
 
 const PERMISOS = { can_manage_reservations: true, can_manage_configuration: true };
 
-// `asignadaA` modela quién tiene la conversación tomada. Desde 2026-09-16 responder exige
-// tenerla: hasta entonces cualquiera podía contestar y la asignación se escribía DESPUÉS del
-// envío, así que dos personas podían escribirle a la misma clienta y el sistema se enteraba
-// cuando ya había dos mensajes fuera.
+// `asignadaA` modela quién tiene la conversación tomada. La asignación es INFORMACIÓN, no un
+// candado: cualquier asesor puede continuar cualquier conversación, porque si quien la empezó no
+// está, el cliente no tiene por qué esperar a que vuelva. No pisarse va por procedimiento interno.
+//
+// Hubo una versión intermedia (2026-09-16) que sí bloqueaba. Duró un día. Lo que se conserva de
+// ella es que contestar una conversación que no tiene nadie te la asigna: la pantalla tiene que
+// decir quién está encima, o el resto del equipo no sabe si hace falta que entren.
 function chatStoreFalso({ asignadaA = "staff-1", nombreAsignada = "Ana", ultimoEntranteAt = new Date().toISOString() } = {}) {
   const guardados = [];
   const devueltas = [];
@@ -23,6 +26,8 @@ function chatStoreFalso({ asignadaA = "staff-1", nombreAsignada = "Ana", ultimoE
     guardados,
     devueltas,
     pausadas,
+    tomadaPor: null,
+    async claimConversation({ staffId }) { this.tomadaPor = staffId; return { ok: true, assignedStaffId: staffId }; },
     async assignmentOf(id) {
       if (!["conv-1", "conv-web"].includes(id)) return null;
       return {
@@ -232,30 +237,37 @@ test("en WhatsApp un puente caído SIGUE significando que no salió", async () =
 // Lo que protegen estas pruebas no es una pantalla: es que dos personas no le escriban a la misma
 // clienta a la vez. Hasta ahora el sistema lo permitía y solo se notaba después, leyendo el hilo.
 
-test("responder sin haberla tomado se rechaza con 409 y no manda nada", async () => {
+test("responder una conversación que no tiene nadie funciona, y te la asigna", async () => {
+  // Hubo una versión que exigía tomarla antes (409 needsClaim). Se quitó: la asignación es
+  // información, no un candado. Pero quien contesta pasa a ser quien la atiende, y eso no es
+  // burocracia -- si la pantalla no dijera quién está encima, el resto del equipo no sabría si
+  // hace falta que entren.
   const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
   await conServidor(ok, async (base, chatStore, llamadas) => {
     const r = await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
       method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
     });
-    assert.equal(r.status, 409);
-    const cuerpo = await r.json();
-    assert.equal(cuerpo.needsClaim, true, "la pantalla necesita saber que el arreglo es tomarla");
-    assert.equal(llamadas.length, 0, "no puede salir nada al puente");
-    assert.equal(chatStore.guardados.length, 0);
+    assert.equal(r.status, 200);
+    assert.equal(llamadas.length, 1, "el mensaje tiene que salir al puente");
+    assert.equal(chatStore.tomadaPor, "staff-1", "quien contesta queda como quien la atiende");
   }, { asignadaA: null });
 });
 
-test("si la tiene otra persona, responder da 403 y dice quién la tiene", async () => {
+test("si la tiene otra persona se puede continuar igual, pero se dice quién más está encima", async () => {
+  // Cualquier asesor puede continuar una conversación: si quien la empezó se fue, el cliente no
+  // tiene por qué esperar a que vuelva. No pisarse va por procedimiento interno.
+  //
+  // Lo que no puede pasar es que se conteste a la vez SIN SABERLO: por eso vuelve el nombre de
+  // quien la tiene, para que sea una decisión y no un descuido.
   const ok = new Response(JSON.stringify({ status: "OK" }), { status: 200 });
   await conServidor(ok, async (base, chatStore, llamadas) => {
     const r = await fetch(`${base}/api/chat/conversations/conv-1/reply`, {
       method: "POST", headers: AUTH, body: JSON.stringify({ body: "Hola" }),
     });
-    assert.equal(r.status, 403);
-    const cuerpo = await r.json();
-    assert.match(cuerpo.error, /Milady/, "sin el nombre, quien atiende no sabe con quién hablar");
-    assert.equal(llamadas.length, 0);
+    assert.equal(r.status, 200);
+    assert.equal((await r.json()).tambienAtiende, "Milady");
+    assert.equal(llamadas.length, 1, "el mensaje sale igual: nadie se queda esperando");
+    assert.notEqual(chatStore.tomadaPor, "staff-1", "no se le quita la conversación a quien la tiene");
   }, { asignadaA: "staff-2", nombreAsignada: "Milady" });
 });
 

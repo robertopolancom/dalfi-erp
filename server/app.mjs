@@ -2898,25 +2898,29 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       const esWeb = destino.channel === "web";
       if (!esWeb && !destino.phone) return res.status(404).json({ error: "Conversación no encontrada." });
 
-      // Solo contesta quien la tiene tomada. Hasta ahora cualquiera podía responder y la
-      // asignación se escribía DESPUÉS del envío, así que dos personas podían escribirle a la
-      // misma clienta sin que el sistema lo impidiera. Tomarla primero es lo que cierra esa
-      // carrera; esto es la otra mitad.
+      // La asignación es INFORMACIÓN, no un candado. Cualquier asesor puede continuar una
+      // conversación, la tenga quien la tenga: si quien la empezó se fue a almorzar, a comer o a
+      // su casa, el cliente no tiene por qué esperar a que vuelva. El control de no pisarse va
+      // por procedimiento interno, que es donde puede tener matices que un candado no tiene.
+      //
+      // Hubo una versión que sí bloqueaba (409 "tómala primero", 403 "la tiene otra"). Se quitó a
+      // propósito. Lo que se pierde es la garantía de que dos personas no contesten a la vez; lo
+      // que se gana es que nadie se quede esperando por culpa del software.
+      //
+      // Lo que SÍ se mantiene: si no la tiene nadie, quien contesta pasa a ser quien la atiende.
+      // No es un candado, es no mentir -- alguien está atendiendo esto y la pantalla debe decir
+      // quién, o el resto del equipo no sabe si hace falta que entren.
       const asignacion = await chatStore.assignmentOf(req.params.id);
       const yo = await chatStore.staffIdByEmail(auth.identity?.email);
+      if (!yo) return res.status(403).json({ error: "Tu usuario no tiene ficha de personal." });
       if (!asignacion?.assignedStaffId) {
-        return res.status(409).json({
-          error: "Toma la conversación antes de responder.",
-          needsClaim: true,
-        });
+        await chatStore.claimConversation({ conversationId: req.params.id, staffId: yo }).catch(() => {});
       }
-      if (asignacion.assignedStaffId !== yo) {
-        return res.status(403).json({
-          error: `Esta conversación la está atendiendo ${asignacion.assignedStaffName || "otra persona"}.`,
-          assignedStaffId: asignacion.assignedStaffId,
-          assignedStaffName: asignacion.assignedStaffName,
-        });
-      }
+      // Si la tiene otra persona no se impide nada, pero se devuelve para poder decirlo en
+      // pantalla: contestar a la vez que otro asesor tiene que ser una decisión, no un descuido.
+      const tambienAtiende = asignacion?.assignedStaffId && asignacion.assignedStaffId !== yo
+        ? (asignacion.assignedStaffName || "otro asesor")
+        : null;
 
       // La ventana de 24 horas de WhatsApp. Se comprueba ANTES de enviar porque el rechazo de
       // Meta llega tarde y de forma asíncrona (131047): quien atiende vería "enviado" y la
@@ -2935,7 +2939,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!bridgeSecret) return res.status(503).json({ error: "El puente de WhatsApp no está configurado." });
       const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
 
-      const staffId = await chatStore.staffIdByEmail(auth.identity?.email);
+      const staffId = yo;
 
       let resultado = null;
       let fallo = null;
@@ -2989,6 +2993,9 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         return res.json({
           ok: true,
           viaPlantilla: Boolean(resultado?.viaPlantilla),
+          // Se avisa DESPUÉS de enviar, no antes: no se impide contestar a la vez que otro
+          // asesor, pero tampoco se oculta. Que sea una decisión y no un descuido.
+          ...(tambienAtiende ? { tambienAtiende } : {}),
           ...(botSinPausar
             ? { aviso: "El mensaje llegó, pero no se pudo pausar el bot: puede contestar por encima de ti." }
             : {}),
