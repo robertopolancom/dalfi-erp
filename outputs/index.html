@@ -651,7 +651,14 @@
             <form class="bandeja-responder" id="bandeja-form">
               <textarea id="bandeja-texto" rows="2" maxlength="4000" placeholder="Escribe tu respuesta..." required></textarea>
               <div class="bandeja-acciones">
+                <!-- Tomar / Soltar / Cerrar. La asignación es POR PERSONA, no por dispositivo:
+                     quien la tomó desde el móvil puede seguir contestando desde aquí y al revés.
+                     Sin tomarla, el servidor rechaza la respuesta -- es lo que impide que dos
+                     personas le escriban a la misma clienta a la vez. -->
+                <button class="primary" id="bandeja-tomar" type="button">Tomar</button>
                 <button class="primary" id="bandeja-enviar" type="submit">Enviar</button>
+                <button class="ghost" id="bandeja-soltar" type="button" title="Dejarla libre para que la tome otra persona">Soltar</button>
+                <button class="ghost" id="bandeja-cerrar-conv" type="button" title="Se acabó la atención: suelta, quita el aviso y devuelve al bot">Cerrar y devolver al bot</button>
                 <button class="ghost" id="bandeja-al-bot" type="button" title="El bot vuelve a atender esta conversacion">Devolver al bot</button>
               </div>
               <p class="bandeja-aviso" id="bandeja-envio"></p>

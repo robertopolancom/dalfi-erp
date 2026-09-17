@@ -11730,6 +11730,9 @@ function engancharBandeja() {
   byId("bandeja-search")?.addEventListener("input", () => renderBandeja());
   byId("bandeja-form")?.addEventListener("submit", enviarRespuestaBandeja);
   byId("bandeja-al-bot")?.addEventListener("click", devolverConversacionAlBot);
+  byId("bandeja-tomar")?.addEventListener("click", () => accionDeBandeja("claim"));
+  byId("bandeja-soltar")?.addEventListener("click", () => accionDeBandeja("release"));
+  byId("bandeja-cerrar-conv")?.addEventListener("click", () => accionDeBandeja("close"));
   byId("bandeja-close")?.addEventListener("click", () => {
     byId("bandeja-thread-panel")?.classList.add("hidden");
     bandejaConversacionAbierta = null;
@@ -11769,6 +11772,7 @@ async function renderBandeja() {
         <td>
           <strong>${escapeHtml(c.name)}</strong>
           ${c.channel === "web" ? '<small class="muted" title="Está escribiendo desde la página web ahora mismo"> · 💬 web</small>' : ""}
+          ${c.channel !== "web" && c.within24h === false ? '<small class="bandeja-aviso-alerta" title="Pasaron más de 24 horas desde su último mensaje: WhatsApp no deja escribirle texto libre"> · ⏳ fuera de 24 h</small>' : ""}
           ${c.isClient ? "" : '<small class="muted"> · sin ficha</small>'}
           ${c.unread ? `<span class="badge">${c.unread}</span>` : ""}
         </td>
@@ -11813,6 +11817,7 @@ async function abrirConversacion(conversationId) {
         ? "El bot ya esta atendiendo esta conversacion"
         : "El bot vuelve a atender esta conversacion";
     }
+    pintarEstadoDeAtencion(hilo);
     contenedor.innerHTML = hilo.messages
       .map((m) => {
         const quien = m.senderType === "cliente" ? hilo.name
@@ -11860,6 +11865,95 @@ async function abrirConversacion(conversationId) {
   } catch (error) {
     console.error("[bandeja] no se pudo abrir la conversación:", error);
     byId("bandeja-message").textContent = error.message;
+  }
+}
+
+// Quién soy yo como agente. El servidor decide de verdad (resuelve el correo del bearer contra
+// app.staff); esto es solo para poder pintar "la tienes tú" sin pedirle nada al servidor.
+let bandejaMiStaffId = null;
+
+// Pinta si la conversación es mía, de otra persona o de nadie, y habilita en consecuencia.
+//
+// Responder sin tenerla tomada lo rechaza el servidor con 409, y si la tiene otra con 403. Esto
+// no sustituye esa comprobación --la de verdad está en el servidor-- pero evita que alguien
+// escriba un párrafo entero para que se lo rechacen al pulsar Enviar.
+function pintarEstadoDeAtencion(hilo) {
+  const tomar = byId("bandeja-tomar");
+  const soltar = byId("bandeja-soltar");
+  const cerrar = byId("bandeja-cerrar-conv");
+  const enviar = byId("bandeja-enviar");
+  const texto = byId("bandeja-texto");
+  const aviso = byId("bandeja-envio");
+  if (!tomar || !enviar) return;
+
+  bandejaMiStaffId = hilo.miStaffId || bandejaMiStaffId;
+  const deNadie = !hilo.assignedStaffId;
+  const mia = Boolean(hilo.assignedStaffId) && hilo.assignedStaffId === bandejaMiStaffId;
+  const deOtra = Boolean(hilo.assignedStaffId) && !mia;
+
+  tomar.classList.toggle("hidden", !deNadie);
+  soltar.classList.toggle("hidden", !mia);
+  cerrar.classList.toggle("hidden", !mia);
+
+  // La ventana de 24 horas de WhatsApp. El servidor la rechaza con 422, pero decirlo ANTES de
+  // escribir es la diferencia entre avisar y hacer perder el tiempo.
+  const fueraDeVentana = hilo.within24h === false;
+  const puedeResponder = mia && !fueraDeVentana;
+  enviar.disabled = !puedeResponder;
+  if (texto) texto.disabled = !puedeResponder;
+
+  if (aviso && !aviso.textContent.startsWith("Enviado")) {
+    if (deOtra) {
+      aviso.textContent = `La está atendiendo ${hilo.assignedStaffName || "otra persona"}. Si hace falta, que la suelte.`;
+      aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+    } else if (deNadie) {
+      aviso.textContent = "Tómala para poder responder. Así nadie más le escribe a la vez.";
+      aviso.className = "bandeja-aviso";
+    } else if (fueraDeVentana) {
+      aviso.textContent = "Pasaron más de 24 horas desde su último mensaje: WhatsApp no deja escribirle texto libre hasta que vuelva a escribir.";
+      aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+    } else {
+      aviso.textContent = "";
+      aviso.className = "bandeja-aviso";
+    }
+  }
+}
+
+// Tomar, soltar y cerrar. Los tres refrescan el hilo con lo que diga el servidor en vez de
+// suponer el resultado: si otra persona ganó la carrera, la pantalla tiene que enterarse.
+async function accionDeBandeja(accion) {
+  if (!bandejaConversacionAbierta) return;
+  const aviso = byId("bandeja-envio");
+  try {
+    const response = await fetch(functionEndpoint(`chat/conversations/${bandejaConversacionAbierta}/${accion}`), {
+      method: "POST", headers: bookingAuthHeaders(),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (aviso) {
+        aviso.textContent = data.error || "No se pudo completar la acción.";
+        aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+      }
+      // Aun así se recarga: un 409 significa que el estado real es otro y hay que enseñarlo.
+      await abrirConversacion(bandejaConversacionAbierta);
+      return;
+    }
+    if (aviso && data.aviso) {
+      aviso.textContent = data.aviso;
+      aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+    }
+    if (accion === "close") {
+      byId("bandeja-thread-panel")?.classList.add("hidden");
+      bandejaConversacionAbierta = null;
+    } else {
+      await abrirConversacion(bandejaConversacionAbierta);
+    }
+    renderBandeja();
+  } catch (error) {
+    if (aviso) {
+      aviso.textContent = error.message;
+      aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+    }
   }
 }
 
