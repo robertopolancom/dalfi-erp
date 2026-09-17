@@ -55,9 +55,33 @@ jobs:
           node --check outputs/inbox/sw.js
           node --check outputs/inbox/transporte.js
 
+      # Se publica en dos pasos en vez de con `wrangler deploy`, y no es un capricho.
+      #
+      # `deploy` reconcilia ADEMAS los disparadores: el dominio propio de wrangler.jsonc. Eso
+      # necesita permisos de ZONA sobre dalfistudio.com (Workers Routes), y el token del CI no
+      # los tiene. El resultado era lo peor de los dos mundos: subia el codigo y despues moria
+      # con "Authentication error [code: 10000]", dejando el workflow siempre en rojo. Un
+      # workflow siempre rojo es lo mismo que no tener workflow, porque nadie lo mira.
+      #
+      # `versions upload` + `versions deploy` publican el codigo y NO tocan los disparadores.
+      # inbox.dalfistudio.com ya esta enganchado al Worker y no cambia nunca, asi que no hay nada
+      # que reconciliar en cada push. El token del CI se queda con lo minimo para publicar, que
+      # es como tiene que ser.
+      #
+      # Lo que esto implica: si algun dia cambia `routes` en wrangler.jsonc, el CI NO lo aplicara.
+      # Ese cambio se hace a mano una vez, con una credencial que si tenga permisos de zona.
       - name: Deploy Worker
         working-directory: outputs/inbox
-        run: npx --yes wrangler@${WRANGLER_VERSION} deploy
+        run: |
+          set -euo pipefail
+          # `versions deploy` sin argumentos abre un menu interactivo y en CI muere con "You must
+          # select at least 1 version". Hay que pasarle el id de LO QUE SE ACABA DE SUBIR, que es
+          # ademas lo correcto: asi no se promociona por accidente una version de otra rama.
+          salida="$(npx --yes wrangler@${WRANGLER_VERSION} versions upload 2>&1)"
+          printf '%s\n' "$salida"
+          version="$(printf '%s' "$salida" | grep -oE 'Worker Version ID: [0-9a-f-]{36}' | head -1 | awk '{print $NF}')"
+          test -n "$version" || { echo "No se pudo leer el id de la version subida"; exit 1; }
+          npx --yes wrangler@${WRANGLER_VERSION} versions deploy "$version" --yes
 
       # Comprobar que lo desplegado es lo que se acaba de subir, y no la versión anterior. El
       # "Success" de wrangler ya ha mentido antes: dice "1 file uploaded" aunque no cambie nada.
