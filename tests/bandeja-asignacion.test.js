@@ -136,3 +136,27 @@ test("ASG06 — el agente se identifica por correo, sin exigir que sea manicuris
     "exigir 'active' obliga a poner a la venta en ReservApp a quien solo atiende WhatsApp");
   assert.match(consultas[0].sql, /lower\(email\) = lower\(\$1\)/, "el correo no distingue mayúsculas");
 });
+
+// El mismo error, en el sitio donde no se nota: a quién se avisa.
+//
+// Pasó de verdad el 2026-09-16, unas horas después de ASG06. staffIdByEmail ya no exigía
+// status='active', así que quien tiene la ficha inactiva (todo el que atiende y no es manicurista
+// reservable) podía tomar conversaciones y responder con normalidad... y no recibía NINGUNA
+// notificación de una conversación sin tomar, que es la única que hace falta de verdad. El aviso
+// no fallaba: simplemente no tenía a quién mandarlo, y eso no produce ni un error en los logs.
+test("ASG07 — el aviso llega a quien tiene suscripción, sea o no manicurista reservable", async () => {
+  const consultas = [];
+  const pool = {
+    async query(sql, params) {
+      consultas.push({ sql, params });
+      return { rows: [{ id: "sub-1", endpoint: "https://fcm.test/x", p256dh: "p", auth: "a" }] };
+    },
+  };
+  const destinos = await new NeonChatStore(pool).pushTargetsForConversation("conv-1");
+  assert.deepEqual(destinos, [{ id: "sub-1", endpoint: "https://fcm.test/x", keys: { p256dh: "p", auth: "a" } }]);
+  assert.doesNotMatch(consultas[0].sql, /status\s*=\s*'active'/,
+    "la ficha inactiva es lo normal en quien atiende desde la oficina: filtrar por eso lo deja sin avisos");
+  // Y la regla que sí importa tiene que seguir en pie: si ya la atiende alguien, solo a esa
+  // persona. Interrumpir a todo el equipo por algo ya atendido es cómo se deja de mirar los avisos.
+  assert.match(consultas[0].sql, /assigned_staff_id is null or ps\.user_id = c\.assigned_staff_id/);
+});

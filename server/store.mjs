@@ -3277,16 +3277,23 @@ export class NeonChatStore {
   //
   // Si la tiene alguien asignada, solo a esa persona: interrumpir a todo el equipo por una
   // conversación que ya está atendida es la forma más rápida de que dejen de mirar los avisos.
-  // Si no la tiene nadie, a todo el personal activo con suscripción -- que es justo el caso en el
-  // que alguien tiene que enterarse.
+  // Si no la tiene nadie, a todo el que tenga suscripción -- que es justo el caso en el que
+  // alguien tiene que enterarse.
+  //
+  // NO se filtra por app.staff.status, y esto ya falló una vez por el mismo motivo que
+  // staffIdByEmail (ver la nota de ahí): en app.staff, "active" significa "manicurista reservable
+  // en ReservApp", no "trabaja aquí". Quien atiende la bandeja desde la oficina tiene la ficha
+  // inactiva a propósito para no salir en el catálogo, y con el filtro puesto no recibía NINGÚN
+  // aviso de una conversación sin tomar -- que es el único aviso que de verdad hace falta.
+  //
+  // El permiso ya se comprobó al crear la suscripción (canManageReservations + ficha de personal).
+  // Tener una fila aquí ES el consentimiento; no hace falta volver a validar nada.
   async pushTargetsForConversation(conversationId) {
     const r = await this.pool.query(
       `select ps.id, ps.endpoint, ps.p256dh, ps.auth
          from app.chat_conversations c
-         join app.staff st
-           on (c.assigned_staff_id is not null and st.id = c.assigned_staff_id)
-           or (c.assigned_staff_id is null and st.status = 'active')
-         join app.staff_push_subscriptions ps on ps.user_id = st.id
+         join app.staff_push_subscriptions ps
+           on c.assigned_staff_id is null or ps.user_id = c.assigned_staff_id
         where c.id = $1`,
       [conversationId],
     );
