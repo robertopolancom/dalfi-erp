@@ -1,0 +1,6 @@
+# Lo que NO se publica. `assets.directory` es "." (toda la carpeta), así que sin esto se subirían
+# como archivos servibles la propia configuración del Worker y los restos temporales de wrangler.
+# No hay secretos en ellos, pero publicar lo que no es parte de la app solo da superficie.
+wrangler.jsonc
+.wrangler
+.assetsignore

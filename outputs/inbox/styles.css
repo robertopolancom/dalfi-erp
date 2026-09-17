@@ -1,0 +1,129 @@
+/* Bandeja móvil. Diseñada para una mano, de pie, en un salón con las manos ocupadas:
+   objetivos táctiles grandes, una columna, nada que requiera precisión.
+   Misma paleta que el resto de Dalfi (salvia y papel) para que no parezca otra empresa. */
+:root{
+  color-scheme: light;
+  --papel:#FAF6EE;
+  --papel-hondo:#F1EEE5;
+  --tinta:#211F1B;
+  --apagado:#726C60;
+  --salvia:#7C8271;
+  --salvia-honda:#4B5040;
+  --salvia-palida:#DDE0D2;
+  --linea:#D8D2C0;
+  --alerta:#A5583F;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--papel);color:var(--tinta);
+  -webkit-font-smoothing:antialiased;
+  /* En móvil con la barra del navegador, 100vh se pasa: dvh respeta lo que se ve de verdad. */
+  min-height:100dvh;
+}
+.oculta{display:none !important}
+
+.pantalla{display:flex;flex-direction:column;min-height:100dvh}
+
+/* --- barra superior --- */
+.barra{
+  display:flex;align-items:center;gap:12px;
+  padding:calc(env(safe-area-inset-top) + 12px) 16px 12px;
+  background:var(--salvia-honda);color:var(--papel);
+  position:sticky;top:0;z-index:10;
+}
+.barra h1{font-size:1.05rem;margin:0;flex:1}
+.barra .titulo{flex:1;min-width:0}
+.barra .titulo strong{display:block;font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.barra .titulo small{display:block;font-size:.72rem;opacity:.85}
+.icono{
+  background:transparent;border:0;color:inherit;font-size:1.4rem;line-height:1;
+  padding:8px 10px;border-radius:10px;cursor:pointer;min-width:44px;min-height:44px;
+}
+.icono:hover{background:rgba(255,255,255,.14)}
+
+/* --- acceso --- */
+.acceso{margin:auto;padding:24px;width:min(420px,100%)}
+.marca{font-size:1.6rem;margin:0 0 4px;color:var(--salvia-honda)}
+.marca span{color:var(--apagado);font-weight:400}
+.intro{color:var(--apagado);font-size:.9rem;margin:0 0 20px}
+label{display:block;font-size:.8rem;font-weight:600;margin:14px 0 6px}
+input,textarea{
+  width:100%;border:1px solid var(--linea);border-radius:12px;
+  padding:13px 14px;font:inherit;font-size:16px; /* 16px evita que iOS haga zoom al enfocar */
+  background:#fff;color:var(--tinta);
+}
+input:focus,textarea:focus{outline:2px solid var(--salvia);outline-offset:0}
+.primario,.secundario{
+  border:0;border-radius:999px;padding:13px 20px;font:inherit;font-weight:600;
+  cursor:pointer;min-height:44px;
+}
+.primario{background:var(--salvia-honda);color:var(--papel);width:100%;margin-top:18px}
+.secundario{background:transparent;color:var(--salvia-honda);border:1px solid var(--linea)}
+.primario:disabled,.secundario:disabled{opacity:.45;cursor:default}
+
+.aviso{margin:10px 0 0;font-size:.82rem;color:var(--apagado);min-height:1.1em;padding:0 16px}
+.aviso.alerta{color:var(--alerta);font-weight:600}
+
+/* --- filtros --- */
+.filtros{display:flex;gap:8px;padding:12px 16px;background:var(--papel);border-bottom:1px solid var(--linea)}
+.filtro{
+  flex:1;border:1px solid var(--linea);background:#fff;color:var(--apagado);
+  border-radius:999px;padding:9px 6px;font:inherit;font-size:.82rem;cursor:pointer;min-height:40px;
+}
+.filtro.activo{background:var(--salvia-palida);border-color:var(--salvia);color:var(--salvia-honda);font-weight:600}
+
+/* --- lista --- */
+.lista{list-style:none;margin:0;padding:0 0 env(safe-area-inset-bottom);flex:1;overflow-y:auto}
+.fila{
+  padding:14px 16px;border-bottom:1px solid var(--linea);cursor:pointer;background:var(--papel);
+}
+.fila:active{background:var(--papel-hondo)}
+.fila.urgente{border-left:4px solid var(--alerta);padding-left:12px}
+.fila-cabecera{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.fila-cabecera strong{font-size:.95rem}
+.previo{margin:6px 0 0;font-size:.84rem;color:var(--apagado);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.motivo{display:block;margin-top:4px;font-size:.72rem;color:var(--alerta)}
+.vacio{padding:40px 16px;text-align:center;color:var(--apagado);font-size:.9rem}
+
+.etiqueta{font-size:.68rem;padding:3px 8px;border-radius:999px;background:var(--papel-hondo);color:var(--apagado);white-space:nowrap}
+.etiqueta.canal{background:var(--salvia-palida);color:var(--salvia-honda)}
+.etiqueta.urgente{background:var(--alerta);color:#fff;font-weight:600}
+.etiqueta.asignada{background:#fff;border:1px solid var(--linea)}
+.etiqueta.ventana{background:#F6E3DC;color:var(--alerta);font-weight:600}
+.etiqueta.sinleer{background:var(--salvia-honda);color:var(--papel);font-weight:700;margin-top:6px;display:inline-block}
+
+/* --- hilo --- */
+.mensajes{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;background:var(--papel-hondo)}
+.mensaje{max-width:85%;padding:10px 13px;border-radius:14px;font-size:.9rem;line-height:1.45}
+.mensaje small{display:block;font-size:.66rem;opacity:.7;margin-bottom:3px}
+.mensaje p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.mensaje.cliente{align-self:flex-start;background:#fff;border:1px solid var(--linea);border-bottom-left-radius:5px}
+.mensaje.bot{align-self:flex-end;background:var(--salvia-palida);border-bottom-right-radius:5px}
+.mensaje.agente{align-self:flex-end;background:var(--salvia-honda);color:var(--papel);border-bottom-right-radius:5px}
+.mensaje .adjunto{display:block;margin-top:8px;max-width:100%;border-radius:10px}
+.mensaje .adjunto-nota{margin-top:6px;opacity:.8}
+.mensaje .fallo{color:var(--alerta);font-weight:700;margin-top:4px}
+
+.acciones{display:flex;gap:8px;padding:10px 16px;background:var(--papel);border-top:1px solid var(--linea)}
+.acciones .primario{margin-top:0}
+.acciones button{flex:1}
+
+.responder{display:flex;gap:8px;padding:10px 16px calc(env(safe-area-inset-bottom) + 10px);background:var(--papel);align-items:flex-end}
+.responder textarea{flex:1;resize:none;border-radius:18px}
+.responder .primario{width:auto;margin:0;padding:13px 18px;flex:none}
+
+/* --- ajustes --- */
+.ajustes{padding:20px 16px calc(env(safe-area-inset-bottom) + 20px)}
+.ajustes h2{font-size:.95rem;margin:22px 0 8px}
+.ajustes h2:first-child{margin-top:0}
+.ajustes .primario,.ajustes .secundario{width:100%;margin-top:10px}
+.nota{
+  margin:12px 0 0;font-size:.8rem;line-height:1.5;color:var(--apagado);
+  background:#fff;border:1px dashed var(--linea);border-radius:12px;padding:12px;
+}
+
+@media (min-width:720px){
+  .pantalla{max-width:620px;margin:0 auto;border-inline:1px solid var(--linea)}
+}

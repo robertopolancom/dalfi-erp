@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Bandeja · Dalfi Studio</title>
+<meta name="theme-color" content="#4B5040" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<!-- ACCESO ------------------------------------------------------------------------------------
+     Mismo Supabase que el ERP: quien atiende ya tiene cuenta ahí y no se le crea una segunda.
+     El permiso real lo comprueba el servidor en cada llamada (canManageReservations); esta
+     pantalla solo sirve para conseguir el token. -->
+<section class="pantalla" id="pantalla-acceso">
+  <div class="acceso">
+    <h1 class="marca">Dalfi <span>Bandeja</span></h1>
+    <p class="intro">Entra con tu cuenta del ERP.</p>
+    <form id="form-acceso" autocomplete="on">
+      <label for="correo">Correo</label>
+      <input id="correo" type="email" autocomplete="username" required />
+      <label for="clave">Contraseña</label>
+      <input id="clave" type="password" autocomplete="current-password" required />
+      <button class="primario" type="submit" id="boton-entrar">Entrar</button>
+      <p class="aviso" id="aviso-acceso" role="status"></p>
+    </form>
+  </div>
+</section>
+
+<!-- LISTA -------------------------------------------------------------------------------------->
+<section class="pantalla oculta" id="pantalla-lista">
+  <header class="barra">
+    <h1>Bandeja</h1>
+    <button class="icono" id="boton-ajustes" type="button" aria-label="Ajustes">⚙</button>
+  </header>
+  <nav class="filtros" id="filtros" role="tablist">
+    <button class="filtro activo" data-filtro="pendientes" type="button" role="tab">Pendientes</button>
+    <button class="filtro" data-filtro="mias" type="button" role="tab">Mías</button>
+    <button class="filtro" data-filtro="todas" type="button" role="tab">Todas</button>
+  </nav>
+  <p class="aviso" id="aviso-lista" role="status"></p>
+  <ul class="lista" id="lista"></ul>
+</section>
+
+<!-- HILO --------------------------------------------------------------------------------------->
+<section class="pantalla oculta" id="pantalla-hilo">
+  <header class="barra">
+    <button class="icono" id="boton-volver" type="button" aria-label="Volver">‹</button>
+    <div class="titulo">
+      <strong id="hilo-nombre"></strong>
+      <small id="hilo-estado"></small>
+    </div>
+  </header>
+  <div class="mensajes" id="mensajes" role="log" aria-live="polite"></div>
+  <div class="acciones" id="acciones">
+    <button class="primario" id="boton-tomar" type="button">Tomar</button>
+    <button class="secundario oculta" id="boton-soltar" type="button">Soltar</button>
+    <button class="secundario oculta" id="boton-cerrar" type="button">Cerrar</button>
+  </div>
+  <form class="responder" id="form-responder">
+    <textarea id="texto" rows="2" maxlength="4000" placeholder="Escribe tu respuesta…"></textarea>
+    <button class="primario" id="boton-enviar" type="submit" aria-label="Enviar">➤</button>
+  </form>
+  <p class="aviso" id="aviso-hilo" role="status"></p>
+</section>
+
+<!-- AJUSTES ------------------------------------------------------------------------------------>
+<section class="pantalla oculta" id="pantalla-ajustes">
+  <header class="barra">
+    <button class="icono" id="boton-volver-ajustes" type="button" aria-label="Volver">‹</button>
+    <h1>Ajustes</h1>
+  </header>
+  <div class="ajustes">
+    <h2>Notificaciones</h2>
+    <p class="intro" id="estado-push">Comprobando…</p>
+    <button class="primario" id="boton-push" type="button">Activar notificaciones</button>
+    <p class="nota" id="nota-ios" hidden>
+      En iPhone las notificaciones solo funcionan si añades esta bandeja a la pantalla de inicio:
+      Compartir → «Añadir a pantalla de inicio». Desde Safari a secas no llegan.
+    </p>
+    <h2>Sesión</h2>
+    <p class="intro" id="quien-soy"></p>
+    <button class="secundario" id="boton-salir" type="button">Cerrar sesión</button>
+  </div>
+</section>
+
+<script src="./config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./transporte.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

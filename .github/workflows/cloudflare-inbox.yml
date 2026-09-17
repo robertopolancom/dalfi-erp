@@ -1,0 +1,74 @@
+name: Deploy bandeja del personal (PWA)
+
+# La PWA de la bandeja es un Worker de assets estáticos, igual que ReservApp y el sitio público.
+# IMPORTANTE: ninguno de esos tres los despliega Cloud Build. Un push al repo NO los publica --
+# eso ya costó once días de un botón de factura roto sin que nadie lo notara. Este workflow existe
+# para que este no dependa de que alguien se acuerde de correr wrangler a mano.
+#
+# No maneja ningún secreto de la aplicación: la PWA solo lleva configuración pública (ver
+# outputs/inbox/config.js) y pide la clave de notificaciones al servidor con sesión iniciada.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cloudflare-inbox.yml
+      - outputs/inbox/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-inbox-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_VERSION: 4.122.0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Validate required GitHub secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "Falta CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "Falta CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+
+      - name: Install and test
+        run: |
+          npm ci
+          node --test tests/bandeja-pwa.test.js
+          node --check outputs/inbox/app.js
+          node --check outputs/inbox/sw.js
+          node --check outputs/inbox/transporte.js
+
+      - name: Deploy Worker
+        working-directory: outputs/inbox
+        run: npx --yes wrangler@${WRANGLER_VERSION} deploy
+
+      # Comprobar que lo desplegado es lo que se acaba de subir, y no la versión anterior. El
+      # "Success" de wrangler ya ha mentido antes: dice "1 file uploaded" aunque no cambie nada.
+      - name: Verify deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://inbox.dalfistudio.com"
+          code=$(curl -s -o /tmp/inbox.html -w "%{http_code}" --max-time 20 "$url" || true)
+          test "$code" = "200" || { echo "La bandeja respondió $code"; exit 1; }
+          grep -q 'id="pantalla-lista"' /tmp/inbox.html || { echo "El HTML servido no es el de la bandeja"; exit 1; }
+          curl -sf --max-time 20 "$url/manifest.webmanifest" > /dev/null || { echo "Falta el manifest"; exit 1; }
+          curl -sf --max-time 20 "$url/sw.js" > /dev/null || { echo "Falta el service worker"; exit 1; }
+          echo "Bandeja publicada y verificada."
