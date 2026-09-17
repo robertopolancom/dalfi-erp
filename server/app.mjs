@@ -189,6 +189,41 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   app.use("/api/site-content", siteCorsMiddleware);
   // Las fotos de la landing salen por aquí, así que necesitan el mismo permiso de origen.
   app.use("/api/site-media", siteCorsMiddleware);
+
+  // La bandeja del personal (PWA) se sirve desde inbox.dalfistudio.com, que es un Worker aparte:
+  // para el navegador es otro origen, así que sin esto ninguna llamada suya llega a leerse. No es
+  // el ERP de escritorio -- ese vive en este mismo host y no necesita CORS.
+  //
+  // Dos detalles que no son adorno:
+  //   - Expose-Headers: ETag. Entre orígenes distintos el navegador oculta ETag salvo que se
+  //     declare aquí, y sin ETag el sondeo condicional deja de funcionar: cada vuelta traería la
+  //     lista completa en vez de un 304. Es la diferencia entre sondear barato y sondear caro.
+  //   - Sin Allow-Credentials: la bandeja manda el token en Authorization, no en cookies. Añadirlo
+  //     solo ampliaría la superficie sin que nada lo use.
+  const inboxCorsMiddleware = (req, res, next) => {
+    const allowedOrigins = String(env.INBOX_ALLOWED_ORIGIN || "https://inbox.dalfistudio.com")
+      .split(",")
+      .map((value) => value.trim().replace(/\/$/, ""))
+      .filter(Boolean);
+    const origin = String(req.get("origin") || "").replace(/\/$/, "");
+    const originAllowed = Boolean(origin) && allowedOrigins.includes(origin);
+    if (originAllowed) {
+      res.set("Access-Control-Allow-Origin", origin);
+      res.set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+      res.set("Access-Control-Allow-Headers", "Authorization,Content-Type,If-None-Match");
+      res.set("Access-Control-Expose-Headers", "ETag");
+      res.set("Access-Control-Max-Age", "86400");
+      res.vary("Origin");
+    }
+    if (req.method === "OPTIONS") {
+      // El preflight viaja sin Authorization, así que tiene que morir aquí y no en authenticate.
+      return originAllowed ? res.status(204).end() : res.status(403).end();
+    }
+    next();
+  };
+  // Solo las rutas que usa la bandeja. /api/chat/ingest (webhook del bridge) queda fuera a
+  // propósito: lo llama un servidor, no un navegador, y no tiene por qué aceptar preflights.
+  app.use(["/api/chat/conversations", "/api/push", "/api/password-reset"], inboxCorsMiddleware);
   app.use((req, res, next) => {
     const bookingHost = String(env.FAST_BOOKING_HOST || "reservapp.dalfistudio.com").toLowerCase();
     const suiteHost = String(env.SEBEN_SUITE_HOST || "ssc.dalfistudio.com").toLowerCase();

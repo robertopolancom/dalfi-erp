@@ -204,3 +204,80 @@ test("ERP04 — si la tiene otra persona, se dice quién", async () => {
   const app = await leerApp();
   assert.match(app, /La está atendiendo \$\{hilo\.assignedStaffName/);
 });
+
+// --- CORS de la bandeja móvil -----------------------------------------------------------------
+//
+// La PWA se sirve desde inbox.dalfistudio.com y el API vive en ssc.dalfistudio.com: para el
+// navegador son dos orígenes distintos. Sin estas cabeceras la bandeja móvil no funciona en
+// absoluto, y falla de la peor manera posible -- el servidor responde 200, los logs no registran
+// nada raro y el navegador tira la respuesta en silencio.
+
+const ORIGEN_BANDEJA = "https://inbox.dalfistudio.com";
+
+test("CORS01 — el preflight de la bandeja pasa sin token", async () => {
+  // El preflight viaja SIN Authorization por definición. Si llegara a authenticate sería 401 y el
+  // navegador ni intentaría la petición real.
+  await conBandeja({}, async (base) => {
+    const r = await fetch(`${base}/api/chat/conversations`, {
+      method: "OPTIONS",
+      headers: { Origin: ORIGEN_BANDEJA, "Access-Control-Request-Method": "GET" },
+    });
+    assert.equal(r.status, 204);
+    assert.equal(r.headers.get("access-control-allow-origin"), ORIGEN_BANDEJA);
+    assert.match(r.headers.get("access-control-allow-headers"), /If-None-Match/,
+      "sin If-None-Match permitido el sondeo condicional no arranca");
+    assert.match(r.headers.get("access-control-allow-methods"), /DELETE/, "quitar una suscripción de push");
+  });
+});
+
+test("CORS02 — el ETag tiene que quedar LEGIBLE para el navegador", async () => {
+  // Entre orígenes distintos el navegador oculta ETag salvo que se declare en Expose-Headers.
+  // Sin eso el sondeo seguiría funcionando pero traería la lista completa en cada vuelta, que es
+  // justo el coste que la bandeja está diseñada para no pagar.
+  await conBandeja({ version: "v9", conversaciones: [{ id: "c1" }] }, async (base) => {
+    const r = await fetch(`${base}/api/chat/conversations`, {
+      headers: { ...AUTH, Origin: ORIGEN_BANDEJA },
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("access-control-allow-origin"), ORIGEN_BANDEJA);
+    assert.match(r.headers.get("access-control-expose-headers"), /ETag/i);
+  });
+});
+
+test("CORS03 — cualquier otro origen se queda fuera", async () => {
+  // Nunca "*": con "*" cualquier página abierta en el móvil de quien atiende podría leer la
+  // bandeja entera usando su sesión.
+  await conBandeja({}, async (base) => {
+    const r = await fetch(`${base}/api/chat/conversations`, {
+      method: "OPTIONS",
+      headers: { Origin: "https://otra-cosa.example", "Access-Control-Request-Method": "GET" },
+    });
+    assert.equal(r.status, 403);
+    assert.equal(r.headers.get("access-control-allow-origin"), null);
+  });
+});
+
+test("CORS04 — el webhook del bridge NO acepta peticiones de navegador", async () => {
+  // /api/chat/ingest lo llama un servidor con un secreto compartido. Darle CORS solo añadiría
+  // superficie: nada en un navegador tiene por qué poder llamarlo.
+  await conBandeja({}, async (base) => {
+    const r = await fetch(`${base}/api/chat/ingest`, {
+      method: "OPTIONS",
+      headers: { Origin: ORIGEN_BANDEJA, "Access-Control-Request-Method": "POST" },
+    });
+    assert.equal(r.headers.get("access-control-allow-origin"), null);
+  });
+});
+
+test("CORS05 — restablecer contraseña también se pide desde la bandeja", async () => {
+  // Quien olvidó la contraseña no puede entrar al ERP a pedirla: la pantalla de acceso de la PWA
+  // es exactamente donde se necesita.
+  await conBandeja({}, async (base) => {
+    const r = await fetch(`${base}/api/password-reset/request`, {
+      method: "OPTIONS",
+      headers: { Origin: ORIGEN_BANDEJA, "Access-Control-Request-Method": "POST" },
+    });
+    assert.equal(r.status, 204);
+    assert.equal(r.headers.get("access-control-allow-origin"), ORIGEN_BANDEJA);
+  });
+});
