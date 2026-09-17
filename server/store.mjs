@@ -2907,10 +2907,21 @@ export class NeonChatStore {
   // app.staff. Se traduce aquí para poder decir QUIÉN contestó; si no hay ficha con ese
   // correo devuelve null y el mensaje queda como "del equipo" sin nombre, que es preferible
   // a romper la clave foránea o, peor, a atribuírselo a otra persona.
+  // Quién es, como AGENTE, quien viene con este correo.
+  //
+  // NO se filtra por status = 'active', y no es un descuido. En app.staff, "active" significa
+  // "manicurista reservable": es lo que alimenta el catálogo de ReservApp y la disponibilidad
+  // (ver líneas 154 y 1737). Atender una conversación no tiene nada que ver con eso -- la dueña
+  // del negocio, o alguien de recepción, contestan WhatsApp sin ser nunca una opción para
+  // reservar una cita.
+  //
+  // Mezclarlo salió caro el 2026-09-16: al exigir tomar la conversación antes de responder, la
+  // bandeja quedó bloqueada para todo el mundo, y la única salida aparente era activar fichas de
+  // gente que no atiende clientas -- lo que las habría puesto a la venta en ReservApp.
   async staffIdByEmail(email) {
     if (!email) return null;
     const r = await this.pool.query(
-      "select id from app.staff where lower(email) = lower($1) and status = 'active' limit 1",
+      "select id from app.staff where lower(email) = lower($1) limit 1",
       [String(email)],
     );
     return r.rows[0]?.id || null;

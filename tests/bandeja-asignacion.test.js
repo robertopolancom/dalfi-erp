@@ -116,3 +116,23 @@ test("VEN03 — el chat de la web no tiene ventana nunca", () => {
   assert.equal(dentroDeLaVentana("web", null), true);
   assert.equal(dentroDeLaVentana("web", new Date(0).toISOString()), true);
 });
+
+// Identificar a quien atiende NO es lo mismo que ser manicurista reservable. En app.staff,
+// status='active' alimenta el catálogo de ReservApp y la disponibilidad: si la búsqueda del
+// agente lo exigiera, la única forma de dejar atender a la dueña o a recepción sería ponerlas a
+// la venta como manicuristas.
+//
+// Esto pasó de verdad el 2026-09-16: al exigir tomar la conversación antes de responder, la
+// bandeja quedó bloqueada para TODO el mundo, y el arreglo evidente habría metido a gente en la
+// lista de reservas de las clientas.
+test("ASG06 — el agente se identifica por correo, sin exigir que sea manicurista activa", async () => {
+  const consultas = [];
+  const pool = {
+    async query(sql, params) { consultas.push({ sql, params }); return { rows: [{ id: "staff-9" }] }; },
+  };
+  const id = await new NeonChatStore(pool).staffIdByEmail("Dalfi@Ejemplo.test");
+  assert.equal(id, "staff-9");
+  assert.doesNotMatch(consultas[0].sql, /status\s*=\s*'active'/,
+    "exigir 'active' obliga a poner a la venta en ReservApp a quien solo atiende WhatsApp");
+  assert.match(consultas[0].sql, /lower\(email\) = lower\(\$1\)/, "el correo no distingue mayúsculas");
+});
