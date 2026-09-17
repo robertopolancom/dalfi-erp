@@ -155,7 +155,7 @@
     }
     visibles.forEach(function (c) {
       var li = document.createElement("li");
-      li.className = "fila" + (c.needsHuman && !c.assignedStaffId ? " urgente" : "");
+      li.className = "fila" + ((!c.assignedStaffId && (c.botPausado || c.needsHuman)) ? " urgente" : "");
       li.tabIndex = 0;
       li.setAttribute("role", "button");
 
@@ -167,7 +167,9 @@
       nombre.textContent = c.name;
       cabecera.append(nombre);
       cabecera.append(etiqueta(c.channel === "web" ? "web" : "WhatsApp", "canal"));
-      if (c.needsHuman && !c.assignedStaffId) cabecera.append(etiqueta("pide ayuda", "urgente"));
+      // Lo más grave primero: si nadie la atiende, eso manda sobre "pide ayuda".
+      if (!c.assignedStaffId && c.botPausado) cabecera.append(etiqueta("nadie atiende", "urgente"));
+      else if (c.needsHuman && !c.assignedStaffId) cabecera.append(etiqueta("pide ayuda", "urgente"));
       if (c.assignedStaffId) {
         cabecera.append(etiqueta(
           c.assignedStaffId === estado.miStaffId ? "la tienes tú" : (c.assignedStaffName || "ocupada"),
@@ -250,9 +252,16 @@
     var deOtra = hilo.assignedStaffId && !mia;
     var fueraDeVentana = hilo.channel !== "web" && hilo.within24h === false;
 
+    // El peor de los dos mundos: el bot en pausa Y sin nadie asignado. A esa persona no le
+    // contesta NADIE. Pasa cuando alguien toma una conversación y la suelta sin devolverla al
+    // bot, o cuando la suelta la reanudación automática. Hasta ahora no se veía en ninguna
+    // pantalla: se leía igual que "sin tomar", que es una situación mucho menos grave.
+    var abandonada = !hilo.assignedStaffId && hilo.botPausado;
+
     $("hilo-estado").textContent = [
       hilo.channel === "web" ? "chat de la web" : "WhatsApp",
       deOtra ? "la tiene " + (hilo.assignedStaffName || "otra persona") : (mia ? "la tienes tú" : "sin tomar"),
+      hilo.botPausado ? "bot en pausa" : "el bot está atendiendo",
     ].join(" · ");
 
     $("boton-tomar").classList.toggle("oculta", Boolean(hilo.assignedStaffId));
@@ -269,8 +278,14 @@
       : fueraDeVentana ? "Fuera de la ventana de 24 h"
       : "Escribe tu respuesta…";
 
-    if (fueraDeVentana && mia) {
+    // Orden a propósito: primero lo que deja a alguien sin respuesta, después lo que te impide
+    // responder. Si las dos cosas pasan a la vez, la que hay que leer es la primera.
+    if (abandonada) {
+      aviso("aviso-hilo", "Nadie está atendiendo esto: el bot está en pausa y la conversación no la tiene nadie. Tómala, o devuélvela al bot.", true);
+    } else if (fueraDeVentana && mia) {
       aviso("aviso-hilo", "Pasaron más de 24 horas desde su último mensaje: WhatsApp no deja escribirle texto libre hasta que vuelva a escribir.", true);
+    } else {
+      aviso("aviso-hilo", "");
     }
 
     var caja = $("mensajes");

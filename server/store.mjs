@@ -2787,6 +2787,14 @@ export class NeonChatStore {
         || row.phone_normalized || "Visitante de la web",
       channel: row.channel || "whatsapp",
       isClient: Boolean(row.client_id),
+      // Si el bot está callado o no. Se calcula aquí y no en el navegador a propósito: el valor
+      // "ATENCION_HUMANA" es un espejo del estado del motor del bridge, y repetir esa cadena en
+      // dos pantallas más es repetir el sitio donde se puede separar de él.
+      //
+      // Importa porque con esto y assignedStaffId la pantalla puede detectar el peor de los dos
+      // mundos: bot en pausa Y sin nadie asignado. Ahí no le contesta NADIE a esa persona, y
+      // hasta ahora no se veía en ninguna parte.
+      botPausado: row.bot_state === BOT_PAUSADO_POR_PERSONA,
       botState: row.bot_state,
       needsHuman: row.needs_human,
       handoffReason: row.handoff_reason,
@@ -2869,6 +2877,14 @@ export class NeonChatStore {
         || row.phone_normalized || "Visitante de la web",
       channel: row.channel || "whatsapp",
       isClient: Boolean(row.client_id),
+      // Si el bot está callado o no. Se calcula aquí y no en el navegador a propósito: el valor
+      // "ATENCION_HUMANA" es un espejo del estado del motor del bridge, y repetir esa cadena en
+      // dos pantallas más es repetir el sitio donde se puede separar de él.
+      //
+      // Importa porque con esto y assignedStaffId la pantalla puede detectar el peor de los dos
+      // mundos: bot en pausa Y sin nadie asignado. Ahí no le contesta NADIE a esa persona, y
+      // hasta ahora no se veía en ninguna parte.
+      botPausado: row.bot_state === BOT_PAUSADO_POR_PERSONA,
       botState: row.bot_state,
       needsHuman: row.needs_human,
       handoffReason: row.handoff_reason,

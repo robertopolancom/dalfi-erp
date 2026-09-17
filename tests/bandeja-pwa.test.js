@@ -163,3 +163,19 @@ test("PWA14 — los botones dicen lo que hacen, y dejar libre no es devolver al 
   assert.match(html, /id="boton-soltar"[^>]*>Dejar libre</);
   assert.match(html, /id="boton-cerrar"[^>]*>Devolver al bot</);
 });
+
+test("PWA15 — 'el bot en pausa y sin nadie' se ve, que es el estado que deja a alguien sin respuesta", async () => {
+  // Una conversación puede quedar con el bot en pausa Y sin asignar: pasa cuando alguien la toma
+  // y la deja libre sin devolverla al bot, o cuando la suelta la reanudación automática. Ahí no
+  // le contesta NADIE a esa persona. Se leía exactamente igual que un "sin tomar" cualquiera, que
+  // es una situación mucho menos grave, y por eso nadie lo miraba.
+  const app = await leer("app.js");
+  assert.match(app, /var abandonada = !hilo\.assignedStaffId && hilo\.botPausado/);
+  assert.match(app, /Nadie está atendiendo esto/);
+  // En la lista tiene que ganarle a "pide ayuda": las dos son urgentes, pero solo una significa
+  // que ahora mismo no hay nadie ni nada respondiendo.
+  assert.match(app, /if \(!c\.assignedStaffId && c\.botPausado\) cabecera\.append\(etiqueta\("nadie atiende"/);
+  assert.match(app, /else if \(c\.needsHuman && !c\.assignedStaffId\)/);
+  // Y el estado del hilo tiene que decir qué hace el bot, no solo quién la tiene.
+  assert.match(app, /hilo\.botPausado \? "bot en pausa" : "el bot está atendiendo"/);
+});

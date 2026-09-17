@@ -11,6 +11,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 import { NeonChatStore, dentroDeLaVentana, VENTANA_WHATSAPP_MS } from "../server/store.mjs";
 
 // Pool falso que simula de verdad la exclusión de Postgres: la fila tiene un dueño y el UPDATE
@@ -159,4 +160,21 @@ test("ASG07 — el aviso llega a quien tiene suscripción, sea o no manicurista 
   // Y la regla que sí importa tiene que seguir en pie: si ya la atiende alguien, solo a esa
   // persona. Interrumpir a todo el equipo por algo ya atendido es cómo se deja de mirar los avisos.
   assert.match(consultas[0].sql, /assigned_staff_id is null or ps\.user_id = c\.assigned_staff_id/);
+});
+
+// El nombre del estado pausado vive en UN solo sitio. Es un espejo de STATES.ATENCION_HUMANA en
+// el motor del bridge: si el ERP y el motor se separan, la bandeja dice una cosa y el bot hace
+// otra. Por eso el booleano se calcula en el servidor y no se repite la cadena en dos pantallas.
+test("ASG08 — el servidor dice si el bot está en pausa; el navegador no repite la cadena", async () => {
+  const fuenteStore = await readFile(new URL("../server/store.mjs", import.meta.url), "utf8");
+  const apariciones = fuenteStore.match(/botPausado: row\.bot_state === BOT_PAUSADO_POR_PERSONA/g) || [];
+  assert.equal(apariciones.length, 2, "la lista y el hilo, los dos");
+
+  for (const archivo of ["../outputs/inbox/app.js", "../outputs/app.js"]) {
+    const fuente = await readFile(new URL(archivo, import.meta.url), "utf8");
+    const codigo = fuente.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    assert.doesNotMatch(codigo, /ATENCION_HUMANA/,
+      `${archivo} no debe conocer el nombre interno del estado del motor`);
+    assert.match(codigo, /botPausado/, `${archivo} tiene que usar el booleano del servidor`);
+  }
 });

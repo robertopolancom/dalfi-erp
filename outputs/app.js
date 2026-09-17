@@ -11906,6 +11906,13 @@ function pintarEstadoDeAtencion(hilo) {
     if (deOtra) {
       aviso.textContent = `La está atendiendo ${hilo.assignedStaffName || "otra persona"}. Si hace falta, que la suelte.`;
       aviso.className = "bandeja-aviso bandeja-aviso-alerta";
+    } else if (deNadie && hilo.botPausado) {
+      // El peor de los dos mundos: el bot en pausa Y sin nadie asignado. A esa persona no le
+      // contesta NADIE. Pasa cuando alguien la toma y la suelta sin devolverla al bot, o cuando
+      // la suelta la reanudacion automatica. Se leia igual que un "sin tomar" cualquiera, que es
+      // una situacion mucho menos grave.
+      aviso.textContent = "Nadie esta atendiendo esto: el bot esta en pausa y la conversacion no la tiene nadie. Tomala, o devuelvela al bot.";
+      aviso.className = "bandeja-aviso bandeja-aviso-alerta";
     } else if (deNadie) {
       aviso.textContent = "Tómala para poder responder. Así nadie más le escribe a la vez.";
       aviso.className = "bandeja-aviso";
