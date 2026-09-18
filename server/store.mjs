@@ -2223,6 +2223,23 @@ export class NeonBookingStore {
     return result.rows[0]?.id || null;
   }
 
+  // Seguimiento tras la cita (Atendida -> pedir reseña; No asistió -> invitar a volver). Una sola
+  // vez por cita y tipo: si alguien la marca dos veces, o la pasa de No asistió a Atendida y de
+  // vuelta, el cliente no recibe el mismo mensaje dos veces. La fila del outbox es a la vez el
+  // candado y el registro de si salió (markWhatsApp). null = ya se le mandó antes.
+  async reservarSeguimientoCita({ appointmentId, eventType, phone }) {
+    const result = await this.pool.query(
+      `insert into app.reservapp_whatsapp_outbox (account_id,recipient_phone,event_type,payload)
+       select null, app.normalize_phone($2), $3::text, jsonb_build_object('appointmentId', $1::text)
+        where not exists (
+          select 1 from app.reservapp_whatsapp_outbox
+           where event_type=$3::text and payload->>'appointmentId'=$1::text)
+       returning id`,
+      [String(appointmentId), phone, eventType],
+    );
+    return result.rows[0] || null;
+  }
+
   async appointmentSummary(id) {
     const result = await this.pool.query(
       `select a.legacy_id, a.deposit_status, c.full_name client_name, p.phone_original client_phone, s.full_name staff_name,

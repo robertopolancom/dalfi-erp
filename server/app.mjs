@@ -636,6 +636,50 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   //
   // Se llama SIEMPRE después de responder el HTTP: confirmar una cita no puede quedarse esperando
   // a WhatsApp ni a un correo. Los fallos se registran, no se propagan.
+  // Mensaje al cliente cuando el personal marca la cita (decisión del dueño, 2026-09-18):
+  //   - Atendida: gracias + pedir la reseña. La factura la sigue pidiendo también (lo pidió así).
+  //   - No asistió: lamentamos que perdieras tu cita + enlace para reservar. Solo cuando lo marca
+  //     una persona: el cierre automático de citas sin confirmar (closeUnconfirmedOverdue) no
+  //     pasa por aquí -- esas nunca apartaron el horario.
+  // Va por plantilla en el bridge (bridge/appointment-followup.js en dalfi-chatbot-n8n); el texto
+  // de aquí es el respaldo si la plantilla falla.
+  const SEGUIMIENTO_EVENTO = { completed: "booking.appointment_completed", no_show: "booking.appointment_no_show" };
+  const textoSeguimiento = (status, nombre) => status === "completed"
+    ? `¡Gracias por visitarnos, ${nombre}! 💅 Esperamos que te encante el resultado. Si te fue bien, nos ayudaría muchísimo que lo contaras en Google: https://dalfistudio.com/resena`
+    : `Hola, ${nombre}. Lamentamos que no pudieras llegar a tu cita en Dalfi Studio Nails. Esperamos que todo esté bien 💖 Cuando quieras, reserva de nuevo aquí y con gusto te atendemos pronto: https://reservapp.dalfistudio.com`;
+  const enviarSeguimientoCita = async (appointmentId, status) => {
+    const evento = SEGUIMIENTO_EVENTO[status];
+    const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
+    if (!evento || !bridgeSecret) return null;
+    const s = await bookingStore.appointmentSummary(appointmentId);
+    if (!s?.client_phone) return { sent: false, reason: "sin_telefono" };
+    const reservado = await bookingStore.reservarSeguimientoCita({ appointmentId, eventType: evento, phone: s.client_phone });
+    if (!reservado) return null;
+    const nombre = String(s.client_name || "").trim().split(/\s+/)[0] || "Cliente";
+    const bridgeBase = String(env.CHATBOT_BRIDGE_URL || "https://bot.dalfistudio.com").replace(/\/$/, "");
+    let resultado;
+    try {
+      const response = await fetchImpl(`${bridgeBase}/webhook/appointment-followup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-webhook-secret": bridgeSecret },
+        body: JSON.stringify({
+          event: evento, reservationId: s.legacy_id || appointmentId,
+          recipientPhone: normalizePhone(s.client_phone), clientName: nombre,
+          whatsappFormattedText: textoSeguimiento(status, nombre),
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      // Igual que en sendMovedAppointmentWhatsApp: solo cuenta como enviado si el bridge lo dice.
+      resultado = response.ok && body?.status === "SENT"
+        ? { sent: true }
+        : { sent: false, reason: String(body?.reason || body?.error || body?.status || `HTTP ${response.status}`) };
+    } catch (error) {
+      resultado = { sent: false, reason: error.message };
+    }
+    await bookingStore.markWhatsApp({ outboxId: reservado.id, status: resultado.sent ? "sent" : "failed", error: resultado.sent ? null : resultado.reason });
+    return resultado;
+  };
+
   const announceDisplacement = (updated) => {
     for (const mov of updated?.displaced || []) {
       emailBestEffort(
@@ -977,6 +1021,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         if (!updated) return res.status(404).json({ error: "Esa cita no existe o ya está cancelada." });
         res.json({ ok: true, appointment: updated });
         announceDisplacement(updated);
+        if (SEGUIMIENTO_EVENTO[status]) emailBestEffort(enviarSeguimientoCita(appointmentId, status), `seguimiento de cita ${status} (${updated.legacy_id || appointmentId})`);
       } catch (error) {
         if (error.status) return res.status(error.status).json({ error: error.message });
         next(error);
