@@ -39,7 +39,7 @@ test("la manicurista preferida se resalta y se descarta como preferencia de un s
 
 test("resetDeviceState también descarta preferredAgendaStaffId, para que no se filtre a una reserva no relacionada", async () => {
   const app = await readApp();
-  assert.match(app, /state\.quickSetupPhone = null;\s*state\.preferredAgendaStaffId = null;\s*goToStep\(0\);/);
+  assert.match(app, /state\.activationTicket = null;\s*state\.preferredAgendaStaffId = null;\s*goToStep\(0\);/);
 });
 
 test("no quedó ningún 'clienta' fuera del shim de compatibilidad ya cubierto por reservapp-admin-delete.test.js", async () => {

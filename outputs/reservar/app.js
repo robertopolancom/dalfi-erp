@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", quickSetupPhone: null, appointmentDetailId: null, preferredAgendaStaffId: null, language: "es" };
+const state = { catalog: null, account: null, client: null, selectedSlot: null, fallbackSegments: null, activationTicket: null, passwordResetFlow: false, pendingBookingStart: false, agendaView: "day", pendingProfile: null, appointmentDetailId: null, preferredAgendaStaffId: null, language: "es" };
 const reservappConfig = window.DALFI_RESERVAPP_CONFIG || {};
 const apiBase = String(reservappConfig.apiBase || "").replace(/\/$/, "");
 
@@ -1446,119 +1446,51 @@ $("identify-login").addEventListener("click", () => {
 });
 $("identify-new").addEventListener("click", () => {
   $("identify-dialog").close();
-  $("phone-check-value").value = "";
-  message($("phone-check-message"));
-  $("phone-check-dialog").showModal();
+  openPhoneCheck();
 });
 $("close-phone-check").addEventListener("click", () => $("phone-check-dialog").close());
 
+// Pedir el código por WhatsApp: mismo camino para "es mi primera vez", "no tengo contraseña" y
+// "olvidé mi contraseña" (ver /auth/request-code en server/app.mjs). La respuesta es la misma
+// para cualquier teléfono -- esta pantalla nunca dice si ya eres cliente (auditoría de
+// seguridad 2026-09-18). Eso se sabe solo después de escribir el código: verify-code responde
+// si faltan tus datos (persona nueva) o si estás cambiando una contraseña que ya tenías.
+async function requestCode(phone) {
+  const serviceIds = selectedServiceIds();
+  const hasDraft = Boolean(serviceIds.length && $("staff").value && $("date").value && $("time").value && !state.fallbackSegments?.length);
+  return api("/api/reservapp/auth/request-code", {
+    method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+    body: JSON.stringify({
+      phone, serviceIds: hasDraft ? serviceIds : [], staffId: hasDraft ? $("staff").value : "",
+      date: hasDraft ? $("date").value : "", time: hasDraft ? $("time").value : "",
+      notes: $("notes").value, website: $("website").value,
+    }),
+  });
+}
+function openVerifyCode(phone, text) {
+  state.pendingProfile = null;
+  $("verify-code-phone").value = phone; $("verify-code-code").value = "";
+  message($("verify-code-message"), text, true);
+  $("verify-code-dialog").showModal();
+}
+function openPhoneCheck(phone = "") {
+  $("phone-check-value").value = phone;
+  message($("phone-check-message"));
+  $("phone-check-dialog").showModal();
+}
 $("phone-check-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter; button.disabled = true;
-  message($("phone-check-message"), t("Buscando…", "Searching…"), true);
   const phone = $("phone-check-value").value;
+  message($("phone-check-message"), t("Enviando…", "Sending…"), true);
   try {
-    const result = await api("/api/reservapp/auth/check-phone", { method: "POST", body: JSON.stringify({ phone }) });
+    const result = await requestCode(phone);
     $("phone-check-dialog").close();
-    if (result.exists) {
-      // Ya hay una ficha con ese teléfono (con o sin contraseña creada) -- el servidor nunca
-      // revela el nombre aquí (auditoría de seguridad 2026-08-25: antes lo hacía, y eso permitía
-      // adivinar qué teléfonos son de clientes reales solo probando números). Confirmar que es
-      // ella ahora pasa por que ELLA escriba su nombre, no por leerlo del servidor.
-      openConfirmName({ phone, needsPasswordOnly: Boolean(result.needsPasswordOnly) });
-    } else {
-      // Sin cuenta activa ni ficha previa -- sigue el registro normal, que ya reutiliza la ficha
-      // pendiente si existe en vez de crear una duplicada.
-      $("new-phone").value = phone;
-      openClientDialog({ forEmployee: false, requireSelection: false });
-    }
+    openVerifyCode(phone, result.message);
   } catch (error) { message($("phone-check-message"), error.message); }
   finally { button.disabled = false; }
 });
 
-// Paso intermedio compartido por "Es mi primera vez" y "Olvidé mi contraseña" cuando ya existe
-// una ficha con ese teléfono: en vez de que el servidor diga el nombre, la propia persona lo
-// escribe y /auth/verify-name lo compara (tolerando errores de tipografía) sin nunca revelarlo
-// -- ni siquiera la respuesta de "no coincide" distingue de "el teléfono no existía". Una vez
-// verificada, "crear contraseña por primera vez" y "no recordarla" son la MISMA acción (definir
-// una contraseña nueva) -- isReset solo cambia el texto que ve, nunca la lógica.
-function openConfirmName({ phone, needsPasswordOnly, isReset = false }) {
-  state.confirmNamePhone = phone;
-  state.confirmNameNeedsPasswordOnly = needsPasswordOnly;
-  state.passwordResetFlow = isReset;
-  $("confirm-name-value").value = "";
-  message($("confirm-name-message"));
-  $("confirm-name-dialog").showModal();
-}
-$("close-confirm-name").addEventListener("click", () => $("confirm-name-dialog").close());
-$("confirm-name-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const button = event.submitter; button.disabled = true;
-  const typedName = $("confirm-name-value").value.trim();
-  message($("confirm-name-message"), t("Verificando…", "Verifying…"), true);
-  try {
-    const result = await api("/api/reservapp/auth/verify-name", { method: "POST", body: JSON.stringify({ phone: state.confirmNamePhone, firstName: typedName }) });
-    if (!result.verified) {
-      message($("confirm-name-message"), t("No pudimos confirmar tu identidad con ese nombre. Revisa que esté bien escrito, o pide a administración que reinicie tu acceso.", "We couldn't confirm your identity with that name. Check that it's spelled correctly, or ask administration to reset your access."));
-      return;
-    }
-    $("confirm-name-dialog").close();
-    if (state.confirmNameNeedsPasswordOnly) {
-      state.quickSetupPhone = state.confirmNamePhone;
-      state.quickSetupFirstName = typedName;
-      $("quick-setup-title").textContent = state.passwordResetFlow ? t("Elige tu nueva contraseña", "Choose your new password") : t("Crea tu contraseña", "Create your password");
-      $("quick-setup-intro").textContent = state.passwordResetFlow
-        ? t(`¡Hola, ${typedName}! Define una contraseña nueva.`, `Hi, ${typedName}! Set a new password.`)
-        : t(`¡Hola, ${typedName}! Ya tienes una ficha con nosotros, solo falta que crees tu contraseña.`, `Hi, ${typedName}! You already have a record with us -- you just need to create your password.`);
-      $("quick-setup-password").value = ""; $("quick-setup-password-confirm").value = "";
-      message($("quick-setup-message"));
-      $("quick-setup-dialog").showModal();
-    } else {
-      $("login-phone").value = state.confirmNamePhone;
-      message($("login-message"), t(`¿Eres tú, ${typedName}? Ingresa tu contraseña para confirmar.`, `Is that you, ${typedName}? Enter your password to confirm.`), true);
-      $("login-dialog").showModal();
-    }
-  } catch (error) { message($("confirm-name-message"), error.message); }
-  finally { button.disabled = false; }
-});
-
-$("close-quick-setup").addEventListener("click", () => $("quick-setup-dialog").close());
-$("quick-setup-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const password = $("quick-setup-password").value;
-  if (password !== $("quick-setup-password-confirm").value) return message($("quick-setup-message"), t("Las contraseñas no coinciden.", "Passwords don't match."));
-  const button = event.submitter; button.disabled = true;
-  message($("quick-setup-message"), t("Guardando…", "Saving…"), true);
-  try {
-    const serviceIds = selectedServiceIds();
-    const hasDraft = Boolean(serviceIds.length);
-    const result = await api("/api/reservapp/auth/set-password-after-verification", {
-      method: "POST",
-      body: JSON.stringify({
-        phone: state.quickSetupPhone, firstName: state.quickSetupFirstName, password,
-        serviceIds, staffId: hasDraft ? $("staff").value : "", date: hasDraft ? $("date").value : "", time: hasDraft ? $("time").value : "",
-        notes: $("notes").value,
-      }),
-    });
-    const wasPasswordReset = state.passwordResetFlow;
-    state.passwordResetFlow = false;
-    applyAccount(result.account);
-    $("quick-setup-dialog").close();
-    if (result.appointment) {
-      $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
-      $("success-summary").textContent = t(`Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`, `Appointment registered, pending confirmation. Reference: ${result.appointment.reference}`);
-      renderBankAccounts($("success-bank-accounts"));
-      renderSuccessDepositUpload([result.appointment]);
-    } else if (wasPasswordReset) {
-      message($("booking-message"), t(`Contraseña actualizada. Hola de nuevo, ${result.account.name}.`, `Password updated. Welcome back, ${result.account.name}.`), true);
-    } else if (state.pendingBookingStart) {
-      state.pendingBookingStart = false;
-      message($("booking-message"), t(`Cuenta creada. ¡Hola, ${result.account.name}!`, `Account created. Hi, ${result.account.name}!`), true);
-      goToStep(1);
-    } else message($("booking-message"), result.bookingError || t("Contraseña guardada. Ya puedes reservar.", "Password saved. You can book now."), !result.bookingError);
-  } catch (error) { message($("quick-setup-message"), error.message); }
-  finally { button.disabled = false; }
-});
 $("step1-back").addEventListener("click", () => goToStep(0));
 $("step1-next").addEventListener("click", () => {
   if (!selectedServiceIds().length) return message($("booking-message"), t("Selecciona al menos un servicio.", "Select at least one service."));
@@ -1596,128 +1528,75 @@ $("step4-back").addEventListener("click", () => goToStep(3));
 
 $("open-login").addEventListener("click", () => { message($("login-message")); $("login-dialog").showModal(); });
 $("close-login").addEventListener("click", () => $("login-dialog").close());
-// Mismo flujo que "Es mi primera vez" al iniciar una reserva (identify-new): reutiliza
-// phone-check-dialog para buscar el teléfono -- si ya hay ficha, pasa a crear/reiniciar
-// contraseña (openConfirmName); si no existe, abre el formulario completo de registro.
+// "¿Primera vez o no tienes contraseña?" -- mismo camino que "Es mi primera vez" (identify-new):
+// pide el código por WhatsApp para el teléfono que ya escribió, si escribió alguno.
 $("login-new-user").addEventListener("click", () => {
   $("login-dialog").close();
-  $("phone-check-value").value = "";
-  message($("phone-check-message"));
-  $("phone-check-dialog").showModal();
+  openPhoneCheck($("login-phone").value);
 });
 $("close-client").addEventListener("click", () => $("client-dialog").close());
 
-// Dos entradas distintas al MISMO diálogo de "primera vez", con comportamiento distinto al
-// enviarlo (ver client-form submit abajo): el cliente que se registra solo (open-client)
-// necesita verificar su teléfono por WhatsApp antes de que exista su ficha -- nadie del salón
-// está validando esos datos. El personal (employee-new-client) SÍ está presente validando a
-// al cliente en persona, así que no tiene sentido hacerlo esperar un código; crea la ficha al
-// instante contra /api/fast-booking/clients (mismo endpoint que ya usa la búsqueda existente).
-function openClientDialog({ forEmployee, requireSelection = true }) {
-  // El registro-invitada por WhatsApp (auto-servicio) guarda un borrador de UNA sola cita
-  // (staff_id/appointment_date/appointment_time en una fila) -- no soporta varias citas
-  // vinculadas por groupId. Una propuesta de horario alternativo (ver availabilityFallback en
-  // server/store.mjs) sí puede ser varias citas -- en ese caso, solo el registro hecho por el
-  // personal funciona (crea la ficha al instante y la reserva se confirma después, ya con
-  // sesión iniciada).
-  if (!forEmployee && Array.isArray(state.fallbackSegments) && state.fallbackSegments.length) {
-    const target = $("booking-message");
-    target.className = "message";
-    target.replaceChildren(
-      t("Para este horario con varias citas, pide a una asesora que registre tu cita: ", "For this multi-appointment time slot, please ask an advisor to book it for you: "),
-      Object.assign(document.createElement("a"), { href: "https://wa.me/18296679289", target: "_blank", rel: "noopener", textContent: t("escríbenos por WhatsApp", "message us on WhatsApp") }),
-    );
-    return;
-  }
-  state.clientDialogForEmployee = forEmployee;
-  state.clientDialogRequireSelection = requireSelection;
-  $("client-dialog-title").textContent = forEmployee ? "Registrar cliente" : t("Crear mi acceso", "Create my access");
-  const hasSelection = Boolean(selectedServiceIds().length && $("staff").value && $("date").value && $("time").value);
-  $("client-dialog-intro").textContent = forEmployee
-    ? "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp."
-    : hasSelection
-      ? t("Confirma tu teléfono, crea tu contraseña y tu cita quedará agendada.", "Confirm your phone number, create your password, and your appointment will be booked.")
-      : t("Confirma tu teléfono y crea tu contraseña para continuar.", "Confirm your phone number and create your password to continue.");
-  $("client-form").querySelector("button[type=submit]").textContent = forEmployee ? "Registrar cliente" : t("Continuar", "Continue");
+// El mismo diálogo de datos personales sirve para dos cosas:
+//   - "employee": el personal registra a un cliente que tiene enfrente -- la ficha se crea al
+//     instante contra /api/fast-booking/clients, sin código de WhatsApp.
+//   - "profile": una persona nueva que ya verificó su código (verify-code respondió
+//     needsProfile) escribe sus datos; se guardan aquí y viajan con la contraseña a
+//     /auth/complete-setup. El teléfono queda fijo: es el que acaba de probar que es suyo.
+function openClientDialog({ mode }) {
+  state.clientDialogMode = mode;
+  const profile = mode === "profile";
+  $("client-dialog-title").textContent = profile ? t("Tus datos", "Your details") : "Registrar cliente";
+  $("client-dialog-intro").textContent = profile
+    ? t("Ya confirmamos tu teléfono. Completa tus datos y luego crea tu contraseña.", "Your phone is confirmed. Fill in your details, then create your password.")
+    : "Regístrala al instante — tú ya la tienes en frente, no hace falta verificarla por WhatsApp.";
+  $("client-form").querySelector("button[type=submit]").textContent = profile ? t("Continuar", "Continue") : "Registrar cliente";
+  if (profile) $("new-phone").value = $("verify-code-phone").value;
+  $("new-phone").readOnly = profile;
   message($("client-message"));
-  if (!requireSelection || requireBookingSelection($("booking-message"))) $("client-dialog").showModal();
+  $("client-dialog").showModal();
 }
-$("open-client").addEventListener("click", () => openClientDialog({ forEmployee: false }));
-$("employee-new-client").addEventListener("click", () => openClientDialog({ forEmployee: true }));
+// "Es mi primera vez" dentro del paso de confirmar: mismo camino que al empezar a reservar.
+$("open-client").addEventListener("click", () => {
+  if (!requireBookingSelection($("booking-message"))) return;
+  openPhoneCheck();
+});
+$("employee-new-client").addEventListener("click", () => {
+  if (requireBookingSelection($("booking-message"))) openClientDialog({ mode: "employee" });
+});
 
 $("client-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  // Identificarse antes de reservar (state.clientDialogRequireSelection === false) no debe
-  // exigir servicio/manicurista/fecha/hora -- todavía no se ha llegado a esa parte del wizard.
-  if (state.clientDialogRequireSelection && !requireBookingSelection($("client-message"))) return;
-  const button = event.submitter; button.disabled = true;
-  if (state.clientDialogForEmployee) {
-    message($("client-message"), "Registrando…", true);
-    try {
-      const result = await api("/api/fast-booking/clients", {
-        method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
-        body: JSON.stringify({
-          firstName: $("first-name").value, lastName: $("last-name").value, phone: $("new-phone").value, email: $("new-email").value,
-          birthDate: $("new-birthdate").value, sex: $("new-sex").value, address: $("new-address").value, preferredService: $("new-preferred-service").value,
-          actorType: "employee",
-        }),
-      });
-      setClient(result.client);
-      $("client-dialog").close();
-      message($("booking-message"), `Cliente ${result.client.name} registrado. Ya puedes confirmar la reserva.`, true);
-    } catch (error) {
-      message($("client-message"), error.body?.duplicate ? "Ya existe un cliente con ese teléfono o correo." : error.message);
-    } finally { button.disabled = false; }
+  if (state.clientDialogMode === "profile") {
+    state.pendingProfile = {
+      firstName: $("first-name").value, lastName: $("last-name").value, email: $("new-email").value,
+      birthDate: $("new-birthdate").value, sex: $("new-sex").value, address: $("new-address").value,
+      preferredService: $("new-preferred-service").value,
+    };
+    $("client-dialog").close();
+    openSetupDialog(state.activationTicket);
     return;
   }
-  message($("client-message"), t("Guardando…", "Saving…"), true);
+  const button = event.submitter; button.disabled = true;
+  message($("client-message"), "Registrando…", true);
   try {
-    const result = await api("/api/reservapp/auth/request-setup", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(setupPayload()) });
-    $("client-dialog").close(); message($("booking-message"), result.message, true);
-    // TEMPORAL: ver comentario en server/app.mjs junto a RESERVAPP_SKIP_PHONE_VERIFICATION --
-    // mientras Meta no apruebe la plantilla de activación, el backend puede saltarse el paso de
-    // WhatsApp y mandar el activationTicket directo aquí.
-    if (result.activationTicket) { openSetupDialog(result.activationTicket); return; }
-    $("submit-booking").disabled = true;
-    $("verify-code-phone").value = $("new-phone").value; $("verify-code-code").value = "";
-    message($("verify-code-message")); $("verify-code-dialog").showModal();
+    const result = await api("/api/fast-booking/clients", {
+      method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() },
+      body: JSON.stringify({
+        firstName: $("first-name").value, lastName: $("last-name").value, phone: $("new-phone").value, email: $("new-email").value,
+        birthDate: $("new-birthdate").value, sex: $("new-sex").value, address: $("new-address").value, preferredService: $("new-preferred-service").value,
+        actorType: "employee",
+      }),
+    });
+    setClient(result.client);
+    $("client-dialog").close();
+    message($("booking-message"), `Cliente ${result.client.name} registrado. Ya puedes confirmar la reserva.`, true);
   } catch (error) {
-    message($("client-message"), error.message);
-    if (error.body?.accountExists) {
-      // Condición de carrera real -- el servidor no revela el nombre aquí, ver /auth/check-phone.
-      $("client-dialog").close();
-      $("login-phone").value = $("new-phone").value;
-      message($("login-message"), t("Ese teléfono ya tiene una cuenta. Ingresa tu contraseña para confirmar.", "That phone number already has an account. Enter your password to confirm."), true);
-      $("login-dialog").showModal();
-    }
+    message($("client-message"), error.body?.duplicate ? "Ya existe un cliente con ese teléfono o correo." : error.message);
   } finally { button.disabled = false; }
 });
 
 $("open-verify-code").addEventListener("click", () => { state.passwordResetFlow = false; $("login-dialog").close(); message($("verify-code-message")); $("verify-code-dialog").showModal(); });
 $("close-verify-code").addEventListener("click", () => $("verify-code-dialog").close());
-
-$("open-forgot-password").addEventListener("click", () => { $("login-dialog").close(); message($("forgot-password-message")); $("forgot-password-phone").value = $("login-phone").value; $("forgot-password-dialog").showModal(); });
-$("close-forgot-password").addEventListener("click", () => $("forgot-password-dialog").close());
-
-$("forgot-password-form").addEventListener("submit", async (event) => {
-  event.preventDefault(); const button = event.submitter; button.disabled = true; message($("forgot-password-message"), t("Enviando…", "Sending…"), true);
-  try {
-    const result = await api("/api/reservapp/auth/request-password-reset", { method: "POST", body: JSON.stringify({ phone: $("forgot-password-phone").value }) });
-    // TEMPORAL a propósito (ver comentario junto a /auth/request-password-reset en
-    // server/app.mjs): mientras Meta no apruebe la verificación real por WhatsApp, confirma
-    // identidad por nombre en vez de mandar un código -- mismo paso intermedio que usa
-    // check-phone, tanto si nunca creó contraseña como si la olvidó.
-    if (result.needsNameConfirmation) {
-      $("forgot-password-dialog").close();
-      openConfirmName({ phone: $("forgot-password-phone").value, needsPasswordOnly: true, isReset: true });
-      return;
-    }
-    state.passwordResetFlow = true; $("forgot-password-dialog").close(); message($("booking-message"), result.message, true);
-    $("verify-code-phone").value = $("forgot-password-phone").value; $("verify-code-code").value = "";
-    message($("verify-code-message")); $("verify-code-dialog").showModal();
-  } catch (error) { message($("forgot-password-message"), error.message); }
-  finally { button.disabled = false; }
-});
 
 function openSetupDialog(activationTicket) {
   state.activationTicket = activationTicket; $("verify-code-dialog").close();
@@ -1731,6 +1610,13 @@ $("verify-code-form").addEventListener("submit", async (event) => {
   event.preventDefault(); const button = event.submitter; button.disabled = true; message($("verify-code-message"), t("Verificando…", "Verifying…"), true);
   try {
     const result = await api("/api/reservapp/setup/verify-code", { method: "POST", body: JSON.stringify({ phone: $("verify-code-phone").value, code: $("verify-code-code").value }) });
+    state.passwordResetFlow = Boolean(result.resetting);
+    if (result.needsProfile) {
+      state.activationTicket = result.activationTicket;
+      $("verify-code-dialog").close();
+      openClientDialog({ mode: "profile" });
+      return;
+    }
     openSetupDialog(result.activationTicket);
   } catch (error) { message($("verify-code-message"), error.message); }
   finally { button.disabled = false; }
@@ -1755,7 +1641,7 @@ $("account-button").addEventListener("click", () => { if (!state.account) { mess
 // sesión debe dejar todo como recién cargado, para que la siguiente persona tenga que
 // identificarse desde cero y no vea ni un campo con datos de la anterior -- pedido explícito.
 function resetDeviceState() {
-  ["booking-form", "identify-form", "phone-check-form", "confirm-name-form", "quick-setup-form", "client-form", "login-form", "forgot-password-form", "verify-code-form", "setup-form"].forEach((id) => {
+  ["booking-form", "identify-form", "phone-check-form", "client-form", "login-form", "verify-code-form", "setup-form"].forEach((id) => {
     $(id)?.reset();
   });
   $("client-search").value = "";
@@ -1766,7 +1652,8 @@ function resetDeviceState() {
   state.selectedSlot = null;
   state.fallbackSegments = null;
   state.pendingBookingStart = false;
-  state.quickSetupPhone = null;
+  state.pendingProfile = null;
+  state.activationTicket = null;
   state.preferredAgendaStaffId = null;
   goToStep(0);
 }
@@ -1842,9 +1729,9 @@ $("setup-form").addEventListener("submit", async (event) => {
   if (password !== $("setup-password-confirm").value) return message($("setup-message"), t("Las contraseñas no coinciden.", "Passwords don't match."));
   const button = event.submitter; button.disabled = true; message($("setup-message"), t("Activando…", "Activating…"), true);
   try {
-    const result = await api("/api/reservapp/auth/complete-setup", { method: "POST", body: JSON.stringify({ token: state.activationTicket, password }) });
+    const result = await api("/api/reservapp/auth/complete-setup", { method: "POST", body: JSON.stringify({ token: state.activationTicket, password, profile: state.pendingProfile || undefined }) });
     const wasPasswordReset = state.passwordResetFlow;
-    state.activationTicket = null; state.passwordResetFlow = false; applyAccount(result.account); $("setup-dialog").close();
+    state.activationTicket = null; state.passwordResetFlow = false; state.pendingProfile = null; applyAccount(result.account); $("setup-dialog").close();
     if (result.appointment) {
       $("booking-card").classList.add("hidden"); $("success-card").classList.remove("hidden");
       $("success-summary").textContent = t(`Cita registrada, pendiente de confirmar. Referencia: ${result.appointment.reference}`, `Appointment registered, pending confirmation. Reference: ${result.appointment.reference}`);
@@ -1857,7 +1744,10 @@ $("setup-form").addEventListener("submit", async (event) => {
       message($("booking-message"), t(`Cuenta creada. ¡Hola, ${result.account.name}!`, `Account created. Hi, ${result.account.name}!`), true);
       goToStep(1);
     } else message($("booking-message"), result.bookingError || t("Cuenta activada. Ya puedes reservar.", "Account activated. You can book now."), !result.bookingError);
-  } catch (error) { message($("setup-message"), error.message); }
+  } catch (error) {
+    message($("setup-message"), error.message);
+    if (error.body?.needsProfile) { $("setup-dialog").close(); openClientDialog({ mode: "profile" }); }
+  }
   finally { button.disabled = false; }
 });
 

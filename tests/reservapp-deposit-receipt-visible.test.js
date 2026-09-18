@@ -133,9 +133,10 @@ test("la pantalla de éxito trae el botón de subir el comprobante, sin repetir 
   // Solo cuentas de cliente: el endpoint de subida rechaza al personal (isClientRole).
   assert.match(app, /if \(!state\.account \|\| !isClientRole\(state\.account\.role\)\) return;/);
   assert.match(app, /depositUploadControl\(item\.id, \{\s*showAccounts: false,/);
-  // Los tres caminos que llegan a la pantalla de éxito la pintan (reserva normal, reserva
-  // combinada y activación de cuenta con cita pendiente).
-  assert.equal((app.match(/renderSuccessDepositUpload\(/g) || []).length, 4);
+  // Los caminos que llegan a la pantalla de éxito la pintan (reserva normal o combinada, y
+  // activación de cuenta con cita pendiente). El de "confirmar por nombre" desapareció el
+  // 2026-09-18 junto con esa forma de entrar.
+  assert.equal((app.match(/renderSuccessDepositUpload\(/g) || []).length, 3);
   assert.match(app, /renderSuccessDepositUpload\(isFallback \? result\.appointments : \[result\.appointment\]\)/);
 });
 

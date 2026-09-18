@@ -31,6 +31,9 @@ function bookingStore({ account = null, existingClient = null } = {}) {
       return true;
     },
     async createSession(input) { createSessionCalls.push(input); },
+    pendingCalls: [],
+    async createPendingRegistration(input) { this.pendingCalls.push(input); return { id: "pending-1", outbox: { id: "outbox-2" } }; },
+    async availability() { return { durationMinutes: 60, slots: [] }; },
   };
 }
 
@@ -61,178 +64,179 @@ test("POST /api/reservapp/auth/request-password-reset: teléfono con formato inv
   });
 });
 
-test("POST /api/reservapp/auth/request-password-reset: sin cuenta activa responde igual (anti-enumeración) sin mandar nada", async () => {
-  const store = bookingStore({ account: null });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.equal(response.status, 202);
-    const body = await response.json();
-    assert.equal(body.pendingConfirmation, true);
-    assert.equal(store.prepareSetupCalls.length, 0);
-  });
-});
+// ---------- Anti-enumeración (auditoría de seguridad 2026-09-18) ----------
+// Pedir el código responde exactamente lo mismo para cualquier teléfono. Antes, según el caso,
+// salía 200 needsNameConfirmation, 202, 409 accountExists o 400 "faltan tus datos", y con eso
+// se sabía quién es cliente del salón.
 
-// password_hash (no status) es la señal real de "ya tiene contraseña" -- una cuenta con status
-// "pending" (invitada, nunca completó su activación, sin importar si es personal o cliente)
-// nunca tuvo contraseña que restablecer, así que debe pedir confirmar el nombre para definir una
-// nueva (ver /auth/set-password-after-verification), no fingir un reset por WhatsApp.
-test("POST /api/reservapp/auth/request-password-reset: cuenta con status pendiente (sin contraseña) pide confirmar nombre, no manda código de reset", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "pending", full_name: "Ana" } });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.equal(body.needsNameConfirmation, true);
-    assert.equal(body.firstName, undefined, "no debe revelar el nombre -- ver /auth/verify-name (auditoría de seguridad 2026-08-25)");
-    assert.equal(store.prepareSetupCalls.length, 0);
-  });
-});
+const ESCENARIOS = {
+  "sin cuenta ni ficha": {},
+  "ficha del ERP sin cuenta": { existingClient: { id: "client-1", full_name: "Ana Gómez" } },
+  "cuenta pendiente sin contraseña": { account: { id: "account-1", status: "pending", full_name: "Ana" } },
+  "cuenta activa con contraseña": { account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } },
+  "cuenta suspendida": { account: { id: "suspended-account", status: "suspended", full_name: "Ana", password_hash: "hash" } },
+};
 
-test("POST /api/reservapp/auth/request-password-reset: sin cuenta pero con ficha ya existente en el ERP pide confirmar nombre en vez de fingir un reset", async () => {
-  const store = bookingStore({ account: null, existingClient: { id: "client-1", full_name: "Ana Gómez" } });
+async function pedirCodigo(storeOptions, { ruta = "request-code", env } = {}) {
+  const store = bookingStore(storeOptions);
+  let envios = 0;
+  let respuesta;
   await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
+    const r = await fetch(`${base}/api/reservapp/auth/${ruta}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
     });
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.equal(body.needsNameConfirmation, true);
-    assert.equal(body.firstName, undefined, "no debe revelar el nombre -- ver /auth/verify-name (auditoría de seguridad 2026-08-25)");
-    assert.equal(store.prepareSetupCalls.length, 0, "no debe mandar un código de reset -- nunca hubo una contraseña que restablecer");
-  });
-});
-
-test("POST /api/reservapp/auth/request-password-reset: cuenta activa dispara prepareSetup y devuelve 202 idéntico al caso sin cuenta", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.equal(response.status, 202);
-    const body = await response.json();
-    assert.equal(body.pendingConfirmation, true);
-    assert.equal(store.prepareSetupCalls.length, 1);
-    assert.equal(store.prepareSetupCalls[0].accountId, "account-1");
-    // Sin draft de reserva -- esto es solo un reset de contraseña, no debe crear ni tocar citas.
-    assert.equal(store.prepareSetupCalls[0].draft, undefined);
-  });
-});
-
-test("POST /api/reservapp/auth/request-password-reset: el mensaje de WhatsApp habla de restablecer, no de crear por primera vez", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } });
-  let sentBody = null;
-  await withServer(store, async (base) => {
-    await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
+    respuesta = { status: r.status, body: await r.json() };
   }, {
-    fetchImpl: async (_url, options) => {
-      sentBody = JSON.parse(options.body);
-      return new Response(JSON.stringify({ status: "SENT" }), { status: 200 });
-    },
+    env,
+    fetchImpl: async () => { envios += 1; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); },
   });
-  assert.match(sentBody.whatsappFormattedText, /restablecer tu contraseña/i);
-  assert.doesNotMatch(sentBody.whatsappFormattedText, /crear tu contraseña/i);
+  return { ...respuesta, envios, store };
+}
+
+test("RC01 — pedir el código responde idéntico exista o no el teléfono, y en cada caso real sale un WhatsApp", async () => {
+  const resultados = {};
+  for (const [nombre, opciones] of Object.entries(ESCENARIOS)) resultados[nombre] = await pedirCodigo(opciones);
+  const referencia = JSON.stringify({ status: resultados["sin cuenta ni ficha"].status, body: resultados["sin cuenta ni ficha"].body });
+  for (const [nombre, r] of Object.entries(resultados)) {
+    assert.equal(JSON.stringify({ status: r.status, body: r.body }), referencia, `"${nombre}" se distingue de un teléfono desconocido`);
+  }
+  assert.equal(resultados["sin cuenta ni ficha"].status, 202);
+  for (const nombre of ["sin cuenta ni ficha", "ficha del ERP sin cuenta", "cuenta pendiente sin contraseña", "cuenta activa con contraseña"]) {
+    assert.equal(resultados[nombre].envios, 1, `"${nombre}" tiene que recibir su código`);
+  }
 });
 
-// TEMPORAL A PROPÓSITO (pedido explícito del dueño del negocio, 2026-08-25 -- ver comentario
-// junto a /auth/request-password-reset en server/app.mjs): mientras se espera la verificación
-// de Meta, RESERVAPP_SKIP_PHONE_VERIFICATION se queda en "true" y ni siquiera intenta mandar un
-// código real -- en su lugar pide confirmar el nombre (needsNameConfirmation), igual que la
-// cuenta que nunca tuvo contraseña, para que pueda definir una nueva sin hablar con un asesor.
-test("POST /api/reservapp/auth/request-password-reset: con RESERVAPP_SKIP_PHONE_VERIFICATION=true pide confirmar nombre, no manda WhatsApp", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez", password_hash: "hash" } });
-  let bridgeCalled = false;
+test("RC02 — request-code, request-setup y request-password-reset son la misma puerta", async () => {
+  const opciones = ESCENARIOS["cuenta activa con contraseña"];
+  const a = await pedirCodigo(opciones, { ruta: "request-code" });
+  const b = await pedirCodigo(opciones, { ruta: "request-setup" });
+  const c = await pedirCodigo(opciones, { ruta: "request-password-reset" });
+  assert.deepEqual(b.body, a.body);
+  assert.deepEqual(c.body, a.body);
+});
+
+test("RC03 — cuenta con contraseña: código para restablecer, sin borrador de cita", async () => {
+  const r = await pedirCodigo(ESCENARIOS["cuenta activa con contraseña"]);
+  assert.equal(r.store.prepareSetupCalls.length, 1);
+  assert.equal(r.store.prepareSetupCalls[0].accountId, "account-1");
+  assert.equal(r.store.prepareSetupCalls[0].draft, null);
+});
+
+test("RC04 — cuenta suspendida por administración: misma respuesta, pero no se manda código (no se reactiva sola)", async () => {
+  const r = await pedirCodigo(ESCENARIOS["cuenta suspendida"]);
+  assert.equal(r.status, 202);
+  assert.equal(r.envios, 0);
+  assert.equal(r.store.prepareSetupCalls.length, 0);
+});
+
+test("RC05 — ficha del ERP sin cuenta: registro pendiente enlazado a la ficha, sin pedir datos de nuevo", async () => {
+  const r = await pedirCodigo(ESCENARIOS["ficha del ERP sin cuenta"]);
+  assert.equal(r.store.pendingCalls.length, 1);
+  assert.equal(r.store.pendingCalls[0].existingClientId, "client-1");
+  assert.equal(r.store.pendingCalls[0].registration, null);
+});
+
+test("RC06 — más de 3 códigos al mismo teléfono en 15 minutos: misma respuesta, sin más WhatsApp", async () => {
+  const store = bookingStore(ESCENARIOS["cuenta activa con contraseña"]);
+  let envios = 0;
+  const cuerpos = [];
   await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/request-password-reset`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch(`${base}/api/reservapp/auth/request-code`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+      });
+      cuerpos.push({ status: r.status, body: await r.json() });
+    }
+  }, { fetchImpl: async () => { envios += 1; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); } });
+  assert.equal(envios, 3, "no puede servir para bombardear de WhatsApp a un número");
+  assert.deepEqual(cuerpos[4], cuerpos[0]);
+});
+
+test("RC07 — el atajo sin WhatsApp (RESERVAPP_SKIP_PHONE_VERIFICATION) ya no existe", async () => {
+  const r = await pedirCodigo(ESCENARIOS["cuenta activa con contraseña"], { env: { RESERVAPP_SKIP_PHONE_VERIFICATION: "true" } });
+  assert.equal(r.body.activationTicket, undefined);
+  assert.equal(r.body.needsNameConfirmation, undefined);
+  assert.equal(r.envios, 1);
+});
+
+test("RC08 — las rutas que delataban o saltaban el código ya no existen", async () => {
+  const store = bookingStore(ESCENARIOS["cuenta activa con contraseña"]);
+  await withServer(store, async (base) => {
+    for (const ruta of ["check-phone", "verify-name", "set-password-after-verification"]) {
+      const r = await fetch(`${base}/api/reservapp/auth/${ruta}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: "8095551234", firstName: "Ana", password: "clave1234" }),
+      });
+      assert.equal(r.status, 404, `${ruta} sigue respondiendo`);
+    }
+  });
+  assert.equal(store.setOwnPasswordCalls.length, 0);
+});
+
+test("RC09 — el estado de la cuenta se dice solo DESPUÉS de acertar el código", async () => {
+  const conCuenta = bookingStore(ESCENARIOS["cuenta activa con contraseña"]);
+  conCuenta.verifySetupOtp = async () => ({ ok: true });
+  await withServer(conCuenta, async (base) => {
+    const r = await fetch(`${base}/api/reservapp/setup/verify-code`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234", code: "123456" }),
     });
-    assert.equal(response.status, 200);
-    const body = await response.json();
-    assert.equal(body.needsNameConfirmation, true);
-    assert.equal(body.pendingConfirmation, false);
-    assert.equal(body.firstName, undefined);
-    assert.equal(store.prepareSetupCalls.length, 0);
-    assert.equal(bridgeCalled, false);
-  }, {
-    env: { RESERVAPP_SKIP_PHONE_VERIFICATION: "true" },
-    fetchImpl: async () => { bridgeCalled = true; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); },
+    const body = await r.json();
+    assert.equal(body.resetting, true);
+    assert.equal(body.needsProfile, false);
+  });
+  const nueva = bookingStore({});
+  nueva.verifyPendingRegistrationOtp = async () => ({ ok: true, needsProfile: true });
+  await withServer(nueva, async (base) => {
+    const r = await fetch(`${base}/api/reservapp/setup/verify-code`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234", code: "123456" }),
+    });
+    const body = await r.json();
+    assert.equal(body.needsProfile, true);
+    assert.equal(body.resetting, false);
   });
 });
 
-// ---------- /auth/set-password-after-verification ----------
-
-test("set-password-after-verification: nombre coincide en una cuenta ya existente -- define la contraseña, activa la cuenta y crea sesión", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "pending", full_name: "Ana Pérez" } });
+test("RC10 — persona nueva: sus datos llegan con la contraseña; sin ellos, 400 needsProfile", async () => {
+  const store = bookingStore({});
+  const recibidos = [];
+  store.activateWithToken = async () => null;
+  store.completePendingRegistration = async (input) => {
+    recibidos.push(input.registration);
+    if (!input.registration) throw Object.assign(new Error("Completa tus datos para crear tu cuenta."), { code: "PENDING_REGISTRATION_NEEDS_PROFILE" });
+    return { id: "acc-9", account_id: "acc-9", role: "cliente", client_id: "c-9", full_name: "Ana Pérez", draft: null };
+  };
   await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/set-password-after-verification`, {
+    const sinDatos = await fetch(`${base}/api/reservapp/auth/complete-setup`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: "ticket-largo", password: "clave1234" }),
+    });
+    assert.equal(sinDatos.status, 400);
+    assert.equal((await sinDatos.json()).needsProfile, true);
+    const conDatos = await fetch(`${base}/api/reservapp/auth/complete-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Ana", password: "Nueva1234" }),
+      body: JSON.stringify({ token: "ticket-largo", password: "clave1234", profile: { firstName: "Ana", lastName: "Pérez", birthDate: "1995-05-20", sex: "<x>" } }),
     });
-    assert.equal(response.status, 200);
-    assert.equal(store.setOwnPasswordCalls.length, 1);
-    assert.equal(store.setOwnPasswordCalls[0].id, "account-1");
-    assert.equal(store.createSessionCalls.length, 1);
-    assert.equal(store.createSessionCalls[0].accountId, "account-1");
-    assert.equal(store.ensureClientAccountCalls.length, 0, "la cuenta ya existía, no debe crear una nueva");
-    assert.ok(response.headers.get("set-cookie")?.includes("reservapp_session="));
+    assert.equal(conDatos.status, 200);
   });
+  assert.equal(recibidos[0], null);
+  assert.equal(recibidos[1].firstName, "Ana");
+  assert.equal(recibidos[1].sex, "", "un valor fuera de la lista se guarda vacío");
 });
 
-test("set-password-after-verification: sin cuenta pero con ficha del ERP -- crea la cuenta primero", async () => {
-  const store = bookingStore({ account: null, existingClient: { id: "client-1", full_name: "Ana Gómez" } });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/set-password-after-verification`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Ana", password: "Nueva1234" }),
+test("RC11 — el WhatsApp habla de restablecer si ya había contraseña, y de crear si no", async () => {
+  const textos = {};
+  for (const nombre of ["cuenta activa con contraseña", "cuenta pendiente sin contraseña"]) {
+    const store = bookingStore(ESCENARIOS[nombre]);
+    await withServer(store, async (base) => {
+      await fetch(`${base}/api/reservapp/auth/request-code`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
+      });
+    }, {
+      fetchImpl: async (_url, options) => {
+        textos[nombre] = JSON.parse(options.body).whatsappFormattedText;
+        return new Response(JSON.stringify({ status: "SENT" }), { status: 200 });
+      },
     });
-    assert.equal(response.status, 200);
-    assert.equal(store.ensureClientAccountCalls.length, 1);
-    assert.equal(store.ensureClientAccountCalls[0].clientId, "client-1");
-    assert.equal(store.setOwnPasswordCalls[0].id, "new-account-1");
-  });
-});
-
-test("set-password-after-verification: nombre equivocado responde 401 y nunca toca la contraseña", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez" } });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/set-password-after-verification`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Roberto", password: "Nueva1234" }),
-    });
-    assert.equal(response.status, 401);
-    assert.equal(store.setOwnPasswordCalls.length, 0);
-  });
-});
-
-test("set-password-after-verification: contraseña débil responde 400 sin verificar nada", async () => {
-  const store = bookingStore({ account: { id: "account-1", status: "active", full_name: "Ana Pérez" } });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/set-password-after-verification`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Ana", password: "corta" }),
-    });
-    assert.equal(response.status, 400);
-    assert.equal(store.setOwnPasswordCalls.length, 0);
-  });
-});
-
-// Alguien a quien administración suspendió/bloqueó a propósito no debe poder "recuperar" su
-// acceso solo sabiendo su propio nombre -- setOwnPasswordAndActivate() ya lo bloquea a nivel de
-// base de datos (where status in pending/active), esta prueba confirma que la ruta responde con
-// un error claro en vez de un 200 falso.
-test("set-password-after-verification: cuenta suspendida/bloqueada no se reactiva por autoservicio", async () => {
-  const store = bookingStore({ account: { id: "suspended-account", status: "suspended", full_name: "Ana Pérez" } });
-  await withServer(store, async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/set-password-after-verification`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Ana", password: "Nueva1234" }),
-    });
-    assert.equal(response.status, 403);
-    assert.equal(store.createSessionCalls.length, 0);
-  });
+  }
+  assert.match(textos["cuenta activa con contraseña"], /restablecer tu contraseña/i);
+  assert.match(textos["cuenta pendiente sin contraseña"], /crear tu contraseña/i);
 });

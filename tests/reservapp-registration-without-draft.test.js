@@ -67,17 +67,20 @@ test("request-setup: permite crear cuenta sin borrador de reserva (registro puro
   });
 });
 
-test("request-setup: sin fecha de nacimiento responde 400 (dato requerido para la ficha en el ERP)", async () => {
+// Hasta el 2026-09-18 faltar la fecha de nacimiento daba 400 solo si el teléfono NO era cliente
+// -- con eso se sabía quién lo era. Ahora los datos incompletos no se rechazan aquí: se piden
+// después del código (verify-code responde needsProfile).
+test("request-setup: sin fecha de nacimiento no rechaza -- guarda el registro sin datos y los pide después del código", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234" }),
     });
-    assert.equal(response.status, 400);
+    assert.equal(response.status, 202);
+    assert.equal(store.createPendingRegistrationCalls[0].registration, null);
     assert.equal(store.createClientCalls.length, 0);
   });
 });
-
 test("request-setup: guarda fecha de nacimiento, sexo, dirección y servicio preferido en el registro pendiente (createClient todavía no se llama)", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
@@ -138,125 +141,22 @@ test("request-setup: un borrador completo sigue validando disponibilidad como an
   });
 });
 
-test("request-setup: teléfono con cuenta activa devuelve accountExists, nunca el nombre (auditoría de seguridad -- ver /auth/verify-name)", async () => {
+test("request-setup: teléfono con cuenta y contraseña responde igual que cualquier otro y manda un código para cambiarla", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ firstName: "Ana", lastName: "Pérez", phone: "8095551234", birthDate: "1995-05-20" }),
     });
-    assert.equal(response.status, 409);
+    assert.equal(response.status, 202);
     const body = await response.json();
-    assert.equal(body.accountExists, true);
+    assert.equal(body.accountExists, undefined, "decir que la cuenta existe es justo la fuga que se cerró");
     assert.equal(body.firstName, undefined);
-    assert.equal(store.prepareSetupCalls.length, 0, "no debe generar un código nuevo para una cuenta ya activa");
+    assert.equal(store.prepareSetupCalls.length, 1);
   }, {
     existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" },
-    existingAccount: { status: "active", full_name: "Ana Gómez", password_hash: "hash" },
+    existingAccount: { id: "account-ana", status: "active", full_name: "Ana Gómez", password_hash: "hash" },
   });
 });
-
-test("check-phone: cuenta con contraseña ya creada devuelve exists:true, nunca el nombre (auditoría de seguridad 2026-08-25)", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { exists: true });
-  }, { existingAccount: { status: "active", full_name: "Ana Gómez", password_hash: "hash" } });
-});
-
-test("check-phone: sin ninguna cuenta ni ficha, devuelve exists:false (sigue el registro normal)", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.deepEqual(await response.json(), { exists: false });
-  });
-});
-
-// password_hash (no status) es la señal real de "ya tiene contraseña" -- una cuenta de PERSONAL
-// invitada que nunca completó su activación (status "pending") es el mismo caso que un cliente
-// sin credenciales todavía: debe saltar a crear su contraseña, no desaparecer como si no existiera.
-test("check-phone: cuenta de personal pendiente de activar (sin contraseña) devuelve needsPasswordOnly:true, no exists:false", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { exists: true, needsPasswordOnly: true });
-  }, { existingAccount: { status: "pending", full_name: "Dalfina Guzmán", password_hash: null } });
-});
-
-test("check-phone: sin cuenta de ReservApp pero con ficha ya existente en el ERP devuelve needsPasswordOnly:true, nunca el nombre", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234" }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { exists: true, needsPasswordOnly: true });
-  }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
-});
-
-// ---------- /auth/verify-name (confirmar identidad sin que el servidor revele el nombre) ----------
-
-test("verify-name: cuenta de ReservApp existente -- coincidencia exacta se verifica", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/verify-name`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Ana" }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { verified: true });
-  }, { existingAccount: { status: "active", full_name: "Ana Gómez", password_hash: "hash" } });
-});
-
-test("verify-name: tolera un error de tipografía razonable (acento, una letra de más)", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/verify-name`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Dalfyna" }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { verified: true });
-  }, { existingAccount: { status: "pending", full_name: "Dalfina Guzmán", password_hash: null } });
-});
-
-test("verify-name: ficha del ERP sin cuenta de ReservApp también se puede verificar", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/verify-name`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Ana" }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { verified: true });
-  }, { existingClient: { id: "33333333-3333-4333-8333-333333333333", full_name: "Ana Gómez" } });
-});
-
-test("verify-name: nombre equivocado no verifica -- y la respuesta no distingue de 'el teléfono no existe' (anti-enumeración)", async () => {
-  await withServer(async (base) => {
-    const wrongName = await fetch(`${base}/api/reservapp/auth/verify-name`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095551234", firstName: "Roberto" }),
-    });
-    const noAccount = await fetch(`${base}/api/reservapp/auth/verify-name`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: "8095550000", firstName: "Roberto" }),
-    });
-    assert.deepEqual(await wrongName.json(), { verified: false });
-    assert.deepEqual(await noAccount.json(), { verified: false }, "misma forma de respuesta exista o no el teléfono -- no debe servir de oráculo");
-  }, { existingAccount: { status: "active", full_name: "Ana Gómez", password_hash: "hash" } });
-});
-
-test("verify-name: sin nombre responde 400", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/verify-name`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "8095551234", firstName: "" }),
-    });
-    assert.equal(response.status, 400);
-  });
-});
-
 test("request-setup: teléfono con ficha ya existente en el ERP no exige nombre/apellido/fecha de nacimiento", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
@@ -284,22 +184,16 @@ test("request-setup: cuenta de personal existente sin contraseña reutiliza esa 
   }, { existingAccount: { id: "account-dalfina", status: "pending", full_name: "Dalfina Guzmán", password_hash: null } });
 });
 
-test("request-setup: sin ficha existente y sin nombre/apellido/fecha de nacimiento sigue exigiéndolos (cliente realmente nuevo)", async () => {
+test("request-setup: persona nueva sin nombre ni fecha de nacimiento recibe su código igual -- los datos se piden después", async () => {
   await withServer(async (base, store) => {
     const response = await fetch(`${base}/api/reservapp/auth/request-setup`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone: "8095551234" }),
     });
-    assert.equal(response.status, 400);
+    assert.equal(response.status, 202);
+    assert.equal(store.createPendingRegistrationCalls.length, 1);
+    assert.equal(store.createPendingRegistrationCalls[0].registration, null);
+    assert.equal(store.createPendingRegistrationCalls[0].existingClientId, null);
     assert.equal(store.createClientCalls.length, 0);
-  });
-});
-
-test("check-phone: teléfono inválido, 400 sin llegar a consultar la cuenta", async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/api/reservapp/auth/check-phone`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: "123" }),
-    });
-    assert.equal(response.status, 400);
   });
 });

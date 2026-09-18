@@ -258,30 +258,11 @@
   </form></dialog>
 
   <dialog id="phone-check-dialog"><form id="phone-check-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker" data-en="First visit">Primera visita</p><h2 data-en="Your phone number">Tu número de teléfono</h2></div><button class="icon-button" id="close-phone-check" type="button" aria-label="Cerrar">×</button></div>
-    <p data-en="This way we confirm whether you already have an account or create a new one.">Así confirmamos si ya tienes una cuenta o creamos una nueva.</p>
-    <label data-en="Phone">Teléfono<input id="phone-check-value" type="tel" inputmode="tel" autocomplete="tel" required /></label>
+    <div class="dialog-head"><div><p class="kicker" data-en="Access via WhatsApp">Acceso por WhatsApp</p><h2 data-en="Your WhatsApp number">Tu número de WhatsApp</h2></div><button class="icon-button" id="close-phone-check" type="button" aria-label="Cerrar">×</button></div>
+    <p data-en="We'll send you a 6-digit code via WhatsApp to confirm the number is yours. With it you create your account, or a new password if you already had one.">Te enviamos por WhatsApp un código de 6 dígitos para confirmar que el número es tuyo. Con él creas tu cuenta, o una contraseña nueva si ya tenías una.</p>
+    <label data-en="WhatsApp phone number">Teléfono de WhatsApp<input id="phone-check-value" type="tel" inputmode="tel" autocomplete="tel" required /></label>
     <div class="message" id="phone-check-message" role="status"></div>
-    <button class="primary" type="submit" data-en="Continue">Continuar</button>
-  </form></dialog>
-
-  <dialog id="confirm-name-dialog"><form id="confirm-name-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker" data-en="Let's confirm it's you">Confirmemos que eres tú</p><h2 data-en="What's your name?">¿Cuál es tu nombre?</h2></div><button class="icon-button" id="close-confirm-name" type="button" aria-label="Cerrar">×</button></div>
-    <p data-en="We already have a record with this phone number. Type your first name to confirm it's you -- for your security, we never show it here first.">Ya tenemos una ficha con este teléfono. Escribe tu primer nombre para confirmar que eres tú -- nunca lo mostramos aquí primero, por tu seguridad.</p>
-    <label data-en="Your name">Tu nombre <span data-en='(first name only, e.g. "Maria")'>(solo el primero, ej. "María")</span><input id="confirm-name-value" type="text" autocomplete="given-name" placeholder="Solo tu primer nombre" data-en-placeholder="Just your first name" required /></label>
-    <div class="message" id="confirm-name-message" role="status"></div>
-    <button class="primary" type="submit" data-en="Continue">Continuar</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
-  </form></dialog>
-
-  <dialog id="quick-setup-dialog"><form id="quick-setup-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker" data-en="We've confirmed it's you">Ya confirmamos que eres tú</p><h2 id="quick-setup-title" data-en="Create your password">Crea tu contraseña</h2></div><button class="icon-button" id="close-quick-setup" type="button" aria-label="Cerrar">×</button></div>
-    <p id="quick-setup-intro" data-en="Set a password for your account.">Define una contraseña para tu cuenta.</p>
-    <label data-en="Password">Contraseña<input id="quick-setup-password" type="password" autocomplete="new-password" minlength="8" required /></label>
-    <label data-en="Confirm password">Confirmar contraseña<input id="quick-setup-password-confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
-    <div class="message" id="quick-setup-message" role="status"></div>
-    <button class="primary" type="submit" data-en="Save password">Guardar contraseña</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
+    <button class="primary" type="submit" data-en="Send me the code">Enviarme el código</button>
   </form></dialog>
 
   <dialog id="client-dialog"><form id="client-form" method="dialog">
@@ -306,17 +287,8 @@
     <label data-en="Phone">Teléfono<input id="login-phone" type="tel" inputmode="tel" autocomplete="username" required /></label>
     <label data-en="Password">Contraseña<input id="login-password" type="password" autocomplete="current-password" required /></label>
     <div class="message" id="login-message"></div><button class="primary" type="submit" data-en="Log in">Entrar</button>
-    <button class="new-client" id="login-new-user" type="button" data-en="New user · create account">Usuario nuevo · crear cuenta</button>
+    <button class="new-client" id="login-new-user" type="button" data-en="First time or no password? We'll send you a code">¿Primera vez o no tienes contraseña? Te mandamos un código</button>
     <button class="secondary" id="open-verify-code" type="button" data-en="Did you receive an activation code via WhatsApp?">¿Recibiste un código de activación por WhatsApp?</button>
-    <button class="secondary" id="open-forgot-password" type="button" data-en="Forgot your password?">¿Olvidaste tu contraseña?</button>
-    <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
-  </form></dialog>
-
-  <dialog id="forgot-password-dialog"><form id="forgot-password-form" method="dialog">
-    <div class="dialog-head"><div><p class="kicker" data-en="Secure access">Acceso seguro</p><h2 data-en="Reset password">Restablecer contraseña</h2></div><button class="icon-button" id="close-forgot-password" type="button" aria-label="Cerrar">×</button></div>
-    <p data-en="We'll try to send you a 6-digit code via WhatsApp. If that's not available right now, we'll let you know here.">Intentamos enviarte por WhatsApp un código de 6 dígitos. Si no está disponible por ahora, te lo decimos aquí.</p>
-    <label data-en="Phone">Teléfono<input id="forgot-password-phone" type="tel" inputmode="tel" autocomplete="tel" required /></label>
-    <div class="message" id="forgot-password-message"></div><button class="primary" type="submit" data-en="Send me the code via WhatsApp">Enviarme el código por WhatsApp</button>
     <a class="whatsapp-link" href="https://wa.me/18296679289" target="_blank" rel="noopener" data-en="Need help? Chat with an advisor on WhatsApp">¿Necesitas ayuda? Habla con un asesor por WhatsApp</a>
   </form></dialog>
 

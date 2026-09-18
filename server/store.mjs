@@ -1155,29 +1155,11 @@ export class NeonBookingStore {
     return true;
   }
 
-  // Autoservicio (POST /auth/set-password-after-verification): crea o reinicia su propia
-  // contraseña una vez que /auth/verify-name confirmó su identidad por nombre -- mientras Meta no
-  // apruebe la verificación real por WhatsApp (RESERVAPP_SKIP_PHONE_VERIFICATION), esta es la
-  // prueba de identidad que reemplaza al código real. Nunca reactiva una cuenta
-  // suspendida/bloqueada (where status in pending/active) -- alguien a quien administración le
-  // quitó el acceso a propósito no puede recuperarlo solo sabiendo su propio nombre; esa cuenta
-  // sigue exigiendo una acción explícita de administración.
-  async setOwnPasswordAndActivate({ id, passwordHash }) {
-    const result = await this.pool.query(
-      `update app.reservapp_accounts set password_hash=$2, status='active', updated_at=now()
-        where id=$1 and status in ('pending','active') returning id`,
-      [id, passwordHash],
-    );
-    if (!result.rowCount) return null;
-    await this.pool.query("update app.reservapp_sessions set revoked_at=now() where account_id=$1 and revoked_at is null", [id]);
-    return true;
-  }
-
   // Alternativa a resetAccountPassword: en vez de que administración escriba la contraseña
   // nueva por la persona, borra la que tenía y la deja en el mismo estado "sin contraseña
   // todavía" que una cuenta recién creada -- la próxima vez que esa persona (cliente o
-  // personal) ponga su teléfono en ReservApp, check-phone/request-setup ya la reconocen
-  // (password_hash IS NULL) y la mandan directo a "¿Eres tú? Crea tu contraseña".
+  // personal) pida su código por WhatsApp en ReservApp, crea una contraseña nueva
+  // (/auth/request-code -> /setup/verify-code -> /auth/complete-setup).
   async clearAccountPassword({ id }) {
     const result = await this.pool.query(
       `update app.reservapp_accounts set password_hash=null, updated_at=now() where id=$1 returning id`,
@@ -1478,6 +1460,9 @@ export class NeonBookingStore {
         [account.account_id, passwordHash],
       );
       await client.query("update app.reservapp_setup_tokens set consumed_at=now() where id=$1", [account.token_id]);
+      // Contraseña nueva = se cierran las sesiones abiertas con la anterior (si alguien más
+      // la conocía, deja de estar dentro).
+      await client.query("update app.reservapp_sessions set revoked_at=now() where account_id=$1 and revoked_at is null", [account.account_id]);
       await client.query(
         `insert into app.reservapp_sessions (account_id,token_hash,expires_at)
          values ($1,$2,$3)`,
@@ -1558,7 +1543,7 @@ export class NeonBookingStore {
     try {
       await client.query("begin");
       const found = await client.query(
-        `select id, token_hash, attempt_count, max_attempts
+        `select id, token_hash, attempt_count, max_attempts, existing_client_id, registration
            from app.reservapp_pending_registrations
           where phone_normalized=app.normalize_phone($1) and consumed_at is null and expires_at>now()
           order by created_at desc limit 1
@@ -1586,7 +1571,9 @@ export class NeonBookingStore {
         [row.id, newTokenHash, newExpiresAt],
       );
       await client.query("commit");
-      return { ok: true };
+      // needsProfile: persona nueva de la que todavía no hay nombre ni fecha de nacimiento --
+      // completePendingRegistration los recibirá junto con la contraseña.
+      return { ok: true, needsProfile: !row.existing_client_id && !row.registration };
     } catch (error) {
       await client.query("rollback").catch(() => {});
       throw error;
@@ -1604,7 +1591,7 @@ export class NeonBookingStore {
   // caída real del proceso en una ventana de milisegundos, no por abandono de la persona (que es
   // el problema que esto resuelve). No se envuelve createClient en una transacción externa
   // porque ese método lo usan otros flujos y tocar su forma añade más riesgo del que quita.
-  async completePendingRegistration({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt }) {
+  async completePendingRegistration({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt, registration: perfilNuevo = null }) {
     const lock = await this.pool.connect();
     let pending;
     try {
@@ -1621,6 +1608,14 @@ export class NeonBookingStore {
         return null;
       }
       pending = found.rows[0];
+      // Persona nueva que pidió el código solo con su teléfono: sus datos llegan ahora, con la
+      // contraseña. Sin ellos no se consume el registro -- puede volver a intentarlo con el
+      // mismo código ya verificado.
+      if (!pending.registration && perfilNuevo) pending.registration = perfilNuevo;
+      if (!pending.existing_client_id && !pending.registration) {
+        await lock.query("rollback");
+        throw Object.assign(new Error("Completa tus datos para crear tu cuenta."), { code: "PENDING_REGISTRATION_NEEDS_PROFILE" });
+      }
       await lock.query("update app.reservapp_pending_registrations set consumed_at=now() where id=$1", [pending.id]);
       await lock.query("commit");
     } catch (error) {

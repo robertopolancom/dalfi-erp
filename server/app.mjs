@@ -28,7 +28,6 @@ import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReview
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
 import { buildInvoiceView, invoiceToken, invoiceUrl, renderInvoiceHtml, renderInvoiceNotFound, verifyInvoiceToken } from "./invoice-link.mjs";
 import { mediaUrl, verifyMediaToken } from "./media-link.mjs";
-import { normalizeTextForMatching } from "../outputs/lib/booking-engine.js";
 import {
   RESERVAPP_ROLES,
   generateOtpCode,
@@ -300,29 +299,22 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   const validPassword = (value) => String(value || "").length >= 8 && /[A-Za-zÁÉÍÓÚáéíóúÑñ]/.test(value) && /[0-9]/.test(value);
   const cleanText = (value, max = 160) => String(value || "").trim().slice(0, max);
 
-  // Distancia de edición clásica -- para tolerar errores de tipografía (acento olvidado, letra
-  // de más/menos) al comparar el nombre que el cliente escribe contra el que ya tiene su ficha,
-  // sin exigir coincidencia exacta ni depender de un servicio externo de IA.
-  const levenshteinDistance = (a, b) => {
-    const rows = a.length + 1, cols = b.length + 1;
-    const dp = Array.from({ length: rows }, (_, i) => (i === 0 ? Array.from({ length: cols }, (_, j) => j) : [i, ...Array(cols - 1).fill(0)]));
-    for (let i = 1; i < rows; i += 1) {
-      for (let j = 1; j < cols; j += 1) {
-        dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-    return dp[rows - 1][cols - 1];
-  };
-  // Compara solo el PRIMER nombre real contra lo que escribió el cliente -- normaliza acentos y
-  // mayúsculas (normalizeTextForMatching) y tolera hasta ~1 error de tipografía por cada 4
-  // caracteres (mínimo 1) en vez de exigir coincidencia exacta.
-  const namesLooselyMatch = (typed, actualFullName) => {
-    const a = normalizeTextForMatching(typed);
-    const b = normalizeTextForMatching(String(actualFullName || "").trim().split(/\s+/)[0] || "");
-    if (!a || !b) return false;
-    if (a === b) return true;
-    const threshold = Math.max(1, Math.floor(Math.max(a.length, b.length) / 4));
-    return levenshteinDistance(a, b) <= threshold;
+  // Datos de una persona nueva (nombre, apellido, fecha de nacimiento y los opcionales). Devuelve
+  // null si faltan los obligatorios: en ese caso se piden después de verificar el código.
+  const perfilDeRegistro = (body = {}) => {
+    const firstName = cleanText(body.firstName, 80);
+    const lastName = cleanText(body.lastName, 80);
+    const birthDate = cleanText(body.birthDate, 10);
+    if (!firstName || !lastName) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || birthDate > new Date().toISOString().slice(0, 10)) return null;
+    const email = cleanText(body.email, 160).toLowerCase();
+    return {
+      firstName, lastName, birthDate,
+      email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "",
+      sex: ["Femenino", "Masculino"].includes(body.sex) ? body.sex : "",
+      address: cleanText(body.address, 300),
+      preferredService: cleanText(body.preferredService, 160),
+    };
   };
   const cleanServiceIds = (value) => [...new Set((Array.isArray(value) ? value : String(value || "").split(",")).map((item) => cleanText(item, 64)).filter(Boolean))].slice(0, 12);
   const authorizeEmployeeBooking = async (req) => {
@@ -678,61 +670,45 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   };
 
   if (bookingStore) {
-    // El nuevo flujo pide identificarse ANTES de elegir servicios (pedido explícito de diseño:
-    // "atención personalizada" desde el primer clic en "Reservar", no al final). Para el botón
-    // "Es mi primera vez" primero solo se pide el teléfono -- este endpoint dice si ya existe
-    // una ficha con ese número, SIN revelar el nombre (auditoría de seguridad 2026-08-25: antes
-    // devolvía el primer nombre aquí, lo que dejaba adivinar qué teléfonos son clientes reales
-    // con solo probar números). Confirmar la identidad de verdad ahora es responsabilidad de
-    // /auth/verify-name, que el cliente pasa escribiendo SU nombre, no leyéndolo del servidor.
-    app.post("/api/reservapp/auth/check-phone", bookingRateLimit, async (req, res, next) => {
+    // Pedir el código de WhatsApp -- la ÚNICA puerta para crear cuenta, crear la contraseña que
+    // nunca se definió o reemplazar una olvidada (auditoría de seguridad 2026-09-18).
+    //
+    // Antes había tres rutas que respondían distinto según el teléfono: check-phone decía si
+    // existía ficha o cuenta, request-setup contestaba 409 si ya había contraseña y pedía nombre y
+    // fecha de nacimiento solo a quien no era cliente, y request-password-reset pedía el nombre
+    // solo si había ficha. Probando números se podía saber quién es cliente del salón. Peor:
+    // set-password-after-verification cambiaba la contraseña de cualquiera con saber su teléfono y
+    // su primer nombre -- era el sustituto temporal mientras Meta no aprobaba los códigos por
+    // WhatsApp, y dejó de tener sentido cuando los códigos volvieron a salir (2026-09-15).
+    //
+    // Ahora la respuesta es siempre la misma, exista o no el teléfono, y el estado de la cuenta
+    // (si es nueva, si ya tenía contraseña) solo se dice en /setup/verify-code, cuando la persona
+    // ya probó que ese WhatsApp es suyo. Cuántos mensajes salen no cambia: antes también se
+    // mandaba un código en cada uno de estos casos.
+    //
+    // request-setup y request-password-reset quedan como nombres alternativos de esta misma ruta,
+    // para quien tenga la app abierta desde antes del cambio.
+    const codigosPorTelefono = new Map();
+    const CODIGOS_POR_TELEFONO_MAX = 3;
+    const CODIGOS_POR_TELEFONO_VENTANA_MS = 15 * 60 * 1000;
+    const puedeEnviarCodigo = (phone) => {
+      const clave = String(phone).replace(/\D/g, "").slice(-10);
+      const ahora = Date.now();
+      const recientes = (codigosPorTelefono.get(clave) || []).filter((t) => ahora - t < CODIGOS_POR_TELEFONO_VENTANA_MS);
+      if (recientes.length >= CODIGOS_POR_TELEFONO_MAX) { codigosPorTelefono.set(clave, recientes); return false; }
+      recientes.push(ahora);
+      codigosPorTelefono.set(clave, recientes);
+      return true;
+    };
+    const barridoCodigos = setInterval(() => pruneHitMap(codigosPorTelefono, CODIGOS_POR_TELEFONO_VENTANA_MS), 5 * 60 * 1000);
+    barridoCodigos.unref?.();
+
+    const solicitarCodigo = async (req, res, next) => {
+      if (req.body?.website) return res.status(204).end();
       const phone = cleanText(req.body?.phone, 30);
       if (!validPhone(phone)) return res.status(400).json({ error: "Escribe un teléfono válido." });
-      try {
-        const existing = await bookingStore.accountByPhone(phone);
-        // password_hash (no status) es la señal real de "ya tiene contraseña creada" -- una
-        // cuenta de personal o cliente puede existir en estado "pending" (invitada, nunca activó)
-        // sin haber definido ninguna todavía, y eso NO es lo mismo que iniciar sesión.
-        if (existing?.password_hash) return res.json({ exists: true });
-        if (existing) return res.json({ exists: true, needsPasswordOnly: true });
-        // Sin cuenta de ReservApp en absoluto -- pero puede que ya sea cliente del salón (ficha
-        // creada directamente en el ERP, por el personal, o en una visita anterior). En ese caso
-        // no hace falta pedirle de nuevo nombre/apellido/fecha de nacimiento: ya los tenemos,
-        // solo falta que defina su contraseña (ver request-setup, que ya reconoce esta misma
-        // ficha por teléfono y se salta esos campos).
-        const customer = await bookingStore.resolveClient({ phone });
-        if (customer) return res.json({ exists: true, needsPasswordOnly: true });
-        res.json({ exists: false });
-      } catch (error) { next(error); }
-    });
-
-    // Confirma identidad sin que el servidor revele el nombre: el cliente escribe el suyo, y se
-    // compara (tolerando errores de tipografía -- acentos, una letra de más/menos) contra el
-    // primer nombre real de la ficha que corresponde a ese teléfono. Nunca devuelve el nombre
-    // real ni distingue "el teléfono no existe" de "el nombre no coincidió" -- misma respuesta
-    // genérica en ambos casos, para no servir de oráculo de enumeración.
-    app.post("/api/reservapp/auth/verify-name", bookingRateLimit, async (req, res, next) => {
-      const phone = cleanText(req.body?.phone, 30);
-      const firstName = cleanText(req.body?.firstName, 80);
-      if (!validPhone(phone) || !firstName) return res.status(400).json({ error: "Escribe tu nombre para continuar." });
-      try {
-        const existing = await bookingStore.accountByPhone(phone);
-        const actualName = existing?.full_name || (await bookingStore.resolveClient({ phone }))?.full_name || "";
-        const verified = Boolean(actualName) && namesLooselyMatch(firstName, actualName);
-        res.json({ verified });
-      } catch (error) { next(error); }
-    });
-
-    app.post("/api/reservapp/auth/request-setup", bookingRateLimit, async (req, res, next) => {
-      if (req.body?.website) return res.status(204).end();
-      const firstName = cleanText(req.body?.firstName, 80);
-      const lastName = cleanText(req.body?.lastName, 80);
-      const phone = cleanText(req.body?.phone, 30);
       const email = cleanText(req.body?.email, 160).toLowerCase();
-      const birthDate = cleanText(req.body?.birthDate, 10);
-      const sex = ["Femenino", "Masculino"].includes(req.body?.sex) ? req.body.sex : "";
-      const address = cleanText(req.body?.address, 300);
-      const preferredService = cleanText(req.body?.preferredService, 160);
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
       const serviceIds = cleanServiceIds(req.body?.serviceIds);
       const draft = {
         serviceIds,
@@ -742,60 +718,37 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         notes: cleanText(req.body?.notes, 500),
         idempotencyKey: cleanText(req.get("Idempotency-Key") || req.body?.idempotencyKey, 120) || crypto.randomUUID(),
       };
-      if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido." });
-      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "El correo no tiene un formato válido." });
-      // Registrarse (crear cuenta) no requiere tener ya un horario elegido --
-      // solo si el cliente arrancó desde el wizard de reserva vendrá un
-      // borrador adjunto, y en ese caso sí debe venir completo.
+      // Pedir el código no requiere tener un horario elegido. Si viene un borrador de cita, tiene
+      // que venir completo -- esto solo mira lo que mandó la persona, no revela nada del teléfono.
       const hasDraftIntent = Boolean(serviceIds.length || draft.staffId || draft.date || draft.time);
       if (hasDraftIntent && (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time))) {
         return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora, o deja todo vacío para solo crear tu cuenta." });
       }
+      // Los datos personales son opcionales aquí: si faltan y hacen falta, se piden después del
+      // código (verify-code responde needsProfile). Si llegan, se guardan solo cuando el teléfono
+      // no es de nadie todavía.
+      const registration = perfilDeRegistro(req.body);
+      const respuesta = {
+        pendingConfirmation: true,
+        expiresInSeconds: 600,
+        message: "Te enviamos por WhatsApp un código de 6 dígitos. Si no te llega en unos minutos, escríbenos por WhatsApp.",
+      };
       try {
-        // Si YA existe cualquier cuenta de ReservApp con este teléfono (de personal o de
-        // cliente) sin contraseña definida todavía, se reutiliza tal cual -- nunca se crea una
-        // ficha ni cuenta nueva encima. Cubre tanto una cuenta de personal invitada que nunca
-        // completó su activación (status "pending") como un cliente que ya empezó este mismo
-        // flujo antes. Con contraseña ya definida, sigue el candado de siempre (abajo).
-        const existingAccount = await bookingStore.accountByPhone(phone);
-        if (existingAccount && !existingAccount.password_hash) {
-          const code = generateOtpCode();
-          const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
-          const prepared = await bookingStore.prepareSetup({ accountId: existingAccount.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
-          // TEMPORAL: ver comentario junto a RESERVAPP_SKIP_PHONE_VERIFICATION más abajo -- mismo
-          // interruptor, mismo mecanismo, solo que reutilizando una cuenta ya existente.
-          if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
-            const activationTicket = secureToken();
-            const newExpiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
-            const verify = await bookingStore.verifySetupOtp({ accountId: existingAccount.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
-            if (!verify.notFound && !verify.locked && !verify.invalid) {
-              return res.status(202).json({
-                pendingConfirmation: false,
-                bypassedPhoneVerification: true,
-                activationTicket,
-                message: "Verificación de WhatsApp deshabilitada temporalmente. Crea tu contraseña para confirmar la cita.",
-              });
-            }
-          }
-          const delivery = await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: existingAccount.full_name || "" });
-          return res.status(202).json({
-            pendingConfirmation: true,
-            deliveryStatus: delivery.status,
-            expiresInSeconds: 600,
-            message: "Te enviamos por WhatsApp un código para crear tu contraseña.",
-            ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {}),
-          });
+        if (!puedeEnviarCodigo(phone)) {
+          vigilante.registrar("intentos_bloqueados", { ip: req.ip, ruta: req.path });
+          return res.status(202).json(respuesta);
         }
-        const existingClient = await bookingStore.resolveClient({ phone });
-        // Si el teléfono ya corresponde a una ficha del salón (creada en el ERP directamente, por
-        // el personal, o en una visita anterior), no hace falta volver a pedir nombre/apellido/
-        // fecha de nacimiento -- ya los tenemos. Solo un cliente realmente nuevo debe completar
-        // el formulario entero.
-        if (!existingClient) {
-          if (!firstName || !lastName) return res.status(400).json({ error: "Nombre, apellido y teléfono válido son obligatorios." });
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(birthDate) || birthDate > new Date().toISOString().slice(0, 10)) {
-            return res.status(400).json({ error: "Introduce una fecha de nacimiento válida." });
-          }
+        const code = generateOtpCode();
+        const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
+        const expuesto = String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {};
+        const account = await bookingStore.accountByPhone(phone);
+        if (account) {
+          // Una cuenta que administración suspendió o bloqueó no se reactiva sola con un código
+          // (activateWithToken la dejaría activa). Misma respuesta, sin enviar nada.
+          if (!["active", "pending"].includes(account.status)) return res.status(202).json(respuesta);
+          const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone, draft: hasDraftIntent ? draft : null });
+          await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: account.full_name || "", purpose: account.password_hash ? "reset" : "setup" });
+          return res.status(202).json({ ...respuesta, ...expuesto });
         }
         if (hasDraftIntent) {
           const availability = await bookingStore.availability({ ...draft, serviceIds });
@@ -803,73 +756,23 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
             return res.status(409).json({ error: "Ese horario acaba de ocuparse. Elige otro.", conflict: true });
           }
         }
-        // Salvaguarda ante condición de carrera (otra solicitud creó la cuenta justo después del
-        // chequeo de arriba) -- normalmente ya se resolvió en la rama de existingAccount.
-        const existing = await bookingStore.accountByPhone(phone);
-        if (existing?.password_hash) {
-          // Nunca revela el nombre aquí (ver /auth/check-phone y /auth/verify-name) -- este
-          // camino solo se alcanza si hubo una condición de carrera real, así que el frontend ya
-          // habría verificado el nombre antes de llegar aquí en el flujo normal.
-          return res.status(409).json({ error: "Ese teléfono ya tiene credenciales. Inicia sesión para reservar.", accountExists: true });
-        }
-        // A diferencia de antes, aquí NO se crea todavía ni la ficha en la ERP ni la cuenta de
-        // ReservApp -- eso quedaría como una ficha fantasma si la persona abandona el formulario
-        // sin llegar a poner su contraseña. En vez de eso, sus datos quedan guardados aparte en
-        // reservapp_pending_registrations (ver store.mjs: createPendingRegistration) hasta que de
-        // verdad confirme el código y ponga su contraseña -- ahí, y solo ahí, completePendingRegistration
-        // consulta la ERP por su teléfono y crea (o enlaza) la ficha real. Si abandona aquí, no
-        // queda ningún rastro ni en la ERP ni en ReservApp.
-        const code = generateOtpCode();
-        const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
-        const registration = existingClient ? null : { firstName, lastName, email, birthDate, sex, address, preferredService };
+        // Sin cuenta de ReservApp. Puede que ya sea cliente del salón (ficha del ERP): entonces no
+        // hace falta pedirle sus datos otra vez. Nada se crea todavía ni en el ERP ni en ReservApp
+        // -- ver createPendingRegistration / completePendingRegistration.
+        const existingClient = await bookingStore.resolveClient({ phone });
         const pendiente = await bookingStore.createPendingRegistration({
-          phone, existingClientId: existingClient?.id || null, registration,
+          phone, existingClientId: existingClient?.id || null,
+          registration: existingClient ? null : registration,
           draft: hasDraftIntent ? draft : null, tokenHash: hashToken(code), expiresAt,
         });
-        // TEMPORAL (quitar cuando Meta apruebe WHATSAPP_ACTIVATION_TEMPLATE_NAME en el bridge de
-        // WhatsApp -- dalfi-chatbot-n8n): sin esa plantilla aprobada, el bridge no puede iniciar
-        // conversación con un cliente nuevo (fuera de la ventana de 24h) y el código de
-        // verificación nunca llega, dejando el autorregistro completamente bloqueado. Con
-        // RESERVAPP_SKIP_PHONE_VERIFICATION=true nos "autoverificamos" el mismo código que
-        // acabamos de generar (mismo verifyPendingRegistrationOtp que usa /setup/verify-code,
-        // mismas reglas de expiración/consumo de un solo uso) y devolvemos el activationTicket
-        // directo, sin pasar por WhatsApp. El cliente sigue eligiendo su propia contraseña -- lo
-        // único que se salta es la prueba de que controla ese teléfono. Para revertir: borrar
-        // esta rama `if` y la env var en Render, no hace falta tocar nada más.
-        if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
-          const activationTicket = secureToken();
-          const newExpiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
-          const verify = await bookingStore.verifyPendingRegistrationOtp({ phone, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
-          if (!verify.notFound && !verify.locked && !verify.invalid) {
-            return res.status(202).json({
-              pendingConfirmation: false,
-              bypassedPhoneVerification: true,
-              activationTicket,
-              message: "Verificación de WhatsApp deshabilitada temporalmente. Crea tu contraseña para confirmar la cita.",
-            });
-          }
-        }
-        // firstName/lastName solo llegan si es un cliente realmente nuevo (ver validación
-        // arriba) -- si ya existía en el ERP, usa el nombre que ya tenía su ficha.
-        const displayName = firstName && lastName ? `${firstName} ${lastName}` : existingClient.full_name;
-        // Este es el camino vivo desde que se quitó RESERVAPP_SKIP_PHONE_VERIFICATION del servicio
-        // (2026-09-15): el código sale de verdad por WhatsApp. outboxId ya no va en null --
-        // createPendingRegistration inserta su fila en reservapp_whatsapp_outbox, que es donde
-        // sendSetupWhatsApp anota si salió o falló. Sin esa fila, un autorregistro que no llega
-        // sería invisible.
-        const delivery = await sendSetupWhatsApp({ outboxId: pendiente.outbox?.id || null, phone, code, name: displayName });
-        res.status(202).json({
-          pendingConfirmation: true,
-          deliveryStatus: delivery.status,
-          expiresInSeconds: 600,
-          message: "Te enviamos por WhatsApp un código para crear tu contraseña y confirmar la cita.",
-          ...(String(env.RESERVAPP_EXPOSE_OTP_CODE || "") === "true" ? { code } : {}),
-        });
-      } catch (error) {
-        if (error?.code === "PHONE_ACCOUNT_CONFLICT") return res.status(409).json({ error: error.message });
-        next(error);
-      }
-    });
+        const displayName = existingClient?.full_name || (registration ? `${registration.firstName} ${registration.lastName}` : "");
+        await sendSetupWhatsApp({ outboxId: pendiente.outbox?.id || null, phone, code, name: displayName });
+        res.status(202).json({ ...respuesta, ...expuesto });
+      } catch (error) { next(error); }
+    };
+    app.post("/api/reservapp/auth/request-code", bookingRateLimit, solicitarCodigo);
+    app.post("/api/reservapp/auth/request-setup", bookingRateLimit, solicitarCodigo);
+    app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, solicitarCodigo);
 
     // Primer paso del setup en dos pasos: probar que el cliente/colaboradora controla el
     // teléfono con el código de 6 dígitos que le llegó por WhatsApp. Si es correcto, rota el
@@ -900,7 +803,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
           vigilante.registrar("codigo_fallido", { ip: req.ip, ruta: req.path });
           return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
         }
-        res.json({ verified: true, activationTicket });
+        // Solo ahora, con el WhatsApp ya probado, se dice en qué situación está la cuenta:
+        // needsProfile = persona nueva de la que aún no tenemos nombre ni fecha de nacimiento
+        // (se piden antes de la contraseña); resetting = ya tenía contraseña y la va a cambiar.
+        res.json({ verified: true, activationTicket, needsProfile: Boolean(result.needsProfile), resetting: Boolean(account?.password_hash) });
       } catch (error) { next(error); }
     });
 
@@ -921,7 +827,9 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         // enlaza) la ficha real y la cuenta de ReservApp. Devuelve la misma forma que
         // activateWithToken para que el resto de esta ruta no tenga que distinguir entre las dos.
         let account = await bookingStore.activateWithToken({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt });
-        if (!account) account = await bookingStore.completePendingRegistration({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt });
+        // Los datos de una persona nueva llegan aquí cuando verify-code dijo needsProfile.
+        const registration = perfilDeRegistro(req.body?.profile || {});
+        if (!account) account = await bookingStore.completePendingRegistration({ tokenHash, passwordHash, sessionTokenHash, sessionExpiresAt, registration });
         if (!account) return res.status(410).json({ error: "El enlace venció o ya fue utilizado. Solicita uno nuevo." });
         let appointment = null;
         let bookingError = null;
@@ -956,6 +864,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       } catch (error) {
         if (error?.code === "PHONE_ACCOUNT_CONFLICT") return res.status(409).json({ error: error.message });
         if (error?.code === "PENDING_REGISTRATION_CLIENT_GONE") return res.status(410).json({ error: error.message });
+        if (error?.code === "PENDING_REGISTRATION_NEEDS_PROFILE") return res.status(400).json({ error: error.message, needsProfile: true });
         next(error);
       }
     });
@@ -976,111 +885,6 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         await bookingStore.createSession({ accountId: account.id, tokenHash: hashToken(sessionToken), expiresAt });
         res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
         res.json({ account: publicAccount(account) });
-      } catch (error) { next(error); }
-    });
-
-    // Reutiliza el mismo pipeline de OTP que el setup de cuenta nueva (prepareSetup ->
-    // /setup/verify-code -> /auth/complete-setup) -- verify-code y complete-setup no necesitan
-    // saber si vinieron de aquí o de request-setup, solo consumen el token/OTP que sea. La
-    // única diferencia real es que aquí NO se crea un cliente nuevo ni se adjunta un draft de
-    // cita, y solo procede si la cuenta ya existe y está activa.
-    app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, async (req, res, next) => {
-      const phone = cleanText(req.body?.phone, 30);
-      if (!validPhone(phone)) return res.status(400).json({ error: "Introduce un teléfono válido de 10 dígitos." });
-      try {
-        const account = await bookingStore.accountByPhone(phone);
-        if (account?.password_hash) {
-          // TEMPORAL A PROPÓSITO (pedido explícito del dueño del negocio, 2026-08-25): estamos
-          // esperando a que Meta apruebe la verificación de la empresa -- hasta entonces el
-          // bridge no puede mandar códigos reales por WhatsApp, y RESERVAPP_SKIP_PHONE_VERIFICATION
-          // se queda en "true". Mientras tanto, /auth/verify-name + /auth/set-password-after-verification
-          // reemplazan el código real: el cliente confirma su identidad escribiendo su nombre en
-          // vez de recibir un código. Cuando Meta apruebe y se apague el interruptor, este mismo
-          // bloque vuelve a mandar el código real (rama de abajo) -- no borrar esa rama.
-          if (String(env.RESERVAPP_SKIP_PHONE_VERIFICATION || "") === "true") {
-            return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
-          }
-          const code = generateOtpCode();
-          const expiresAt = new Date(Date.now() + SETUP_OTP_TTL_MS).toISOString();
-          const prepared = await bookingStore.prepareSetup({ accountId: account.id, tokenHash: hashToken(code), expiresAt, recipientPhone: phone });
-          await sendSetupWhatsApp({ outboxId: prepared.outbox.id, phone, code, name: account.full_name || "", purpose: "reset" });
-          return res.status(202).json({
-            pendingConfirmation: true,
-            message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",
-          });
-        }
-        // Sin contraseña creada todavía: no necesariamente "olvidó" la suya -- puede que nunca
-        // haya definido ninguna (cuenta de personal invitada sin activar, o ficha del ERP sin
-        // credenciales de ReservApp todavía -- mismos dos casos que reconoce /auth/check-phone).
-        if (account) return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
-        const customer = await bookingStore.resolveClient({ phone });
-        if (customer) return res.json({ pendingConfirmation: false, needsNameConfirmation: true });
-        // Ni cuenta ni ficha -- misma respuesta genérica que antes, este endpoint no debe servir
-        // para enumerar qué teléfonos existen en el sistema.
-        res.status(202).json({
-          pendingConfirmation: true,
-          message: "Si ese teléfono tiene una cuenta activa, te enviamos por WhatsApp un código para restablecer tu contraseña.",
-        });
-      } catch (error) { next(error); }
-    });
-
-    // Autoservicio de contraseña una vez confirmada la identidad por nombre (/auth/verify-name):
-    // sirve tanto para crear la contraseña por primera vez como para reemplazar una que ya no
-    // recuerda -- misma acción en ambos casos, sin distinguir, porque desde aquí solo importa
-    // "ya sé quién dice ser, déjala definir una contraseña". Vuelve a verificar el nombre aquí
-    // mismo (nunca confía en que el frontend ya lo hizo en /auth/verify-name) y NUNCA reactiva
-    // una cuenta que administración suspendió/bloqueó a propósito -- esa sigue exigiendo que
-    // administración la reinicie (POST /admin/accounts/:id/reset-password o "Reiniciar acceso").
-    app.post("/api/reservapp/auth/set-password-after-verification", bookingRateLimit, async (req, res, next) => {
-      const phone = cleanText(req.body?.phone, 30);
-      const firstName = cleanText(req.body?.firstName, 80);
-      const password = String(req.body?.password || "");
-      if (!validPhone(phone) || !firstName) return res.status(400).json({ error: "Escribe tu nombre para continuar." });
-      if (!validPassword(password)) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres, una letra y un número." });
-      // Borrador de cita opcional (si venía de reservar y se identificó a mitad del wizard) --
-      // mismo criterio que request-setup: solo se valida/crea si de verdad hay una selección
-      // completa, nunca a medias.
-      const serviceIds = cleanServiceIds(req.body?.serviceIds);
-      const draft = {
-        serviceIds, staffId: cleanText(req.body?.staffId, 64), date: cleanText(req.body?.date, 10),
-        time: cleanText(req.body?.time, 5), notes: cleanText(req.body?.notes, 500),
-      };
-      const hasDraftIntent = Boolean(serviceIds.length || draft.staffId || draft.date || draft.time);
-      if (hasDraftIntent && (!serviceIds.length || !draft.staffId || !/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || !/^\d{2}:\d{2}$/.test(draft.time))) {
-        return res.status(400).json({ error: "Selecciona servicios, manicurista, fecha y hora, o deja todo vacío para solo definir tu contraseña." });
-      }
-      try {
-        const existingAccount = await bookingStore.accountByPhone(phone);
-        const customer = existingAccount ? null : await bookingStore.resolveClient({ phone });
-        const actualName = existingAccount?.full_name || customer?.full_name || "";
-        if (!actualName || !namesLooselyMatch(firstName, actualName)) {
-          return res.status(401).json({ error: "No pudimos confirmar tu identidad con ese nombre. Pide a administración que reinicie tu acceso." });
-        }
-        let accountId = existingAccount?.id;
-        let clientId = existingAccount?.client_id || customer?.id;
-        if (!accountId) accountId = (await bookingStore.ensureClientAccount({ clientId: customer.id, phone })).id;
-        const updated = await bookingStore.setOwnPasswordAndActivate({ id: accountId, passwordHash: await hashPassword(password) });
-        if (!updated) return res.status(403).json({ error: "Esta cuenta está suspendida. Pide a administración que reinicie tu acceso." });
-        const sessionToken = secureToken();
-        const sessionExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
-        await bookingStore.createSession({ accountId, tokenHash: hashToken(sessionToken), expiresAt: sessionExpiresAt });
-        const account = await bookingStore.accountByPhone(phone);
-        let appointment = null;
-        let bookingError = null;
-        if (hasDraftIntent && clientId) {
-          const input = { clientId, ...draft, serviceIds, source: "RESERVAPP_CLIENTE", createdBy: { role: "cliente", accountId }, idempotencyKey: crypto.randomUUID() };
-          const availability = await bookingStore.availability(input);
-          if (availability.slots?.some((slot) => slot.staffId === draft.staffId && slot.time === draft.time)) {
-            input.endTime = new Date(new Date(`2000-01-01T${draft.time}:00Z`).getTime() + availability.durationMinutes * 60_000).toISOString().slice(11, 16);
-            const created = await bookingStore.createAppointment(input);
-            if (!created.conflict && !created.missing) {
-              appointment = { id: created.appointment.id, reference: created.appointment.legacy_id };
-              if (!created.idempotent) await syncChangedAppointmentsToGoogleCalendar(env, created.previousDocument, created.document, { fetchImpl });
-            } else bookingError = "Tu contraseña quedó definida, pero el horario se ocupó. Elige otro.";
-          } else bookingError = "Tu contraseña quedó definida, pero el horario se ocupó. Elige otro.";
-        }
-        res.set("Set-Cookie", sessionCookie(sessionToken, 30 * 86_400));
-        res.json({ account: publicAccount(account), appointment, bookingError });
       } catch (error) { next(error); }
     });
 
@@ -1476,9 +1280,8 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     });
 
     // Alternativa al reset manual de arriba: en vez de que administración escriba la
-    // contraseña nueva, borra la que tenía -- la próxima vez que esa persona ponga su teléfono
-    // en ReservApp, la reconoce sin contraseña (ver check-phone/request-setup) y la manda
-    // directo a "¿Eres tú? Crea tu contraseña" para que la defina ella misma.
+    // contraseña nueva, borra la que tenía -- esa persona pide su código por WhatsApp en
+    // ReservApp (/auth/request-code) y define ella misma una contraseña nueva.
     app.post("/api/reservapp/admin/accounts/:id/clear-password", bookingRateLimit, async (req, res, next) => {
       try {
         const { allowed } = await resolveAdminAuthority(req);

@@ -60,10 +60,9 @@ test("request-setup marca el outbox como sent solo cuando el bridge confirma SEN
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestSetupBody()),
     });
     assert.equal(response.status, 202);
-    assert.equal((await response.json()).deliveryStatus, "sent");
-    // outboxId va en null a propósito: createPendingRegistration todavía no inserta fila en
-    // reservapp_whatsapp_outbox (ver comentario junto a su uso en server/app.mjs) mientras
-    // RESERVAPP_SKIP_PHONE_VERIFICATION mantenga este camino como código muerto en producción.
+    // El resultado del envío queda en el outbox, no en la respuesta: la respuesta es la misma
+    // para cualquier teléfono (anti-enumeración, 2026-09-18).
+    assert.equal((await response.json()).deliveryStatus, undefined);
     assert.deepEqual(store.whatsappCalls, [{ outboxId: null, status: "sent", error: undefined }]);
   });
 });
@@ -75,16 +74,16 @@ test("request-setup NO marca sent si el bridge responde 200 pero IGNORED/UNKNOWN
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestSetupBody()),
     });
     assert.equal(response.status, 202);
-    assert.equal((await response.json()).deliveryStatus, "failed");
+    assert.equal((await response.json()).deliveryStatus, undefined);
     assert.equal(store.whatsappCalls[0].status, "failed");
     assert.match(store.whatsappCalls[0].error, /IGNORED|UNKNOWN_EVENT/);
   });
 });
 
-// TEMPORAL: cubre RESERVAPP_SKIP_PHONE_VERIFICATION (ver comentario junto a su uso en
-// server/app.mjs) -- mientras Meta no apruebe la plantilla de activación, este flag permite
-// omitir el envío/verificación de WhatsApp y devolver el activationTicket directo.
-test("request-setup con RESERVAPP_SKIP_PHONE_VERIFICATION=true devuelve activationTicket sin llamar al bridge de WhatsApp", async () => {
+// RESERVAPP_SKIP_PHONE_VERIFICATION era el atajo sin WhatsApp mientras Meta no aprobaba la
+// plantilla. Desde el 2026-09-18 ya no existe: con él, cualquiera podía crear la contraseña de un
+// teléfono ajeno. Aunque alguien vuelva a poner la variable, el código sale por WhatsApp.
+test("request-setup con RESERVAPP_SKIP_PHONE_VERIFICATION=true igual manda el código y nunca entrega un activationTicket", async () => {
   let bridgeCalled = false;
   const fetchImpl = async () => { bridgeCalled = true; return new Response(JSON.stringify({ status: "SENT" }), { status: 200 }); };
   const store = bookingStore();
@@ -105,11 +104,9 @@ test("request-setup con RESERVAPP_SKIP_PHONE_VERIFICATION=true devuelve activati
     });
     const body = await response.json();
     assert.equal(response.status, 202);
-    assert.equal(body.bypassedPhoneVerification, true);
-    assert.equal(body.pendingConfirmation, false);
-    assert.equal(typeof body.activationTicket, "string");
-    assert.ok(body.activationTicket.length > 10);
-    assert.equal(bridgeCalled, false, "no debe llamar al bridge de WhatsApp cuando el bypass está activo");
+    assert.equal(body.pendingConfirmation, true);
+    assert.equal(body.activationTicket, undefined);
+    assert.equal(bridgeCalled, true);
   } finally { server.close(); await once(server, "close"); }
 });
 
@@ -120,7 +117,7 @@ test("request-setup marca failed si el bridge responde un HTTP de error", async 
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(requestSetupBody()),
     });
     assert.equal(response.status, 202);
-    assert.equal((await response.json()).deliveryStatus, "failed");
+    assert.equal((await response.json()).deliveryStatus, undefined);
     assert.equal(store.whatsappCalls[0].status, "failed");
   });
 });
