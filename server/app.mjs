@@ -1,6 +1,6 @@
 import express from "express";
 import compression from "compression";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   resolveErpIdentity,
   requireErpPermission,
@@ -22,6 +22,7 @@ import { runClosingCatchUp } from "./closing-catchup.mjs";
 import { businessMinutesBetween, documentData } from "./store.mjs";
 import { buildMovedAppointmentMessage, fechaEnPalabras } from "./moved-appointment-message.mjs";
 import { construirNotificacion, enviarPush, pushConfigurado } from "./push.mjs";
+import { crearVigilante } from "./alertas-seguridad.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
@@ -252,12 +253,41 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     }
   };
 
+  // Avisos de seguridad por correo (ver server/alertas-seguridad.mjs). Cuenta intentos
+  // sospechosos y avisa a administración si se disparan; antes quedaban en los registros y nadie
+  // se enteraba.
+  const vigilante = crearVigilante({
+    env,
+    enviarCorreo: (mensaje) => sendBusinessEmail(env, mensaje, undefined, undefined, fetchImpl),
+  });
+
+  // Comparación de secretos en tiempo constante. Con `!==` la comparación se corta en el primer
+  // carácter distinto, y en teoría midiendo cuánto tarda la respuesta se puede ir adivinando el
+  // secreto letra a letra. Se comparan los hashes y no las cadenas porque timingSafeEqual exige
+  // la misma longitud, y comparar longitudes primero ya filtraría la longitud del secreto.
+  const secretoCoincide = (recibido, esperado) => {
+    if (!esperado) return false;
+    const a = createHash("sha256").update(String(recibido || "")).digest();
+    const b = createHash("sha256").update(String(esperado)).digest();
+    return timingSafeEqual(a, b);
+  };
+  // true si el secreto de la cabecera NO vale. Además lo cuenta como evento de seguridad: estas
+  // rutas solo las llaman el bot y las tareas programadas, que conocen el secreto.
+  const secretoInvalido = (req, cabecera, esperado) => {
+    if (secretoCoincide(req.get(cabecera) || "", esperado)) return false;
+    vigilante.registrar("secreto_invalido", { ip: req.ip, ruta: req.path });
+    return true;
+  };
+
   const bookingHits = new Map();
   const bookingRateLimit = (req, res, next) => {
     const key = req.ip || "unknown";
     const now = Date.now();
     const recent = (bookingHits.get(key) || []).filter((time) => now - time < BOOKING_LIMIT_WINDOW_MS);
-    if (recent.length >= BOOKING_LIMIT_MAX) return res.status(429).json({ error: "Demasiados intentos. Espera unos minutos." });
+    if (recent.length >= BOOKING_LIMIT_MAX) {
+      vigilante.registrar("intentos_bloqueados", { ip: key, ruta: req.path });
+      return res.status(429).json({ error: "Demasiados intentos. Espera unos minutos." });
+    }
     recent.push(now);
     bookingHits.set(key, recent);
     next();
@@ -861,9 +891,15 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         const result = account
           ? await bookingStore.verifySetupOtp({ accountId: account.id, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt })
           : await bookingStore.verifyPendingRegistrationOtp({ phone, codeHash: hashToken(code), newTokenHash: hashToken(activationTicket), newExpiresAt });
-        if (result.locked) return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
+        if (result.locked) {
+          vigilante.registrar("codigo_fallido", { ip: req.ip, ruta: req.path });
+          return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
+        }
         if (result.notFound) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
-        if (result.invalid) return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
+        if (result.invalid) {
+          vigilante.registrar("codigo_fallido", { ip: req.ip, ruta: req.path });
+          return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
+        }
         res.json({ verified: true, activationTicket });
       } catch (error) { next(error); }
     });
@@ -931,7 +967,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       try {
         const account = await bookingStore.accountByPhone(phone);
         const correct = account?.status === "active" && await verifyPassword(password, account.password_hash);
-        if (!correct) return res.status(401).json({ error: "Teléfono o contraseña incorrectos." });
+        if (!correct) {
+          vigilante.registrar("login_fallido", { ip: req.ip, ruta: req.path });
+          return res.status(401).json({ error: "Teléfono o contraseña incorrectos." });
+        }
         const sessionToken = secureToken();
         const expiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
         await bookingStore.createSession({ accountId: account.id, tokenHash: hashToken(sessionToken), expiresAt });
@@ -1809,7 +1848,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     app.post("/api/booking/send-reminders", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.BOOKING_REMINDER_CRON_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar BOOKING_REMINDER_CRON_SECRET." });
-      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      if (secretoInvalido(req, "x-cron-secret", expectedSecret)) return res.status(401).json({ error: "Secreto de cron inválido." });
       try {
         const { settings } = await bookingStore.businessSettings();
         const appointments = await bookingStore.listAppointmentsForReminderSweep();
@@ -1857,7 +1896,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     app.post("/api/booking/expire-unconfirmed", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.EXPIRE_UNCONFIRMED_CRON_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar EXPIRE_UNCONFIRMED_CRON_SECRET." });
-      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      if (secretoInvalido(req, "x-cron-secret", expectedSecret)) return res.status(401).json({ error: "Secreto de cron inválido." });
       try {
         // El margen evita cerrar una cita que acaba de terminar mientras la manicurista todavía
         // está cobrando y aún no le ha dado a "Atendida".
@@ -1871,7 +1910,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     app.post("/api/booking/purge-deposit-receipts", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.DEPOSIT_RECEIPT_PURGE_CRON_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar DEPOSIT_RECEIPT_PURGE_CRON_SECRET." });
-      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      if (secretoInvalido(req, "x-cron-secret", expectedSecret)) return res.status(401).json({ error: "Secreto de cron inválido." });
       try {
         const recibos = await bookingStore.purgeExpiredDepositReceipts();
         // El mismo cron diario se lleva tambien los adjuntos del chat con mas de 3 dias. Se
@@ -1891,7 +1930,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     app.post("/api/booking/send-deposit-review-reminders", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.DEPOSIT_REVIEW_REMINDER_CRON_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar DEPOSIT_REVIEW_REMINDER_CRON_SECRET." });
-      if ((req.get("x-cron-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de cron inválido." });
+      if (secretoInvalido(req, "x-cron-secret", expectedSecret)) return res.status(401).json({ error: "Secreto de cron inválido." });
       try {
         if (!isWithinDepositReminderWindow()) return res.json({ ok: true, skipped: "outside_window", sent: 0 });
         const pending = await bookingStore.listPendingDepositReviews();
@@ -1928,7 +1967,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
         return false;
       }
-      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) {
+      if (secretoInvalido(req, "x-chatbot-secret", expectedSecret)) {
         res.status(401).json({ error: "Secreto de chatbot inválido." });
         return false;
       }
@@ -1959,7 +1998,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     app.get("/api/booking/bank-accounts", bookingRateLimit, async (req, res, next) => {
       const expectedSecret = env.CHATBOT_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
-      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) return res.status(401).json({ error: "Secreto de chatbot inválido." });
+      if (secretoInvalido(req, "x-chatbot-secret", expectedSecret)) return res.status(401).json({ error: "Secreto de chatbot inválido." });
       try {
         const row = await store.read();
         const cuentas = Array.isArray(documentData(row?.data)?.cuentas) ? documentData(row?.data).cuentas : [];
@@ -1990,7 +2029,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     // pasar si esta cita puntual ya quedó cancelada/reasignada por otro lado mientras tanto.
     app.post("/api/reservapp/booking/confirm-attendance", bookingRateLimit, async (req, res, next) => {
       const bridgeSecret = String(env.ERP_WEBHOOK_SECRET || "");
-      const viaBridge = bridgeSecret && (req.get("x-webhook-secret") || "") === bridgeSecret;
+      const viaBridge = Boolean(bridgeSecret) && secretoCoincide(req.get("x-webhook-secret") || "", bridgeSecret);
       let clientId = null;
       if (!viaBridge) {
         const session = await reservappSession(req);
@@ -2087,7 +2126,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!validPhone(phone) || !/^\d{6}$/.test(code)) return res.status(400).json({ error: "Código inválido." });
       try {
         const result = await bookingStore.verifyRelayOtp({ phone, codeHash: hashToken(code) });
-        if (result.locked) return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
+        if (result.locked) {
+          vigilante.registrar("codigo_fallido", { ip: req.ip, ruta: req.path });
+          return res.status(429).json({ error: "Demasiados intentos. Solicita un nuevo código.", code: "OTP_LOCKED" });
+        }
         if (result.notFound) return res.status(410).json({ error: "El código venció o no fue solicitado. Solicita uno nuevo.", code: "OTP_NOT_FOUND" });
         if (result.invalid) {
           return res.status(401).json({ error: "Código incorrecto.", code: "OTP_INVALID", attemptsRemaining: result.attemptsRemaining });
@@ -2422,7 +2464,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
       const expectedSecret = env.CHATBOT_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
-      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) {
+      if (secretoInvalido(req, "x-chatbot-secret", expectedSecret)) {
         return res.status(401).json({ error: "Secreto de chatbot inválido." });
       }
       const body = req.body || {};
@@ -2521,7 +2563,7 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       if (!chatStore) return res.status(503).json({ error: "Bandeja no disponible." });
       const expectedSecret = env.CHATBOT_SECRET;
       if (!expectedSecret) return res.status(500).json({ error: "Falta configurar CHATBOT_SECRET." });
-      if ((req.get("x-chatbot-secret") || "") !== expectedSecret) {
+      if (secretoInvalido(req, "x-chatbot-secret", expectedSecret)) {
         return res.status(401).json({ error: "Secreto de chatbot inválido." });
       }
       const after = typeof req.query.after === "string" && req.query.after ? req.query.after : null;
@@ -3695,6 +3737,11 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   });
 
   registerLegacyBookingApi(app, { store, env, fetchImpl });
+
+  // Cualquier /api/... que llegue hasta aquí no existe. Antes caía en la página de la aplicación
+  // con un 200, y un programa que se equivocara de ruta recibía HTML creyendo que todo iba bien.
+  // Tiene que ir DESPUÉS de todas las rutas /api y ANTES del comodín de la página.
+  app.all("/api/{*splat}", (_req, res) => res.status(404).json({ error: "Ruta no encontrada." }));
 
   if (staticDir) {
     app.use("/reservar", express.static(`${staticDir}/reservar`, { extensions: ["html"] }));
