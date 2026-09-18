@@ -184,6 +184,22 @@ test("FW09 — sin GOOGLE_REVIEW_URL usa el enlace real del negocio, el mismo de
   try {
     const r = await fetch(`http://127.0.0.1:${server.address().port}/resena`, { redirect: "manual" });
     assert.equal(r.status, 302);
-    assert.match(r.headers.get("location"), /^https:\/\/www\.google\.com\/maps\/place\/\/data=/);
+    // El enlace OFICIAL de "pedir opiniones" del Perfil de Negocio. El que habia antes
+    // (maps/place//data=...!12e1) aterrizaba en la ficha y dejaba a la clienta buscando el boton
+    // de escribir resena ella sola -- comprobado en produccion el 2026-09-17. Esa friccion es
+    // justo la que hace que no la dejen, y una resena que no se escribe no se recupera.
+    assert.match(r.headers.get("location"), /^https:\/\/g\.page\/r\/[A-Za-z0-9_-]+\/review$/);
   } finally { server.close(); await once(server, "close"); }
+});
+
+test("FW10 — ningún sitio se queda con el enlace de reseña viejo", async () => {
+  // Habia CUATRO copias del enlace repartidas por el repo. Si una se queda atras, unas clientas
+  // aterrizan en el cuadro de escribir resena y otras en la ficha, y nadie se entera de por que
+  // unas dejan resena y otras no.
+  const { readFile } = await import("node:fs/promises");
+  for (const archivo of ["../server/app.mjs", "../outputs/reservar/app.js", "../outputs/dalfistudionails/index.html"]) {
+    const fuente = await readFile(new URL(archivo, import.meta.url), "utf8");
+    const codigo = fuente.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+    assert.doesNotMatch(codigo, /maps\/place\/\/data=/, `${archivo} sigue con el enlace viejo`);
+  }
 });

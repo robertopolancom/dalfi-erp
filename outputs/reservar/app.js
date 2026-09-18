@@ -1104,10 +1104,10 @@ function renderAppointmentCard(apt) {
   return card;
 }
 
-// !12e1 abre directamente el cuadro de "escribir reseña" del listado de Google, sin pasar por la
+// El enlace oficial de "pedir opiniones" del Perfil de Negocio abre el cuadro de escribir
 // ficha. El id es el ftid del negocio en Google Maps; no hace falta clave de API.
 const GOOGLE_REVIEW_URL =
-  "https://www.google.com/maps/place//data=!4m3!3m2!1s0x8ea54f001fe84fb3:0x87f47f6d24a641bd!12e1";
+  "https://g.page/r/Cb1BpiRtf_SHEAI/review";
 
 function reviewInviteEl() {
   const box = document.createElement("div");

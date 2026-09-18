@@ -65,8 +65,12 @@ const RELAY_OTP_REQUEST_LIMIT_MAX = 5;
 // y la página pública: es el enlace de "escribir reseña" de la ficha, no la ficha. Se puede
 // sustituir con GOOGLE_REVIEW_URL sin tocar código ni volver a pedirle nada a Meta, porque lo que
 // va en la plantilla de WhatsApp es /resena de este servidor, no esta dirección.
+// Enlace OFICIAL de "pedir opiniones" que da Google en el Perfil de Negocio (g.page/r/.../review).
+// Sustituye al que habia (maps/place//data=...!12e1), que en la practica aterrizaba en la ficha y
+// obligaba a la clienta a buscar el boton de escribir resena ella sola. Esa friccion es
+// exactamente la que hace que no la dejen.
 const GOOGLE_REVIEW_URL_DEFAULT =
-  "https://www.google.com/maps/place//data=!4m3!3m2!1s0x8ea54f001fe84fb3:0x87f47f6d24a641bd!12e1";
+  "https://g.page/r/Cb1BpiRtf_SHEAI/review";
 
 // Ventana de negocio para el recordatorio horario de comprobantes de depósito pendientes de
 // revisar (ver POST /api/booking/send-deposit-review-reminders): 8am-11pm hora de Santo
