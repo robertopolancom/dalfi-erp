@@ -215,9 +215,15 @@ test("FW11 — TODO enlace de reseña que ve un cliente es dalfistudio.com/resen
   const factura = await readFile(new URL("../server/invoice-link.mjs", import.meta.url), "utf8");
   assert.match(factura, /class="resena"/, "cada factura tiene que invitar a resenar");
   assert.match(factura, /href="https:\/\/dalfistudio\.com\/resena"/);
-  // Y el rebote del sitio público al servidor.
-  const rebote = await readFile(new URL("../outputs/dalfistudionails/_redirects", import.meta.url), "utf8");
-  assert.match(rebote, /^\/resena https:\/\/ssc\.dalfistudio\.com\/resena 302$/m);
+  // Y la página puente del sitio público: vista previa en español al compartir el enlace (con
+  // una redirección directa WhatsApp mostraba la de Google, en inglés) y salto inmediato a
+  // /resena del servidor.
+  const puente = await readFile(new URL("../outputs/dalfistudionails/resena.html", import.meta.url), "utf8");
+  assert.match(puente, /<html lang="es">/);
+  assert.match(puente, /property="og:title" content="Déjanos tu reseña/);
+  assert.match(puente, /property="og:description" content="[^"]*opinión/);
+  assert.match(puente, /http-equiv="refresh" content="0; url=https:\/\/ssc\.dalfistudio\.com\/resena"/);
+  assert.doesNotMatch(puente, /g\.page\/r\//, "la dirección de Google solo la sabe el servidor");
 });
 
 test("FW10 — ningún sitio se queda con el enlace de reseña viejo", async () => {
