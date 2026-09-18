@@ -1,0 +1,4 @@
+# El enlace de reseña que se comparte es dalfistudio.com/resena (corto, con el dominio de la marca).
+# Rebota a /resena del ERP, que es el único sitio que sabe la dirección real de Google
+# (GOOGLE_REVIEW_URL): si Google la cambia, se toca allí y esto sigue igual.
+/resena https://ssc.dalfistudio.com/resena 302

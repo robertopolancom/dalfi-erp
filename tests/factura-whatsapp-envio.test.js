@@ -192,8 +192,10 @@ test("FW09 — sin GOOGLE_REVIEW_URL usa el enlace real del negocio, el mismo de
   } finally { server.close(); await once(server, "close"); }
 });
 
-test("FW11 — TODO enlace de reseña que ve un cliente pasa por /resena", async () => {
-  // La regla: solo el servidor sabe la direccion real de Google. Todo lo demas apunta a /resena.
+test("FW11 — TODO enlace de reseña que ve un cliente es dalfistudio.com/resena", async () => {
+  // La regla: solo el servidor sabe la direccion real de Google. Lo que ve el cliente es
+  // dalfistudio.com/resena (pedido del dueño, 2026-09-18: el dominio de la marca), que rebota a
+  // /resena del servidor.
   // Asi el destino se cambia en un sitio -- sin desplegar ReservApp, sin tocar el sitio publico,
   // sin desplegar el bot y sin volver a pedirle nada a Meta.
   //
@@ -204,14 +206,18 @@ test("FW11 — TODO enlace de reseña que ve un cliente pasa por /resena", async
   for (const archivo of clientes) {
     const fuente = await readFile(new URL(archivo, import.meta.url), "utf8");
     const codigo = fuente.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-    assert.match(codigo, /ssc\.dalfistudio\.com\/resena/, `${archivo} tiene que pasar por /resena`);
+    assert.match(codigo, /https:\/\/dalfistudio\.com\/resena/, `${archivo} tiene que usar dalfistudio.com/resena`);
+    assert.doesNotMatch(codigo, /ssc\.dalfistudio\.com\/resena/, `${archivo} todavía muestra el enlace largo`);
     assert.doesNotMatch(codigo, /g\.page\/r\//, `${archivo} no puede saltarse /resena`);
     assert.doesNotMatch(codigo, /maps\.app\.goo\.gl\/QNxpbs5Gt2H4Xryz7\?g_st/, `${archivo}: ese es el perfil, no el cuadro de escribir`);
   }
   // Y la factura, que es donde mas se pide: invitacion visible y apuntando al mismo sitio.
   const factura = await readFile(new URL("../server/invoice-link.mjs", import.meta.url), "utf8");
   assert.match(factura, /class="resena"/, "cada factura tiene que invitar a resenar");
-  assert.match(factura, /href="\/resena"/);
+  assert.match(factura, /href="https:\/\/dalfistudio\.com\/resena"/);
+  // Y el rebote del sitio público al servidor.
+  const rebote = await readFile(new URL("../outputs/dalfistudionails/_redirects", import.meta.url), "utf8");
+  assert.match(rebote, /^\/resena https:\/\/ssc\.dalfistudio\.com\/resena 302$/m);
 });
 
 test("FW10 — ningún sitio se queda con el enlace de reseña viejo", async () => {

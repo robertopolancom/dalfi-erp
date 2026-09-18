@@ -207,11 +207,11 @@ export function renderInvoiceHtml(view) {
        Motivo: el mensaje se lee en dos segundos y se archiva; esta pagina se abre a proposito,
        cuando el cliente quiere ver en que se le fue el dinero, y ese es el momento en que esta
        pensando en el servicio que acaba de recibir. Es el mejor momento para pedirselo.
-       El enlace apunta a /resena de este mismo servidor, como todos los demas: el destino real
-       se cambia en un solo sitio. -->
+       El enlace es dalfistudio.com/resena, como todos los que ve un cliente: rebota a /resena
+       de este servidor, y el destino real se cambia en un solo sitio. -->
   <div class="resena">
     <p>¿Quedaste a gusto con tu visita? Cuéntalo en Google — a otra persona de Baní le ayuda a decidirse, y a nosotras nos alegra el día.</p>
-    <a href="/resena" target="_blank" rel="noopener">Dejar mi reseña</a>
+    <a href="https://dalfistudio.com/resena" target="_blank" rel="noopener">Dejar mi reseña</a>
   </div>
   <div class="foot">
     Calle Juan Caballero No. 38 · Baní, Peravia<br>
