@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "build": "node scripts/write-supabase-config.mjs",
+    "build": "node scripts/write-supabase-config.mjs && node scripts/build-erp-assets.mjs",
     "start": "node server/index.mjs",
     "test": "node --test",
     "test:e2e": "node --test tests/e2e-browser.e2e.js tests/e2e-business-flows.test.js",
@@ -14,6 +14,7 @@
     "web-push": "3.6.7"
   },
   "devDependencies": {
+    "esbuild": "0.25.12",
     "playwright": "^1.62.0"
   }
 }

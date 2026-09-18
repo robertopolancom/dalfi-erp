@@ -3748,7 +3748,8 @@
     </dialog>
 
     <script src="supabase-config.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- supabase-js fijado en 2.116.0 y servido desde aquí (antes: CDN con versión flotante @2, cualquier 2.x nueva entraba sin revisar). Para actualizar: npm pack @supabase/supabase-js@X y copiar dist/umd/supabase.js. -->
+<script src="vendor/supabase-js-2.116.0.js"></script>
     <script src="lib/closing-math.js?v=20260724-secure-persistence"></script>
     <!-- type="module" es obligatorio: este archivo usa `export` (lo importan 10 pruebas de
          tests/ como ESM) y además publica globalThis.DalfiBookingEngine para el navegador. Como

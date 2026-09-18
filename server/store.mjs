@@ -771,7 +771,7 @@ export class NeonBookingStore {
           and (lower(c.full_name) like lower($1)
                or ($2 <> '' and p.phone_normalized like '%' || app.normalize_phone($2) || '%'))
         order by c.full_name limit 12`,
-      [`%${query}%`, digits],
+      [`%${String(query).replace(/[\\%_]/g, "\\$&")}%`, digits], // comodines escapados, ver listClientsForAdmin
     );
     return result.rows;
   }
@@ -1113,7 +1113,9 @@ export class NeonBookingStore {
   // reservarle una cita a CUALQUIER cliente (GET /api/fast-booking/clients) es una consulta
   // aparte y sigue mostrando la ERP completa -- ese es un uso legítimo distinto de este panel.
   async listClientsForAdmin({ query = "", limit = 200 } = {}) {
-    const search = `%${query.trim()}%`;
+    // % y _ son comodines de ILIKE: sin escaparlos, buscar "%" traía a todos los clientes. No
+    // era inyección (va como parámetro), pero la búsqueda tiene que buscar lo que se escribió.
+    const search = `%${query.trim().replace(/[\\%_]/g, "\\$&")}%`;
     const result = await this.pool.query(
       `select c.id, c.full_name, c.status, c.email, p.phone_original client_phone,
               ra.id account_id, ra.status account_status

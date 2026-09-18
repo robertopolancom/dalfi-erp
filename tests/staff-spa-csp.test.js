@@ -30,12 +30,14 @@ async function withServer(env, fn) {
   finally { server.close(); await once(server, "close"); }
 }
 
-test("la SPA del personal recibe un CSP que permite jsdelivr (cliente de Supabase) y el proyecto real de Supabase", async () => {
+test("la SPA del personal recibe un CSP solo con scripts propios (supabase-js se sirve de outputs/vendor) y el proyecto real de Supabase", async () => {
   await withServer({ SUPABASE_URL: "https://miproyecto.supabase.co" }, async (base) => {
     const response = await fetch(`${base}/`);
     const csp = response.headers.get("content-security-policy");
     assert.ok(csp, "debe traer el header Content-Security-Policy");
-    assert.match(csp, /script-src 'self' https:\/\/cdn\.jsdelivr\.net/);
+    // Sin CDN de terceros desde 2026-09-18: una versión flotante de un CDN podía cambiar sin revisar.
+    assert.match(csp, /script-src 'self'(;|$)/);
+    assert.doesNotMatch(csp, /jsdelivr/);
     assert.match(csp, /connect-src 'self' https:\/\/miproyecto\.supabase\.co wss:\/\/miproyecto\.supabase\.co/);
     assert.match(csp, /frame-ancestors 'none'/);
   });

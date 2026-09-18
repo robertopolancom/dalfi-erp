@@ -7,8 +7,8 @@
 // No hay envío sin conexión a propósito: una respuesta en cola que sale sola media hora después,
 // cuando la clienta ya se fue o la atendió otra, es peor que no haberla mandado. La app bloquea
 // el envío y lo dice.
-const CACHE = "dalfi-inbox-v1";
-const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./transporte.js", "./config.js", "./manifest.webmanifest"];
+const CACHE = "dalfi-inbox-v2";
+const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./transporte.js", "./config.js", "./manifest.webmanifest", "./vendor/supabase-js-2.116.0.js"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));

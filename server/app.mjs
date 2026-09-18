@@ -102,9 +102,9 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
-  // La SPA del personal (outputs/index.html) carga el cliente de Supabase desde jsdelivr y le
-  // habla directo a SUPABASE_URL (el auth legado nunca se migró, ver render.yaml) -- ambos
-  // hosts tienen que estar permitidos explícitamente o el CSP rompe el login del personal en
+  // La SPA del personal (outputs/index.html) carga el cliente de Supabase (outputs/vendor, versión
+  // fija) y le habla directo a SUPABASE_URL (el auth legado nunca se migró, ver render.yaml) -- ese
+  // host tiene que estar permitido explícitamente o el CSP rompe el login del personal en
   // vez de solo bloquear ataques. Derivado de env.SUPABASE_URL en vez de hardcodeado para que
   // no se desactualice si el proyecto de Supabase cambia (mismo valor que
   // scripts/write-supabase-config.mjs usa para outputs/supabase-config.js).
@@ -114,7 +114,8 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   const supabaseConnectSrc = supabaseOrigin ? `${supabaseOrigin} ${supabaseOrigin.replace(/^https:/, "wss:")}` : "";
   const staffCsp = [
     "default-src 'self'",
-    "script-src 'self' https://cdn.jsdelivr.net",
+    // Sin CDN de terceros: supabase-js se sirve desde outputs/vendor con versión fija.
+    "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     `connect-src 'self' ${supabaseConnectSrc}`.trim(),
     // blob: lo necesita compressSiteImage() en outputs/app.js: pasa el archivo elegido por
@@ -3592,6 +3593,15 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
   app.all("/api/{*splat}", (_req, res) => res.status(404).json({ error: "Ruta no encontrada." }));
 
   if (staticDir) {
+    // Un año en caché para lo que lleva su versión en la dirección: ?v=<hash de 12> que pone
+    // scripts/build-erp-assets.mjs al construir, o la versión en el nombre (outputs/vendor/). Si
+    // el archivo cambia, cambia la dirección. Solo el formato de hash: un ?v= escrito a mano (el
+    // repo sin construir, en local) no garantiza eso y se queda revalidando como antes.
+    app.use((req, res, next) => {
+      const versionado = /^[0-9a-f]{12}$/.test(String(req.query.v || "")) && /\.(js|css)$/.test(req.path);
+      if (versionado || req.path.startsWith("/vendor/")) res.set("Cache-Control", "public, max-age=31536000, immutable");
+      next();
+    });
     app.use("/reservar", express.static(`${staticDir}/reservar`, { extensions: ["html"] }));
     app.get("/reservar", (_req, res) => res.sendFile("index.html", { root: `${staticDir}/reservar` }));
     app.use(express.static(staticDir, { extensions: ["html"] }));

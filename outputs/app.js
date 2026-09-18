@@ -11562,48 +11562,103 @@ function renderSettings() {
     : '<p class="empty">No hay configuraciones de TSS registradas.</p>';
 }
 
+// Qué hay que reconstruir para cada pantalla (id de la <section class="view">). Antes renderAll()
+// reconstruía las 41 piezas de TODAS las pantallas en cada guardado, en cada sincronización con el
+// servidor y al abrir -- aunque solo se ve una. Lighthouse (2026-09-18) lo marcaba como casi 1 s de
+// bloqueo en celular. Ahora se reconstruye la pantalla visible y las demás quedan pendientes hasta
+// que se abren (ver switchToView). El reparto se sacó siguiendo qué elementos toca cada función y
+// todas las que llama; si una pieza nueva escribe en dos pantallas, va en las dos.
+const RENDER_POR_VISTA = {
+  "dashboard": [
+    ["dashboard", renderDashboard],
+  ],
+  "billing": [
+    ["facturacion", renderInvoices],
+  ],
+  "turno": [
+    ["turno", renderTurno],
+  ],
+  "invoice-admin": [
+    ["administracion de facturas", renderInvoiceAdmin],
+  ],
+  "receivables": [
+    ["cuentas por cobrar", renderReceivables],
+    ["registros de ingresos", renderIncomeRecords],
+  ],
+  "pending-transfers": [
+    ["transferencias pendientes", renderPendingTransfers],
+  ],
+  "reservations": [
+    ["citas", renderReservations],
+  ],
+  "payroll": [
+    ["nomina", renderPayroll],
+    ["vacaciones", renderVacations],
+    ["cxc de colaboradores", renderCollaboratorReceivables],
+  ],
+  "cash": [
+    ["cierres de caja", renderCash],
+  ],
+  "card-reconciliation": [
+    ["conciliacion de tarjetas", renderCardReconciliation],
+  ],
+  "expenses": [
+    ["egresos", renderExpenses],
+  ],
+  "accounts-overview": [
+    ["cuentas balance", renderAccountsView],
+  ],
+  "inventory": [
+    ["inventario", renderInventory],
+    ["almacenes", renderWarehouses],
+    ["suplidores", renderSuppliers],
+    ["compras de inventario", renderPurchases],
+    ["cxp suplidores", renderSupplierPayables],
+    ["transferencias de inventario", renderTransfers],
+    ["mesas", renderStations],
+    ["entregas de mesa", renderStationDeliveries],
+    ["fichas tecnicas", renderRecipes],
+    ["perdidas de inventario", renderInventoryLosses],
+    ["conteos fisicos", renderPhysicalCounts],
+    ["salidas internas", renderInternalIssues],
+    ["consumo de academia", renderAcademyConsumptions],
+    ["auditorias de mesa", renderStationAudits],
+    ["auditorias de academia", renderAcademyAudits],
+    ["alertas de inventario", renderInventoryAlerts],
+    ["minimos por mesa", renderStationInventoryRules],
+    ["lotes de inventario", renderInventoryLots],
+  ],
+  "retail-sales": [
+    ["ventas directas", renderRetailSales],
+  ],
+  "fixed-assets": [
+    ["reglas de consumo de activos", renderAssetConsumptionRules],
+    ["activos fijos", renderFixedAssets],
+    ["custodia de activos", renderAssetCustodies],
+    ["eventos de activos", renderAssetEvents],
+  ],
+  "reports": [
+    ["reportes", renderReports],
+  ],
+  "settings": [
+    ["base de datos", renderSettings],
+  ],
+};
+const vistasPendientes = new Set();
+
+function renderVista(viewId) {
+  vistasPendientes.delete(viewId);
+  for (const [nombre, render] of RENDER_POR_VISTA[viewId] || []) safeRender(nombre, render);
+}
+
 function renderAll() {
+  // Las listas de autocompletar (<datalist>) las usan formularios de varias pantallas: siempre.
   safeRender("datalists", renderDatalists);
-  safeRender("dashboard", renderDashboard);
-  safeRender("facturacion", renderInvoices);
-  safeRender("turno", renderTurno);
-  safeRender("administracion de facturas", renderInvoiceAdmin);
-  safeRender("cuentas por cobrar", renderReceivables);
-  safeRender("registros de ingresos", renderIncomeRecords);
-  safeRender("transferencias pendientes", renderPendingTransfers);
-  safeRender("citas", renderReservations);
-  safeRender("nomina", renderPayroll);
-  safeRender("vacaciones", renderVacations);
-  safeRender("cxc de colaboradores", renderCollaboratorReceivables);
-  safeRender("cierres de caja", renderCash);
-  safeRender("conciliacion de tarjetas", renderCardReconciliation);
-  safeRender("egresos", renderExpenses);
-  safeRender("cuentas balance", renderAccountsView);
-  safeRender("inventario", renderInventory);
-  safeRender("almacenes", renderWarehouses);
-  safeRender("suplidores", renderSuppliers);
-  safeRender("compras de inventario", renderPurchases);
-  safeRender("cxp suplidores", renderSupplierPayables);
-  safeRender("transferencias de inventario", renderTransfers);
-  safeRender("mesas", renderStations);
-  safeRender("entregas de mesa", renderStationDeliveries);
-  safeRender("fichas tecnicas", renderRecipes);
-  safeRender("perdidas de inventario", renderInventoryLosses);
-  safeRender("conteos fisicos", renderPhysicalCounts);
-  safeRender("ventas directas", renderRetailSales);
-  safeRender("salidas internas", renderInternalIssues);
-  safeRender("consumo de academia", renderAcademyConsumptions);
-  safeRender("auditorias de mesa", renderStationAudits);
-  safeRender("auditorias de academia", renderAcademyAudits);
-  safeRender("alertas de inventario", renderInventoryAlerts);
-  safeRender("minimos por mesa", renderStationInventoryRules);
-  safeRender("lotes de inventario", renderInventoryLots);
-  safeRender("reglas de consumo de activos", renderAssetConsumptionRules);
-  safeRender("activos fijos", renderFixedAssets);
-  safeRender("custodia de activos", renderAssetCustodies);
-  safeRender("eventos de activos", renderAssetEvents);
-  safeRender("reportes", renderReports);
-  safeRender("base de datos", renderSettings);
+  const activa = document.querySelector(".view.active")?.id;
+  for (const viewId of Object.keys(RENDER_POR_VISTA)) {
+    if (viewId === activa) renderVista(viewId);
+    else vistasPendientes.add(viewId);
+  }
 }
 
 function lookupValuesFor(listId) {
@@ -12049,6 +12104,7 @@ function switchToView(viewId) {
   button?.classList.add("active");
   view.classList.add("active");
   if (button) byId("view-title").textContent = button.textContent;
+  if (vistasPendientes.has(viewId)) renderVista(viewId);
   if (viewId === "cash") safeRender("cierres de caja", renderCash);
   if (viewId === "accounts-overview") safeRender("cuentas balance", renderAccountsView);
   if (viewId === "retail-sales") safeRender("ventas directas", renderRetailSales);
@@ -13287,6 +13343,7 @@ function openBillingView() {
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
   byId("billing").classList.add("active");
   byId("view-title").textContent = "Facturación";
+  if (vistasPendientes.has("billing")) renderVista("billing");
 }
 
 function openAdminInvoiceEditor(invoiceId = "") {
@@ -13310,6 +13367,7 @@ function openSettingsFormFromInvoice(formId) {
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
   byId("settings").classList.add("active");
   byId("view-title").textContent = "Base de datos";
+  if (vistasPendientes.has("settings")) renderVista("settings");
   // openDataForm() SIEMPRE borra dataset.returnToInvoice al abrir un
   // formulario (ver su comentario): por eso aqui se marca DESPUES de
   // llamarla, nunca antes.
