@@ -13,13 +13,15 @@
        sola pagina), asi que sin esto Google indexaria infinitas paginas identicas. -->
   <meta name="robots" content="noindex, nofollow" />
   <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="preload" href="./assets/fonts/poppins-normal-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="./assets/fonts/playfairdisplay-normal-400-600.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="./styles.css" />
   <title>ReservApp · Dalfi Studio Nails</title>
 </head>
 <body>
   <main class="shell">
     <header class="brand">
-      <img class="brand-mark" src="./assets/dalfi-icon.png" alt="Dalfi Studio Nails &amp; Academy" />
+      <img class="brand-mark" src="./assets/dalfi-icon-112.webp" width="91" height="112" alt="Dalfi Studio Nails &amp; Academy" />
       <div class="brand-copy"><h1>Dalfi Studio</h1><p>ReservApp <span class="dot">·</span> Seben Suite Connect</p></div>
       <div class="account-group">
         <button class="lang-toggle" id="lang-toggle" type="button" aria-label="Switch to English">EN</button>
@@ -36,7 +38,7 @@
     </nav>
 
     <section class="card" id="booking-card">
-      <div class="progress" aria-label="Progreso"><span id="progress-bar"></span></div>
+      <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
       <p class="kicker" id="mode-label">Reserva rápida</p>
 
       <div class="wizard-step" data-step="0">

@@ -1,4 +1,14 @@
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Poppins:wght@300;400;500;600;700;800&display=swap');
+/* Fuentes alojadas aquí mismo (solo alfabeto latino) en vez de pedirlas a fonts.googleapis.com:
+   la hoja de Google bloqueaba la primera pintura ~1,8 s en celular (Lighthouse, 2026-09-18).
+   font-display:swap -- el texto sale enseguida con la letra del sistema y cambia al llegar. */
+@font-face{font-family:'Playfair Display';font-style:italic;font-weight:400 500;font-display:swap;src:url(assets/fonts/playfairdisplay-italic-400-500.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Playfair Display';font-style:normal;font-weight:400 600;font-display:swap;src:url(assets/fonts/playfairdisplay-normal-400-600.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Poppins';font-style:normal;font-weight:300;font-display:swap;src:url(assets/fonts/poppins-normal-300.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Poppins';font-style:normal;font-weight:400;font-display:swap;src:url(assets/fonts/poppins-normal-400.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Poppins';font-style:normal;font-weight:500;font-display:swap;src:url(assets/fonts/poppins-normal-500.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Poppins';font-style:normal;font-weight:600;font-display:swap;src:url(assets/fonts/poppins-normal-600.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Poppins';font-style:normal;font-weight:700;font-display:swap;src:url(assets/fonts/poppins-normal-700.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
+@font-face{font-family:'Poppins';font-style:normal;font-weight:800;font-display:swap;src:url(assets/fonts/poppins-normal-800.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD}
 
 /* Paleta de marca: verde salvia + crema + casi-negro. Fondo de página: foto propia del dueño
    del negocio (mesa de mármol + café, tonos crema/beige neutros) en vez del degradado
@@ -23,6 +33,7 @@
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;min-height:100vh;background:linear-gradient(180deg,rgba(250,246,238,.5),rgba(250,246,238,.1) 30%),url('./assets/bg-hero.jpg') center 20%/cover no-repeat;color:var(--brand-dark)}
+@supports (background-image:image-set(url('x.webp') type('image/webp'))){body{background-image:linear-gradient(180deg,rgba(250,246,238,.5),rgba(250,246,238,.1) 30%),image-set(url('./assets/bg-hero.webp') type('image/webp'),url('./assets/bg-hero.jpg') type('image/jpeg'))}}
 button,input,select,textarea{font:inherit}
 .shell{width:min(820px,100%);margin:auto;padding:32px 18px 70px}
 
@@ -39,7 +50,7 @@ button,input,select,textarea{font:inherit}
 .card{background:var(--paper);border:1px solid #FFFFFF;border-radius:26px;padding:clamp(22px,5vw,42px);box-shadow:var(--shadow);position:relative;overflow:hidden}
 .progress{height:5px;background:var(--soft);border-radius:99px;margin:-8px 0 28px}
 .progress span{display:block;width:12%;height:100%;background:var(--brand-dark);border-radius:inherit;transition:width .3s}
-.kicker{text-transform:uppercase;letter-spacing:.16em;color:var(--brand);font-weight:600;font-size:.72rem;margin:0 0 6px}
+.kicker{text-transform:uppercase;letter-spacing:.16em;color:#5F6555;font-weight:600;font-size:.72rem;margin:0 0 6px}
 .tagline{font-family:"Playfair Display",Georgia,serif;color:var(--brand-dark);font-weight:500;font-size:1.1rem;font-style:italic;margin:0 0 14px}
 .card h2,dialog h2{font-family:"Playfair Display",Georgia,serif;font-weight:500;font-size:clamp(1.55rem,5vw,2.25rem);letter-spacing:-.02em;margin:0;color:var(--brand-dark)}
 .intro{color:var(--muted);margin:9px 0 28px}
@@ -86,7 +97,7 @@ fieldset{border:0;padding:0;margin:2px 0 22px}
 .message.ok{color:var(--brand)}
 .message a{color:inherit;font-weight:800;text-decoration:underline}
 
-.whatsapp-link{display:inline-flex;align-items:center;gap:7px;justify-content:center;width:100%;margin-top:14px;color:#25925a;font-weight:600;font-size:.88rem;text-decoration:none}
+.whatsapp-link{display:inline-flex;align-items:center;gap:7px;justify-content:center;width:100%;margin-top:14px;color:#1b7a47;font-weight:600;font-size:.88rem;text-decoration:none}
 .whatsapp-link:hover{text-decoration:underline}
 .whatsapp-link::before{content:"";width:9px;height:9px;border-radius:50%;background:#25925a}
 .selected-client{border:1px solid #C9C2AA;background:#F1EEE5;padding:13px 15px;border-radius:14px;margin-bottom:12px;font-weight:800}

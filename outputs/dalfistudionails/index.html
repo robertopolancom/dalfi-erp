@@ -79,9 +79,10 @@
     }
   }
   </script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Poppins:wght@300;400;500;600;700&display=swap">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="preload" href="assets/fonts/poppins-normal-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/playfairdisplay-normal-400-600.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -96,7 +97,7 @@
       <svg class="mark" viewBox="0 0 30 30" fill="none"><circle cx="15" cy="15" r="14" stroke="#4B5040" stroke-width="1.4"/><path d="M10 16.5c1.6 2 3.4 3 5 3s3.4-1 5-3" stroke="#4B5040" stroke-width="1.4" stroke-linecap="round"/><circle cx="11.4" cy="12" r="1.15" fill="#4B5040"/><circle cx="18.6" cy="12" r="1.15" fill="#4B5040"/></svg>
       <span class="name">Dalfi <em>Studio Nails</em></span>
     </a>
-    <div class="nav-tabs" role="tablist">
+    <div class="nav-tabs">
       <a class="nav-tab" href="#inicio" data-page-link="inicio">Inicio</a>
       <a class="nav-tab" href="#servicios" data-page-link="servicios">Servicios</a>
       <a class="nav-tab" href="#galeria" data-page-link="galeria">Galería</a>
@@ -130,11 +131,11 @@
         </div>
         <div class="hero-art">
           <figure class="hero-photo hero-photo-main">
-            <img data-cms-img="images.hero" src="assets/trabajo-butter-2.jpg" width="811" height="1200"
+            <img data-cms-img="images.hero" src="assets/trabajo-butter-2.jpg" srcset="assets/trabajo-butter-2-480.webp 480w, assets/trabajo-butter-2-960.webp 960w" sizes="(max-width: 900px) 420px, 520px" fetchpriority="high" width="811" height="1200"
                  alt="Manicura en tono butter yellow, sobre las tarjetas de Dalfi Studio Nails">
           </figure>
           <figure class="hero-photo hero-photo-inset">
-            <img data-cms-img="images.heroInset" src="assets/estudio-colores.jpg" width="1100" height="1094" loading="lazy"
+            <img data-cms-img="images.heroInset" src="assets/estudio-colores.jpg" srcset="assets/estudio-colores-480.webp 480w, assets/estudio-colores-960.webp 960w" sizes="(max-width: 900px) 220px, 280px" width="1100" height="1094" loading="lazy"
                  alt="Pared de esmaltes del estudio, con decenas de colores para elegir">
           </figure>
           <span class="hero-photo-tag">Trabajo real del estudio</span>
@@ -145,7 +146,7 @@
     <div class="band">
       <div class="wrap about">
         <figure class="about-figure">
-          <img data-cms-img="images.about" src="assets/estudio-pared.jpg" width="936" height="1100" loading="lazy"
+          <img data-cms-img="images.about" src="assets/estudio-pared.jpg" srcset="assets/estudio-pared-480.webp 480w, assets/estudio-pared-960.webp 960w" sizes="(max-width: 900px) 340px, 460px" width="936" height="1100" loading="lazy"
                alt="Pared del estudio con los retratos de Dalfina Guzmán y los estantes de esmaltes">
           <figcaption>
             <strong>Dalfina Guzmán</strong>
@@ -176,22 +177,22 @@
         </div>
         <div class="photo-row">
           <figure class="photo">
-            <img src="assets/estudio-estacion.jpg" width="1065" height="1100" loading="lazy"
+            <img src="assets/estudio-estacion.jpg" srcset="assets/estudio-estacion-480.webp 480w, assets/estudio-estacion-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1065" height="1100" loading="lazy"
                  alt="Estación de manicura con lámpara, reposamanos y luz natural">
             <figcaption>Tu estación</figcaption>
           </figure>
           <figure class="photo">
-            <img src="assets/estudio-cortesia.jpg" width="1100" height="1081" loading="lazy"
+            <img src="assets/estudio-cortesia.jpg" srcset="assets/estudio-cortesia-480.webp 480w, assets/estudio-cortesia-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="1081" loading="lazy"
                  alt="Taza de Dalfi Studio con galletas, en una bandeja de cortesía">
             <figcaption>Bebida de cortesía</figcaption>
           </figure>
           <figure class="photo">
-            <img src="assets/estudio-colores.jpg" width="1100" height="1094" loading="lazy"
+            <img src="assets/estudio-colores.jpg" srcset="assets/estudio-colores-480.webp 480w, assets/estudio-colores-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="1094" loading="lazy"
                  alt="Estantes con decenas de esmaltes para elegir color">
             <figcaption>Variedad de colores</figcaption>
           </figure>
           <figure class="photo">
-            <img src="assets/estudio-pedicura.jpg" width="1100" height="945" loading="lazy"
+            <img src="assets/estudio-pedicura.jpg" srcset="assets/estudio-pedicura-480.webp 480w, assets/estudio-pedicura-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="945" loading="lazy"
                  alt="Sillón de pedicura con cojín y manta">
             <figcaption>Rincón de pedicura</figcaption>
           </figure>
@@ -231,7 +232,7 @@
         <p>Lo que hacemos, tal como te lo explicaríamos en el sillón. Los precios y la disponibilidad exacta se confirman al reservar.</p>
       </div>
       <figure class="banner">
-        <img data-cms-img="images.services" src="assets/trabajo-french.jpg" width="900" height="555" loading="lazy"
+        <img data-cms-img="images.services" src="assets/trabajo-french.jpg" srcset="assets/trabajo-french-480.webp 480w, assets/trabajo-french-960.webp 960w" sizes="(max-width: 760px) 100vw, 900px" width="900" height="555" loading="lazy"
              alt="Manicura francesa hecha en Dalfi Studio Nails">
       </figure>
       <div class="menu" data-cms-list="services">
@@ -278,47 +279,47 @@
 
       <div class="photo-grid">
         <figure class="photo">
-          <img src="assets/estudio-pared.jpg" width="936" height="1100" loading="lazy" alt="Pared del estudio con retratos enmarcados y estantes de esmaltes">
+          <img src="assets/estudio-pared.jpg" srcset="assets/estudio-pared-480.webp 480w, assets/estudio-pared-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="936" height="1100" loading="lazy" alt="Pared del estudio con retratos enmarcados y estantes de esmaltes">
           <figcaption>La recepción</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/estudio-estacion.jpg" width="1065" height="1100" loading="lazy" alt="Estación de manicura con lámpara, reposamanos y luz natural">
+          <img src="assets/estudio-estacion.jpg" srcset="assets/estudio-estacion-480.webp 480w, assets/estudio-estacion-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1065" height="1100" loading="lazy" alt="Estación de manicura con lámpara, reposamanos y luz natural">
           <figcaption>Tu estación</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/estudio-colores.jpg" width="1100" height="1094" loading="lazy" alt="Estantes con decenas de esmaltes para elegir color">
+          <img src="assets/estudio-colores.jpg" srcset="assets/estudio-colores-480.webp 480w, assets/estudio-colores-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="1094" loading="lazy" alt="Estantes con decenas de esmaltes para elegir color">
           <figcaption>Variedad de colores</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/trabajo-butter-2.jpg" width="811" height="1200" loading="lazy" alt="Manicura butter yellow sobre las tarjetas del estudio">
+          <img src="assets/trabajo-butter-2.jpg" srcset="assets/trabajo-butter-2-480.webp 480w, assets/trabajo-butter-2-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="811" height="1200" loading="lazy" alt="Manicura butter yellow sobre las tarjetas del estudio">
           <figcaption>Butter yellow</figcaption>
         </figure>
         <figure class="photo">
-          <img data-cms-img="images.contact" src="assets/estudio-espejo.jpg" width="1092" height="1100" loading="lazy" alt="Espejo de cuerpo entero junto a la estación de manicura">
+          <img data-cms-img="images.contact" src="assets/estudio-espejo.jpg" srcset="assets/estudio-espejo-480.webp 480w, assets/estudio-espejo-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1092" height="1100" loading="lazy" alt="Espejo de cuerpo entero junto a la estación de manicura">
           <figcaption>El espejito de las fotos</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/estudio-cortesia.jpg" width="1100" height="1081" loading="lazy" alt="Taza de Dalfi Studio con galletas sobre una bandeja">
+          <img src="assets/estudio-cortesia.jpg" srcset="assets/estudio-cortesia-480.webp 480w, assets/estudio-cortesia-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="1081" loading="lazy" alt="Taza de Dalfi Studio con galletas sobre una bandeja">
           <figcaption>Bebida de cortesía</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/trabajo-butter-1.jpg" width="750" height="1109" loading="lazy" alt="Mano con manicura butter yellow y anillos dorados">
+          <img src="assets/trabajo-butter-1.jpg" srcset="assets/trabajo-butter-1-480.webp 480w, assets/trabajo-butter-1-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="750" height="1109" loading="lazy" alt="Mano con manicura butter yellow y anillos dorados">
           <figcaption>Detalle del acabado</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/estudio-pedicura.jpg" width="1100" height="945" loading="lazy" alt="Sillón de pedicura con cojín y aire acondicionado">
+          <img src="assets/estudio-pedicura.jpg" srcset="assets/estudio-pedicura-480.webp 480w, assets/estudio-pedicura-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="945" loading="lazy" alt="Sillón de pedicura con cojín y aire acondicionado">
           <figcaption>Rincón de pedicura</figcaption>
         </figure>
         <figure class="photo">
-          <img src="assets/estudio-esterilizacion.jpg" width="1100" height="1081" loading="lazy" alt="Esterilizador del estudio con las herramientas dentro">
+          <img src="assets/estudio-esterilizacion.jpg" srcset="assets/estudio-esterilizacion-480.webp 480w, assets/estudio-esterilizacion-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="1100" height="1081" loading="lazy" alt="Esterilizador del estudio con las herramientas dentro">
           <figcaption>Herramientas esterilizadas</figcaption>
         </figure>
         <figure class="photo wide">
-          <img src="assets/trabajo-french.jpg" width="900" height="555" loading="lazy" alt="Manicura francesa en tono nude">
+          <img src="assets/trabajo-french.jpg" srcset="assets/trabajo-french-480.webp 480w, assets/trabajo-french-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="900" height="555" loading="lazy" alt="Manicura francesa en tono nude">
           <figcaption>Francesa clásica</figcaption>
         </figure>
         <figure class="photo wide">
-          <img src="assets/trabajo-pedicura.jpg" width="918" height="600" loading="lazy" alt="Pedicura francesa con acabado brillante">
+          <img src="assets/trabajo-pedicura.jpg" srcset="assets/trabajo-pedicura-480.webp 480w, assets/trabajo-pedicura-960.webp 960w" sizes="(max-width: 760px) 50vw, 380px" width="918" height="600" loading="lazy" alt="Pedicura francesa con acabado brillante">
           <figcaption>Pedicura francesa</figcaption>
         </figure>
       </div>
@@ -363,7 +364,7 @@
       </div>
       <div class="contact-side">
       <figure class="contact-photo">
-        <img src="assets/estudio-espejo.jpg" width="1092" height="1100" loading="lazy"
+        <img src="assets/estudio-espejo.jpg" srcset="assets/estudio-espejo-480.webp 480w, assets/estudio-espejo-960.webp 960w" sizes="(max-width: 900px) 100vw, 560px" width="1092" height="1100" loading="lazy"
              alt="Interior de Dalfi Studio Nails en Baní">
       </figure>
       <figure class="map-embed">
