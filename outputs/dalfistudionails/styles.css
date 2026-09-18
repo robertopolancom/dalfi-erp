@@ -258,6 +258,8 @@ footer{padding:40px 0 48px;border-top:1px solid var(--line)}
 .foot-social a{color:var(--muted);text-decoration:none;font-size:.84rem;display:flex;align-items:center;gap:7px}
 .foot-social a:hover{color:var(--sage-deep)}
 .foot-credit{font-size:.76rem;color:var(--muted)}
+.foot-bottom{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px 18px}
+.foot-brands a{color:var(--sage-deep)}
 
 /* ---------- modal de reserva (iframe embebido) ---------- */
 #reservar-dialog{
