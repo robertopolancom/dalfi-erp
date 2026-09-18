@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <meta name="theme-color" content="#4B5040" />
   <meta name="description" content="Reservas y agenda de Dalfi Studio Nails." />
+  <!-- ReservApp NO debe aparecer en buscadores, y no es un descuido.
+       Es la herramienta con la que se reserva, no el escaparate del negocio: quien llega a Google
+       buscando "unas en Bani" tiene que aterrizar en dalfistudio.com, donde hay fotos, servicios
+       y direccion -- no en una pantalla de iniciar sesion.
+       Ademas este Worker sirve el mismo HTML para CUALQUIER direccion (es una aplicacion de una
+       sola pagina), asi que sin esto Google indexaria infinitas paginas identicas. -->
+  <meta name="robots" content="noindex, nofollow" />
   <link rel="manifest" href="./manifest.webmanifest" />
   <link rel="stylesheet" href="./styles.css" />
   <title>ReservApp · Dalfi Studio Nails</title>

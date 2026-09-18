@@ -1,0 +1,14 @@
+# Sitio publico de Dalfi Studio Nails & Academy (Bani, Peravia).
+#
+# Hasta el 2026-09-17 aqui respondia el robots.txt por defecto de Cloudflare -- el de las senales
+# de contenido para IA -- que no dice nada de este sitio y, sobre todo, no apunta a ningun
+# sitemap. Sin esa linea, Google tiene que descubrir las paginas por su cuenta.
+
+User-agent: *
+Allow: /
+
+# La aplicacion de reservas vive en otro dominio (reservapp.dalfistudio.com) y alli tiene su
+# propio robots.txt. No debe competir en buscadores con esta pagina: es una herramienta, no un
+# escaparate.
+
+Sitemap: https://dalfistudio.com/sitemap.xml

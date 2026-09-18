@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- El sitio es UNA sola pagina: las cuatro secciones (inicio, servicios, galeria, ubicacion) se
+     muestran y ocultan con JavaScript, pero todas viven en el mismo HTML y en la misma direccion.
+     Por eso aqui hay una sola entrada y no cuatro: listar anclas (#servicios) como si fueran
+     paginas distintas no aporta nada a Google y solo confunde el informe de cobertura. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://dalfistudio.com/</loc>
+    <lastmod>2026-09-17</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>

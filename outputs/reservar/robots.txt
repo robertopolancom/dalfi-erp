@@ -1,0 +1,7 @@
+# ReservApp: la herramienta de reservas, no el escaparate. Todo lo que tenga que posicionar en
+# buscadores vive en https://dalfistudio.com
+#
+# Este Worker devuelve el mismo HTML para cualquier direccion que se le pida (aplicacion de una
+# sola pagina), asi que sin esto Google descubriria paginas que en realidad no existen.
+User-agent: *
+Disallow: /
