@@ -1104,10 +1104,11 @@ function renderAppointmentCard(apt) {
   return card;
 }
 
-// El enlace oficial de "pedir opiniones" del Perfil de Negocio abre el cuadro de escribir
-// ficha. El id es el ftid del negocio en Google Maps; no hace falta clave de API.
-const GOOGLE_REVIEW_URL =
-  "https://g.page/r/Cb1BpiRtf_SHEAI/review";
+// TODO enlace de resena que se le ensena a un cliente pasa por /resena del ERP, nunca por
+// Google directamente. Asi el destino real vive en UN solo sitio (GOOGLE_REVIEW_URL en el
+// servidor) y se cambia sin desplegar esta aplicacion, sin tocar la plantilla de WhatsApp y sin
+// volver a pedirle nada a Meta.
+const GOOGLE_REVIEW_URL = "https://ssc.dalfistudio.com/resena";
 
 function reviewInviteEl() {
   const box = document.createElement("div");

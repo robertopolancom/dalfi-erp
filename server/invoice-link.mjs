@@ -140,6 +140,10 @@ const SHELL_STYLES = `
        border-radius:11px;padding:11px 14px;font-size:.82rem;font-weight:600}
   .foot{padding:18px 26px 24px;border-top:1px solid #E9E4D6;font-size:.76rem;color:#726C60;line-height:1.7}
   .foot a{color:#4B5040;font-weight:600}
+  .resena{margin:22px 26px 0;padding:16px 18px;background:#F1EEE5;border-radius:14px;text-align:center}
+  .resena p{margin:0 0 12px;font-size:.86rem;color:#211F1B;line-height:1.55}
+  .resena a{display:inline-block;background:#4B5040;color:#FAF6EE;text-decoration:none;
+    font-weight:600;font-size:.86rem;padding:11px 22px;border-radius:999px}
   .empty{width:min(460px,100%);margin:56px auto;text-align:center;color:#726C60;line-height:1.7}
   .empty h1{font-size:1.24rem;color:#211F1B;margin:0 0 10px}
   @media print{body{background:#fff;padding:0}.sheet{border:0;box-shadow:none}}
@@ -199,10 +203,20 @@ export function renderInvoiceHtml(view) {
     </div>
     ${view.pendiente > 0 ? `<p class="due">Pendiente por pagar: ${money(view.pendiente)}</p>` : ""}
   </div>
+  <!-- La invitacion a resenar va AQUI, en la factura, y no solo en el mensaje de WhatsApp.
+       Motivo: el mensaje se lee en dos segundos y se archiva; esta pagina se abre a proposito,
+       cuando el cliente quiere ver en que se le fue el dinero, y ese es el momento en que esta
+       pensando en el servicio que acaba de recibir. Es el mejor momento para pedirselo.
+       El enlace apunta a /resena de este mismo servidor, como todos los demas: el destino real
+       se cambia en un solo sitio. -->
+  <div class="resena">
+    <p>¿Quedaste a gusto con tu visita? Cuéntalo en Google — a otra persona de Baní le ayuda a decidirse, y a nosotras nos alegra el día.</p>
+    <a href="/resena" target="_blank" rel="noopener">Dejar mi reseña</a>
+  </div>
   <div class="foot">
     Calle Juan Caballero No. 38 · Baní, Peravia<br>
     WhatsApp <a href="https://wa.me/18296679289">829-667-9289</a> ·
-    <a href="https://nails.dalfistudio.com">nails.dalfistudio.com</a><br>
+    <a href="https://dalfistudio.com">dalfistudio.com</a><br>
     Gracias por tu visita. Si algo no cuadra, escríbenos y lo revisamos.
   </div>
 </div>`);
