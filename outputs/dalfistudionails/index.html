@@ -366,8 +366,16 @@
              alt="Interior de Dalfi Studio Nails en Baní">
       </figure>
       <figure class="map-embed">
+        <!-- El mapa se ancla al IDENTIFICADOR del negocio en Google (cid), no a una busqueda por
+             texto. Antes buscaba "DALFI STUDIOS NAILS & ACADEMY" -- con una S de mas en "Studios",
+             que no es como se llama la ficha ("Dalfi Studio Nails & Academy"). Una busqueda por
+             texto con el nombre equivocado puede caer en otro sitio o en ninguno; el cid apunta
+             siempre a esta ficha, se escriba como se escriba.
+             El cid sale de la ficha verificada: 0x87f47f6d24a641bd en decimal.
+             Tiene que ser www.google.com y no maps.google.com: la CSP de _headers solo permite
+             incrustar desde ese dominio. -->
         <iframe
-          src="https://www.google.com/maps?q=DALFI+STUDIOS+NAILS+%26+ACADEMY,+Juan+Caballero+38,+Ban%C3%AD&amp;hl=es&amp;z=17&amp;output=embed"
+          src="https://www.google.com/maps?cid=9796595196180709821&amp;hl=es&amp;z=17&amp;output=embed"
           title="Mapa de Dalfi Studio Nails — Juan Caballero 38, Baní"
           loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen></iframe>
         <figcaption>
