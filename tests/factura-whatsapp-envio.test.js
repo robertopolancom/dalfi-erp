@@ -221,7 +221,7 @@ test("FW11 — TODO enlace de reseña que ve un cliente es dalfistudio.com/resen
   const puente = await readFile(new URL("../outputs/dalfistudionails/resena.html", import.meta.url), "utf8");
   assert.match(puente, /<html lang="es">/);
   assert.match(puente, /property="og:title" content="Déjanos tu reseña/);
-  assert.match(puente, /property="og:description" content="[^"]*opinión/);
+  assert.match(puente, /property="og:description" content="En Dalfi Studio Nails tu satisfacción[^"]*reseña en Google\."/);
   assert.match(puente, /http-equiv="refresh" content="0; url=https:\/\/ssc\.dalfistudio\.com\/resena"/);
   assert.doesNotMatch(puente, /g\.page\/r\//, "la dirección de Google solo la sabe el servidor");
 });
