@@ -1,4 +1,5 @@
 import { isClientRole } from "./reservapp-auth.mjs";
+import { almuerzoDelNegocio } from "../outputs/lib/booking-engine.js";
 import { normalizePhone } from "./phone.mjs";
 import { mediaUrl } from "./media-link.mjs";
 
@@ -78,6 +79,17 @@ function legacyId(prefix) {
 export function documentData(document) {
   if (document?.data && typeof document.data === "object") return document.data;
   return document;
+}
+
+// El almuerzo del salón (lunes a jueves 12:00-13:00; viernes y sábado corrido, ver
+// almuerzoDelNegocio) se trata como un bloque ocupado de TODAS las manicuristas ese día: así ni la
+// disponibilidad normal ni la alternativa de varias citas ofrecen un servicio que caiga encima.
+function conAlmuerzoDelNegocio(busyByStaff, staffIds, date, weekday, settings) {
+  const almuerzo = almuerzoDelNegocio(weekday, settings);
+  if (!almuerzo) return busyByStaff;
+  const bloque = { starts_at: `${date}T${almuerzo.start}:00-04:00`, ends_at: `${date}T${almuerzo.end}:00-04:00`, almuerzo: true };
+  for (const id of staffIds) busyByStaff.set(id, [...(busyByStaff.get(id) || []), bloque]);
+  return busyByStaff;
 }
 
 function uniqueServiceIds(value) {
@@ -516,7 +528,10 @@ export class NeonBookingStore {
     const staffWindows = await this.staffDayWindows({ staff, date, weekday, opening, closing });
     staff = staff.filter((person) => staffWindows.get(person.id));
     if (!staff.length) return { date, slots: [], closed: true };
-    const busyByStaff = await this.staffBusyIntervals({ staffIds: staff.map((item) => item.id), date, timezone });
+    const busyByStaff = conAlmuerzoDelNegocio(
+      await this.staffBusyIntervals({ staffIds: staff.map((item) => item.id), date, timezone }),
+      staff.map((item) => item.id), date, weekday, settings,
+    );
     const toMinutes = (clock) => {
       const [hour, minute] = clock.split(":").map(Number);
       return hour * 60 + minute;
@@ -631,7 +646,10 @@ export class NeonBookingStore {
     const sameStaffCandidates = staffAll.filter((person) => selectedIds.every((id) => eligiblePerService.get(id).has(person.id)));
     if (sameStaffCandidates.length) {
       const windows = await this.staffDayWindows({ staff: sameStaffCandidates, date, weekday, opening, closing });
-      const busyByStaff = await this.staffBusyIntervals({ staffIds: sameStaffCandidates.map((p) => p.id), date, timezone });
+      const busyByStaff = conAlmuerzoDelNegocio(
+        await this.staffBusyIntervals({ staffIds: sameStaffCandidates.map((p) => p.id), date, timezone }),
+        sameStaffCandidates.map((p) => p.id), date, weekday, settings,
+      );
       let best = null;
       for (const person of sameStaffCandidates) {
         const window = windows.get(person.id);
@@ -663,7 +681,10 @@ export class NeonBookingStore {
     const anyEligibleStaff = staffAll.filter((p) => anyEligibleIds.has(p.id));
     if (anyEligibleStaff.length) {
       const windows = await this.staffDayWindows({ staff: anyEligibleStaff, date, weekday, opening, closing });
-      const busyByStaff = await this.staffBusyIntervals({ staffIds: anyEligibleStaff.map((p) => p.id), date, timezone });
+      const busyByStaff = conAlmuerzoDelNegocio(
+        await this.staffBusyIntervals({ staffIds: anyEligibleStaff.map((p) => p.id), date, timezone }),
+        anyEligibleStaff.map((p) => p.id), date, weekday, settings,
+      );
       let best = null;
       for (const order of orders) {
         const segments = [];

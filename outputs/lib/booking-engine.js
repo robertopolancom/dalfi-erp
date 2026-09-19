@@ -42,9 +42,33 @@ export const DEFAULT_BUSINESS_SCHEDULE = {
   updatedBy: null,
 };
 
-export const DEFAULT_LUNCH_DURATION_MINUTES = 120;
+export const DEFAULT_LUNCH_DURATION_MINUTES = 60;
 export const DEFAULT_LUNCH_START = "12:00";
-export const DEFAULT_LUNCH_END = "14:00";
+export const DEFAULT_LUNCH_END = "13:00";
+
+// Almuerzo del SALÓN por día de la semana (0 = domingo … 6 = sábado). Regla de Roberto
+// (2026-09-19): de 9:00 a 18:00, con el almuerzo de 12:00 a 13:00 sin citas de lunes a jueves;
+// viernes y sábado se trabaja corrido. Es del negocio, no de cada manicurista: las dos
+// disponibilidades (ReservApp/ERP en server/store.mjs y la del bot en calculateAvailableSlots)
+// salen de aquí. Se puede cambiar sin tocar código con settings.lunchByDay
+// ({ "1": { start, end } | null, ... }) en la configuración del negocio.
+export const ALMUERZO_POR_DIA_PREDETERMINADO = {
+  0: null,
+  1: { start: "12:00", end: "13:00" },
+  2: { start: "12:00", end: "13:00" },
+  3: { start: "12:00", end: "13:00" },
+  4: { start: "12:00", end: "13:00" },
+  5: null,
+  6: null,
+};
+
+export function almuerzoDelNegocio(dayOfWeek, settings = {}) {
+  const propio = settings?.lunchByDay && typeof settings.lunchByDay === "object" ? settings.lunchByDay : null;
+  const clave = String(dayOfWeek);
+  const valor = propio && Object.prototype.hasOwnProperty.call(propio, clave) ? propio[clave] : ALMUERZO_POR_DIA_PREDETERMINADO[dayOfWeek];
+  if (!valor?.start || !valor?.end || String(valor.end) <= String(valor.start)) return null;
+  return { start: String(valor.start).slice(0, 5), end: String(valor.end).slice(0, 5) };
+}
 
 // Convierte "HH:MM" a minutos desde medianoche (0..1439).
 export function parseTimeToMinutes(timeStr) {
@@ -194,6 +218,8 @@ export function normalizeBusinessSchedule(input) {
     reschedulingPolicy: src.reschedulingPolicy || DEFAULT_BUSINESS_SCHEDULE.reschedulingPolicy,
     updatedAt: src.updatedAt || null,
     updatedBy: src.updatedBy || null,
+    // Almuerzo del salón por día (ver almuerzoDelNegocio); sin él, rige ALMUERZO_POR_DIA_PREDETERMINADO.
+    lunchByDay: src.lunchByDay && typeof src.lunchByDay === "object" ? src.lunchByDay : null,
   };
 }
 
@@ -256,14 +282,15 @@ export function normalizeStaffWeeklySchedule(input) {
   const entryMin = parseTimeToMinutes(src.entryTime) ?? 540; // 09:00
   const exitMin = parseTimeToMinutes(src.exitTime) ?? 1080; // 18:00
   const lunchStartMin = parseTimeToMinutes(src.lunchStartTime) ?? 720; // 12:00
-  const lunchEndMin = parseTimeToMinutes(src.lunchEndTime) ?? 840; // 14:00
+  const lunchEndMin = parseTimeToMinutes(src.lunchEndTime) ?? 780; // 13:00
 
-  // Asegurar 120 min de almuerzo si no se especifica o si es inconsistente
+  // Si viene inconsistente, el almuerzo estándar del salón (12:00-13:00). Ojo: el almuerzo que
+  // bloquea citas es el del NEGOCIO (almuerzoDelNegocio), no este: ver resolveEffectiveStaffSchedule.
   let finalLunchStart = lunchStartMin;
   let finalLunchEnd = lunchEndMin;
   if (finalLunchEnd <= finalLunchStart || (finalLunchEnd - finalLunchStart) < 30) {
     finalLunchStart = 720;
-    finalLunchEnd = 840;
+    finalLunchEnd = 780;
   }
   const lunchDuration = finalLunchEnd - finalLunchStart;
 
@@ -297,6 +324,7 @@ export function resolveEffectiveStaffSchedule({
   const bSched = normalizeBusinessSchedule(businessSchedule);
   const dayOfWeek = getDayOfWeekFromDateString(date);
   const dayWindow = date ? resolveBusinessDayWindow(date, bSched) : null;
+  const almuerzoDelDia = dayOfWeek === null ? null : almuerzoDelNegocio(dayOfWeek, businessSchedule);
 
   const result = {
     collaboratorId,
@@ -306,9 +334,11 @@ export function resolveEffectiveStaffSchedule({
     isStaffWorking: true,
     entryTime: dayWindow ? formatMinutesToTime(dayWindow.openMinutes) : bSched.defaultOpeningTime,
     exitTime: dayWindow ? formatMinutesToTime(dayWindow.closeMinutes) : bSched.defaultClosingTime,
-    lunchStartTime: DEFAULT_LUNCH_START,
-    lunchEndTime: DEFAULT_LUNCH_END,
-    lunchDurationMinutes: DEFAULT_LUNCH_DURATION_MINUTES,
+    // Almuerzo del salón para ese día; sin almuerzo (viernes y sábado) queda 00:00-00:00, que
+    // para calculateAvailableSlots es "no hay bloque" (fin <= inicio).
+    lunchStartTime: almuerzoDelDia?.start || "00:00",
+    lunchEndTime: almuerzoDelDia?.end || "00:00",
+    lunchDurationMinutes: almuerzoDelDia ? (parseTimeToMinutes(almuerzoDelDia.end) - parseTimeToMinutes(almuerzoDelDia.start)) : 0,
     exceptions: [],
     reason: "",
   };
@@ -341,9 +371,8 @@ export function resolveEffectiveStaffSchedule({
     result.isStaffWorking = norm.working;
     result.entryTime = norm.entryTime;
     result.exitTime = norm.exitTime;
-    result.lunchStartTime = norm.lunchStartTime;
-    result.lunchEndTime = norm.lunchEndTime;
-    result.lunchDurationMinutes = norm.lunchDurationMinutes;
+    // El almuerzo NO se toma del horario semanal de la manicurista: es el del salón (arriba). Si una
+    // persona almuerza a otra hora un día puntual, va como excepción "almuerzo_especial".
     if (!norm.working) {
       result.reason = "Día no laborable según horario semanal de la manicurista.";
     }

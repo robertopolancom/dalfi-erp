@@ -152,9 +152,9 @@ test("13. Copia semanal y 14. Vigencia de horarios", () => {
 // ==========================================
 // C. DOS HORAS DE ALMUERZO CONTINUO (15-20)
 // ==========================================
-test("15. Almuerzo continuo de 120 minutos asignado por defecto", () => {
+test("15. Almuerzo de 60 minutos por defecto (12:00-13:00)", () => {
   const norm = normalizeStaffWeeklySchedule({ collaboratorId: "COL-1", dayOfWeek: 1 });
-  assert.equal(norm.lunchDurationMinutes, 120);
+  assert.equal(norm.lunchDurationMinutes, 60);
 });
 
 test("16. Almuerzo se ubica dentro de la jornada de trabajo", () => {
@@ -163,7 +163,7 @@ test("16. Almuerzo se ubica dentro de la jornada de trabajo", () => {
     date: "2026-08-03",
   });
   assert.equal(eff.lunchStartTime, "12:00");
-  assert.equal(eff.lunchEndTime, "14:00");
+  assert.equal(eff.lunchEndTime, "13:00");
 });
 
 test("18. Servicio que cruza el intervalo de almuerzo queda excluido", () => {
@@ -177,10 +177,11 @@ test("18. Servicio que cruza el intervalo de almuerzo queda excluido", () => {
     ],
   });
   const times = avail.slots.map((s) => s.time);
-  // Un servicio de 60 min a las 11:30 terminaría 12:30 (dentro de almuerzo) -> NO disponible
+  // Un servicio de 60 min a las 11:30 terminaría 12:30 (dentro de almuerzo) -> NO disponible.
+  // El almuerzo es el del salón (lunes 12:00-13:00), no el del horario semanal de la manicurista.
   assert.equal(times.includes("11:30"), false);
   assert.equal(times.includes("12:00"), false);
-  assert.equal(times.includes("13:00"), false);
+  assert.equal(times.includes("13:00"), true);
   assert.equal(times.includes("14:00"), true);
 });
 
@@ -190,9 +191,8 @@ test("20. Cambio de almuerzo actualiza la disponibilidad de forma dinámica", ()
     collaboratorId: "COL-1",
     serviceLines: [{ serviceId: "SRV-1" }],
     services: [{ servicioID: "SRV-1", duracionMin: 60 }],
-    weeklySchedules: [
-      { collaboratorId: "COL-1", dayOfWeek: 1, working: true, entryTime: "09:00", exitTime: "18:00", lunchStartTime: "13:00", lunchEndTime: "15:00" },
-    ],
+    // El almuerzo se cambia en la configuración del NEGOCIO (lunchByDay), no por manicurista.
+    businessSchedule: { lunchByDay: { 1: { start: "13:00", end: "15:00" } } },
   });
   const times = availCustomLunch.slots.map((s) => s.time);
   assert.equal(times.includes("12:00"), true); // Ahora 12:00 libre

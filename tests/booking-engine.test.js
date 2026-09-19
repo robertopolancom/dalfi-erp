@@ -111,7 +111,7 @@ test("calculateAppointmentDuration suma duraciones y buffers", () => {
   assert.equal(res.totalBlockedMinutes, 105);
 });
 
-test("calculateAvailableSlots genera slots excluyendo almuerzo (12:00-14:00) y citas", () => {
+test("calculateAvailableSlots genera slots excluyendo el almuerzo del salón (lunes 12:00-13:00) y citas", () => {
   const services = [{ servicioID: "SRV-1", servicio: "Uñas Acrílicas", duracionMin: 60 }];
   const result = calculateAvailableSlots({
     date: "2026-08-03", // Lunes
@@ -146,13 +146,14 @@ test("calculateAvailableSlots genera slots excluyendo almuerzo (12:00-14:00) y c
   const times = result.slots.map((s) => s.time);
 
   // 10:00 a 11:00 está ocupado por RES-100.
-  // 12:00 a 14:00 está ocupado por Almuerzo.
+  // 12:00 a 13:00 es el almuerzo del salón (lunes a jueves, regla de 2026-09-19). El almuerzo del
+  // horario semanal de la manicurista (12:00-14:00 en este dato) ya no manda: es del negocio.
   // Cita de 60 min iniciada a las 11:30 terminaría a las 12:30 (se solapa con almuerzo) -> NO debe incluir 11:30.
   assert.ok(times.includes("09:00"));
   assert.ok(!times.includes("10:00"));
   assert.ok(!times.includes("11:30"));
   assert.ok(!times.includes("12:00"));
-  assert.ok(!times.includes("13:00"));
+  assert.ok(times.includes("13:00"));
   assert.ok(times.includes("14:00"));
 });
 
