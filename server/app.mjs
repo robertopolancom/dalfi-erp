@@ -27,6 +27,7 @@ import { validarImagenBase64 } from "./imagen-segura.mjs";
 import { documentoDesdeFactura, emisorDesdeEntorno } from "./ecf/documento.mjs";
 import { renderRepresentacionImpresa } from "./ecf/representacion.mjs";
 import { adaptadorSimulado } from "./ecf/servicio.mjs";
+import { crearEmisionECF } from "./ecf/emision.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
@@ -2245,16 +2246,70 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       // factura no tenga e-NCF de verdad, se rellena con uno SIMULADO (no se guarda nada) para ver
       // cómo queda, y la hoja lo dice en grande. La vista normal del cliente no cambia hasta que
       // el emisor tenga RNC y se emita de verdad.
+      // Si la factura ya tiene un e-CF aceptado, ESA es la factura: se muestra siempre con el
+      // formato de la DGII, con lo que se emitió (no con lo que diga hoy el ERP si se editó después).
+      const emitidos = bookingStore?.ecfPorOrigen ? await bookingStore.ecfPorOrigen("factura", invoiceId).catch(() => []) : [];
+      const aceptado = emitidos.find((r) => r.origen === "factura" && (r.estado === "aceptado" || r.estado === "aceptado_condicional"));
+      if (aceptado) {
+        const doc = { ...aceptado.documento, encf: aceptado.encf, codigoSeguridad: aceptado.codigo_seguridad, fechaFirma: aceptado.fecha_firma, simulado: aceptado.proveedor === "simulado" };
+        return res.send(renderRepresentacionImpresa(doc, { ambiente: String(env.ECF_AMBIENTE || "prueba") }));
+      }
       if (req.query.vista === "fiscal") {
         const doc = row?.data ? documentoDesdeFactura(row.data, invoiceId, { emisor: emisorDesdeEntorno(env) }) : null;
         if (!doc) return res.status(404).send(renderInvoiceNotFound());
-        if (!doc.encf) Object.assign(doc, await adaptadorSimulado().emitir(doc));
+        Object.assign(doc, await adaptadorSimulado().emitir(doc), { simulado: true });
         return res.send(renderRepresentacionImpresa(doc, { ambiente: String(env.ECF_AMBIENTE || "prueba") }));
       }
       const view = row?.data ? buildInvoiceView(row.data, invoiceId) : null;
       if (!view) return res.status(404).send(renderInvoiceNotFound());
       res.send(renderInvoiceHtml(view));
     } catch (error) { next(error); }
+  });
+
+  // ---------- e-CF (fase C): emitir, consultar, nota de crédito y cola ----------
+  // Ver server/ecf/emision.mjs. Sin ECF_EMISOR_RNC todo responde 409 y no se escribe nada: Dalfi
+  // factura hoy con RNC de persona física y la empresa se está constituyendo.
+  const emisionECF = bookingStore?.ecfCrear
+    ? crearEmisionECF({ env, store: bookingStore, leerDocumentoERP: async () => (await store.read())?.data })
+    : null;
+  const ORIGENES_ECF = new Set(["factura", "venta"]);
+  const resumenECF = (r) => r && ({
+    origen: r.origen, tipo: r.tipo, encf: r.encf, estado: r.estado, proveedor: r.proveedor,
+    trackId: r.track_id, codigoSeguridad: r.codigo_seguridad, fechaFirma: r.fecha_firma,
+    referenciaEncf: r.referencia_encf, intentos: r.intentos, ultimoError: r.ultimo_error,
+  });
+  const conPermisoECF = (accion) => async (req, res, next) => {
+    try {
+      if (!emisionECF) return res.status(503).json({ error: "La base de datos de e-CF no está disponible." });
+      if (!ORIGENES_ECF.has(req.params.origen) || !/^[\w-]{1,80}$/.test(req.params.id)) return res.status(400).json({ error: "Documento inválido." });
+      const auth = await requireErpPermission(webRequest(req), { ...env, fetch: fetchImpl }, "canManageInvoices", "emitir comprobantes fiscales");
+      if (auth.error) return relayAuthError(res, auth.error);
+      await accion(req, res);
+    } catch (error) {
+      if (error?.status) return res.status(error.status).json({ error: error.message, code: error.code });
+      next(error);
+    }
+  };
+  app.get("/api/ecf/:origen/:id", conPermisoECF(async (req, res) => {
+    const filas = await bookingStore.ecfPorOrigen(req.params.origen, req.params.id);
+    res.json({ comprobantes: filas.map(resumenECF) });
+  }));
+  app.post("/api/ecf/:origen/:id/emitir", conPermisoECF(async (req, res) => {
+    res.json({ comprobante: resumenECF(await emisionECF.emitir(req.params.origen, req.params.id)) });
+  }));
+  app.post("/api/ecf/:origen/:id/nota-credito", conPermisoECF(async (req, res) => {
+    const motivo = String(req.body?.motivo || "").trim().slice(0, 90);
+    if (!motivo) return res.status(400).json({ error: "Escribe el motivo de la anulación." });
+    res.json({ comprobante: resumenECF(await emisionECF.notaDeCredito(req.params.origen, req.params.id, { motivo })) });
+  }));
+  // La llama el cron cada 5 minutos (workers/booking-reminder-cron), con el mismo secreto que los
+  // recordatorios. Sin RNC del emisor responde enseguida sin tocar nada.
+  app.post("/api/ecf/procesar-cola", async (req, res, next) => {
+    const expectedSecret = env.BOOKING_REMINDER_CRON_SECRET;
+    if (!expectedSecret) return res.status(500).json({ error: "Falta configurar BOOKING_REMINDER_CRON_SECRET." });
+    if (secretoInvalido(req, "x-cron-secret", expectedSecret)) return res.status(401).json({ error: "Secreto de cron inválido." });
+    if (!emisionECF) return res.json({ procesados: 0, omitido: "sin_base" });
+    try { res.json(await emisionECF.procesarCola()); } catch (error) { next(error); }
   });
 
   // Enviar la factura a la clienta. Devuelve siempre el enlace, y un wa.me con el mensaje ya
@@ -3013,6 +3068,41 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     }
   });
 
+  // Documentos que pasan a Anulada/Revertida en este guardado y tienen un e-CF aceptado sin su nota
+  // de crédito. Devuelve el mensaje de error o null. Sin tabla de e-CF (o sin ninguno emitido) no
+  // bloquea nada: hoy, sin RNC, nunca bloquea.
+  async function anulacionesSinNotaDeCredito(antes, despues) {
+    if (!bookingStore?.ecfPorOrigen) return null;
+    const tablasDe = (doc) => (doc?.data && typeof doc.data === "object" ? doc.data : doc || {});
+    const a = tablasDe(antes);
+    const d = tablasDe(despues);
+    const candidatos = [];
+    const estadoPrevio = new Map((a.facturas || []).map((f) => [String(f.facturaID), f.estadoFactura]));
+    for (const f of d.facturas || []) {
+      if (f.estadoFactura === "Anulada" && estadoPrevio.get(String(f.facturaID)) !== "Anulada") candidatos.push(["factura", String(f.facturaID)]);
+    }
+    const ventaPrevia = new Map((a.ventasDirectas || []).map((v) => [String(v.saleId), v.estado]));
+    const ventasRevertidas = new Set((d.ventasDirectas || [])
+      .filter((v) => v.estado === "Revertida" && ventaPrevia.get(String(v.saleId)) !== "Revertida")
+      .map((v) => String(v.retailSaleId)));
+    for (const id of ventasRevertidas) candidatos.push(["venta", id]);
+    for (const [origen, id] of candidatos) {
+      let filas;
+      try {
+        filas = await bookingStore.ecfPorOrigen(origen, id);
+      } catch (error) {
+        // 42P01: la tabla todavía no existe (migración 0032 sin aplicar) = no hay ningún e-CF.
+        if (error?.code === "42P01") return null;
+        throw error;
+      }
+      const aceptado = filas.find((r) => r.origen === origen && (r.estado === "aceptado" || r.estado === "aceptado_condicional"));
+      if (!aceptado) continue;
+      const nota = filas.find((r) => r.origen === "nota_credito" && r.referencia_encf === aceptado.encf && r.estado !== "rechazado");
+      if (!nota) return `La ${origen === "venta" ? "venta" : "factura"} ${id} tiene el comprobante fiscal ${aceptado.encf} aceptado por la DGII. Para anularla hay que emitir primero la nota de crédito.`;
+    }
+    return null;
+  }
+
   app.put("/api/database", authenticate, async (req, res, next) => {
     const payload = req.body;
     if (!payload?.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
@@ -3033,6 +3123,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         return res.status(403).json({ error: "Tu usuario no esta autorizado para modificar estas areas." });
       }
       if (authorization.noChanges) return res.json({ saved: true, noChanges: true, updatedAt: current.updatedAt });
+      // Con e-CF, una factura o venta que ya tiene comprobante aceptado por la DGII no se anula
+      // cambiándole el estado: primero va la nota de crédito (POST /api/ecf/.../nota-credito).
+      const bloqueoECF = await anulacionesSinNotaDeCredito(current.data, payload.data);
+      if (bloqueoECF) return res.status(409).json({ error: bloqueoECF, code: "ECF_REQUIERE_NOTA_CREDITO" });
       const result = await store.save({
         document: payload.data,
         expectedUpdatedAt: payload.expectedUpdatedAt || null,

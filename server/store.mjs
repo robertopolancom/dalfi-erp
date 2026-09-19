@@ -2225,6 +2225,80 @@ export class NeonBookingStore {
     return result.rows[0]?.id || null;
   }
 
+  // ---------- e-CF (0032_ecf_documentos.sql) ----------
+  // Reserva el siguiente e-NCF del tipo y crea el registro en una sola transacción: si dos cajas
+  // facturan a la vez, cada una sale con su número, sin huecos ni duplicados. Sin secuencia
+  // autorizada (o vencida o agotada) no se inventa nada: error claro.
+  async ecfCrear({ origen, origenId, tipo, proveedor, documento, referenciaEncf = null }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const sec = await client.query(
+        `update app.ecf_secuencias set siguiente = siguiente + 1, actualizado_en = now()
+          where tipo = $1 and siguiente <= hasta and (vence is null or vence >= current_date)
+          returning siguiente - 1 as numero`,
+        [tipo],
+      );
+      if (!sec.rowCount) {
+        await client.query("rollback");
+        throw Object.assign(new Error(`No hay secuencia de e-NCF vigente para el tipo ${tipo}. Carga el rango que autorizó la DGII.`), { code: "ECF_SIN_SECUENCIA" });
+      }
+      const encf = `E${tipo}${String(sec.rows[0].numero).padStart(10, "0")}`;
+      const inserted = await client.query(
+        `insert into app.ecf_documentos (origen, origen_id, tipo, encf, proveedor, documento, referencia_encf)
+         values ($1,$2,$3,$4,$5,$6::jsonb,$7) returning *`,
+        [origen, String(origenId), tipo, encf, proveedor, JSON.stringify({ ...documento, encf }), referenciaEncf],
+      );
+      await client.query("commit");
+      return inserted.rows[0];
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async ecfPorOrigen(origen, origenId) {
+    const r = await this.pool.query(
+      `select * from app.ecf_documentos where (origen = $1 and origen_id = $2)
+          or (origen = 'nota_credito' and referencia_encf in (select encf from app.ecf_documentos where origen = $1 and origen_id = $2))
+        order by creado_en`,
+      [origen, String(origenId)],
+    );
+    return r.rows;
+  }
+
+  async ecfActualizar(id, { estado, trackId, codigoSeguridad, fechaFirma, respuesta, error, proximoIntento, sumarIntento = false, documento = null }) {
+    const r = await this.pool.query(
+      `update app.ecf_documentos set
+          estado = coalesce($2, estado),
+          track_id = coalesce($3, track_id),
+          codigo_seguridad = coalesce($4, codigo_seguridad),
+          fecha_firma = coalesce($5, fecha_firma),
+          respuesta = coalesce($6::jsonb, respuesta),
+          ultimo_error = $7,
+          proximo_intento = coalesce($8, proximo_intento),
+          intentos = intentos + $9,
+          documento = coalesce($10::jsonb, documento),
+          actualizado_en = now()
+        where id = $1 returning *`,
+      [id, estado || null, trackId || null, codigoSeguridad || null, fechaFirma || null, respuesta ? JSON.stringify(respuesta) : null, error || null, proximoIntento || null, sumarIntento ? 1 : 0, documento ? JSON.stringify(documento) : null],
+    );
+    return r.rows[0] || null;
+  }
+
+  // Lo que la cola tiene que (re)intentar: pendientes y con error, y los que el PSFE dejó en proceso.
+  async ecfPendientes(limite = 20) {
+    const r = await this.pool.query(
+      `select * from app.ecf_documentos
+        where estado in ('pendiente','en_proceso','error') and proximo_intento <= now() and intentos < 12
+        order by proximo_intento limit $1`,
+      [limite],
+    );
+    return r.rows;
+  }
+
   // Seguimiento tras la cita (Atendida -> pedir reseña; No asistió -> invitar a volver). Una sola
   // vez por cita y tipo: si alguien la marca dos veces, o la pasa de No asistió a Atendida y de
   // vuelta, el cliente no recibe el mismo mensaje dos veces. La fila del outbox es a la vez el

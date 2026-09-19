@@ -207,3 +207,14 @@ test("recordatorios: solo en el disparo del minuto 0 de cada hora, aunque el cro
   for (const min of [5, 10, 30, 55]) assert.equal(workerModule.esDisparoDeHora(hora(min)), false, `minuto ${min}`);
   assert.match(wranglerToml, /BOT_BASE_URL = "https:\/\/bot\.dalfistudio\.com"/);
 });
+
+test("cola de e-CF: POST al ERP con x-cron-secret en cada disparo; sin secreto no llama", async () => {
+  const fetchMock = makeFetchMock(() => new Response("{}", { status: 200 }));
+  const r = await workerModule.runEcfQueue(makeEnv(), fetchMock);
+  assert.equal(r.ok, true);
+  assert.equal(fetchMock.calls[0].url, `${FAKE_BASE_URL}/api/ecf/procesar-cola`);
+  assert.equal(fetchMock.calls[0].init.headers["x-cron-secret"], FAKE_SECRET);
+  const sin = makeFetchMock(() => new Response("{}", { status: 200 }));
+  assert.deepEqual(await workerModule.runEcfQueue({ APP_BASE_URL: FAKE_BASE_URL }, sin), { skipped: true });
+  assert.equal(sin.calls.length, 0);
+});

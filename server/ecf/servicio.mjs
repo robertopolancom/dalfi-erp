@@ -35,7 +35,9 @@ export function adaptadorSimulado() {
       const bytes = randomBytes(6);
       const codigoSeguridad = [...bytes].map((b) => ALFANUMERICO[b % ALFANUMERICO.length]).join("");
       return {
-        encf: `E${documento.tipo}${String(siguiente).padStart(10, "0")}`,
+        // El e-NCF lo asigna NUESTRA secuencia (es del contribuyente); el simulado solo inventa
+        // uno si no le llega ninguno (vista de prueba).
+        encf: documento.encf || `E${documento.tipo}${String(siguiente).padStart(10, "0")}`,
         codigoSeguridad,
         fechaFirma: new Date().toISOString(),
         trackId: `SIM-${randomBytes(8).toString("hex")}`,

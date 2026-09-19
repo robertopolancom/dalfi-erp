@@ -121,6 +121,25 @@ async function runHumanWaitSweep(env, fetchImpl = fetch) {
   }
 }
 
+// Cola de e-CF (2026-09-18): reintenta los comprobantes que el PSFE no pudo recibir y consulta los
+// que quedaron en proceso. Mismo secreto que los recordatorios (el ERP lo valida igual). Sin RNC
+// del emisor el ERP responde enseguida sin hacer nada.
+async function runEcfQueue(env, fetchImpl = fetch) {
+  const secret = env.BOOKING_REMINDER_CRON_SECRET;
+  if (!env.APP_BASE_URL || !secret) return { skipped: true };
+  const endpoint = new URL("/api/ecf/procesar-cola", env.APP_BASE_URL).toString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(env.REQUEST_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(endpoint, { method: "POST", headers: { "x-cron-secret": secret }, signal: controller.signal });
+    console.log(JSON.stringify({ job: "dalfi-ecf-cola", at: nowIso(), ok: response.ok, status: response.status }));
+    if (!response.ok) throw new Error(`La cola de e-CF respondio ${response.status}.`);
+    return { ok: true, status: response.status };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 // Los recordatorios salen solo en el disparo del minuto 0 de cada hora, como cuando el cron era
 // horario (una vez por hora): send-reminders es idempotente por ciclo horario, pero no hay por qué llamarlo 12
 // veces por hora.
@@ -134,6 +153,11 @@ export default {
     ctx.waitUntil(
       runHumanWaitSweep(env).catch((error) => {
         console.error(`dalfi-bot-human-wait-sweep: ${error.message}`);
+      }),
+    );
+    ctx.waitUntil(
+      runEcfQueue(env).catch((error) => {
+        console.error(`dalfi-ecf-cola: ${error.message}`);
       }),
     );
     if (!esDisparoDeHora(controllerEvent)) return;
@@ -152,4 +176,4 @@ export default {
   },
 };
 
-export { runBookingReminderCron, runHumanWaitSweep, esDisparoDeHora };
+export { runBookingReminderCron, runHumanWaitSweep, runEcfQueue, esDisparoDeHora };
