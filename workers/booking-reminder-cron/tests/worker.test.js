@@ -161,7 +161,7 @@ test("worker.js NO accede a Supabase directamente ni duplica ninguna regla de ne
 
 test("la expresion cron activa vive UNICAMENTE en workers/booking-reminder-cron/wrangler.toml, no hardcodeada en worker.js", () => {
   assert.ok(!/\d+ \* \* \* \*/.test(workerSource), "worker.js no debe contener una expresion cron: la programacion es responsabilidad de wrangler.toml");
-  assert.match(wranglerToml, /^\[triggers\]\s*\ncrons = \["0 \* \* \* \*"\]/m, "el Cron Trigger debe estar activo (sin comentar), una vez por hora");
+  assert.match(wranglerToml, /^\[triggers\]\s*\ncrons = \["\*\/5 \* \* \* \*"\]/m, "cada 5 minutos: barrido del bot en cada disparo, recordatorios solo en el de la hora");
 });
 
 test("APP_BASE_URL en wrangler.toml apunta al backend real (Render + Neon), no a un placeholder ni al dominio de Cloudflare Pages ya eliminado", () => {
@@ -179,4 +179,31 @@ test("todas las pruebas de fetch de este archivo usan FAKE_BASE_URL/FAKE_SECRET 
   assert.match(thisFile, /FAKE_BASE_URL = "https:\/\/example-test\.pages\.dev"/);
   assert.match(thisFile, /FAKE_SECRET = "test-secret-not-real-0000"/);
   assert.match(thisFile, /function makeEnv\(overrides = \{\}\) \{\s*\n\s*return \{ APP_BASE_URL: FAKE_BASE_URL, BOOKING_REMINDER_CRON_SECRET: FAKE_SECRET, \.\.\.overrides \};/);
+});
+
+// --- Barrido del bot (2026-09-18) -------------------------------------------------------------
+
+test("barrido: llama al bot con x-webhook-secret por POST, sin el secreto en la URL", async () => {
+  const fetchMock = makeFetchMock(() => new Response("{}", { status: 200 }));
+  const r = await workerModule.runHumanWaitSweep({ BOT_BASE_URL: "https://bot-test.example", ERP_WEBHOOK_SECRET: FAKE_SECRET }, fetchMock);
+  assert.equal(r.ok, true);
+  assert.equal(fetchMock.calls.length, 1);
+  assert.equal(fetchMock.calls[0].url, "https://bot-test.example/internal/human-wait-sweep");
+  assert.equal(fetchMock.calls[0].init.method, "POST");
+  assert.equal(fetchMock.calls[0].init.headers["x-webhook-secret"], FAKE_SECRET);
+  assert.ok(!fetchMock.calls[0].url.includes(FAKE_SECRET));
+});
+
+test("barrido: sin ERP_WEBHOOK_SECRET se salta, sin llamar a nadie y sin romper los recordatorios", async () => {
+  const fetchMock = makeFetchMock(() => new Response("{}", { status: 200 }));
+  const r = await workerModule.runHumanWaitSweep({ BOT_BASE_URL: "https://bot-test.example" }, fetchMock);
+  assert.deepEqual(r, { skipped: true });
+  assert.equal(fetchMock.calls.length, 0);
+});
+
+test("recordatorios: solo en el disparo del minuto 0 de cada hora, aunque el cron sea cada 5 minutos", () => {
+  const hora = (min) => ({ scheduledTime: Date.UTC(2026, 8, 18, 15, min) });
+  assert.equal(workerModule.esDisparoDeHora(hora(0)), true);
+  for (const min of [5, 10, 30, 55]) assert.equal(workerModule.esDisparoDeHora(hora(min)), false, `minuto ${min}`);
+  assert.match(wranglerToml, /BOT_BASE_URL = "https:\/\/bot\.dalfistudio\.com"/);
 });

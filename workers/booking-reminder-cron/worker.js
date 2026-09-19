@@ -90,8 +90,53 @@ async function runBookingReminderCron(env, fetchImpl = fetch) {
   }
 }
 
+// Barrido del bot (2026-09-18). Cuando el bot pasa a un cliente con una persona y nadie le contesta
+// en 10 minutos, le ofrece volver con el bot. En Cloud Run el bot no tiene un temporizador vivo
+// (se apaga sin tráfico), así que alguien de fuera tiene que llamarlo: POST
+// /internal/human-wait-sweep, con el mismo secreto que el ERP ya usa para hablar con el bot.
+// Va en este Worker y no en uno nuevo porque el plan gratuito de Cloudflare permite 5 crons por
+// cuenta y ya se usan los 5: este pasa de cada hora a cada 5 minutos, y los recordatorios siguen
+// saliendo una vez por hora (ver scheduled()).
+//
+// Si el Worker todavía no tiene ERP_WEBHOOK_SECRET, el barrido se salta en silencio y los
+// recordatorios siguen igual: nunca uno tumba al otro.
+async function runHumanWaitSweep(env, fetchImpl = fetch) {
+  const secret = env.ERP_WEBHOOK_SECRET;
+  if (!env.BOT_BASE_URL || !secret) return { skipped: true };
+  const endpoint = new URL("/internal/human-wait-sweep", env.BOT_BASE_URL).toString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Number(env.REQUEST_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+  const startedAt = Date.now();
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { "x-webhook-secret": secret },
+      signal: controller.signal,
+    });
+    console.log(JSON.stringify({ job: "dalfi-bot-human-wait-sweep", at: nowIso(), ok: response.ok, status: response.status, durationMs: Date.now() - startedAt }));
+    if (!response.ok) throw new Error(`El barrido del bot respondio ${response.status}.`);
+    return { ok: true, status: response.status };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Los recordatorios salen solo en el disparo del minuto 0 de cada hora, como cuando el cron era
+// horario (una vez por hora): send-reminders es idempotente por ciclo horario, pero no hay por qué llamarlo 12
+// veces por hora.
+function esDisparoDeHora(controllerEvent) {
+  const cuando = new Date(controllerEvent?.scheduledTime ?? Date.now());
+  return cuando.getUTCMinutes() < 5;
+}
+
 export default {
   async scheduled(controllerEvent, env, ctx) {
+    ctx.waitUntil(
+      runHumanWaitSweep(env).catch((error) => {
+        console.error(`dalfi-bot-human-wait-sweep: ${error.message}`);
+      }),
+    );
+    if (!esDisparoDeHora(controllerEvent)) return;
     // Una sola solicitud por ejecucion (sin reintentos agresivos dentro de la
     // misma ejecucion): si esta falla, la siguiente ejecucion programada del
     // cron (una hora despues) es la recuperacion natural. send-reminders.js
@@ -107,4 +152,4 @@ export default {
   },
 };
 
-export { runBookingReminderCron };
+export { runBookingReminderCron, runHumanWaitSweep, esDisparoDeHora };

@@ -18,6 +18,9 @@ preview_urls = false
 
 [vars]
 APP_BASE_URL = "https://ssc.dalfistudio.com"
+# El bot, para el barrido de "sigo esperando a una persona" (ver runHumanWaitSweep en worker.js).
+# Su secreto va aparte: npx wrangler secret put ERP_WEBHOOK_SECRET
+BOT_BASE_URL = "https://bot.dalfistudio.com"
 
 # BOOKING_REMINDER_CRON_SECRET se configura por separado como Secret (nunca
 # en este archivo ni en Git): "wrangler secret put BOOKING_REMINDER_CRON_SECRET".
@@ -31,4 +34,4 @@ APP_BASE_URL = "https://ssc.dalfistudio.com"
 # ejecutarse con frecuencia suficiente (cada hora) para que esa ventana nunca
 # se salte un ciclo.
 [triggers]
-crons = ["0 * * * *"]
+crons = ["*/5 * * * *"]
