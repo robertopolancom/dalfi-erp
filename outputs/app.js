@@ -2262,11 +2262,11 @@ async function loadDepositReviewArea(reservationId) {
       return;
     }
     if (!canManageReservations()) {
-      area.innerHTML = `<img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${receipt.image_data}" alt="Comprobante de depósito" />`;
+      area.innerHTML = `<img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${escapeHtml(receipt.image_data)}" alt="Comprobante de depósito" />`;
       return;
     }
     area.innerHTML = `
-      <img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${receipt.image_data}" alt="Comprobante de depósito" />
+      <img class="deposit-receipt-image" src="data:${escapeHtml(receipt.mime_type)};base64,${escapeHtml(receipt.image_data)}" alt="Comprobante de depósito" />
       <div class="deposit-review-actions">
         <button type="button" class="secondary-btn compact deposit-review-btn approve" data-reservation-id="${escapeHtml(reservationId)}" data-approve="true">Confirmar depósito</button>
         <button type="button" class="secondary-btn compact deposit-review-btn reject" data-reservation-id="${escapeHtml(reservationId)}" data-approve="false">Rechazar</button>

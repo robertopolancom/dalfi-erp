@@ -23,9 +23,9 @@ test("la subida está gateada por canManageConfiguration, y la lectura pública 
 test("solo se admiten imágenes, y con un tope de tamaño real (no el largo del base64)", () => {
   assert.match(appMjs, /SITE_MEDIA_MIME_TYPES = new Set\(\["image\/jpeg", "image\/png", "image\/webp"\]\)/);
   assert.match(appMjs, /SITE_MEDIA_MAX_BYTES = 3 \* 1024 \* 1024/);
-  // Se mide el peso real: el base64 infla un 33% y comparar su largo rechazaría fotos válidas.
-  assert.match(appMjs, /Math\.floor\(\(imageBase64\.length \* 3\) \/ 4\)/);
-  assert.match(appMjs, /res\.status\(413\)/);
+  // Se mide el peso real (el base64 infla un 33%) y que sean bytes de imagen: validarImagenBase64
+  // decodifica y compara contra el tope en bytes; ver tests/imagen-segura.test.js (IS04, 413).
+  assert.match(appMjs, /validarImagenBase64\(imageBase64, mimeType, \{ maxBytes: SITE_MEDIA_MAX_BYTES \}\)/);
 });
 
 test("la imagen se sirve cacheada para siempre porque su contenido nunca cambia", () => {

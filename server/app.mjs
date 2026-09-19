@@ -23,6 +23,7 @@ import { businessMinutesBetween, documentData } from "./store.mjs";
 import { buildMovedAppointmentMessage, fechaEnPalabras } from "./moved-appointment-message.mjs";
 import { construirNotificacion, enviarPush, pushConfigurado } from "./push.mjs";
 import { crearVigilante } from "./alertas-seguridad.mjs";
+import { validarImagenBase64 } from "./imagen-segura.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
@@ -1159,6 +1160,9 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       const imageBase64 = String(req.body?.imageBase64 || "");
       if (!ALLOWED_DEPOSIT_MIME_TYPES.has(mimeType)) return res.status(400).json({ error: "La imagen debe ser JPEG, PNG o WEBP." });
       if (!imageBase64) return res.status(400).json({ error: "Falta la imagen del comprobante." });
+      // La app ya la comprime a JPEG antes de mandarla (~200-400 KB); 5 MB da margen de sobra.
+      const imagen = validarImagenBase64(imageBase64, mimeType, { maxBytes: 5 * 1024 * 1024 });
+      if (!imagen.ok) return res.status(imagen.status).json({ error: imagen.error });
       try {
         const updated = await bookingStore.submitDepositReceipt({
           appointmentId: req.params.id, clientId: req.reservapp.account.client_id, imageBase64, mimeType,
@@ -3108,11 +3112,10 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
       const imageBase64 = String(req.body?.imageBase64 || "");
       if (!SITE_MEDIA_MIME_TYPES.has(mimeType)) return res.status(400).json({ error: "Formato no admitido. Usa JPG, PNG o WebP." });
       if (!imageBase64) return res.status(400).json({ error: "Falta la imagen." });
-      // Se mide el tamaño REAL en bytes, no el largo del base64 (que infla un 33%).
-      const byteSize = Math.floor((imageBase64.length * 3) / 4);
-      if (byteSize > SITE_MEDIA_MAX_BYTES) {
-        return res.status(413).json({ error: `La imagen pesa ${(byteSize / 1024 / 1024).toFixed(1)}MB y el máximo son 3MB.` });
-      }
+      // Tamaño REAL en bytes (no el largo del base64, que infla un 33%) y que sea una imagen de verdad.
+      const imagen = validarImagenBase64(imageBase64, mimeType, { maxBytes: SITE_MEDIA_MAX_BYTES });
+      if (!imagen.ok) return res.status(imagen.status).json({ error: imagen.error });
+      const byteSize = imagen.bytes;
       const saved = await bookingStore.insertSiteMedia({
         siteKey: req.params.siteKey, imageData: imageBase64, mimeType, byteSize,
         altText: cleanText(req.body?.altText, 160), createdBy: auth.identity.email,
