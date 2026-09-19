@@ -159,10 +159,17 @@ test("RC07 — el atajo sin WhatsApp (RESERVAPP_SKIP_PHONE_VERIFICATION) ya no e
   assert.equal(r.envios, 1);
 });
 
-test("RC08 — las rutas que delataban o saltaban el código ya no existen", async () => {
+test("RC08 — las rutas que delataban o saltaban el código ya no existen; check-phone solo queda como respuesta fija", async () => {
   const store = bookingStore(ESCENARIOS["cuenta activa con contraseña"]);
   await withServer(store, async (base) => {
-    for (const ruta of ["check-phone", "verify-name", "set-password-after-verification"]) {
+    // check-phone responde lo mismo para cualquier teléfono (compatibilidad con copias viejas de la app).
+    for (const opciones of [ESCENARIOS["cuenta activa con contraseña"], {}]) {
+      const r = await pedirCodigo(opciones, { ruta: "check-phone" });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body, { exists: false });
+      assert.equal(r.envios, 0, "check-phone no manda nada");
+    }
+    for (const ruta of ["verify-name", "set-password-after-verification"]) {
       const r = await fetch(`${base}/api/reservapp/auth/${ruta}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ phone: "8095551234", firstName: "Ana", password: "clave1234" }),

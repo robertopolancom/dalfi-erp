@@ -820,6 +820,15 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
         res.status(202).json({ ...respuesta, ...expuesto });
       } catch (error) { next(error); }
     };
+    // Compatibilidad con copias viejas de ReservApp guardadas en el navegador (2026-09-19): esa
+    // versión preguntaba aquí si el teléfono existía y, al quitar la ruta, quedaba trabada sin
+    // pedir el código. Ahora responde SIEMPRE lo mismo ("no existe"), así que no revela nada: la
+    // copia vieja sigue al formulario de registro, que pide el código por request-setup (alias de
+    // request-code) y funciona igual para cliente nuevo, ficha del ERP o cuenta con contraseña.
+    app.post("/api/reservapp/auth/check-phone", bookingRateLimit, (req, res) => {
+      if (!validPhone(cleanText(req.body?.phone, 30))) return res.status(400).json({ error: "Escribe un teléfono válido." });
+      res.json({ exists: false });
+    });
     app.post("/api/reservapp/auth/request-code", bookingRateLimit, solicitarCodigo);
     app.post("/api/reservapp/auth/request-setup", bookingRateLimit, solicitarCodigo);
     app.post("/api/reservapp/auth/request-password-reset", bookingRateLimit, solicitarCodigo);

@@ -9,3 +9,18 @@
 
 /config.js
   Cache-Control: no-cache
+
+# La página y su código siempre se revalidan (con ETag, así que si no cambiaron no se vuelven a
+# bajar). Sin esto el navegador guardaba app.js por su cuenta: el 2026-09-19 clientes con una copia
+# vieja no podían pedir el código de registro después de un cambio del día anterior.
+/
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
+
+/app.js
+  Cache-Control: no-cache
+
+/styles.css
+  Cache-Control: no-cache
