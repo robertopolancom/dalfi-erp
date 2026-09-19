@@ -13143,8 +13143,56 @@ function ensureStaffRecord(name) {
   return staff;
 }
 
+// --- Comprobante fiscal de la factura (e-CF) -------------------------------------------------
+// Mismos algoritmos que server/ecf/identificacion.mjs (el servidor vuelve a validar al emitir):
+// aquí es para avisar en el momento, no para confiar en el navegador.
+function rncValidoFiscal(valor) {
+  const d = String(valor || "").replace(/\D/g, "");
+  if (d.length !== 9) return false;
+  const pesos = [7, 9, 8, 6, 5, 4, 3, 2];
+  const resto = pesos.reduce((acc, peso, i) => acc + peso * Number(d[i]), 0) % 11;
+  return (resto === 0 ? 2 : resto === 1 ? 1 : 11 - resto) === Number(d[8]);
+}
+
+function cedulaValidaFiscal(valor) {
+  const d = String(valor || "").replace(/\D/g, "");
+  if (d.length !== 11) return false;
+  let suma = 0;
+  for (let i = 0; i < 10; i += 1) {
+    let producto = Number(d[i]) * (i % 2 === 0 ? 1 : 2);
+    if (producto > 9) producto -= 9;
+    suma += producto;
+  }
+  return (10 - (suma % 10)) % 10 === Number(d[10]);
+}
+
+function actualizarBloqueFiscalFactura() {
+  const esCredito = byId("invoice-fiscal-type")?.value === "31";
+  byId("invoice-fiscal-buyer")?.classList.toggle("hidden", !esCredito);
+}
+
+// Devuelve los campos fiscales para guardar en la factura, o { error, focus } si falta algo.
+function datosFiscalesFactura() {
+  const tipo = byId("invoice-fiscal-type")?.value === "31" ? "31" : "32";
+  if (tipo === "32") return { tipoComprobante: "32", compradorRNC: "", compradorRazonSocial: "" };
+  const rnc = String(byId("invoice-buyer-rnc").value || "").replace(/\D/g, "");
+  const nombre = byId("invoice-buyer-name").value.trim();
+  const valido = rnc.length === 9 ? rncValidoFiscal(rnc) : rnc.length === 11 ? cedulaValidaFiscal(rnc) : false;
+  if (!valido) return { error: "Para crédito fiscal escribe un RNC (9 dígitos) o una cédula (11) válidos.", focus: "invoice-buyer-rnc" };
+  if (!nombre) return { error: "Escribe la razón social o el nombre del comprador.", focus: "invoice-buyer-name" };
+  return { tipoComprobante: "31", compradorRNC: rnc, compradorRazonSocial: nombre };
+}
+
+function cargarDatosFiscalesFactura(invoice) {
+  byId("invoice-fiscal-type").value = invoice?.tipoComprobante === "31" ? "31" : "32";
+  byId("invoice-buyer-rnc").value = invoice?.compradorRNC || "";
+  byId("invoice-buyer-name").value = invoice?.compradorRazonSocial || "";
+  actualizarBloqueFiscalFactura();
+}
+
 function clearInvoiceFormAfterSubmit() {
   byId("invoice-form").reset();
+  actualizarBloqueFiscalFactura();
   delete byId("invoice-form").dataset.editVersion;
   byId("invoice-edit-id").value = "";
   byId("invoice-date").value = today;
@@ -13193,6 +13241,7 @@ function startInvoiceEdit(invoiceId) {
   byId("invoice-date").value = dateOnly(invoice.fechaHora) || today;
   byId("invoice-client-search").value = invoice.clienteNombre || "";
   byId("invoice-note").value = invoice.observaciones || "";
+  cargarDatosFiscalesFactura(invoice);
   byId("invoice-general-extra").value = Number(invoice.adicionalGeneralMonto) || 0;
   byId("invoice-general-extra-note").value = invoice.adicionalGeneralDetalle || "";
   byId("invoice-general-discount-percent").value = Number(invoice.descuentoGeneralPorcentaje) || 0;
@@ -13320,6 +13369,7 @@ function saveEditedInvoice(invoiceId, client, lines, totals, note) {
   invoice.descuentoGeneralMonto = totals.generalDiscountAmount || 0;
   invoice.totalConPropina = totals.total + previousTip;
   invoice.observaciones = note;
+  Object.assign(invoice, datosFiscalesFactura());
   stampRecord(invoice, "updated");
   refreshPendingClosingsForDate(currentDate);
   if (targetDate !== currentDate) refreshPendingClosingsForDate(targetDate);
@@ -14118,6 +14168,7 @@ function updateExpenseBalancePreview() {
 }
 
 function wireForms() {
+  byId("invoice-fiscal-type")?.addEventListener("change", actualizarBloqueFiscalFactura);
   const saveClientCatalog = (event) => {
     event.preventDefault();
     if (!canManageBilling()) {
@@ -14405,6 +14456,12 @@ function wireForms() {
       byId("invoice-client-search").focus();
       return;
     }
+    const fiscal = datosFiscalesFactura();
+    if (fiscal.error) {
+      alert(fiscal.error);
+      byId(fiscal.focus)?.focus();
+      return;
+    }
     if (!lines.length) {
       alert("Agrega por lo menos un servicio con su colaboradora antes de continuar al cobro.");
       document.querySelector(".line-service")?.focus();
@@ -14602,6 +14659,8 @@ function wireForms() {
       distribucionPropina: tipDistributionDeclared,
       cierreID: "Cierre no creado",
       observaciones: note,
+      // Comprobante fiscal (e-CF): E32 consumo o E31 crédito fiscal con RNC/cédula del comprador.
+      ...datosFiscalesFactura(),
     });
     dbTable("facturas").push(invoiceRecord);
     if (activeReservationInvoiceId) {

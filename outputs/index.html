@@ -233,6 +233,23 @@
                 <div class="readonly-hint" id="invoice-client-summary">Selecciona un cliente para ver nombre y teléfono.</div>
               </div>
 
+              <!-- Comprobante fiscal (e-CF). Consumo = consumidor final (E32), lo normal en el salón.
+                   Crédito fiscal (E31) solo cuando el cliente pide factura a nombre de su empresa o
+                   con su cédula: exige RNC o cédula válidos. Ver server/ecf/documento.mjs. -->
+              <div class="field-block" id="invoice-fiscal-block">
+                <label>
+                  Comprobante fiscal
+                  <select id="invoice-fiscal-type">
+                    <option value="32">Consumo (consumidor final)</option>
+                    <option value="31">Crédito fiscal (con RNC o cédula)</option>
+                  </select>
+                </label>
+                <div class="hidden" id="invoice-fiscal-buyer">
+                  <label>RNC o cédula<input id="invoice-buyer-rnc" inputmode="numeric" autocomplete="off" placeholder="9 u 11 dígitos" /></label>
+                  <label>Razón social o nombre<input id="invoice-buyer-name" autocomplete="off" /></label>
+                </div>
+              </div>
+
               <section class="invoice-summary compact-summary hidden" id="invoice-prior-debt-summary" aria-live="polite">
                 <div class="summary-row">
                   <span>Total de esta factura</span>

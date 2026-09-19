@@ -24,6 +24,9 @@ import { buildMovedAppointmentMessage, fechaEnPalabras } from "./moved-appointme
 import { construirNotificacion, enviarPush, pushConfigurado } from "./push.mjs";
 import { crearVigilante } from "./alertas-seguridad.mjs";
 import { validarImagenBase64 } from "./imagen-segura.mjs";
+import { documentoDesdeFactura, emisorDesdeEntorno } from "./ecf/documento.mjs";
+import { renderRepresentacionImpresa } from "./ecf/representacion.mjs";
+import { adaptadorSimulado } from "./ecf/servicio.mjs";
 import { notifyNewAppointment, notifyDepositReceiptUploaded, notifyDepositReviewPending,
          notifyAppointmentCancelled, notifyAppointmentConfirmedByClient, notifyAppointmentStranded,
          notifyAppointmentRescheduledByClient, sendInvoiceEmail, sendBusinessEmail } from "./email.mjs";
@@ -2238,6 +2241,16 @@ export function createApp({ store, bookingStore, chatStore, env = process.env, s
     if (!invoiceId) return res.status(404).send(renderInvoiceNotFound());
     try {
       const row = await store.read();
+      // ?vista=fiscal: la representación impresa con el formato de la DGII (e-CF). Mientras la
+      // factura no tenga e-NCF de verdad, se rellena con uno SIMULADO (no se guarda nada) para ver
+      // cómo queda, y la hoja lo dice en grande. La vista normal del cliente no cambia hasta que
+      // el emisor tenga RNC y se emita de verdad.
+      if (req.query.vista === "fiscal") {
+        const doc = row?.data ? documentoDesdeFactura(row.data, invoiceId, { emisor: emisorDesdeEntorno(env) }) : null;
+        if (!doc) return res.status(404).send(renderInvoiceNotFound());
+        if (!doc.encf) Object.assign(doc, await adaptadorSimulado().emitir(doc));
+        return res.send(renderRepresentacionImpresa(doc, { ambiente: String(env.ECF_AMBIENTE || "prueba") }));
+      }
       const view = row?.data ? buildInvoiceView(row.data, invoiceId) : null;
       if (!view) return res.status(404).send(renderInvoiceNotFound());
       res.send(renderInvoiceHtml(view));
