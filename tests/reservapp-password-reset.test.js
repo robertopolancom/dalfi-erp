@@ -247,3 +247,15 @@ test("RC11 — el WhatsApp habla de restablecer si ya había contraseña, y de c
   assert.match(textos["cuenta activa con contraseña"], /restablecer tu contraseña/i);
   assert.match(textos["cuenta pendiente sin contraseña"], /crear tu contraseña/i);
 });
+
+test("RC12 — un teléfono nuevo pide el código sin datos: la base no puede exigirlos en ese momento", async () => {
+  // Regresión del 2026-09-19: la 0017 tenía un check que exigía datos o ficha al crear el registro
+  // pendiente, y todo cliente nuevo recibía 500 al pedir el código. Las pruebas usaban una base
+  // simulada sin esa regla; esta fija que la migración que la quita exista.
+  const { readFile } = await import("node:fs/promises");
+  const sql = await readFile(new URL("../neon/migrations/0033_registro_sin_datos_hasta_el_codigo.sql", import.meta.url), "utf8");
+  assert.match(sql, /drop constraint if exists reservapp_pending_registrations_check/);
+  const r = await pedirCodigo({});
+  assert.equal(r.status, 202);
+  assert.equal(r.store.pendingCalls[0].registration, null, "se guarda sin datos: se piden después del código");
+});
