@@ -29,7 +29,8 @@
        local es la pieza que conecta la web con la ficha del mapa.
        Los datos salen de config/business-info.json del bot, que es la fuente que usa el chatbot
        para contestarle a la clientela -- asi no hay dos verdades.
-       El horario son DOS bloques por dia a proposito: se cierra de 12 a 1. -->
+       El horario de lunes a jueves son DOS bloques a proposito: se cierra de 12 a 1 para almorzar.
+       Viernes y sabado van corridos de 9 a 6 (cambio del 2026-09-19). -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -57,14 +58,20 @@
     "openingHoursSpecification": [
       {
         "@type": "OpeningHoursSpecification",
-        "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],
+        "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday"],
         "opens": "09:00",
         "closes": "12:00"
       },
       {
         "@type": "OpeningHoursSpecification",
-        "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],
+        "dayOfWeek": ["Monday","Tuesday","Wednesday","Thursday"],
         "opens": "13:00",
+        "closes": "18:00"
+      },
+      {
+        "@type": "OpeningHoursSpecification",
+        "dayOfWeek": ["Friday","Saturday"],
+        "opens": "09:00",
         "closes": "18:00"
       }
     ],
@@ -358,7 +365,7 @@
           </div>
           <div class="contact-item">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9.5"/><path d="M12 7.5v5l3.2 1.9"/></svg>
-            <div><h4>Horario</h4><p data-cms="contact.horario">Lunes a sábado, de 9:00 a. m. a 6:00 p. m. Cerramos de 12:00 a 1:00 p. m. Domingos y días feriados no abrimos.</p></div>
+            <div><h4>Horario</h4><p data-cms="contact.horario">Lunes a sábado, de 9:00 a. m. a 6:00 p. m. De lunes a jueves cerramos de 12:00 a 1:00 p. m.; viernes y sábado, corrido. Domingos y días feriados no abrimos.</p></div>
           </div>
         </div>
       </div>
